@@ -26,9 +26,21 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
         .other, .sad, .surprised, .unknown
     ]
 
-    private let session: ORTSession
+    private var session: ORTSession
+    private let modelURL: URL
+    private var usingCoreML: Bool
 
     public init(modelURL: URL, useCoreML: Bool = true) throws {
+        self.modelURL = modelURL
+        self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
+        let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
+        self.usingCoreML = coreMLActive
+        AppLog.serAcoustic.info(
+            "emotion2vec ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
+        )
+    }
+
+    private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
         let env = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
@@ -37,14 +49,7 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
             coreml.enableOnSubgraphs = true
             try? options.appendCoreMLExecutionProvider(with: coreml)
         }
-        self.session = try ORTSession(
-            env: env,
-            modelPath: modelURL.path,
-            sessionOptions: options
-        )
-        AppLog.serAcoustic.info(
-            "emotion2vec ONNX loaded: \(modelURL.lastPathComponent, privacy: .public)"
-        )
+        return try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
     }
 
     public init(useCoreML: Bool = true) throws {
@@ -66,39 +71,7 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
         guard n > 0 else {
             throw AcousticSERError.onnxRuntimeFailure(reason: "empty audio")
         }
-
-        let bytes = n * MemoryLayout<Float>.size
-        let inputData = buffer.samples.withUnsafeBufferPointer { src -> NSMutableData in
-            NSMutableData(bytes: src.baseAddress, length: bytes)
-        }
-        let inputValue = try ORTValue(
-            tensorData: inputData,
-            elementType: .float,
-            shape: [1 as NSNumber, NSNumber(value: n)]
-        )
-
-        var lengths: [Int32] = [Int32(n)]
-        let lenData = lengths.withUnsafeMutableBufferPointer { ptr -> NSMutableData in
-            NSMutableData(bytes: ptr.baseAddress, length: MemoryLayout<Int32>.size)
-        }
-        let lengthValue = try ORTValue(
-            tensorData: lenData,
-            elementType: .int32,
-            shape: [1 as NSNumber]
-        )
-
-        let outputs = try session.run(
-            withInputs: ["speech": inputValue, "speech_lengths": lengthValue],
-            outputNames: ["logits"],
-            runOptions: nil
-        )
-        guard let logits = outputs["logits"] else {
-            throw AcousticSERError.onnxRuntimeFailure(reason: "no logits output")
-        }
-        let outData = try logits.tensorData() as Data
-        let raw = outData.withUnsafeBytes { ptr -> [Float] in
-            Array(ptr.bindMemory(to: Float.self))
-        }
+        let raw = try runInference(samples: buffer.samples, frameCount: n)
         guard raw.count >= Self.LABEL_ORDER.count else {
             throw AcousticSERError.onnxRuntimeFailure(
                 reason: "expected \(Self.LABEL_ORDER.count) classes, got \(raw.count)"
@@ -110,6 +83,55 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
             dict[label] = probs[idx]
         }
         return CategoricalEmotion(probabilities: dict)
+    }
+
+    /// One-shot inference with automatic CPU fallback on first CoreML EP
+    /// failure. See W2V2DimensionalSER.runInference for rationale.
+    private func runInference(samples: [Float], frameCount n: Int) throws -> [Float] {
+        do {
+            return try invoke(samples: samples, frameCount: n)
+        } catch {
+            guard usingCoreML else { throw error }
+            AppLog.serAcoustic.warning(
+                "emotion2vec CoreML EP failed (\(String(describing: error), privacy: .public)); rebuilding session on CPU"
+            )
+            session = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+            usingCoreML = false
+            return try invoke(samples: samples, frameCount: n)
+        }
+    }
+
+    private func invoke(samples: [Float], frameCount n: Int) throws -> [Float] {
+        let bytes = n * MemoryLayout<Float>.size
+        let inputData = samples.withUnsafeBufferPointer { src -> NSMutableData in
+            NSMutableData(bytes: src.baseAddress, length: bytes)
+        }
+        let inputValue = try ORTValue(
+            tensorData: inputData,
+            elementType: .float,
+            shape: [1 as NSNumber, NSNumber(value: n)]
+        )
+        var lengths: [Int32] = [Int32(n)]
+        let lenData = lengths.withUnsafeMutableBufferPointer { ptr -> NSMutableData in
+            NSMutableData(bytes: ptr.baseAddress, length: MemoryLayout<Int32>.size)
+        }
+        let lengthValue = try ORTValue(
+            tensorData: lenData,
+            elementType: .int32,
+            shape: [1 as NSNumber]
+        )
+        let outputs = try session.run(
+            withInputs: ["speech": inputValue, "speech_lengths": lengthValue],
+            outputNames: ["logits"],
+            runOptions: nil
+        )
+        guard let logits = outputs["logits"] else {
+            throw AcousticSERError.onnxRuntimeFailure(reason: "no logits output")
+        }
+        let outData = try logits.tensorData() as Data
+        return outData.withUnsafeBytes { ptr -> [Float] in
+            Array(ptr.bindMemory(to: Float.self))
+        }
     }
 
     private static func softmax(_ x: [Float]) -> [Float] {

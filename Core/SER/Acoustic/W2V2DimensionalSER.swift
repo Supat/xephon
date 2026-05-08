@@ -13,28 +13,31 @@ import XephonLogging
 //   outputs: logits  [1, 3]      Float32   order = arousal, dominance, valence
 //            hidden_states [1, 1024] Float32  (unused here; useful for fusion)
 public actor W2V2DimensionalSER: DimensionalAcousticSER {
-    private let session: ORTSession
+    private var session: ORTSession
+    private let modelURL: URL
+    private var usingCoreML: Bool
 
     /// Initialize from an explicit `.onnx` URL.
     public init(modelURL: URL, useCoreML: Bool = true) throws {
+        self.modelURL = modelURL
+        self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
+        let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
+        self.usingCoreML = coreMLActive
+        AppLog.serAcoustic.info(
+            "W2V2 ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
+        )
+    }
+
+    private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
         let env = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
         if useCoreML, ORTIsCoreMLExecutionProviderAvailable() {
             let coreml = ORTCoreMLExecutionProviderOptions()
             coreml.enableOnSubgraphs = true
-            // Best-effort: if the CoreML EP can't claim a subgraph it
-            // transparently falls back to the CPU EP for that node.
             try? options.appendCoreMLExecutionProvider(with: coreml)
         }
-        self.session = try ORTSession(
-            env: env,
-            modelPath: modelURL.path,
-            sessionOptions: options
-        )
-        AppLog.serAcoustic.info(
-            "W2V2 ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(useCoreML && ORTIsCoreMLExecutionProviderAvailable(), privacy: .public))"
-        )
+        return try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
     }
 
     /// Convenience: load from the app bundle.
@@ -58,29 +61,7 @@ public actor W2V2DimensionalSER: DimensionalAcousticSER {
         guard n > 0 else {
             throw AcousticSERError.onnxRuntimeFailure(reason: "empty audio")
         }
-
-        let bytes = n * MemoryLayout<Float>.size
-        let inputData = buffer.samples.withUnsafeBufferPointer { src -> NSMutableData in
-            NSMutableData(bytes: src.baseAddress, length: bytes)
-        }
-        let inputValue = try ORTValue(
-            tensorData: inputData,
-            elementType: .float,
-            shape: [1 as NSNumber, NSNumber(value: n)]
-        )
-
-        let outputs = try session.run(
-            withInputs: ["signal": inputValue],
-            outputNames: ["logits"],
-            runOptions: nil
-        )
-        guard let logits = outputs["logits"] else {
-            throw AcousticSERError.onnxRuntimeFailure(reason: "no logits output")
-        }
-        let outData = try logits.tensorData() as Data
-        let scalars = outData.withUnsafeBytes { ptr -> [Float] in
-            Array(ptr.bindMemory(to: Float.self))
-        }
+        let scalars = try runInference(samples: buffer.samples, frameCount: n)
         guard scalars.count >= 3 else {
             throw AcousticSERError.onnxRuntimeFailure(reason: "expected 3 logits, got \(scalars.count)")
         }
@@ -90,5 +71,49 @@ public actor W2V2DimensionalSER: DimensionalAcousticSER {
             arousal: scalars[0],
             dominance: scalars[1]
         )
+    }
+
+    /// One-shot inference with automatic CPU fallback. The CoreML EP fails
+    /// with "Insufficient Permission (to submit GPU work from background)"
+    /// whenever the app loses foreground privileges (user tabbed away,
+    /// screen locked) — those failures are sticky for the session, so the
+    /// first failure rebuilds the session without the CoreML EP and retries
+    /// on CPU. Stays on CPU for the rest of the session.
+    private func runInference(samples: [Float], frameCount n: Int) throws -> [Float] {
+        do {
+            return try invoke(samples: samples, frameCount: n)
+        } catch {
+            guard usingCoreML else { throw error }
+            AppLog.serAcoustic.warning(
+                "W2V2 CoreML EP failed (\(String(describing: error), privacy: .public)); rebuilding session on CPU"
+            )
+            session = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+            usingCoreML = false
+            return try invoke(samples: samples, frameCount: n)
+        }
+    }
+
+    private func invoke(samples: [Float], frameCount n: Int) throws -> [Float] {
+        let bytes = n * MemoryLayout<Float>.size
+        let inputData = samples.withUnsafeBufferPointer { src -> NSMutableData in
+            NSMutableData(bytes: src.baseAddress, length: bytes)
+        }
+        let inputValue = try ORTValue(
+            tensorData: inputData,
+            elementType: .float,
+            shape: [1 as NSNumber, NSNumber(value: n)]
+        )
+        let outputs = try session.run(
+            withInputs: ["signal": inputValue],
+            outputNames: ["logits"],
+            runOptions: nil
+        )
+        guard let logits = outputs["logits"] else {
+            throw AcousticSERError.onnxRuntimeFailure(reason: "no logits output")
+        }
+        let outData = try logits.tensorData() as Data
+        return outData.withUnsafeBytes { ptr -> [Float] in
+            Array(ptr.bindMemory(to: Float.self))
+        }
     }
 }
