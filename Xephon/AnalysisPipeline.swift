@@ -13,6 +13,14 @@ import XephonLogging
 // they throw `.notImplemented` because the model weights haven't been hydrated
 // yet via scripts/fetch_models.sh — the pipeline degrades gracefully:
 // the corresponding modality is dropped, fusion runs with whatever is left.
+/// Per-segment timing snapshot returned by `processSegment`. Used by the
+/// pipeline visualization to show last-stage latency.
+public struct ProcessingMetrics: Sendable, Hashable {
+    public let acousticDuration: TimeInterval?
+    public let textDuration: TimeInterval?
+    public let totalDuration: TimeInterval
+}
+
 // Intentionally NOT @MainActor: heavy SER constructors (e.g. W2V2 ONNX load,
 // ~631 MB) and per-segment inference must not block the UI thread. All stored
 // references are themselves Sendable (actors / value types).
@@ -122,7 +130,7 @@ final class AnalysisPipeline: Sendable {
         for segment in asrSegments {
             let speakerID = speakerForSegment(segment, in: diarized)
             let segmentBuffer = sliceBuffer(buffer, start: segment.start, end: segment.end)
-            let estimate = try await processSegment(
+            let (estimate, _) = try await processSegment(
                 asr: segment,
                 segmentAudio: segmentBuffer,
                 speakerID: speakerID
@@ -139,18 +147,37 @@ final class AnalysisPipeline: Sendable {
         asr: ASRSegment,
         segmentAudio: AudioChunk,
         speakerID: String = "S01"
-    ) async throws -> UtteranceEstimate {
+    ) async throws -> (UtteranceEstimate, ProcessingMetrics) {
+        let totalStart = Date()
+        let acousticStart = Date()
         async let dimensional = runDimensional(segmentAudio)
         async let categorical = runCategorical(segmentAudio)
         async let plutchik = runText(asr.text)
-        let (dim, cat, txt) = await (dimensional, categorical, plutchik)
-        return try await fuser.fuse(
+
+        // Acoustic timing = wall time until both dimensional + categorical
+        // resolve (they're concurrent). Text timing = wall time until plutchik
+        // resolves. The two overlap in real time but are reported separately.
+        let textStart = Date()
+        let txt = await plutchik
+        let textDuration = Date().timeIntervalSince(textStart)
+
+        let dim = await dimensional
+        let cat = await categorical
+        let acousticDuration = Date().timeIntervalSince(acousticStart)
+
+        let estimate = try await fuser.fuse(
             asr: asr,
             speakerID: speakerID,
             dimensional: dim,
             acousticCategorical: cat,
             plutchik: txt
         )
+        let metrics = ProcessingMetrics(
+            acousticDuration: dim != nil || cat != nil ? acousticDuration : nil,
+            textDuration: txt != nil ? textDuration : nil,
+            totalDuration: Date().timeIntervalSince(totalStart)
+        )
+        return (estimate, metrics)
     }
 
     // MARK: - Optional stages (return nil on failure → degraded fusion)

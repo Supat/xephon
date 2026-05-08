@@ -5,6 +5,7 @@ import Fusion
 struct ContentView: View {
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
+    @State private var showingDiscardConfirm: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -22,6 +23,22 @@ struct ContentView: View {
             .toolbarTitleDisplayMode(.inline)
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
+            }
+            .alert(
+                String(localized: "record.discardConfirm.title"),
+                isPresented: $showingDiscardConfirm
+            ) {
+                Button(String(localized: "record.discardConfirm.confirm"), role: .destructive) {
+                    Task { await recorder.toggle() }
+                }
+                Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {}
+            } message: {
+                Text(
+                    String(
+                        format: String(localized: "record.discardConfirm.message"),
+                        recorder.utterances.count
+                    )
+                )
             }
         }
     }
@@ -50,6 +67,9 @@ struct ContentView: View {
                     .padding(.horizontal)
                     .multilineTextAlignment(.center)
             }
+
+            PipelineCard(recorder: recorder)
+                .padding(.top, 4)
 
             Spacer(minLength: 0)
 
@@ -141,7 +161,11 @@ struct ContentView: View {
     @ViewBuilder
     private var recordButton: some View {
         Button {
-            Task { await recorder.toggle() }
+            if !recorder.isRecording && !recorder.utterances.isEmpty {
+                showingDiscardConfirm = true
+            } else {
+                Task { await recorder.toggle() }
+            }
         } label: {
             Label(
                 recorder.isRecording
@@ -270,6 +294,168 @@ private struct UtteranceRow: View {
 
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
+}
+
+// MARK: - Pipeline visualization
+
+private struct PipelineCard: View {
+    let recorder: RecordingController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(String(localized: "pipeline.header"))
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            StageRow(
+                icon: "mic.fill",
+                name: String(localized: "pipeline.capture"),
+                state: captureState,
+                metric: captureMetric
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                StageRow(
+                    icon: "waveform.and.mic",
+                    name: String(localized: "pipeline.asr"),
+                    state: asrState,
+                    metric: asrMetric
+                )
+                if !recorder.volatileText.isEmpty {
+                    Text("“\(recorder.volatileText)…”")
+                        .font(.caption2.italic())
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 24)
+                        .lineLimit(2)
+                        .truncationMode(.head)
+                }
+            }
+            StageRow(
+                icon: "waveform",
+                name: String(localized: "pipeline.acousticSER"),
+                state: stageState(latency: recorder.lastAcousticDuration, isActive: false),
+                metric: latencyMetric(recorder.lastAcousticDuration)
+            )
+            StageRow(
+                icon: "text.bubble.fill",
+                name: String(localized: "pipeline.textSER"),
+                state: stageState(latency: recorder.lastTextDuration, isActive: false),
+                metric: latencyMetric(recorder.lastTextDuration)
+            )
+            StageRow(
+                icon: "circle.hexagongrid.fill",
+                name: String(localized: "pipeline.fusion"),
+                state: recorder.utterances.isEmpty ? .idle : .ready,
+                metric: recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count) utts"
+            )
+            StageRow(
+                icon: "square.and.arrow.up",
+                name: String(localized: "pipeline.export"),
+                state: recorder.lastExportAt == nil ? .idle : .ready,
+                metric: exportMetric
+            )
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    // MARK: derived state
+
+    private var captureState: StageRow.State {
+        recorder.isRecording ? .active(recorder.inputLevel) : .idle
+    }
+    private var captureMetric: String {
+        recorder.isRecording
+            ? String(format: "%.1f s", recorder.elapsedSeconds)
+            : "—"
+    }
+
+    private var asrState: StageRow.State {
+        if recorder.isRecording { return .pending }
+        if !recorder.utterances.isEmpty { return .ready }
+        return .idle
+    }
+    private var asrMetric: String {
+        recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)"
+    }
+
+    private func stageState(latency: TimeInterval?, isActive: Bool) -> StageRow.State {
+        if isActive { return .active(0) }
+        return latency == nil ? .idle : .ready
+    }
+
+    private func latencyMetric(_ value: TimeInterval?) -> String {
+        guard let value else { return "—" }
+        if value >= 1 { return String(format: "%.2f s", value) }
+        return String(format: "%.0f ms", value * 1000)
+    }
+
+    private var exportMetric: String {
+        guard let date = recorder.lastExportAt else { return "—" }
+        let interval = -date.timeIntervalSinceNow
+        if interval < 60 { return String(format: "%.0fs ago", interval) }
+        return String(format: "%.0fm ago", interval / 60)
+    }
+}
+
+private struct StageRow: View {
+    enum State {
+        case idle
+        case pending
+        case active(Float)   // 0...1 intensity
+        case ready
+    }
+
+    let icon: String
+    let name: String
+    let state: State
+    let metric: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .frame(width: 16)
+                .foregroundStyle(iconColor)
+            Text(name)
+                .font(.caption)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            stateGlyph
+                .font(.caption2)
+            Text(metric)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var iconColor: Color {
+        switch state {
+        case .idle: return .secondary
+        case .pending: return .blue
+        case .active: return .green
+        case .ready: return .accentColor
+        }
+    }
+
+    @ViewBuilder
+    private var stateGlyph: some View {
+        switch state {
+        case .idle:
+            Image(systemName: "circle")
+                .foregroundStyle(.tertiary)
+        case .pending:
+            Text("⋯")
+                .foregroundStyle(.blue)
+        case .active(let intensity):
+            Image(systemName: "circle.fill")
+                .foregroundStyle(.green.opacity(Double(0.4 + intensity * 0.6)))
+        case .ready:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        }
+    }
 }
 
 private struct LevelMeterView: View {

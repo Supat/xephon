@@ -2,6 +2,17 @@
 "settings.speechBoost" = "Speech boost (ASR only)";
 "transcript.empty.title" = "No utterances yet";
 "transcript.empty.subtitle" = "Tap Start recording to begin.";
+"pipeline.header" = "Pipeline";
+"pipeline.capture" = "Capture";
+"pipeline.asr" = "ASR (live)";
+"pipeline.acousticSER" = "Acoustic SER";
+"pipeline.textSER" = "Text SER";
+"pipeline.fusion" = "Fusion";
+"pipeline.export" = "Export";
+"record.discardConfirm.title" = "Discard current results?";
+"record.discardConfirm.message" = "Starting a new recording will clear %d utterance(s). Export them first if you want to keep them.";
+"record.discardConfirm.confirm" = "Discard and record";
+"record.discardConfirm.cancel" = "Cancel";
 "record.start" = "Start recording";
 "record.stop" = "Stop recording";
 "record.status.format" = "%.1f s · %d samples";

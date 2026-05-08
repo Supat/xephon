@@ -14,4 +14,12 @@ public protocol StreamingTranscriber: Actor {
     func feed(_ buffer: AudioChunk) async
     /// Flush any remaining audio, emit any pending finals, then close the stream.
     func finish() async
+    /// In-flight transcript that hasn't been finalized yet (i.e., text within
+    /// the analyzer's volatile range). Empty when nothing is being revised.
+    /// Useful for "live preview" UI.
+    var volatileText: String { get async }
+}
+
+public extension StreamingTranscriber {
+    var volatileText: String { get async { "" } }
 }

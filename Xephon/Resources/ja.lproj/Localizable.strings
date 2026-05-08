@@ -2,6 +2,17 @@
 "settings.speechBoost" = "音声強調 (ASRのみ)";
 "transcript.empty.title" = "まだ発話がありません";
 "transcript.empty.subtitle" = "「録音を開始」をタップして始めてください。";
+"pipeline.header" = "パイプライン";
+"pipeline.capture" = "収録";
+"pipeline.asr" = "ASR (ライブ)";
+"pipeline.acousticSER" = "音響SER";
+"pipeline.textSER" = "テキストSER";
+"pipeline.fusion" = "融合";
+"pipeline.export" = "書き出し";
+"record.discardConfirm.title" = "現在の結果を破棄しますか？";
+"record.discardConfirm.message" = "新しい録音を開始すると %d 件の発話がクリアされます。残したい場合は先に書き出してください。";
+"record.discardConfirm.confirm" = "破棄して録音";
+"record.discardConfirm.cancel" = "キャンセル";
 "record.start" = "録音を開始";
 "record.stop" = "録音を停止";
 "record.status.format" = "%.1f 秒 · %d サンプル";

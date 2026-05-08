@@ -25,6 +25,11 @@ final class RecordingController {
     private(set) var availableInputs: [AudioInputDescription] = []
     private(set) var currentInputUID: String?
     private(set) var isSpeechBoostEnabled: Bool = true
+    private(set) var volatileText: String = ""
+    private(set) var lastAcousticDuration: TimeInterval?
+    private(set) var lastTextDuration: TimeInterval?
+    private(set) var lastSegmentTotal: TimeInterval?
+    private(set) var lastExportAt: Date?
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
@@ -42,6 +47,7 @@ final class RecordingController {
     private var feedTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var routeWatcherTask: Task<Void, Never>?
+    private var volatilePollTask: Task<Void, Never>?
     private var capturedSamples: [Float] = []
 
     init(
@@ -140,6 +146,16 @@ final class RecordingController {
                 }
             }
 
+            // Volatile-text poll for the live ASR preview in the pipeline card.
+            // 5 Hz keeps it fluid without taxing the actor.
+            volatilePollTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    self.volatileText = await self.streamingTranscriber.volatileText
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+            }
+
             // Pump 2: drain finalized ASR segments → SER+fuse → append.
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -147,12 +163,15 @@ final class RecordingController {
                 for await segment in segmentStream {
                     do {
                         let segmentBuffer = self.sliceForSegment(segment)
-                        let estimate = try await pipeline.processSegment(
+                        let (estimate, metrics) = try await pipeline.processSegment(
                             asr: segment,
                             segmentAudio: segmentBuffer,
                             speakerID: "S01"
                         )
                         self.utterances.append(estimate)
+                        self.lastAcousticDuration = metrics.acousticDuration
+                        self.lastTextDuration = metrics.textDuration
+                        self.lastSegmentTotal = metrics.totalDuration
                     } catch {
                         AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
                     }
@@ -172,6 +191,10 @@ final class RecordingController {
         await feedTask?.value
         rawTask = nil
         feedTask = nil
+
+        volatilePollTask?.cancel()
+        volatilePollTask = nil
+        volatileText = ""
 
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
         // finalize + per-segment SER for any tail audio).
@@ -242,6 +265,7 @@ final class RecordingController {
             .appendingPathComponent("xephon-\(Int(Date().timeIntervalSince1970)).json")
         do {
             try await exporter.write(utterances, to: url)
+            lastExportAt = Date()
             return url
         } catch {
             errorMessage = String(describing: error)

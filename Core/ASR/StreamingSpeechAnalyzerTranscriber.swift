@@ -21,6 +21,7 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
     private var outputCont: AsyncStream<ASRSegment>.Continuation?
     private var pending: [Double: SpeechTranscriber.Result] = [:]
     private var emittedKeys: Set<Double> = []
+    private var volatileTextValue: String = ""
     private var resultDrainer: Task<Void, Never>?
     private var analyzerStartTask: Task<Void, Never>?
     private var targetFormat: AVAudioFormat?
@@ -124,10 +125,23 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
 
     // MARK: - State updates (actor-isolated)
 
+    public var volatileText: String {
+        get async { volatileTextValue }
+    }
+
     private func appendResult(_ result: SpeechTranscriber.Result) {
         let startKey = result.range.start.seconds
         guard !emittedKeys.contains(startKey) else { return }
         pending[startKey] = result
+        recomputeVolatileText()
+    }
+
+    private func recomputeVolatileText() {
+        volatileTextValue = pending.values
+            .sorted { $0.range.start.seconds < $1.range.start.seconds }
+            .map { String($0.text.characters).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     private func flushFinalized(below boundary: Double) {
@@ -150,6 +164,7 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
             pending.removeValue(forKey: result.range.start.seconds)
             emittedKeys.insert(result.range.start.seconds)
         }
+        recomputeVolatileText()
     }
 
     private func cleanup() {
@@ -159,6 +174,7 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         targetFormat = nil
         pending.removeAll()
         emittedKeys.removeAll()
+        volatileTextValue = ""
     }
 
     // MARK: - Asset install
