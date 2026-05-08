@@ -32,11 +32,18 @@ targets:
       - path: Xephon
         excludes:
           - "Info.plist"
-      # audeering W2V2 ONNX (~631 MB). The first build will be slow as Xcode
-      # copies it into DerivedData; subsequent builds are incremental.
+      # audeering W2V2 ONNX (~631 MB). Lands at Xephon.app/model.onnx.
       # Hydrate via scripts/fetch_models.sh.
       - path: Models/w2v2-msp-dim/model.onnx
         type: file
+        buildPhase: resources
+        optional: true
+      # WRIME-fine-tuned RoBERTa (~425 MB ONNX + tokenizer). Folder reference
+      # so the subdirectory `wrime-roberta/` is preserved in the app bundle —
+      # avoids `model.onnx` name collision with the W2V2 file above. Hydrate
+      # via scripts/export_wrime_onnx.py.
+      - path: Models/wrime-roberta
+        type: folder
         buildPhase: resources
         optional: true
     info:

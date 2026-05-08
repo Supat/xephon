@@ -1,5 +1,8 @@
 "input.default" = "デフォルト入力";
 "settings.speechBoost" = "音声強調 (ASRのみ)";
+"settings.textSER" = "テキスト SER";
+"settings.textSER.deberta" = "DeBERTa";
+"settings.textSER.foundationModels" = "Apple FM";
 "transcript.empty.title" = "まだ発話がありません";
 "transcript.empty.subtitle" = "「録音を開始」をタップして始めてください。";
 "pipeline.header" = "パイプライン";
