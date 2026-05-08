@@ -8,9 +8,8 @@ Xephon is a research tool. All processing is on-device by default.
   to disk unless the user explicitly exports a recording.
 - ASR, diarization, and emotion estimation run locally on the Neural Engine /
   GPU / CPU.
-- The cloud ASR fallback toggle, when enabled, sends short audio segments to
-  the configured provider for transcription only. The toggle's state must
-  remain visible in the UI while recording.
+- No cloud transcription or analysis path is wired up today. If one is added
+  later, it must follow the rules in "Adding a new cloud provider" below.
 
 ## What we do not do
 

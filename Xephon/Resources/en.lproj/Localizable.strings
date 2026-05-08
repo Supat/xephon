@@ -1,5 +1,6 @@
-"settings.cloudASRFallback" = "Allow cloud ASR fallback";
 "input.default" = "Default input";
+"transcript.empty.title" = "No utterances yet";
+"transcript.empty.subtitle" = "Tap Start recording to begin.";
 "record.start" = "Start recording";
 "record.stop" = "Stop recording";
 "record.status.format" = "%.1f s · %d samples";

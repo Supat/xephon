@@ -3,51 +3,76 @@ import Audio
 import Fusion
 
 struct ContentView: View {
-    @State private var allowsCloudASRFallback: Bool = false
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                // Per CLAUDE.md: cloud-fallback toggle state must be visible while recording.
-                Toggle(String(localized: "settings.cloudASRFallback"),
-                       isOn: $allowsCloudASRFallback)
-                    .toggleStyle(.switch)
-                    .padding(.horizontal)
-
-                inputPicker
-
-                recordButton
-
-                if recorder.isRecording {
-                    LevelMeterView(level: recorder.inputLevel)
-                        .frame(maxWidth: 320)
-                }
-
-                statusLine
-
-                if let error = recorder.errorMessage {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal)
-                        .multilineTextAlignment(.center)
-                }
-
-                if !recorder.utterances.isEmpty {
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    controlPane
+                        .frame(width: geo.size.width / 3)
                     Divider()
-                    transcriptList
-                    exportButton
+                    transcriptPane
+                        .frame(maxWidth: .infinity)
                 }
-
-                Spacer(minLength: 0)
             }
-            .padding()
             .navigationTitle("Xephon")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarTitleDisplayMode(.inline)
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
             }
+        }
+    }
+
+    // MARK: - Left pane (1/3): controls
+
+    private var controlPane: some View {
+        VStack(spacing: 16) {
+            inputPicker
+
+            recordButton
+
+            if recorder.isRecording {
+                LevelMeterView(level: recorder.inputLevel)
+                    .frame(maxWidth: 280)
+            }
+
+            statusLine
+
+            if let error = recorder.errorMessage {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+                    .multilineTextAlignment(.center)
+            }
+
+            Spacer(minLength: 0)
+
+            if !recorder.utterances.isEmpty {
+                exportButton
+            }
+        }
+        .padding()
+        .frame(maxHeight: .infinity)
+    }
+
+    // MARK: - Right pane (2/3): transcript
+
+    @ViewBuilder
+    private var transcriptPane: some View {
+        if recorder.utterances.isEmpty {
+            ContentUnavailableView(
+                String(localized: "transcript.empty.title"),
+                systemImage: "waveform",
+                description: Text(String(localized: "transcript.empty.subtitle"))
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            transcriptList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
