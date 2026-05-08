@@ -157,23 +157,28 @@ final class RecordingController {
             }
 
             // Pump 2: drain finalized ASR segments → SER+fuse → append.
+            // Each segment is processed concurrently (TaskGroup) so a slow
+            // text-SER LLM call on segment N doesn't block segment N+1.
+            // Results are inserted in start-time order regardless of which
+            // task finishes first.
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 let pipeline = await self.ensurePipeline()
-                for await segment in segmentStream {
-                    do {
+                await withTaskGroup(of: Void.self) { group in
+                    for await segment in segmentStream {
                         let segmentBuffer = self.sliceForSegment(segment)
-                        let (estimate, metrics) = try await pipeline.processSegment(
-                            asr: segment,
-                            segmentAudio: segmentBuffer,
-                            speakerID: "S01"
-                        )
-                        self.utterances.append(estimate)
-                        self.lastAcousticDuration = metrics.acousticDuration
-                        self.lastTextDuration = metrics.textDuration
-                        self.lastSegmentTotal = metrics.totalDuration
-                    } catch {
-                        AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                        group.addTask { [weak self] in
+                            do {
+                                let (estimate, metrics) = try await pipeline.processSegment(
+                                    asr: segment,
+                                    segmentAudio: segmentBuffer,
+                                    speakerID: "S01"
+                                )
+                                await self?.applySegmentResult(estimate: estimate, metrics: metrics)
+                            } catch {
+                                AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                            }
+                        }
                     }
                 }
             }
@@ -227,6 +232,17 @@ final class RecordingController {
             errorMessage = String(describing: error)
             AppLog.app.error("setPreferredInput failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Called from a TaskGroup child once a segment finishes processing.
+    /// Inserts the utterance at the correct chronological index and updates
+    /// the per-stage latency snapshot used by the pipeline visualization.
+    private func applySegmentResult(estimate: UtteranceEstimate, metrics: ProcessingMetrics) {
+        let index = utterances.firstIndex { $0.start > estimate.start } ?? utterances.endIndex
+        utterances.insert(estimate, at: index)
+        lastAcousticDuration = metrics.acousticDuration
+        lastTextDuration = metrics.textDuration
+        lastSegmentTotal = metrics.totalDuration
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {

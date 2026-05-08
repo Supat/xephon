@@ -210,10 +210,29 @@ final class AnalysisPipeline: Sendable {
 
     private func runText(_ text: String) async -> PlutchikScore? {
         guard let textSER, !text.isEmpty else { return nil }
+        if Self.isFiller(text) {
+            AppLog.app.debug("text SER skipped (filler): \(text, privacy: .public)")
+            return nil
+        }
         do { return try await textSER.classify(text) } catch {
             AppLog.app.debug("text SER skipped: \(String(describing: error), privacy: .public)")
             return nil
         }
+    }
+
+    /// Backchannels and ultra-short utterances rarely carry useful affect
+    /// signal; running a ~1 s LLM round-trip on them is mostly waste.
+    /// Conservative list — only obvious fillers, no content words.
+    private static let fillers: Set<String> = [
+        "あの", "えーと", "えっと", "えと", "うーん", "うんうん",
+        "うん", "ええ", "はい", "いえ", "そう", "そうそう",
+        "そうですね", "なるほど", "ふむ", "へえ", "ああ", "おお",
+    ]
+
+    private static func isFiller(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 1 { return true }
+        return fillers.contains(trimmed)
     }
 
     // MARK: - Buffer slicing
