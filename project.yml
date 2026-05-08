@@ -1,0 +1,135 @@
+name: Xephon
+options:
+  bundleIdPrefix: com.supatsaetia.xephon
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "15.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "0.1.0"
+    DEVELOPMENT_TEAM: "" # set in Xcode > Signing & Capabilities for sideload
+
+packages:
+  Xephon:
+    path: .
+
+targets:
+  Xephon:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Xephon
+        excludes:
+          - "Info.plist"
+      # audeering W2V2 ONNX (~631 MB). The first build will be slow as Xcode
+      # copies it into DerivedData; subsequent builds are incremental.
+      # Hydrate via scripts/fetch_models.sh.
+      - path: Models/w2v2-msp-dim/model.onnx
+        type: file
+        buildPhase: resources
+        optional: true
+    info:
+      path: Xephon/Info.plist
+      properties:
+        CFBundleDisplayName: Xephon
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        NSMicrophoneUsageDescription: "Xephon records short conversational audio to estimate per-speaker emotion. Audio is processed entirely on this device unless you toggle Cloud ASR fallback."
+        NSSpeechRecognitionUsageDescription: "Xephon transcribes Japanese conversational audio on-device using Apple Speech."
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiredDeviceCapabilities:
+          - arm64
+    settings:
+      base:
+        PRODUCT_NAME: Xephon
+        PRODUCT_BUNDLE_IDENTIFIER: com.supatsaetia.xephon
+        TARGETED_DEVICE_FAMILY: "1,2" # iPhone + iPad
+        # Mac Catalyst is intentionally NOT supported: onnxruntime-swift-package-manager
+        # ships no maccatalyst slice in its xcframework, which breaks SERAcoustic.
+        # For Mac development run via "Designed for iPad" or use a real iPad.
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+    dependencies:
+      - package: Xephon
+        product: XephonCore
+
+  XephonTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - Tests/UnitTests
+    dependencies:
+      - target: Xephon
+      - package: Xephon
+        product: XephonCore
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Xephon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Xephon"
+
+  XephonEvalTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - Tests/EvalTests
+    dependencies:
+      - target: Xephon
+      - package: Xephon
+        product: XephonCore
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Xephon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Xephon"
+
+schemes:
+  Xephon:
+    build:
+      targets:
+        Xephon: all
+        XephonTests: [test]
+        XephonEvalTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - XephonTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  XephonEval:
+    build:
+      targets:
+        Xephon: all
+        XephonEvalTests: [test]
+    test:
+      config: Debug
+      targets:
+        - XephonEvalTests

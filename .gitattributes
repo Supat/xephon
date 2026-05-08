@@ -1,0 +1,20 @@
+# Core ML / ONNX model artifacts (hydrated by scripts/fetch_models.sh; usually gitignored,
+# but if anything ever lands in the tree it must go through LFS, never as raw blobs).
+*.mlpackage filter=lfs diff=lfs merge=lfs -text
+*.mlmodelc  filter=lfs diff=lfs merge=lfs -text
+*.mlmodel   filter=lfs diff=lfs merge=lfs -text
+*.onnx      filter=lfs diff=lfs merge=lfs -text
+*.ort       filter=lfs diff=lfs merge=lfs -text
+
+# Test fixtures: short consented audio clips only. See CLAUDE.md.
+Tests/Fixtures/**/*.wav filter=lfs diff=lfs merge=lfs -text
+Tests/Fixtures/**/*.m4a filter=lfs diff=lfs merge=lfs -text
+
+# Line-ending hygiene
+*.swift  text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.sh     text eol=lf
+*.plist  text eol=lf

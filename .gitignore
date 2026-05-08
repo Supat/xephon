@@ -1,0 +1,46 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserdatad/
+
+# XcodeGen output (regenerate with `scripts/generate_project.sh`)
+Xephon.xcodeproj/
+
+# SwiftPM
+.build/
+.swiftpm/
+Packages/
+
+# macOS
+.DS_Store
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+
+# Python (model conversion scripts)
+__pycache__/
+.venv/
+venv/
+*.pyc
+
+# Models (hydrated by scripts/fetch_models.sh, not committed)
+Models/*
+!Models/.gitkeep
+
+# Audio: never accidentally commit participant recordings.
+# Test fixtures under Tests/Fixtures/ are an exception (LFS, see .gitattributes).
+*.wav
+*.m4a
+*.aiff
+*.flac
+*.mp3
+!Tests/Fixtures/**/*.wav
+!Tests/Fixtures/**/*.m4a
+
+# Claude Code session state
+.claude/

@@ -1,0 +1,8 @@
+"settings.cloudASRFallback" = "クラウドASRフォールバックを許可";
+"input.default" = "デフォルト入力";
+"record.start" = "録音を開始";
+"record.stop" = "録音を停止";
+"record.status.format" = "%.1f 秒 · %d サンプル";
+"analyze.inProgress" = "解析中…";
+"warmup.inProgress" = "モデルを読み込み中…";
+"export.json" = "JSON書き出し";

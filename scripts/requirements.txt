@@ -1,0 +1,8 @@
+# Pinned loosely; tighten with `pip freeze > requirements.lock` once stable.
+huggingface_hub>=0.24,<1.0
+
+# Heavy deps used only by future conversion steps. Uncomment when needed:
+# coremltools>=8.0
+# transformers>=4.45
+# torch>=2.4
+# onnx>=1.16
