@@ -210,7 +210,8 @@ final class AnalysisPipeline: Sendable {
 
     private func runDimensional(_ buffer: AudioChunk) async -> VADScore? {
         guard let dimensionalSER else { return nil }
-        do { return try await dimensionalSER.score(buffer) } catch {
+        let capped = Self.capForSER(buffer)
+        do { return try await dimensionalSER.score(capped) } catch {
             AppLog.app.debug("dimensional SER skipped: \(String(describing: error), privacy: .public)")
             return nil
         }
@@ -218,10 +219,35 @@ final class AnalysisPipeline: Sendable {
 
     private func runCategorical(_ buffer: AudioChunk) async -> CategoricalEmotion? {
         guard let categoricalSER else { return nil }
-        do { return try await categoricalSER.score(buffer) } catch {
+        let capped = Self.capForSER(buffer)
+        do { return try await categoricalSER.score(capped) } catch {
             AppLog.app.debug("categorical SER skipped: \(String(describing: error), privacy: .public)")
             return nil
         }
+    }
+
+    /// Cap audio length before feeding to acoustic SER models. Three reasons:
+    ///   1. audeering's W2V2 dimensional model and emotion2vec+ are trained on
+    ///      ≤10 s clips; longer inputs degrade accuracy without helping.
+    ///   2. ONNX Runtime's CoreML EP compiles a per-input-shape MLModel for
+    ///      the W2V2 graph; at long, unique shapes it has been observed to
+    ///      crash inside the ANE compiler with EXC_BAD_ACCESS.
+    ///   3. Inference latency scales linearly with audio length, so capping
+    ///      directly improves the perceived ASR→SER lag.
+    /// Take the central window so we score the most representative speech
+    /// (turn boundaries are often less informative).
+    private static let serMaxSeconds: TimeInterval = 8.0
+    private static func capForSER(_ buffer: AudioChunk) -> AudioChunk {
+        let maxSamples = Int(serMaxSeconds * buffer.sampleRate)
+        guard buffer.samples.count > maxSamples else { return buffer }
+        let extra = buffer.samples.count - maxSamples
+        let startIndex = extra / 2
+        let slice = Array(buffer.samples[startIndex..<(startIndex + maxSamples)])
+        return AudioChunk(
+            samples: slice,
+            sampleRate: buffer.sampleRate,
+            timestamp: buffer.timestamp + Double(startIndex) / buffer.sampleRate
+        )
     }
 
     private func runText(_ text: String) async -> PlutchikScore? {
