@@ -15,6 +15,42 @@ private extension SwitchingTextSER.Backend {
     }
 }
 
+/// Format an audio-time offset (seconds) as a clock string. Adapts to length:
+///   < 1 min  → `M:SS.s`     (e.g. `0:05.2`)
+///   < 1 hour → `MM:SS.s`    (e.g. `12:34.5`)
+///   ≥ 1 hour → `H:MM:SS`    (e.g. `1:23:45`)
+/// Hour-or-greater drops the fractional part to keep the row compact;
+/// sub-second precision rarely matters at that scale.
+func formatClock(_ seconds: TimeInterval) -> String {
+    let clamped = max(0, seconds)
+    let total = Int(clamped)
+    let h = total / 3600
+    let m = (total % 3600) / 60
+    let s = total % 60
+    if h > 0 {
+        return String(format: "%d:%02d:%02d", h, m, s)
+    }
+    let frac = clamped - Double(total)
+    return String(format: "%d:%02d.%d", m, s, Int(frac * 10))
+}
+
+/// SI suffixes for raw sample counts. 16 kHz audio crosses millions in
+/// minutes, so plain integers fill the status line — `123K` / `1.23M` is
+/// easier to scan. Decimal precision tapers as magnitude grows.
+func formatCount(_ n: Int) -> String {
+    let v = Double(n)
+    if abs(v) < 1_000          { return "\(n)" }
+    if abs(v) < 1_000_000      { return formatSI(v / 1_000,         "K") }
+    if abs(v) < 1_000_000_000  { return formatSI(v / 1_000_000,     "M") }
+    return                       formatSI(v / 1_000_000_000, "G")
+}
+
+private func formatSI(_ v: Double, _ suffix: String) -> String {
+    if v >= 100 { return String(format: "%.0f%@", v, suffix) }
+    if v >= 10  { return String(format: "%.1f%@", v, suffix) }
+    return        String(format: "%.2f%@", v, suffix)
+}
+
 struct ContentView: View {
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
@@ -303,8 +339,8 @@ struct ContentView: View {
                 }
                 Text(String(
                     format: String(localized: "record.status.format"),
-                    recorder.elapsedSeconds,
-                    recorder.samplesCaptured
+                    formatClock(recorder.elapsedSeconds),
+                    formatCount(recorder.samplesCaptured)
                 ))
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -327,15 +363,15 @@ struct ContentView: View {
     @ViewBuilder
     private var transcriptList: some View {
         ScrollViewReader { proxy in
-            List(Array(recorder.utterances.enumerated()), id: \.offset) { idx, u in
-                UtteranceRow(utterance: u)
-                    .id(idx)
+            List(Array(recorder.utterances.enumerated()), id: \.element.id) { idx, u in
+                UtteranceRow(number: idx + 1, utterance: u)
+                    .id(u.id)
             }
             .listStyle(.plain)
             .onChange(of: recorder.utterances.count) { _, count in
-                guard count > 0 else { return }
+                guard count > 0, let last = recorder.utterances.last else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(count - 1, anchor: .bottom)
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
         }
@@ -356,6 +392,7 @@ struct ContentView: View {
 }
 
 private struct UtteranceRow: View {
+    let number: Int
     let utterance: UtteranceEstimate
 
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
@@ -366,6 +403,9 @@ private struct UtteranceRow: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
+                    Text("#\(number)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                     Text(utterance.speakerID)
                         .font(.caption.bold())
                         .foregroundStyle(.tint)
@@ -397,7 +437,7 @@ private struct UtteranceRow: View {
                             )
                             .foregroundStyle(.secondary)
                     }
-                    Text(String(format: "%.1f–%.1f s", utterance.start, utterance.end))
+                    Text("\(formatClock(utterance.start))–\(formatClock(utterance.end))")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }

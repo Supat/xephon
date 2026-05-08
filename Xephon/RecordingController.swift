@@ -59,6 +59,7 @@ final class RecordingController {
     private var analysisTask: Task<Void, Never>?
     private var routeWatcherTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
+    private var fileEndWatcherTask: Task<Void, Never>?
     private var capturedSamples: [Float] = []
 
     init(
@@ -214,6 +215,23 @@ final class RecordingController {
                     }
                 }
             }
+
+            // File-backed sources have a natural end. Watch for the feed loop
+            // to drain (the AudioFileCapture pump finishes both streams when
+            // the file is exhausted) and auto-stop so the user doesn't have
+            // to tap Stop. Mic captures never drain on their own, so this is
+            // a no-op for live recording. Spawned outside the awaited task
+            // graph so calling stop() from here doesn't deadlock against
+            // stop()'s own `await feedTask?.value`.
+            if case .file = sourceMode {
+                let watchedFeed = feedTask
+                fileEndWatcherTask = Task { @MainActor [weak self] in
+                    await watchedFeed?.value
+                    guard let self, self.isRecording else { return }
+                    AppLog.app.info("file source exhausted; auto-stopping")
+                    await self.stop()
+                }
+            }
         } catch {
             errorMessage = String(describing: error)
             phase = .idle
@@ -223,6 +241,11 @@ final class RecordingController {
 
     /// Stop capture, finalize the analyzer, drain remaining segments, then idle.
     func stop() async {
+        // Don't await the auto-stop watcher (it's the caller in the
+        // file-end path). Cancel it so manual Stop also tears it down.
+        fileEndWatcherTask?.cancel()
+        fileEndWatcherTask = nil
+
         await capture.stop()
         await rawTask?.value
         await feedTask?.value

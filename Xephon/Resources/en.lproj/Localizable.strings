@@ -18,7 +18,7 @@
 "record.discardConfirm.cancel" = "Cancel";
 "record.start" = "Start recording";
 "record.stop" = "Stop recording";
-"record.status.format" = "%.1f s · %d samples";
+"record.status.format" = "%@ · %@ samples";
 "analyze.inProgress" = "Analyzing…";
 "warmup.inProgress" = "Loading models…";
 "export.json" = "Export JSON";
