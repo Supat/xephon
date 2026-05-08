@@ -5,6 +5,7 @@ import Audio
 import ASR
 import Fusion
 import Export
+import SERText
 import XephonLogging
 
 @MainActor
@@ -25,11 +26,14 @@ final class RecordingController {
     private(set) var availableInputs: [AudioInputDescription] = []
     private(set) var currentInputUID: String?
     private(set) var isSpeechBoostEnabled: Bool = true
+    private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
+    private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
     private(set) var volatileText: String = ""
     private(set) var lastAcousticDuration: TimeInterval?
     private(set) var lastTextDuration: TimeInterval?
     private(set) var lastSegmentTotal: TimeInterval?
     private(set) var lastExportAt: Date?
+    private(set) var inflightSegments: Int = 0
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
@@ -62,10 +66,21 @@ final class RecordingController {
         // SER constructors (W2V2 ONNX ~631 MB) and the SpeechAnalyzer asset
         // install can complete before the user finishes their first sentence.
         if pipeline == nil {
-            self.pipelineTask = Task.detached(priority: .userInitiated) {
+            let warmTask = Task.detached(priority: .userInitiated) {
                 let configured = await AnalysisPipeline.autoConfigured()
                 AppLog.app.info("Pipeline pre-warm complete")
                 return configured
+            }
+            self.pipelineTask = warmTask
+            // Surface text-SER backend availability as soon as the pre-warm
+            // resolves, so the DeBERTa/Apple FM picker can appear before the
+            // user records for the first time.
+            Task { @MainActor [weak self] in
+                let configured = await warmTask.value
+                guard let self, self.pipeline == nil else { return }
+                self.pipeline = configured
+                self.pipelineTask = nil
+                await self.refreshTextSERState(from: configured)
             }
         }
 
@@ -90,11 +105,18 @@ final class RecordingController {
             let configured = await task.value
             self.pipeline = configured
             self.pipelineTask = nil
+            await refreshTextSERState(from: configured)
             return configured
         }
         let configured = await AnalysisPipeline.autoConfigured()
         self.pipeline = configured
+        await refreshTextSERState(from: configured)
         return configured
+    }
+
+    private func refreshTextSERState(from pipeline: AnalysisPipeline) async {
+        availableTextSERBackends = await pipeline.availableTextSERBackends()
+        currentTextSERBackend = await pipeline.currentTextSERBackend()
     }
 
     func toggle() async {
@@ -157,23 +179,30 @@ final class RecordingController {
             }
 
             // Pump 2: drain finalized ASR segments → SER+fuse → append.
+            // Each segment is processed concurrently (TaskGroup) so a slow
+            // text-SER LLM call on segment N doesn't block segment N+1.
+            // Results are inserted in start-time order regardless of which
+            // task finishes first.
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 let pipeline = await self.ensurePipeline()
-                for await segment in segmentStream {
-                    do {
+                await withTaskGroup(of: Void.self) { group in
+                    for await segment in segmentStream {
                         let segmentBuffer = self.sliceForSegment(segment)
-                        let (estimate, metrics) = try await pipeline.processSegment(
-                            asr: segment,
-                            segmentAudio: segmentBuffer,
-                            speakerID: "S01"
-                        )
-                        self.utterances.append(estimate)
-                        self.lastAcousticDuration = metrics.acousticDuration
-                        self.lastTextDuration = metrics.textDuration
-                        self.lastSegmentTotal = metrics.totalDuration
-                    } catch {
-                        AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                        self.beginSegmentInflight()
+                        group.addTask { [weak self] in
+                            do {
+                                let (estimate, metrics) = try await pipeline.processSegment(
+                                    asr: segment,
+                                    segmentAudio: segmentBuffer,
+                                    speakerID: "S01"
+                                )
+                                await self?.applySegmentResult(estimate: estimate, metrics: metrics)
+                            } catch {
+                                AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                            }
+                            await self?.endSegmentInflight()
+                        }
                     }
                 }
             }
@@ -219,6 +248,12 @@ final class RecordingController {
         self.isSpeechBoostEnabled = enabled
     }
 
+    func setTextSERBackend(_ backend: SwitchingTextSER.Backend) async {
+        let pipeline = await ensurePipeline()
+        await pipeline.setTextSERBackend(backend)
+        await refreshTextSERState(from: pipeline)
+    }
+
     func selectInput(uid: String?) async {
         do {
             try await capture.setPreferredInput(uid)
@@ -227,6 +262,29 @@ final class RecordingController {
             errorMessage = String(describing: error)
             AppLog.app.error("setPreferredInput failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Called from a TaskGroup child once a segment finishes processing.
+    /// Inserts the utterance at the correct chronological index and updates
+    /// the per-stage latency snapshot used by the pipeline visualization.
+    private func applySegmentResult(estimate: UtteranceEstimate, metrics: ProcessingMetrics) {
+        // Stamp speech-boost state so the row badge reflects how the audio
+        // was captured. Best-effort: reads the live toggle, which is fine
+        // for the common case where it's not flipped mid-recording.
+        let stamped = estimate.withSpeechBoost(isSpeechBoostEnabled)
+        let index = utterances.firstIndex { $0.start > stamped.start } ?? utterances.endIndex
+        utterances.insert(stamped, at: index)
+        lastAcousticDuration = metrics.acousticDuration
+        lastTextDuration = metrics.textDuration
+        lastSegmentTotal = metrics.totalDuration
+    }
+
+    fileprivate func beginSegmentInflight() {
+        inflightSegments += 1
+    }
+
+    fileprivate func endSegmentInflight() {
+        if inflightSegments > 0 { inflightSegments -= 1 }
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {

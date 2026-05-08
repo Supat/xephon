@@ -1,5 +1,8 @@
 "input.default" = "Default input";
 "settings.speechBoost" = "Speech boost (ASR only)";
+"settings.textSER" = "Text SER";
+"settings.textSER.deberta" = "DeBERTa";
+"settings.textSER.foundationModels" = "Apple FM";
 "transcript.empty.title" = "No utterances yet";
 "transcript.empty.subtitle" = "Tap Start recording to begin.";
 "pipeline.header" = "Pipeline";

@@ -48,8 +48,9 @@ MODELS=(
 )
 
 # DeBERTa-WRIME (Takenaka 2025) ships via `pip install deberta-emotion-predictor`.
-# The exact upstream HF repo isn't documented; once confirmed, add it above and
-# remove this note. See docs/models.md.
+# The exact upstream HF repo isn't documented. As an interim, we use
+# MuneK/roberta-base-japanese-finetuned-wrime exported to ONNX via
+# scripts/export_wrime_onnx.py (called at the end of this script).
 
 # -----------------------------------------------------------------------------
 # Argument parsing
@@ -130,6 +131,14 @@ for entry in "${MODELS[@]}"; do
   esac
   echo "[done] $name"
 done
+
+echo
+echo "[step] Exporting WRIME RoBERTa to ONNX (text SER)…"
+if [ ! -f Models/wrime-roberta/model.onnx ]; then
+    python scripts/export_wrime_onnx.py
+else
+    echo "[skip] wrime-roberta (already exported)"
+fi
 
 echo
 echo "Models/ tree:"

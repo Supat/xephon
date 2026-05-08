@@ -44,6 +44,12 @@ public extension AudioCapture {
 public actor AVAudioEngineCapture: AudioCapture {
     private let engine = AVAudioEngine()
     private let eq: AVAudioUnitEQ
+    // Sink mixer that receives the EQ output. Tapping AVAudioUnitEQ's output
+    // bus directly is unreliable — its internal format isn't always inherited
+    // from `engine.connect(...format:)`, leading to "Failed to create tap due
+    // to format mismatch" at runtime. AVAudioMixerNode negotiates formats
+    // predictably, so we route input → eq → sink and tap the sink.
+    private let processedSink = AVAudioMixerNode()
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var rawConverter: AVAudioConverter?
@@ -53,6 +59,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     public init() {
         self.eq = SpeechBoost.makeEQ()
         self.engine.attach(self.eq)
+        self.engine.attach(self.processedSink)
     }
 
     public func start() async throws -> CaptureStreams {
@@ -93,12 +100,21 @@ public actor AVAudioEngineCapture: AudioCapture {
                 got: String(describing: inputFormat)
             )
         }
+        // Skip the resampler's primer — its job is to ramp output amplitude,
+        // but it shifts the output timeline relative to the input by the
+        // primer length, which manifests as a small leading delay/glitch in
+        // every chunk we yield. Matches the pattern from swift-scribe's
+        // BufferConverter.
+        rawConverter.primeMethod = .none
+        processedConverter.primeMethod = .none
         self.rawConverter = rawConverter
         self.processedConverter = processedConverter
 
-        // Connect inputNode → EQ. The EQ output bus (bus 0) is what we tap for
-        // the processed stream; inputNode's bus 0 (a tee point) gives us raw.
+        // input → eq → processedSink. Tap input for raw, tap processedSink for
+        // the speech-boosted copy. The mixer sink avoids tapping the EQ output
+        // bus directly (see comment on `processedSink`).
         engine.connect(input, to: eq, format: inputFormat)
+        engine.connect(eq, to: processedSink, format: inputFormat)
 
         let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
         let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
@@ -120,8 +136,9 @@ public actor AVAudioEngineCapture: AudioCapture {
             )
         }
 
-        // Tap B — EQ output. The same per-buffer audio after speech-band shaping.
-        eq.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
+        // Tap B — sink mixer (= EQ-processed audio). The same per-buffer
+        // audio after speech-band shaping.
+        processedSink.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
                 buffer,
                 time: time,
@@ -137,7 +154,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            eq.removeTap(onBus: 0)
+            processedSink.removeTap(onBus: 0)
             rawCont.finish()
             processedCont.finish()
             self.rawCont = nil
@@ -153,7 +170,7 @@ public actor AVAudioEngineCapture: AudioCapture {
 
     public func stop() async {
         engine.inputNode.removeTap(onBus: 0)
-        eq.removeTap(onBus: 0)
+        processedSink.removeTap(onBus: 0)
         if engine.isRunning {
             engine.stop()
         }
@@ -176,13 +193,34 @@ public actor AVAudioEngineCapture: AudioCapture {
         converter: AVAudioConverter,
         continuation: AsyncStream<AudioChunk>.Continuation
     ) {
-        let outputCapacity = AVAudioFrameCount(Double(buffer.frameLength) * sampleRateRatio) + 1024
-        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
+        // Capacity = exactly what one input buffer's worth of audio resamples
+        // to (rounded up). The converter will fill up to this and then ask
+        // for more input; we respond with `.noDataNow` so it returns with
+        // what it has. Capacity equal to expected output (not padded) avoids
+        // inviting an additional input request that would risk doubling.
+        let expectedOutputFrames = AVAudioFrameCount(
+            (Double(buffer.frameLength) * sampleRateRatio).rounded(.up)
+        )
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: expectedOutputFrames) else {
             return
         }
 
+        // The block-based API is required for sample-rate conversion. The
+        // canonical pattern (per FluidInference/swift-scribe BufferConverter)
+        // returns `.noDataNow` after the single buffer is consumed — NOT
+        // `.endOfStream`. `.noDataNow` makes the converter return with what
+        // it has produced so far, while keeping it reusable for the next
+        // call. `.endOfStream` permanently finalizes the converter and
+        // breaks subsequent tap callbacks.
         var convError: NSError?
+        final class Once: @unchecked Sendable { var fired = false }
+        let once = Once()
         let inputBlock: AVAudioConverterInputBlock = { _, status in
+            if once.fired {
+                status.pointee = .noDataNow
+                return nil
+            }
+            once.fired = true
             status.pointee = .haveData
             return buffer
         }

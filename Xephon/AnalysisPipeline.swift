@@ -67,10 +67,14 @@ final class AnalysisPipeline: Sendable {
             "emotion2vec categorical SER",
             { try Emotion2VecCategoricalSER() }
         )
-        let textSER: (any TextSER)? = await Self.tryInitAsync(
+        let deberta: (any TextSER)? = await Self.tryInitAsync(
             "DeBERTa WRIME text SER",
             { try await DeBERTaWRIME() }
-        ) ?? Self.fallbackTextSER()
+        )
+        let textSER: any TextSER = SwitchingTextSER(
+            deberta: deberta,
+            foundationModels: FoundationModelsSER()
+        )
 
         AppLog.app.info(
             "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), text=\(textSER != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
@@ -106,12 +110,18 @@ final class AnalysisPipeline: Sendable {
         }
     }
 
-    /// If DeBERTa-WRIME isn't bundled, fall back to FoundationModelsSER (Apple's
-    /// on-device LLM). Lower quality than the fine-tuned classifier per
-    /// Takenaka 2025, but immediately available on iPadOS 26.
-    private static func fallbackTextSER() -> (any TextSER)? {
-        AppLog.app.info("Text SER falling back to FoundationModelsSER")
-        return FoundationModelsSER()
+    // MARK: - Text SER backend control (forwards to SwitchingTextSER if present)
+
+    func availableTextSERBackends() async -> [SwitchingTextSER.Backend] {
+        await (textSER as? SwitchingTextSER)?.availableBackends ?? []
+    }
+
+    func currentTextSERBackend() async -> SwitchingTextSER.Backend? {
+        await (textSER as? SwitchingTextSER)?.currentBackend
+    }
+
+    func setTextSERBackend(_ backend: SwitchingTextSER.Backend) async {
+        await (textSER as? SwitchingTextSER)?.setBackend(backend)
     }
 
     func analyze(_ buffer: AudioChunk) async throws -> [UtteranceEstimate] {
@@ -165,13 +175,19 @@ final class AnalysisPipeline: Sendable {
         let cat = await categorical
         let acousticDuration = Date().timeIntervalSince(acousticStart)
 
-        let estimate = try await fuser.fuse(
+        let baseEstimate = try await fuser.fuse(
             asr: asr,
             speakerID: speakerID,
             dimensional: dim,
             acousticCategorical: cat,
             plutchik: txt
         )
+        // Stamp which text backend produced `plutchik`, so the UI can badge it.
+        // Nil when text SER was skipped (filler / empty / no model).
+        let textBackend: String? = txt == nil
+            ? nil
+            : await (textSER as? SwitchingTextSER)?.currentBackend.rawValue
+        let estimate = baseEstimate.withTextBackend(textBackend)
         let metrics = ProcessingMetrics(
             acousticDuration: dim != nil || cat != nil ? acousticDuration : nil,
             textDuration: txt != nil ? textDuration : nil,
@@ -210,10 +226,29 @@ final class AnalysisPipeline: Sendable {
 
     private func runText(_ text: String) async -> PlutchikScore? {
         guard let textSER, !text.isEmpty else { return nil }
+        if Self.isFiller(text) {
+            AppLog.app.debug("text SER skipped (filler): \(text, privacy: .public)")
+            return nil
+        }
         do { return try await textSER.classify(text) } catch {
             AppLog.app.debug("text SER skipped: \(String(describing: error), privacy: .public)")
             return nil
         }
+    }
+
+    /// Backchannels and ultra-short utterances rarely carry useful affect
+    /// signal; running a ~1 s LLM round-trip on them is mostly waste.
+    /// Conservative list — only obvious fillers, no content words.
+    private static let fillers: Set<String> = [
+        "あの", "えーと", "えっと", "えと", "うーん", "うんうん",
+        "うん", "ええ", "はい", "いえ", "そう", "そうそう",
+        "そうですね", "なるほど", "ふむ", "へえ", "ああ", "おお",
+    ]
+
+    private static func isFiller(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 1 { return true }
+        return fillers.contains(trimmed)
     }
 
     // MARK: - Buffer slicing

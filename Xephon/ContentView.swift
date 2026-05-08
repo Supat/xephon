@@ -1,6 +1,17 @@
 import SwiftUI
 import Audio
 import Fusion
+import SERText
+
+private extension SwitchingTextSER.Backend {
+    /// Short tag rendered on each utterance row's text-backend badge.
+    var badgeLabel: String {
+        switch self {
+        case .deberta:          return "DeBERTa"
+        case .foundationModels: return "Apple FM"
+        }
+    }
+}
 
 struct ContentView: View {
     @State private var recorder = RecordingController()
@@ -49,6 +60,8 @@ struct ContentView: View {
         VStack(spacing: 16) {
             speechBoostToggle
 
+            textSERPicker
+
             inputPicker
 
             recordButton
@@ -95,6 +108,40 @@ struct ContentView: View {
         } else {
             transcriptList
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var textSERPicker: some View {
+        if recorder.availableTextSERBackends.count > 1 {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(String(localized: "settings.textSER"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker(
+                    String(localized: "settings.textSER"),
+                    selection: Binding(
+                        get: { recorder.currentTextSERBackend ?? .foundationModels },
+                        set: { newValue in
+                            Task { await recorder.setTextSERBackend(newValue) }
+                        }
+                    )
+                ) {
+                    ForEach(recorder.availableTextSERBackends, id: \.self) { backend in
+                        Text(Self.label(for: backend)).tag(backend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private static func label(for backend: SwitchingTextSER.Backend) -> String {
+        switch backend {
+        case .deberta:          return String(localized: "settings.textSER.deberta")
+        case .foundationModels: return String(localized: "settings.textSER.foundationModels")
         }
     }
 
@@ -246,24 +293,51 @@ private struct UtteranceRow: View {
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(utterance.speakerID)
-                    .font(.caption.bold())
-                    .foregroundStyle(.tint)
+                HStack(spacing: 6) {
+                    Text(utterance.speakerID)
+                        .font(.caption.bold())
+                        .foregroundStyle(.tint)
+                    if utterance.speechBoost == true {
+                        Label("Boost", systemImage: "waveform.badge.plus")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .overlay(
+                                Capsule().strokeBorder(.orange.opacity(0.5), lineWidth: 0.5)
+                            )
+                            .foregroundStyle(.orange)
+                    }
+                }
                 Text(utterance.transcript.isEmpty ? "—" : utterance.transcript)
                     .font(.body)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 4) {
-                Text(String(format: "%.1f–%.1f s", utterance.start, utterance.end))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    if let backendBadge {
+                        Text(backendBadge)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .overlay(
+                                Capsule().strokeBorder(.secondary.opacity(0.4), lineWidth: 0.5)
+                            )
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(String(format: "%.1f–%.1f s", utterance.start, utterance.end))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 HStack(spacing: 8) {
                     if let label = utterance.fusedTopLabel {
-                        Text(label)
+                        let tint = Self.color(forLabel: label)
+                        Text(label.capitalized(with: Locale(identifier: "en_US")))
                             .font(.caption)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(.tint.opacity(0.15), in: Capsule())
+                            .background(tint.opacity(0.18), in: Capsule())
+                            .foregroundStyle(tint)
                     }
                     if let v = utterance.fusedValence {
                         vaLabel("V", value: v)
@@ -275,6 +349,29 @@ private struct UtteranceRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private var backendBadge: String? {
+        guard let raw = utterance.textBackend,
+              let backend = SwitchingTextSER.Backend(rawValue: raw) else { return nil }
+        return backend.badgeLabel
+    }
+
+    /// Color tint for a fused emotion label. Tracks the conventional Plutchik
+    /// wheel where it overlaps; falls back to grey for unknown/neutral labels.
+    private static func color(forLabel raw: String) -> Color {
+        switch raw.lowercased() {
+        case "happy", "joy", "joyful":               return .yellow
+        case "sad", "sadness":                       return .blue
+        case "angry", "anger":                       return .red
+        case "fear", "fearful", "afraid":            return .purple
+        case "disgust", "disgusted":                 return Color(red: 0.45, green: 0.55, blue: 0.20)
+        case "surprise", "surprised":                return .orange
+        case "trust":                                return .green
+        case "anticipation":                         return Color(red: 0.95, green: 0.55, blue: 0.10)
+        case "neutral", "calm":                      return .gray
+        default:                                     return Color.secondary
+        }
     }
 
     @ViewBuilder
@@ -332,19 +429,19 @@ private struct PipelineCard: View {
             StageRow(
                 icon: "waveform",
                 name: String(localized: "pipeline.acousticSER"),
-                state: stageState(latency: recorder.lastAcousticDuration, isActive: false),
+                state: perSegmentState(latency: recorder.lastAcousticDuration),
                 metric: latencyMetric(recorder.lastAcousticDuration)
             )
             StageRow(
                 icon: "text.bubble.fill",
                 name: String(localized: "pipeline.textSER"),
-                state: stageState(latency: recorder.lastTextDuration, isActive: false),
+                state: perSegmentState(latency: recorder.lastTextDuration),
                 metric: latencyMetric(recorder.lastTextDuration)
             )
             StageRow(
                 icon: "circle.hexagongrid.fill",
                 name: String(localized: "pipeline.fusion"),
-                state: recorder.utterances.isEmpty ? .idle : .ready,
+                state: fusionState,
                 metric: recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count) utts"
             )
             StageRow(
@@ -379,9 +476,18 @@ private struct PipelineCard: View {
         recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)"
     }
 
-    private func stageState(latency: TimeInterval?, isActive: Bool) -> StageRow.State {
-        if isActive { return .active(0) }
-        return latency == nil ? .idle : .ready
+    /// Per-segment stages (Acoustic SER, Text SER) flip to active while a
+    /// segment is in flight, otherwise idle. Latency value is shown in the
+    /// metric column, but the glyph state itself doesn't latch to .ready —
+    /// otherwise the stage looks "done" forever even though it'll fire again
+    /// on the next segment.
+    private func perSegmentState(latency _: TimeInterval?) -> StageRow.State {
+        recorder.inflightSegments > 0 ? .active(0) : .idle
+    }
+
+    private var fusionState: StageRow.State {
+        if recorder.inflightSegments > 0 { return .active(0) }
+        return recorder.utterances.isEmpty ? .idle : .ready
     }
 
     private func latencyMetric(_ value: TimeInterval?) -> String {
@@ -421,12 +527,13 @@ private struct StageRow: View {
                 .font(.caption)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            stateGlyph
-                .font(.caption2)
             Text(metric)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            stateGlyph
+                .font(.caption2)
+                .frame(width: 14, alignment: .center)
         }
     }
 

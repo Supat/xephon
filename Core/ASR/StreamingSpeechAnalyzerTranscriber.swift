@@ -6,21 +6,26 @@ import XephonLogging
 
 // Streaming variant of SpeechAnalyzerTranscriber. Keeps a single SpeechAnalyzer
 // alive across the recording session, feeds audio buffers as they arrive, and
-// emits ASRSegments only after `volatileRangeChangedHandler` reports that their
-// range has been committed (i.e., the model is no longer revising them).
+// emits one ASRSegment per finalized result.
 //
-// In Apple's iOS 26 SpeechAnalyzer model:
-//   - Each Result has a CMTimeRange describing the audio span it transcribes.
-//   - The "volatile range" is the trailing region the model may still revise.
-//   - A Result is final when its `range.end <= volatileRange.start`.
+// Canonical pattern per Apple WWDC25 sample code and FluidInference/swift-scribe:
+//   - reportingOptions includes `.volatileResults` so the transcriber emits
+//     both volatile and final results.
+//   - For each result, check `result.isFinal`:
+//       * isFinal == true  → committed sentence chunk; emit downstream.
+//                            Final results are non-overlapping by contract.
+//       * isFinal == false → rolling preview of trailing audio; replace the
+//                            volatile-text snapshot used by the live UI.
+//   - No need for volatileRangeChangedHandler, no result-dictionary, no
+//     range-overlap dedup. The previous design that tried to reconstruct
+//     finalization from `volatileRangeChangedHandler` produced the duplicated
+//     transcripts users saw.
 public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
     public let locale: Locale
 
     private nonisolated(unsafe) var analyzer: SpeechAnalyzer?
     private var inputCont: AsyncStream<AnalyzerInput>.Continuation?
     private var outputCont: AsyncStream<ASRSegment>.Continuation?
-    private var pending: [Double: SpeechTranscriber.Result] = [:]
-    private var emittedKeys: Set<Double> = []
     private var volatileTextValue: String = ""
     private var resultDrainer: Task<Void, Never>?
     private var analyzerStartTask: Task<Void, Never>?
@@ -41,7 +46,7 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         let transcriber = SpeechTranscriber(
             locale: resolvedLocale,
             transcriptionOptions: [],
-            reportingOptions: [],
+            reportingOptions: [.volatileResults],
             attributeOptions: [.audioTimeRange, .transcriptionConfidence]
         )
         try await ensureAssetInstalled(for: transcriber, locale: resolvedLocale)
@@ -60,26 +65,17 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         let (outputStream, outputCont) = AsyncStream<ASRSegment>.makeStream()
         self.inputCont = inputCont
         self.outputCont = outputCont
-        self.pending.removeAll()
-        self.emittedKeys.removeAll()
+        self.volatileTextValue = ""
 
         let analyzer = SpeechAnalyzer(modules: [transcriber], options: nil)
         self.analyzer = analyzer
 
-        // Volatile range moves forward each time a chunk of audio is committed.
-        // When that happens, every cached result whose end is now ≤ the new
-        // volatile.start is a finalized sentence — emit it.
-        await analyzer.setVolatileRangeChangedHandler { [weak self] newRange, _, _ in
-            let boundary = newRange.start.seconds
-            Task { await self?.flushFinalized(below: boundary) }
-        }
-
-        // Drain results from the transcriber. We replace prior revisions of
-        // the same range; the volatile-range handler decides when to emit.
+        // Drain results. Finals are emitted as ASRSegments; volatiles update
+        // the rolling preview text.
         resultDrainer = Task { [weak self] in
             do {
                 for try await result in transcriber.results {
-                    await self?.appendResult(result)
+                    await self?.handleResult(result)
                 }
             } catch {
                 AppLog.asr.error("streaming drainer failed: \(String(describing: error), privacy: .public)")
@@ -115,10 +111,11 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         } catch {
             AppLog.asr.error("streaming finalize failed: \(String(describing: error), privacy: .public)")
         }
-        // Anything still pending is now final by definition.
-        flushFinalized(below: .infinity)
+        // Wait for the drainer to consume any tail finals from the analyzer
+        // before we close the segment stream — otherwise downstream consumers
+        // miss the last sentence of the session.
+        await resultDrainer?.value
         outputCont?.finish()
-        resultDrainer?.cancel()
         analyzerStartTask?.cancel()
         cleanup()
     }
@@ -129,42 +126,24 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         get async { volatileTextValue }
     }
 
-    private func appendResult(_ result: SpeechTranscriber.Result) {
-        let startKey = result.range.start.seconds
-        guard !emittedKeys.contains(startKey) else { return }
-        pending[startKey] = result
-        recomputeVolatileText()
-    }
+    private func handleResult(_ result: SpeechTranscriber.Result) {
+        let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        let kind = result.isFinal ? "FINAL" : "vol  "
+        AppLog.asr.debug("\(kind, privacy: .public) [\(result.range.start.seconds, privacy: .public)–\(result.range.end.seconds, privacy: .public)s] \"\(text, privacy: .public)\"")
 
-    private func recomputeVolatileText() {
-        volatileTextValue = pending.values
-            .sorted { $0.range.start.seconds < $1.range.start.seconds }
-            .map { String($0.text.characters).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    private func flushFinalized(below boundary: Double) {
-        let finalized = pending.values
-            .filter { $0.range.end.seconds <= boundary && !emittedKeys.contains($0.range.start.seconds) }
-            .sorted { $0.range.start.seconds < $1.range.start.seconds }
-        for result in finalized {
+        if result.isFinal {
+            volatileTextValue = ""
+            guard !text.isEmpty else { return }
             let segment = ASRSegment(
-                text: String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines),
+                text: text,
                 start: result.range.start.seconds,
                 end: result.range.end.seconds,
                 confidence: nil
             )
-            guard !segment.text.isEmpty else {
-                pending.removeValue(forKey: result.range.start.seconds)
-                emittedKeys.insert(result.range.start.seconds)
-                continue
-            }
             outputCont?.yield(segment)
-            pending.removeValue(forKey: result.range.start.seconds)
-            emittedKeys.insert(result.range.start.seconds)
+        } else {
+            volatileTextValue = text
         }
-        recomputeVolatileText()
     }
 
     private func cleanup() {
@@ -172,9 +151,9 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         inputCont = nil
         outputCont = nil
         targetFormat = nil
-        pending.removeAll()
-        emittedKeys.removeAll()
         volatileTextValue = ""
+        resultDrainer = nil
+        analyzerStartTask = nil
     }
 
     // MARK: - Asset install

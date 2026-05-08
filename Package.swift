@@ -91,6 +91,7 @@ let package = Package(
             dependencies: [
                 "XephonLogging",
                 .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
             ],
             path: "Core/SER/Text"
         ),
