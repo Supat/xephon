@@ -25,6 +25,30 @@ public struct CategoricalEmotion: Sendable, Hashable, Codable {
     public init(probabilities: [Label: Float]) {
         self.probabilities = probabilities
     }
+
+    // See note on PlutchikScore: Swift's Dictionary Codable only treats
+    // String/Int keys as object keys, so we flatten to named fields.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: AcousticDynamicKey.self)
+        for label in Label.allCases {
+            if let value = probabilities[label],
+               let key = AcousticDynamicKey(stringValue: label.rawValue) {
+                try container.encode(value, forKey: key)
+            }
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: AcousticDynamicKey.self)
+        var probs: [Label: Float] = [:]
+        for key in container.allKeys {
+            if let label = Label(rawValue: key.stringValue),
+               let value = try? container.decode(Float.self, forKey: key) {
+                probs[label] = value
+            }
+        }
+        self.probabilities = probs
+    }
 }
 
 public protocol DimensionalAcousticSER: Actor {
@@ -33,4 +57,11 @@ public protocol DimensionalAcousticSER: Actor {
 
 public protocol CategoricalAcousticSER: Actor {
     func score(_ buffer: AudioChunk) async throws -> CategoricalEmotion
+}
+
+struct AcousticDynamicKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
 }

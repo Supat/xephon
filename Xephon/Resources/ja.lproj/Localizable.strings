@@ -1,4 +1,5 @@
 "input.default" = "デフォルト入力";
+"settings.speechBoost" = "音声強調 (ASRのみ)";
 "transcript.empty.title" = "まだ発話がありません";
 "transcript.empty.subtitle" = "「録音を開始」をタップして始めてください。";
 "record.start" = "録音を開始";

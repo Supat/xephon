@@ -2,38 +2,60 @@ import Foundation
 @preconcurrency import AVFoundation
 import XephonLogging
 
+/// Two parallel streams from the same physical mic. Both are 16 kHz mono
+/// Float32, but `processed` has been routed through a speech-band EQ — feed
+/// it to ASR, keep `raw` for SER and other prosody-sensitive analyses.
+public struct CaptureStreams: Sendable {
+    public let raw: AsyncStream<AudioChunk>
+    public let processed: AsyncStream<AudioChunk>
+
+    public init(raw: AsyncStream<AudioChunk>, processed: AsyncStream<AudioChunk>) {
+        self.raw = raw
+        self.processed = processed
+    }
+}
+
 public protocol AudioCapture: Actor {
-    /// Starts the audio engine and returns a stream of resampled buffers
-    /// (16 kHz mono Float32 per `PipelineAudio`). Throws
+    /// Starts the audio engine and returns two parallel streams: a raw mic
+    /// capture (for SER) and a speech-boosted copy (for ASR). Throws
     /// `AudioError.permissionDenied` if microphone access is not granted.
-    func start() async throws -> AsyncStream<AudioChunk>
+    func start() async throws -> CaptureStreams
     func stop() async
 
-    /// Inputs currently advertised by the OS (built-in mic, AirPods, USB-C
-    /// audio, etc.). May be empty before the audio session is configured.
     func availableInputs() async -> [AudioInputDescription]
-    /// The input the OS will actually use on the next `start()`.
     func currentInput() async -> AudioInputDescription?
-    /// Persist a preferred input. Pass `nil` to defer to the system default.
-    /// The chosen UID corresponds to `AudioInputDescription.uid`.
     func setPreferredInput(_ uid: String?) async throws
+
+    /// Enables/disables the speech-band EQ on the ASR-bound branch. When
+    /// disabled, the `processed` stream pass-throughs raw audio so SER and
+    /// ASR see identical input.
+    var isSpeechBoostEnabled: Bool { get async }
+    func setSpeechBoostEnabled(_ enabled: Bool) async
 }
 
 public extension AudioCapture {
     func availableInputs() async -> [AudioInputDescription] { [] }
     func currentInput() async -> AudioInputDescription? { nil }
     func setPreferredInput(_ uid: String?) async throws {}
+    var isSpeechBoostEnabled: Bool { get async { false } }
+    func setSpeechBoostEnabled(_ enabled: Bool) async {}
 }
 
 public actor AVAudioEngineCapture: AudioCapture {
     private let engine = AVAudioEngine()
-    private var continuation: AsyncStream<AudioChunk>.Continuation?
-    private var converter: AVAudioConverter?
+    private let eq: AVAudioUnitEQ
+    private var rawCont: AsyncStream<AudioChunk>.Continuation?
+    private var processedCont: AsyncStream<AudioChunk>.Continuation?
+    private var rawConverter: AVAudioConverter?
+    private var processedConverter: AVAudioConverter?
     private var preferredInputUID: String?
 
-    public init() {}
+    public init() {
+        self.eq = SpeechBoost.makeEQ()
+        self.engine.attach(self.eq)
+    }
 
-    public func start() async throws -> AsyncStream<AudioChunk> {
+    public func start() async throws -> CaptureStreams {
         guard await Self.requestPermission() else {
             throw AudioError.permissionDenied
         }
@@ -41,10 +63,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         #if os(iOS) || targetEnvironment(macCatalyst)
         do {
             let session = AVAudioSession.sharedInstance()
-            // `.allowBluetooth` enables AirPods / Bluetooth-headset mic input
-            // (HFP profile). Without it, AirPods-as-input is hidden from
-            // `availableInputs` even when AirPods are paired.
-            try session.setCategory(.record, mode: .measurement, options: [.allowBluetooth])
+            try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
             if let uid = preferredInputUID,
                let target = (session.availableInputs ?? []).first(where: { $0.uid == uid }) {
                 try session.setPreferredInput(target)
@@ -67,47 +86,50 @@ public actor AVAudioEngineCapture: AudioCapture {
             throw AudioError.unsupportedFormat(expected: "16 kHz mono Float32", got: "n/a")
         }
 
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+        guard let rawConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
+              let processedConverter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
             throw AudioError.unsupportedFormat(
                 expected: String(describing: outputFormat),
                 got: String(describing: inputFormat)
             )
         }
-        self.converter = converter
+        self.rawConverter = rawConverter
+        self.processedConverter = processedConverter
 
-        let (stream, cont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
-        self.continuation = cont
+        // Connect inputNode → EQ. The EQ output bus (bus 0) is what we tap for
+        // the processed stream; inputNode's bus 0 (a tee point) gives us raw.
+        engine.connect(input, to: eq, format: inputFormat)
+
+        let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        self.rawCont = rawCont
+        self.processedCont = processedCont
 
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
 
+        // Tap A — raw input. Captures: rawCont (Sendable), rawConverter,
+        // outputFormat (each touched only on the audio thread).
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
-            let outputCapacity = AVAudioFrameCount(Double(buffer.frameLength) * sampleRateRatio) + 1024
-            guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
-                return
-            }
+            Self.yieldResampled(
+                buffer,
+                time: time,
+                sampleRateRatio: sampleRateRatio,
+                outputFormat: outputFormat,
+                converter: rawConverter,
+                continuation: rawCont
+            )
+        }
 
-            var convError: NSError?
-            let inputBlock: AVAudioConverterInputBlock = { _, status in
-                status.pointee = .haveData
-                return buffer
-            }
-            let result = converter.convert(to: outBuffer, error: &convError, withInputFrom: inputBlock)
-            guard result != .error,
-                  let channelData = outBuffer.floatChannelData else {
-                return
-            }
-
-            let frameCount = Int(outBuffer.frameLength)
-            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
-            let timestamp = time.sampleRate > 0
-                ? Double(time.sampleTime) / time.sampleRate
-                : 0
-
-            cont.yield(AudioChunk(
-                samples: samples,
-                sampleRate: PipelineAudio.sampleRate,
-                timestamp: timestamp
-            ))
+        // Tap B — EQ output. The same per-buffer audio after speech-band shaping.
+        eq.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
+            Self.yieldResampled(
+                buffer,
+                time: time,
+                sampleRateRatio: sampleRateRatio,
+                outputFormat: outputFormat,
+                converter: processedConverter,
+                continuation: processedCont
+            )
         }
 
         engine.prepare()
@@ -115,25 +137,72 @@ public actor AVAudioEngineCapture: AudioCapture {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            cont.finish()
-            self.continuation = nil
-            self.converter = nil
+            eq.removeTap(onBus: 0)
+            rawCont.finish()
+            processedCont.finish()
+            self.rawCont = nil
+            self.processedCont = nil
+            self.rawConverter = nil
+            self.processedConverter = nil
             throw AudioError.engineUnavailable(reason: String(describing: error))
         }
 
-        AppLog.audio.info("Capture started: input=\(inputFormat.sampleRate, privacy: .public) Hz → 16 kHz mono")
-        return stream
+        AppLog.audio.info("Capture started: input=\(inputFormat.sampleRate, privacy: .public) Hz → 16 kHz mono (raw + speech-boosted)")
+        return CaptureStreams(raw: rawStream, processed: processedStream)
     }
 
     public func stop() async {
         engine.inputNode.removeTap(onBus: 0)
+        eq.removeTap(onBus: 0)
         if engine.isRunning {
             engine.stop()
         }
-        continuation?.finish()
-        continuation = nil
-        converter = nil
+        rawCont?.finish()
+        processedCont?.finish()
+        rawCont = nil
+        processedCont = nil
+        rawConverter = nil
+        processedConverter = nil
         AppLog.audio.info("Capture stopped")
+    }
+
+    // MARK: - Resample helper (audio thread)
+
+    private static func yieldResampled(
+        _ buffer: AVAudioPCMBuffer,
+        time: AVAudioTime,
+        sampleRateRatio: Double,
+        outputFormat: AVAudioFormat,
+        converter: AVAudioConverter,
+        continuation: AsyncStream<AudioChunk>.Continuation
+    ) {
+        let outputCapacity = AVAudioFrameCount(Double(buffer.frameLength) * sampleRateRatio) + 1024
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
+            return
+        }
+
+        var convError: NSError?
+        let inputBlock: AVAudioConverterInputBlock = { _, status in
+            status.pointee = .haveData
+            return buffer
+        }
+        let result = converter.convert(to: outBuffer, error: &convError, withInputFrom: inputBlock)
+        guard result != .error,
+              let channelData = outBuffer.floatChannelData else {
+            return
+        }
+
+        let frameCount = Int(outBuffer.frameLength)
+        let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+        let timestamp = time.sampleRate > 0
+            ? Double(time.sampleTime) / time.sampleRate
+            : 0
+
+        continuation.yield(AudioChunk(
+            samples: samples,
+            sampleRate: PipelineAudio.sampleRate,
+            timestamp: timestamp
+        ))
     }
 
     // MARK: - Input selection
@@ -165,6 +234,18 @@ public actor AVAudioEngineCapture: AudioCapture {
         #endif
     }
 
+    public var isSpeechBoostEnabled: Bool {
+        get async { !eq.bypass }
+    }
+
+    public func setSpeechBoostEnabled(_ enabled: Bool) async {
+        // AVAudioUnitEffect.bypass can flip safely while the engine is running;
+        // the EQ continues to forward audio so the dual-tap structure stays
+        // valid — only the spectral shaping turns off.
+        eq.bypass = !enabled
+        AppLog.audio.info("Speech boost \(enabled ? "ON" : "OFF", privacy: .public)")
+    }
+
     public func setPreferredInput(_ uid: String?) async throws {
         preferredInputUID = uid
         #if os(iOS) || targetEnvironment(macCatalyst)
@@ -183,7 +264,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     private func configureCategoryIfNeeded(_ session: AVAudioSession) {
         if session.category != .record {
             do {
-                try session.setCategory(.record, mode: .measurement, options: [.allowBluetooth])
+                try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
             } catch {
                 AppLog.audio.warning("setCategory failed: \(String(describing: error), privacy: .public)")
             }

@@ -11,11 +11,21 @@ public actor FoundationModelsSER: TextSER {
     // session accumulates conversation history and eventually overflows
     // (LanguageModelSession.GenerationError.exceededContextWindowSize).
     private static let instructions = """
-        You are a Japanese-language affect annotator. Given a Japanese utterance,
-        estimate the speaker's emotion as Plutchik 8-class probabilities in [0, 1].
-        Each probability is independent — they do not need to sum to 1. Be calibrated
-        and conservative when the utterance is ambiguous; output near-zero for emotions
-        that are clearly absent. Respond strictly with the requested fields.
+        You are a Japanese-language affect annotator. Read the utterance and
+        estimate how strongly each Plutchik emotion is present, as independent
+        probabilities in [0, 1] (they do NOT need to sum to 1).
+
+        Use the full range. Most utterances carry mild traces of multiple
+        emotions — do NOT default to all-zeros. Calibration guide:
+          0.0  emotion is clearly absent
+          0.2  faint trace, possibly inferred
+          0.5  noticeable but not dominant
+          0.7  clearly present
+          0.9+ dominant / intense
+
+        For neutral or ambiguous utterances, prefer values around 0.2–0.4
+        across multiple emotions rather than zeros across the board. Always
+        return all eight fields.
         """
 
     public init() {}

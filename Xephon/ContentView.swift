@@ -30,6 +30,8 @@ struct ContentView: View {
 
     private var controlPane: some View {
         VStack(spacing: 16) {
+            speechBoostToggle
+
             inputPicker
 
             recordButton
@@ -74,6 +76,20 @@ struct ContentView: View {
             transcriptList
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var speechBoostToggle: some View {
+        Toggle(
+            String(localized: "settings.speechBoost"),
+            isOn: Binding(
+                get: { recorder.isSpeechBoostEnabled },
+                set: { newValue in
+                    Task { await recorder.setSpeechBoostEnabled(newValue) }
+                }
+            )
+        )
+        .toggleStyle(.switch)
+        .padding(.horizontal)
     }
 
     @ViewBuilder

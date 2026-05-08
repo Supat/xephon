@@ -24,6 +24,7 @@ final class RecordingController {
     private(set) var inputLevel: Float = 0
     private(set) var availableInputs: [AudioInputDescription] = []
     private(set) var currentInputUID: String?
+    private(set) var isSpeechBoostEnabled: Bool = true
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
@@ -37,7 +38,8 @@ final class RecordingController {
     private var pipeline: AnalysisPipeline?
     private var pipelineTask: Task<AnalysisPipeline, Never>?
     private let exporter = JSONExporter()
-    private var captureTask: Task<Void, Never>?
+    private var rawTask: Task<Void, Never>?
+    private var feedTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var routeWatcherTask: Task<Void, Never>?
     private var capturedSamples: [Float] = []
@@ -106,7 +108,7 @@ final class RecordingController {
     func start() async {
         do {
             let segmentStream = try await streamingTranscriber.start()
-            let audioStream = try await capture.start()
+            let streams = try await capture.start()
 
             phase = .recording
             errorMessage = nil
@@ -114,19 +116,28 @@ final class RecordingController {
             utterances = []
             capturedSamples.removeAll(keepingCapacity: true)
 
-            // Pump 1: drain audio → feed analyzer + accumulate samples + level meter.
-            captureTask = Task { @MainActor [weak self] in
+            // Pump 1 (raw): drain → SER buffer + level meter. The raw stream
+            // preserves prosody for SER and prosody analyses.
+            rawTask = Task { @MainActor [weak self] in
                 guard let self else { return }
-                for await buffer in audioStream {
+                for await buffer in streams.raw {
                     self.capturedSamples.append(contentsOf: buffer.samples)
                     self.samplesCaptured = self.capturedSamples.count
                     self.inputLevel = Self.smoothLevel(
                         previous: self.inputLevel,
                         current: Self.perceptualLevel(buffer.samples)
                     )
-                    await self.streamingTranscriber.feed(buffer)
                 }
                 self.inputLevel = 0
+            }
+
+            // Pump 2 (processed): drain → ASR analyzer. Speech-band EQ applied
+            // upstream by AVAudioUnitEQ (see SpeechBoost).
+            feedTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                for await buffer in streams.processed {
+                    await self.streamingTranscriber.feed(buffer)
+                }
             }
 
             // Pump 2: drain finalized ASR segments → SER+fuse → append.
@@ -157,8 +168,10 @@ final class RecordingController {
     /// Stop capture, finalize the analyzer, drain remaining segments, then idle.
     func stop() async {
         await capture.stop()
-        await captureTask?.value
-        captureTask = nil
+        await rawTask?.value
+        await feedTask?.value
+        rawTask = nil
+        feedTask = nil
 
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
         // finalize + per-segment SER for any tail audio).
@@ -176,6 +189,11 @@ final class RecordingController {
         let current = await capture.currentInput()
         self.availableInputs = inputs
         self.currentInputUID = current?.uid
+    }
+
+    func setSpeechBoostEnabled(_ enabled: Bool) async {
+        await capture.setSpeechBoostEnabled(enabled)
+        self.isSpeechBoostEnabled = enabled
     }
 
     func selectInput(uid: String?) async {

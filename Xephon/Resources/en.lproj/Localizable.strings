@@ -1,4 +1,5 @@
 "input.default" = "Default input";
+"settings.speechBoost" = "Speech boost (ASR only)";
 "transcript.empty.title" = "No utterances yet";
 "transcript.empty.subtitle" = "Tap Start recording to begin.";
 "record.start" = "Start recording";
