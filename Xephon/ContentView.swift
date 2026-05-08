@@ -1,7 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import Audio
 import Fusion
 import SERText
+import XephonLogging
 
 private extension SwitchingTextSER.Backend {
     /// Short tag rendered on each utterance row's text-backend badge.
@@ -17,6 +19,9 @@ struct ContentView: View {
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
     @State private var showingDiscardConfirm: Bool = false
+    @State private var showingFilePicker: Bool = false
+    @State private var pendingFileURL: URL?
+    @State private var showingFileDiscardConfirm: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -32,8 +37,36 @@ struct ContentView: View {
             .navigationTitle("Xephon")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingFilePicker = true
+                    } label: {
+                        Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
+                    }
+                    .disabled(recorder.isRecording || recorder.isAnalyzing)
+                }
+            }
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
+            }
+            .fileImporter(
+                isPresented: $showingFilePicker,
+                allowedContentTypes: [.audio, .mp3, .wav, .mpeg4Audio, .aiff],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    if !recorder.utterances.isEmpty {
+                        pendingFileURL = url
+                        showingFileDiscardConfirm = true
+                    } else {
+                        Task { await recorder.startFromFile(url) }
+                    }
+                case .failure(let error):
+                    AppLog.app.error("file picker: \(String(describing: error), privacy: .public)")
+                }
             }
             .alert(
                 String(localized: "record.discardConfirm.title"),
@@ -43,6 +76,27 @@ struct ContentView: View {
                     Task { await recorder.toggle() }
                 }
                 Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {}
+            } message: {
+                Text(
+                    String(
+                        format: String(localized: "record.discardConfirm.message"),
+                        recorder.utterances.count
+                    )
+                )
+            }
+            .alert(
+                String(localized: "record.discardConfirm.title"),
+                isPresented: $showingFileDiscardConfirm
+            ) {
+                Button(String(localized: "record.discardConfirm.confirm"), role: .destructive) {
+                    if let url = pendingFileURL {
+                        Task { await recorder.startFromFile(url) }
+                    }
+                    pendingFileURL = nil
+                }
+                Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
+                    pendingFileURL = nil
+                }
             } message: {
                 Text(
                     String(
@@ -145,7 +199,16 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var speechBoostToggle: some View {
+        // Hide the speech-boost EQ control while the active source is a
+        // file — the toggle wouldn't affect file content.
+        if case .microphone = recorder.sourceMode {
+            speechBoostToggleBody
+        }
+    }
+
+    private var speechBoostToggleBody: some View {
         Toggle(
             String(localized: "settings.speechBoost"),
             isOn: Binding(
@@ -230,13 +293,22 @@ struct ContentView: View {
     @ViewBuilder
     private var statusLine: some View {
         if recorder.isRecording {
-            Text(String(
-                format: String(localized: "record.status.format"),
-                recorder.elapsedSeconds,
-                recorder.samplesCaptured
-            ))
-            .font(.system(.body, design: .monospaced))
-            .foregroundStyle(.secondary)
+            VStack(spacing: 4) {
+                if case .file(let url) = recorder.sourceMode {
+                    Text(String(format: String(localized: "file.analyzing"), url.lastPathComponent))
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text(String(
+                    format: String(localized: "record.status.format"),
+                    recorder.elapsedSeconds,
+                    recorder.samplesCaptured
+                ))
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
         } else if recorder.isAnalyzing {
             HStack(spacing: 8) {
                 ProgressView()

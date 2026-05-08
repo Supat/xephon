@@ -42,8 +42,15 @@ final class RecordingController {
         Double(samplesCaptured) / PipelineAudio.sampleRate
     }
 
-    private let capture: any AudioCapture
+    private var capture: any AudioCapture
+    private let micCapture: any AudioCapture
     private let streamingTranscriber: any StreamingTranscriber
+    private(set) var sourceMode: SourceMode = .microphone
+
+    enum SourceMode: Equatable {
+        case microphone
+        case file(URL)
+    }
     private var pipeline: AnalysisPipeline?
     private var pipelineTask: Task<AnalysisPipeline, Never>?
     private let exporter = JSONExporter()
@@ -60,6 +67,7 @@ final class RecordingController {
         pipeline: AnalysisPipeline? = nil
     ) {
         self.capture = capture
+        self.micCapture = capture
         self.streamingTranscriber = streamingTranscriber ?? StreamingSpeechAnalyzerTranscriber()
         self.pipeline = pipeline
         // Pre-warm the pipeline in the background at first construction so heavy
@@ -232,6 +240,15 @@ final class RecordingController {
         await analysisTask?.value
         analysisTask = nil
         phase = .idle
+
+        // File-backed sessions are one-shot: drop back to the live mic so
+        // the next Record tap behaves normally. The file analysis output
+        // remains in `utterances` for inspection/export.
+        if case .file = sourceMode {
+            sourceMode = .microphone
+            capture = micCapture
+            await refreshInputs()
+        }
     }
 
     // MARK: - Audio input selection
@@ -262,6 +279,30 @@ final class RecordingController {
             errorMessage = String(describing: error)
             AppLog.app.error("setPreferredInput failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    // MARK: - File-backed source
+
+    /// Switch to a file-backed audio source and immediately begin streaming
+    /// it through the same pipeline used for the microphone. The file plays
+    /// at real-time pace so SpeechAnalyzer's volatile→final stabilization
+    /// and per-segment SER behave the same way they do for live audio.
+    func startFromFile(_ url: URL) async {
+        guard phase == .idle else { return }
+        sourceMode = .file(url)
+        capture = AudioFileCapture(fileURL: url)
+        availableInputs = []
+        currentInputUID = nil
+        await start()
+    }
+
+    /// Restore the microphone as the active source. Called automatically when
+    /// a file-backed session ends.
+    func resetToMicrophone() async {
+        guard phase == .idle else { return }
+        sourceMode = .microphone
+        capture = micCapture
+        await refreshInputs()
     }
 
     /// Called from a TaskGroup child once a segment finishes processing.

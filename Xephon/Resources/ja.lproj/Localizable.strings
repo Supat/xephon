@@ -22,3 +22,5 @@
 "analyze.inProgress" = "解析中…";
 "warmup.inProgress" = "モデルを読み込み中…";
 "export.json" = "JSON書き出し";
+"file.open" = "ファイルを開く";
+"file.analyzing" = "%@ を解析中";
