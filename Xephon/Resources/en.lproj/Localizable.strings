@@ -22,3 +22,5 @@
 "analyze.inProgress" = "Analyzing…";
 "warmup.inProgress" = "Loading models…";
 "export.json" = "Export JSON";
+"file.open" = "Open File";
+"file.analyzing" = "Analyzing %@";
