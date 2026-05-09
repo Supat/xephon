@@ -6,6 +6,11 @@
 "transcript.empty.title" = "No utterances yet";
 "transcript.empty.subtitle" = "Tap Start recording to begin.";
 "transcript.newUtterance" = "New utterance";
+"filter.search.placeholder" = "Search utterances";
+"filter.label.all" = "All labels";
+"filter.noMatches.title" = "No matches";
+"filter.noMatches.subtitle" = "Adjust the search text or label filter.";
+"filter.noMatches.clear" = "Clear filters";
 "pipeline.header" = "Pipeline";
 "pipeline.capture" = "Capture";
 "pipeline.asr" = "ASR (live)";
@@ -26,6 +31,7 @@
 "file.open" = "Open File";
 "menu.openAudioFile" = "Open…";
 "menu.exportJSON" = "Export to JSON";
+"menu.findInUtterances" = "Find in Utterances…";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";
 "pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace runs at 8× real time, preserving the on-device speech recognizer's segment boundaries closely enough that SER classifications stay consistent with real-time.";

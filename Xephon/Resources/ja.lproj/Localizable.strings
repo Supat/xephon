@@ -6,6 +6,11 @@
 "transcript.empty.title" = "まだ発話がありません";
 "transcript.empty.subtitle" = "「録音を開始」をタップして始めてください。";
 "transcript.newUtterance" = "新しい発話";
+"filter.search.placeholder" = "発話を検索";
+"filter.label.all" = "すべてのラベル";
+"filter.noMatches.title" = "一致なし";
+"filter.noMatches.subtitle" = "検索テキストまたはラベルフィルタを調整してください。";
+"filter.noMatches.clear" = "フィルタをクリア";
 "pipeline.header" = "パイプライン";
 "pipeline.capture" = "収録";
 "pipeline.asr" = "ASR (ライブ)";
@@ -26,6 +31,7 @@
 "file.open" = "ファイルを開く";
 "menu.openAudioFile" = "開く…";
 "menu.exportJSON" = "JSONを書き出す";
+"menu.findInUtterances" = "発話を検索…";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
 "pacing.message" = "リアルタイムはファイル再生時間と同じ長さで進み、ライブ録音と同等の結果になります。高速は8倍速で進みます。音声認識器のセグメント境界をリアルタイムに近い形で保ち、SER分類結果が一致します。";

@@ -36,6 +36,16 @@ struct XephonApp: App {
                 }
                 .keyboardShortcut("s", modifiers: .command)
             }
+            // ⌘F focuses the utterance search field. Lives in the Edit
+            // menu's pasteboard region (which is where Find traditionally
+            // sits on Apple platforms). Same UUID-token bridge as the
+            // File commands above.
+            CommandGroup(after: .pasteboard) {
+                Button(String(localized: "menu.findInUtterances")) {
+                    menuCommands.findToken = UUID()
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
         }
     }
 }
@@ -53,4 +63,7 @@ final class MenuCommands {
     /// Bumped by the File → Export to JSON menu item. ContentView
     /// watches this and runs the same exporter the toolbar button uses.
     var exportJSONToken: UUID = UUID()
+    /// Bumped by the Edit → Find menu item (⌘F). ContentView watches
+    /// this and moves keyboard focus into the utterance search field.
+    var findToken: UUID = UUID()
 }

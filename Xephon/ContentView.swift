@@ -124,6 +124,16 @@ struct ContentView: View {
     /// once the user has tapped into the list (or focus has otherwise
     /// landed on it). Bound nil = no selection.
     @State private var selectedUtteranceID: UUID?
+    /// Free-text filter applied to each utterance's `text`. Empty
+    /// string disables filtering.
+    @State private var searchText: String = ""
+    /// Label filter. Nil = "All labels"; non-nil only shows utterances
+    /// whose fused top label matches.
+    @State private var selectedLabelFilter: String?
+    /// Keyboard focus for the search field. Driven by ⌘F (sets it
+    /// true) and Esc (sets it false). `@FocusState` is the only
+    /// mechanism that programmatically moves focus into a TextField.
+    @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
         if !recorder.modelsReady {
@@ -200,6 +210,12 @@ struct ContentView: View {
                         shareURL = url
                     }
                 }
+            }
+            // Edit → Find (⌘F): move keyboard focus into the search
+            // field. Setting `@FocusState` to true is the only way to
+            // programmatically focus a SwiftUI TextField.
+            .onChange(of: menuCommands.findToken) { _, _ in
+                searchFieldFocused = true
             }
             .fileImporter(
                 isPresented: $showingFilePicker,
@@ -344,9 +360,137 @@ struct ContentView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            transcriptList
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                filterBar
+                if filteredIndexedUtterances.isEmpty {
+                    noMatchesView
+                } else {
+                    transcriptList
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Inline filter row: a free-text search field plus a label
+    /// dropdown. Both filters AND together so the user can scope by
+    /// "happy utterances containing 楽しい" etc. The bar always shows
+    /// when the full list is non-empty so the controls don't appear
+    /// then disappear as utterances arrive.
+    @ViewBuilder
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(
+                    String(localized: "filter.search.placeholder"),
+                    text: $searchText
+                )
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .submitLabel(.search)
+                .focused($searchFieldFocused)
+                // Esc inside the search field returns focus to the
+                // surrounding view so subsequent ⌘ shortcuts and
+                // arrow-key list navigation work without an extra tap.
+                // Returning `.handled` keeps the keystroke from
+                // bubbling to the List's own Esc handler (which would
+                // otherwise also clear the row selection).
+                .onKeyPress(.escape) {
+                    if searchFieldFocused {
+                        searchFieldFocused = false
+                        return .handled
+                    }
+                    return .ignored
+                }
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            // Label picker. Pulled into a Menu so the chevron looks
+            // native and tinted-by-label rows read at a glance. Tap
+            // expands to a list of labels with their per-label counts;
+            // "All labels" clears the filter.
+            Menu {
+                Button {
+                    selectedLabelFilter = nil
+                } label: {
+                    if selectedLabelFilter == nil {
+                        Label(String(localized: "filter.label.all"), systemImage: "checkmark")
+                    } else {
+                        Text(String(localized: "filter.label.all"))
+                    }
+                }
+                if !availableLabels.isEmpty {
+                    Divider()
+                }
+                ForEach(availableLabels, id: \.self) { label in
+                    Button {
+                        selectedLabelFilter = label
+                    } label: {
+                        let displayed = label.capitalized(with: Locale(identifier: "en_US"))
+                        let count = recorder.conversationSummary.labelCounts[label] ?? 0
+                        if selectedLabelFilter == label {
+                            Label("\(displayed) (\(count))", systemImage: "checkmark")
+                        } else {
+                            Text("\(displayed) (\(count))")
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text(filterLabelDisplay)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
+                .font(.callout)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .foregroundStyle(selectedLabelFilter.map(emotionTint(for:)) ?? Color.primary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var filterLabelDisplay: String {
+        if let label = selectedLabelFilter {
+            return label.capitalized(with: Locale(identifier: "en_US"))
+        }
+        return String(localized: "filter.label.all")
+    }
+
+    @ViewBuilder
+    private var noMatchesView: some View {
+        ContentUnavailableView {
+            Label(
+                String(localized: "filter.noMatches.title"),
+                systemImage: "line.3.horizontal.decrease.circle"
+            )
+        } description: {
+            Text(String(localized: "filter.noMatches.subtitle"))
+        } actions: {
+            Button(String(localized: "filter.noMatches.clear")) {
+                searchText = ""
+                selectedLabelFilter = nil
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -524,11 +668,43 @@ struct ContentView: View {
         Set(recorder.utterances.map { $0.speakerID }).count
     }
 
-    /// True iff the chronologically last utterance has been laid out and
-    /// is currently on-screen. Empty list counts as "visible" (no last
-    /// to track) so the capsule never appears in the empty state.
+    /// Distinct top labels seen so far this session, used to populate
+    /// the label-filter menu. Sorted alphabetically for stable order.
+    private var availableLabels: [String] {
+        Set(recorder.utterances.compactMap { $0.fusedTopLabel }).sorted()
+    }
+
+    /// `(originalIndex, utterance)` pairs surviving both filters. The
+    /// original index is preserved so each row's "#N" badge keeps the
+    /// utterance's stable session number even when the list is
+    /// filtered (a row labeled #15 always points at the 15th utterance
+    /// of the recording).
+    private var filteredIndexedUtterances: [(idx: Int, u: UtteranceEstimate)] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return recorder.utterances.enumerated().compactMap {
+            (idx, u) -> (idx: Int, u: UtteranceEstimate)? in
+            if let filterLabel = selectedLabelFilter,
+               u.fusedTopLabel != filterLabel {
+                return nil
+            }
+            if !trimmed.isEmpty,
+               !u.transcript.localizedCaseInsensitiveContains(trimmed) {
+                return nil
+            }
+            return (idx, u)
+        }
+    }
+
+    /// True iff the chronologically last utterance *in the filtered
+    /// view* has been laid out and is currently on-screen. Empty list
+    /// counts as "visible" (no last to track) so the capsule never
+    /// appears in the empty state. Tracking the filtered last (not the
+    /// full-list last) keeps the auto-scroll behavior correct under
+    /// active filters: a new utterance that doesn't match the filter
+    /// shouldn't scroll the list, and one that does shouldn't be
+    /// labeled "unread" if the user is already at the filtered bottom.
     private var isLastUtteranceVisible: Bool {
-        guard let lastID = recorder.utterances.last?.id else { return true }
+        guard let lastID = filteredIndexedUtterances.last?.u.id else { return true }
         return visibleUtteranceIDs.contains(lastID)
     }
 
@@ -536,22 +712,22 @@ struct ContentView: View {
     private var transcriptList: some View {
         ScrollViewReader { proxy in
             List(
-                Array(recorder.utterances.enumerated()),
-                id: \.element.id,
+                filteredIndexedUtterances,
+                id: \.u.id,
                 selection: $selectedUtteranceID
-            ) { idx, u in
+            ) { item in
                 UtteranceRow(
-                    number: idx + 1,
-                    utterance: u,
+                    number: item.idx + 1,
+                    utterance: item.u,
                     isMultiSpeaker: distinctSpeakerCount > 1
                 )
-                .id(u.id)
-                .onAppear { visibleUtteranceIDs.insert(u.id) }
-                .onDisappear { visibleUtteranceIDs.remove(u.id) }
+                .id(item.u.id)
+                .onAppear { visibleUtteranceIDs.insert(item.u.id) }
+                .onDisappear { visibleUtteranceIDs.remove(item.u.id) }
                 // Tag each row so List knows what UUID to write into the
                 // `selectedUtteranceID` binding when it changes selection
                 // (via tap, ↑/↓ arrow, or Home/End).
-                .tag(u.id)
+                .tag(item.u.id)
             }
             .listStyle(.plain)
             // Keep the selected row scrolled into view when the user
@@ -580,7 +756,11 @@ struct ContentView: View {
                 }
                 return .ignored
             }
-            .onChange(of: recorder.utterances.last?.id) { oldLastID, newLastID in
+            // Observe the FILTERED last so adding an utterance that
+            // doesn't match the active filter doesn't auto-scroll, and
+            // adding one that does match scrolls the (possibly shorter)
+            // filtered view to the right place.
+            .onChange(of: filteredIndexedUtterances.last?.u.id) { oldLastID, newLastID in
                 // Session reset cleared the array.
                 guard let newLastID else {
                     hasUnreadUtterance = false
@@ -623,9 +803,9 @@ struct ContentView: View {
             .overlay(alignment: .bottom) {
                 if hasUnreadUtterance {
                     NewUtteranceCapsule {
-                        guard let last = recorder.utterances.last else { return }
+                        guard let lastID = filteredIndexedUtterances.last?.u.id else { return }
                         withAnimation(.easeOut(duration: 0.25)) {
-                            proxy.scrollTo(last.id, anchor: .bottom)
+                            proxy.scrollTo(lastID, anchor: .bottom)
                         }
                         hasUnreadUtterance = false
                     }
@@ -785,12 +965,12 @@ private struct PipelineCard: View {
                 // shift the rows below as text streams in. `reservesSpace`
                 // pads the Text to its line limit regardless of content;
                 // `.head` truncation keeps the most recent words visible
-                // when the preview overflows the 5-line budget.
+                // when the preview overflows the 3-line budget.
                 Text(recorder.volatileText.isEmpty ? " " : "“\(recorder.volatileText)…”")
                     .font(.caption2.italic())
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 24)
-                    .lineLimit(5, reservesSpace: true)
+                    .lineLimit(3, reservesSpace: true)
                     .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
