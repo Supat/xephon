@@ -61,6 +61,12 @@ final class RecordingController {
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
     private var capturedSamples: [Float] = []
+    /// Audio-time (seconds) of `capturedSamples[0]`. Starts at 0 and advances
+    /// each time we trim already-processed audio from the head of the buffer.
+    /// Without this, sample-rate × audio-time indexing would land at the
+    /// wrong frame after a trim. Long sessions would otherwise grow
+    /// `capturedSamples` linearly forever (~64 KB / sec at 16 kHz mono Float32).
+    private var capturedSamplesOrigin: TimeInterval = 0
 
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
@@ -145,21 +151,38 @@ final class RecordingController {
     func start() async {
         do {
             let segmentStream = try await streamingTranscriber.start()
-            let streams = try await capture.start()
+            // If `capture.start()` throws here, the transcriber's analyzer +
+            // drainer are already alive and would leak (subsequent
+            // recordings would stack new ones on top). Tear it down
+            // explicitly before propagating, so failure paths leave the
+            // controller in a clean idle state.
+            let streams: CaptureStreams
+            do {
+                streams = try await capture.start()
+            } catch {
+                await streamingTranscriber.finish()
+                throw error
+            }
 
             phase = .recording
             errorMessage = nil
             samplesCaptured = 0
             utterances = []
             capturedSamples.removeAll(keepingCapacity: true)
+            capturedSamplesOrigin = 0
 
             // Pump 1 (raw): drain → SER buffer + level meter. The raw stream
             // preserves prosody for SER and prosody analyses.
+            //
+            // `samplesCaptured` is a monotonic session counter (drives the
+            // elapsed-time display); it must NOT track `capturedSamples.count`
+            // because the rolling buffer is trimmed each time a segment is
+            // sliced for SER, which would make the timer jump backward.
             rawTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 for await buffer in streams.raw {
                     self.capturedSamples.append(contentsOf: buffer.samples)
-                    self.samplesCaptured = self.capturedSamples.count
+                    self.samplesCaptured += buffer.samples.count
                     self.inputLevel = Self.smoothLevel(
                         previous: self.inputLevel,
                         current: Self.perceptualLevel(buffer.samples)
@@ -198,6 +221,12 @@ final class RecordingController {
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
                         let segmentBuffer = self.sliceForSegment(segment)
+                        // The SER task owns `segmentBuffer` (a copy);
+                        // it's safe to drop the head of `capturedSamples`
+                        // up to this segment's end now. Bounds session
+                        // memory: an 8-hour recording stays at a few MB
+                        // instead of growing to ~1.8 GB.
+                        self.trimProcessedAudio(below: segment.end)
                         self.beginSegmentInflight()
                         group.addTask { [weak self] in
                             do {
@@ -241,6 +270,15 @@ final class RecordingController {
 
     /// Stop capture, finalize the analyzer, drain remaining segments, then idle.
     func stop() async {
+        // Re-entrancy guard. Manual Stop and the file-end watcher can both
+        // race to call this — the watcher's `await self.stop()` is queued
+        // before we cancel its task on the manual path, so two `stop()`
+        // calls reach this point sequentially (MainActor serializes them).
+        // Without this guard, the second call re-runs
+        // `streamingTranscriber.finish()` on an already-finalized analyzer,
+        // which is undefined behavior.
+        guard phase == .recording else { return }
+
         // Don't await the auto-stop watcher (it's the caller in the
         // file-end path). Cancel it so manual Stop also tears it down.
         fileEndWatcherTask?.cancel()
@@ -357,12 +395,31 @@ final class RecordingController {
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {
-        let full = AudioChunk(
-            samples: capturedSamples,
-            sampleRate: PipelineAudio.sampleRate,
-            timestamp: 0
-        )
-        return AnalysisPipeline.slice(full, start: asr.start, end: asr.end)
+        let sampleRate = PipelineAudio.sampleRate
+        let localStart = max(0, asr.start - capturedSamplesOrigin)
+        let localEnd   = max(localStart, asr.end - capturedSamplesOrigin)
+        let startIndex = min(Int(localStart * sampleRate), capturedSamples.count)
+        let endIndex   = min(Int(localEnd   * sampleRate), capturedSamples.count)
+        guard startIndex < endIndex else {
+            return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: asr.start)
+        }
+        let slice = Array(capturedSamples[startIndex..<endIndex])
+        return AudioChunk(samples: slice, sampleRate: sampleRate, timestamp: asr.start)
+    }
+
+    /// Drop processed audio up to `boundary` (audio-time seconds) from the
+    /// head of `capturedSamples`. Called after each segment is sliced —
+    /// the SER task already owns its own copy of the slice, so trimming
+    /// here is safe. Bounds session-long memory growth: peak capture
+    /// memory is now roughly the longest single utterance plus the
+    /// not-yet-finalized rolling buffer, regardless of session length.
+    private func trimProcessedAudio(below boundary: TimeInterval) {
+        let dropSeconds = boundary - capturedSamplesOrigin
+        guard dropSeconds > 0 else { return }
+        let frames = min(Int(dropSeconds * PipelineAudio.sampleRate), capturedSamples.count)
+        guard frames > 0 else { return }
+        capturedSamples.removeFirst(frames)
+        capturedSamplesOrigin += Double(frames) / PipelineAudio.sampleRate
     }
 
     // MARK: - Level meter helpers

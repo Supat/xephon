@@ -43,6 +43,15 @@ targets:
         type: file
         buildPhase: resources
         optional: true
+      # emotion2vec_plus_large full classifier ONNX (~600 MB). Folder
+      # reference because the model exceeds the 2 GB protobuf limit and is
+      # split into model.onnx (graph) + model.data (external weights),
+      # which must ship in the same directory. Hydrate via
+      # scripts/fetch_models.sh (which calls scripts/export_emotion2vec_onnx.py).
+      - path: Models/emotion2vec-plus-large/emotion2vec_onnx
+        type: folder
+        buildPhase: resources
+        optional: true
       # WRIME-fine-tuned RoBERTa (~425 MB ONNX + tokenizer). Folder reference
       # so the subdirectory `wrime-roberta/` is preserved in the app bundle —
       # avoids `model.onnx` name collision with the W2V2 file above. Hydrate

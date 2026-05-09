@@ -141,5 +141,13 @@ else
 fi
 
 echo
+echo "[step] Exporting emotion2vec_plus_large to ONNX (acoustic categorical SER)…"
+if [ ! -f Models/emotion2vec-plus-large/emotion2vec_model.onnx ]; then
+    python scripts/export_emotion2vec_onnx.py
+else
+    echo "[skip] emotion2vec (already exported)"
+fi
+
+echo
 echo "Models/ tree:"
 ls -la Models/

@@ -183,7 +183,7 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
                 text: plainText,
                 start: start.isFinite ? start : 0,
                 end: end.isFinite ? end : 0,
-                confidence: nil // confidence attribute is per-run inside result.text; left for a future extractor
+                confidence: SpeechAttributes.averageConfidence(in: result.text)
             ))
         }
         return segments

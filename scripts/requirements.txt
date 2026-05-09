@@ -8,5 +8,10 @@ transformers>=4.45
 torch>=2.4
 onnx>=1.16
 
+# emotion2vec ONNX export (scripts/export_emotion2vec_onnx.py). FunASR
+# bundles its own torch+kaldi+librosa dependencies; the install is also
+# ~1 GB but reuses the torch + numpy already pinned above.
+funasr>=1.1
+
 # Optional, future Core ML conversion path:
 # coremltools>=8.0

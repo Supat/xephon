@@ -53,14 +53,19 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
     }
 
     public init(useCoreML: Bool = true) throws {
+        // Bundle layout produced by scripts/export_emotion2vec_onnx.py:
+        //   Xephon.app/emotion2vec_onnx/model.onnx (graph)
+        //   Xephon.app/emotion2vec_onnx/model.data (external weights)
+        // Both files must live in the same directory so ORT's external-data
+        // loader can resolve the relative reference.
         let url = Bundle.main.url(
             forResource: "model",
             withExtension: "onnx",
-            subdirectory: "emotion2vec-plus-large"
-        ) ?? Bundle.main.url(forResource: "emotion2vec_model", withExtension: "onnx")
+            subdirectory: "emotion2vec_onnx"
+        )
         guard let modelURL = url else {
             throw AcousticSERError.modelUnavailable(
-                reason: "emotion2vec model.onnx not in app bundle (export from Models/emotion2vec-plus-large/model.pt via FunASR — see source comment)"
+                reason: "emotion2vec_onnx/model.onnx not in app bundle (run scripts/fetch_models.sh, which calls scripts/export_emotion2vec_onnx.py)"
             )
         }
         try self.init(modelURL: modelURL, useCoreML: useCoreML)
@@ -111,27 +116,46 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
             elementType: .float,
             shape: [1 as NSNumber, NSNumber(value: n)]
         )
-        var lengths: [Int32] = [Int32(n)]
-        let lenData = lengths.withUnsafeMutableBufferPointer { ptr -> NSMutableData in
-            NSMutableData(bytes: ptr.baseAddress, length: MemoryLayout<Int32>.size)
-        }
-        let lengthValue = try ORTValue(
-            tensorData: lenData,
-            elementType: .int32,
-            shape: [1 as NSNumber]
-        )
+        // The exported graph takes only `speech` — utterance-level layer
+        // norm + encoder + mean-pool + linear head are all baked in.
         let outputs = try session.run(
-            withInputs: ["speech": inputValue, "speech_lengths": lengthValue],
+            withInputs: ["speech": inputValue],
             outputNames: ["logits"],
             runOptions: nil
         )
         guard let logits = outputs["logits"] else {
             throw AcousticSERError.onnxRuntimeFailure(reason: "no logits output")
         }
+        let info = try logits.tensorTypeAndShapeInfo()
         let outData = try logits.tensorData() as Data
-        return outData.withUnsafeBytes { ptr -> [Float] in
+        let raw = outData.withUnsafeBytes { ptr -> [Float] in
             Array(ptr.bindMemory(to: Float.self))
         }
+        // FunASR exports may emit [batch, time, classes] (per-frame logits
+        // pre-pooling) or already-pooled [batch, classes]. Mean-pool over
+        // the time axis when 3D so callers always see a single 9-vector.
+        return Self.poolToUtteranceLogits(raw: raw, shape: info.shape.map { $0.intValue })
+    }
+
+    private static func poolToUtteranceLogits(raw: [Float], shape: [Int]) -> [Float] {
+        guard shape.count >= 2 else { return raw }
+        // 2-D: already utterance-level. Drop leading batch dim.
+        if shape.count == 2 {
+            let classes = shape[1]
+            return Array(raw.prefix(classes))
+        }
+        // 3-D [batch, time, classes]: average over time within batch 0.
+        let time = shape[1]
+        let classes = shape[2]
+        guard time > 0, classes > 0, raw.count >= time * classes else { return raw }
+        var out = [Float](repeating: 0, count: classes)
+        for t in 0..<time {
+            let base = t * classes
+            for c in 0..<classes { out[c] += raw[base + c] }
+        }
+        let inv = 1.0 / Float(time)
+        for c in 0..<classes { out[c] *= inv }
+        return out
     }
 
     private static func softmax(_ x: [Float]) -> [Float] {
