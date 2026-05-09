@@ -102,6 +102,7 @@ func emotionTint(for raw: String) -> Color {
 }
 
 struct ContentView: View {
+    @Environment(MenuCommands.self) private var menuCommands
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
     @State private var showingDiscardConfirm: Bool = false
@@ -118,6 +119,11 @@ struct ContentView: View {
     /// the most recent off-screen. Cleared when the most recent comes
     /// back into view (either by user scroll or capsule tap).
     @State private var hasUnreadUtterance: Bool = false
+    /// Currently selected utterance for hardware-keyboard navigation.
+    /// SwiftUI's `List(selection:)` natively responds to ↑/↓ arrow keys
+    /// once the user has tapped into the list (or focus has otherwise
+    /// landed on it). Bound nil = no selection.
+    @State private var selectedUtteranceID: UUID?
 
     var body: some View {
         if !recorder.modelsReady {
@@ -166,6 +172,34 @@ struct ContentView: View {
             }
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
+            }
+            // File → Open… (⌘O) command pipe. The menu writes a fresh
+            // UUID into `menuCommands.openAudioFileToken`; we observe
+            // the change and raise the same `.fileImporter` the
+            // on-screen button does. We gate on busy state here rather
+            // than at the menu level because the menu can't easily
+            // observe `recorder` from app-level commands.
+            .onChange(of: menuCommands.openAudioFileToken) { _, _ in
+                guard !recorder.isRecording, !recorder.isAnalyzing else { return }
+                showingFilePicker = true
+            }
+            // File → Export to JSON (⌘S) command pipe. Same gating as the
+            // toolbar button so cmd-S during recording / analyzing /
+            // empty-utterances no-ops cleanly. Additionally guards
+            // `shareURL == nil` so repeated ⌘S while the share sheet is
+            // already up doesn't write a fresh file + reassign shareURL —
+            // `.sheet(item:)` interprets a new URL as "dismiss + represent",
+            // which under rapid presses appears as a stacking sheet.
+            .onChange(of: menuCommands.exportJSONToken) { _, _ in
+                guard !recorder.utterances.isEmpty,
+                      !recorder.isRecording,
+                      !recorder.isAnalyzing,
+                      shareURL == nil else { return }
+                Task {
+                    if let url = await recorder.exportJSON() {
+                        shareURL = url
+                    }
+                }
             }
             .fileImporter(
                 isPresented: $showingFilePicker,
@@ -289,6 +323,8 @@ struct ContentView: View {
                 summary: recorder.conversationSummary,
                 totalDuration: recorder.conversationSummary.totalDuration
             )
+
+            StatisticsCard(summary: recorder.conversationSummary)
 
             Spacer(minLength: 0)
         }
@@ -499,7 +535,11 @@ struct ContentView: View {
     @ViewBuilder
     private var transcriptList: some View {
         ScrollViewReader { proxy in
-            List(Array(recorder.utterances.enumerated()), id: \.element.id) { idx, u in
+            List(
+                Array(recorder.utterances.enumerated()),
+                id: \.element.id,
+                selection: $selectedUtteranceID
+            ) { idx, u in
                 UtteranceRow(
                     number: idx + 1,
                     utterance: u,
@@ -508,8 +548,38 @@ struct ContentView: View {
                 .id(u.id)
                 .onAppear { visibleUtteranceIDs.insert(u.id) }
                 .onDisappear { visibleUtteranceIDs.remove(u.id) }
+                // Tag each row so List knows what UUID to write into the
+                // `selectedUtteranceID` binding when it changes selection
+                // (via tap, ↑/↓ arrow, or Home/End).
+                .tag(u.id)
             }
             .listStyle(.plain)
+            // Keep the selected row scrolled into view when the user
+            // arrow-keys past the visible window. The system handles this
+            // for tap-driven selection automatically; for keyboard-driven
+            // selection on a plain list it's not always automatic.
+            .onChange(of: selectedUtteranceID) { _, newID in
+                guard let newID else { return }
+                // Scroll only if the row isn't already on screen, so we
+                // don't fight the system's default keep-visible behavior
+                // when the user is paging row-by-row near the edge.
+                if !visibleUtteranceIDs.contains(newID) {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(newID, anchor: .center)
+                    }
+                }
+            }
+            // Esc clears the selection. Returning `.ignored` when nothing
+            // is selected lets the system route Esc to its default
+            // handlers (e.g. dismissing a sheet or popover) instead of
+            // silently swallowing the key.
+            .onKeyPress(.escape) {
+                if selectedUtteranceID != nil {
+                    selectedUtteranceID = nil
+                    return .handled
+                }
+                return .ignored
+            }
             .onChange(of: recorder.utterances.last?.id) { oldLastID, newLastID in
                 // Session reset cleared the array.
                 guard let newLastID else {
@@ -540,7 +610,10 @@ struct ContentView: View {
                 }
             }
             .onChange(of: recorder.utterances.isEmpty) { _, isEmpty in
-                if isEmpty { hasUnreadUtterance = false }
+                if isEmpty {
+                    hasUnreadUtterance = false
+                    selectedUtteranceID = nil
+                }
             }
             .onChange(of: isLastUtteranceVisible) { _, visible in
                 // User scrolled (or list re-laid out) to bring the most
@@ -918,6 +991,93 @@ private struct SummaryCard: View {
         if centered >  eps { return .green }
         if centered < -eps { return .red }
         return .gray
+    }
+}
+
+/// Per-label utterance count histogram. Sits below `SummaryCard` and
+/// reads `ConversationSummary.labelCounts` (raw counts, not the
+/// confidence-weighted scores `topLabel` uses). Sorted by count
+/// descending so the dominant labels read top-down. Empty until the
+/// first labeled utterance arrives.
+private struct StatisticsCard: View {
+    let summary: ConversationSummary
+
+    private var sortedRows: [(label: String, count: Int)] {
+        summary.labelCounts
+            .map { (label: $0.key, count: $0.value) }
+            // Tiebreak on the label string so the order is deterministic
+            // for equal counts — otherwise dictionary iteration order
+            // makes the panel jitter as new utterances arrive.
+            .sorted { ($0.count, $1.label) > ($1.count, $0.label) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(String(localized: "statistics.header"))
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if summary.utteranceCount > 0 {
+                    Text("\(summary.utteranceCount)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if sortedRows.isEmpty {
+                Text(String(localized: "statistics.empty"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(sortedRows, id: \.label) { row in
+                        StatisticsRow(
+                            label: row.label,
+                            count: row.count,
+                            total: summary.utteranceCount
+                        )
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct StatisticsRow: View {
+    let label: String
+    let count: Int
+    let total: Int
+
+    var body: some View {
+        let tint = emotionTint(for: label)
+        let fraction: Double = total > 0 ? Double(count) / Double(total) : 0
+        HStack(spacing: 8) {
+            Text(label.capitalized(with: Locale(identifier: "en_US")))
+                .font(.caption.monospaced())
+                .foregroundStyle(tint)
+                .frame(minWidth: 80, alignment: .leading)
+            // Inline bar so the relative weight of each label is legible
+            // at a glance — the count alone reads as a flat list.
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(tint.opacity(0.12))
+                    Capsule()
+                        .fill(tint.opacity(0.55))
+                        .frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 6)
+            Text("\(count)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 28, alignment: .trailing)
+        }
     }
 }
 

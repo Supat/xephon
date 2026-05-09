@@ -24,6 +24,8 @@
 "warmup.inProgress" = "Loading models…";
 "export.json" = "Export JSON";
 "file.open" = "Open File";
+"menu.openAudioFile" = "Open…";
+"menu.exportJSON" = "Export to JSON";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";
 "pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace runs at 8× real time, preserving the on-device speech recognizer's segment boundaries closely enough that SER classifications stay consistent with real-time.";
@@ -34,3 +36,5 @@
 "summary.calibrating" = "Calibrating…";
 "summary.utterances" = "%d utterances · %@";
 "summary.dispersion" = "± %.2f";
+"statistics.header" = "Statistics";
+"statistics.empty" = "No labels yet.";

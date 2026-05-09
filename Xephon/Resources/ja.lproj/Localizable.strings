@@ -24,6 +24,8 @@
 "warmup.inProgress" = "モデルを読み込み中…";
 "export.json" = "JSON書き出し";
 "file.open" = "ファイルを開く";
+"menu.openAudioFile" = "開く…";
+"menu.exportJSON" = "JSONを書き出す";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
 "pacing.message" = "リアルタイムはファイル再生時間と同じ長さで進み、ライブ録音と同等の結果になります。高速は8倍速で進みます。音声認識器のセグメント境界をリアルタイムに近い形で保ち、SER分類結果が一致します。";
@@ -34,3 +36,5 @@
 "summary.calibrating" = "校正中…";
 "summary.utterances" = "%d 件の発話 · %@";
 "summary.dispersion" = "± %.2f";
+"statistics.header" = "統計";
+"statistics.empty" = "まだラベルがありません。";

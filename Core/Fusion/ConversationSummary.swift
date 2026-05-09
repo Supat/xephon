@@ -13,6 +13,12 @@ public struct ConversationSummary: Sendable, Hashable {
     public private(set) var totalDuration: TimeInterval = 0
     public private(set) var trajectory: [TrajectoryPoint] = []
     public private(set) var labelScores: [String: Float] = [:]
+    /// Raw count of utterances per fused top label. Distinct from
+    /// `labelScores` (which is confidence-weighted) — counts are useful
+    /// for the Statistics panel where the user wants "how many times
+    /// did the model produce this label" without ASR-confidence
+    /// dilution.
+    public private(set) var labelCounts: [String: Int] = [:]
 
     // Per-modality weighted accumulators. V/A/D can independently be nil
     // when their producing modality fails, so each carries its own
@@ -95,6 +101,7 @@ public struct ConversationSummary: Sendable, Hashable {
         if let label = u.fusedTopLabel, !label.isEmpty {
             let weight = u.asrConfidence ?? 0.5
             labelScores[label, default: 0] += weight
+            labelCounts[label, default: 0] += 1
         }
     }
 
