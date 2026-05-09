@@ -819,9 +819,32 @@ final class RecordingController {
     /// argument on its own queue; we hand it a snapshot rather than a
     /// reference to `capturedSamples` so MainActor mutations during
     /// inference don't tear it.
+    ///
+    /// CRITICAL: this forces a deep copy of the samples buffer rather
+    /// than letting Swift Array's CoW share storage. The naive
+    /// `samples: capturedSamples` form bumps the refcount and aliases
+    /// the live buffer — the next `append` on the rawTask path then
+    /// triggers CoW, reallocating `capturedSamples` with a fresh
+    /// buffer whose capacity isn't bounded by the prior reservation.
+    /// Across many snapshots, this lets capacity ratchet past
+    /// `maxBufferedSamples`, defeating the trim-before-append cap and
+    /// eventually attempting a multi-MB doubling that fails under
+    /// memory pressure (observed: SIGABRT on `append(contentsOf:)` at
+    /// 16–18 MB allocation requests). The deep copy keeps
+    /// `capturedSamples` exclusively owned by rawTask, so its capacity
+    /// stays at the original `reserveCapacity` allocation forever.
     private func snapshotForDiarization() -> AudioChunk {
-        AudioChunk(
-            samples: capturedSamples,
+        let isolated = capturedSamples.withUnsafeBufferPointer { src -> [Float] in
+            guard let base = src.baseAddress else { return [] }
+            return [Float](unsafeUninitializedCapacity: src.count) { dst, initializedCount in
+                if let dstBase = dst.baseAddress {
+                    dstBase.update(from: base, count: src.count)
+                }
+                initializedCount = src.count
+            }
+        }
+        return AudioChunk(
+            samples: isolated,
             sampleRate: PipelineAudio.sampleRate,
             timestamp: capturedSamplesOrigin
         )
