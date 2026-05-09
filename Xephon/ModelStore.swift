@@ -25,6 +25,15 @@ actor ModelStore {
     /// Cached resolutions from a successful `ensureModels()` call. Looked
     /// up by `installPath` (e.g. "wrime-roberta/model.onnx").
     private var resolved: [String: URL] = [:]
+    /// Persisted hash cache. Keyed by `<manifest version>::<URL.path>`
+    /// in UserDefaults so each cold launch can skip rehashing the same
+    /// 800 MB of weights when nothing has changed. Bumping
+    /// `ModelManifest.releaseTag` invalidates the keyspace automatically.
+    private let userDefaults: UserDefaults
+    /// In-flight hydration. Tracked so `resetForRedownload()` can
+    /// cancel + await it before wiping the install dir, instead of
+    /// pulling files out from under an active download.
+    private var hydrationTask: Task<Void, any Error>?
 
     let state: ModelDownloadState
 
@@ -32,10 +41,12 @@ actor ModelStore {
         state: ModelDownloadState,
         manifest: [ModelEntry] = ModelManifest.entries,
         installRoot: URL? = nil,
-        urlSession: URLSession? = nil
-    ) {
+        urlSession: URLSession? = nil,
+        userDefaults: UserDefaults = .standard
+    ) throws {
         self.manifest = manifest
-        self.installRoot = installRoot ?? Self.defaultInstallRoot()
+        self.userDefaults = userDefaults
+        self.installRoot = try installRoot ?? Self.defaultInstallRoot()
         // Default URLSession with a generous resource timeout — model
         // downloads are 100s of MB and the default 7 days for resource
         // is fine, but we want to detect total stalls within a few
@@ -54,16 +65,22 @@ actor ModelStore {
 
     /// `Application Support/Models/<tag>/`. Excluded from iCloud backup
     /// because re-downloading is cheaper than syncing 800 MB.
-    private static func defaultInstallRoot() -> URL {
+    ///
+    /// Throws if Application Support can't be reached — the previous
+    /// fallback to `temporaryDirectory` was a footgun: tmp is purgeable,
+    /// so a transient sandbox issue at first launch would silently install
+    /// 800 MB into a directory iOS could nuke at any time. Better to
+    /// surface the failure and let the user retry / restart.
+    private static func defaultInstallRoot() throws -> URL {
         let fm = FileManager.default
-        let base = (try? fm.url(
+        let base = try fm.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
-        )) ?? fm.temporaryDirectory
+        )
         let url = base.appendingPathComponent(ModelManifest.installSubdirectory, isDirectory: true)
-        try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+        try fm.createDirectory(at: url, withIntermediateDirectories: true)
         // Best-effort exclude-from-backup; ignore failures (sandbox
         // edge cases, simulator quirks).
         var resourced = url
@@ -77,8 +94,22 @@ actor ModelStore {
 
     /// Idempotent: ensures every manifest file is locally available.
     /// Safe to call repeatedly — second call is a no-op once resolved.
+    /// If a previous call is in flight, awaits it instead of starting a
+    /// concurrent pass (the file system + state mutations aren't safe
+    /// to interleave).
     /// Surfaces progress on `state` (MainActor) throughout.
     func ensureModels() async throws {
+        if let existing = hydrationTask {
+            try await existing.value
+            return
+        }
+        let task = Task { try await self.runEnsureModels() }
+        hydrationTask = task
+        defer { hydrationTask = nil }
+        try await task.value
+    }
+
+    private func runEnsureModels() async throws {
         await state.begin(totalEntries: manifest.count)
         defer {
             // Always finalize the UI state, even on throw — caller decides
@@ -100,7 +131,16 @@ actor ModelStore {
 
     /// Force a fresh download next call by clearing the install dir +
     /// memo. Used by the "Re-download" affordance in setup view.
-    func resetForRedownload() throws {
+    /// Cancels any in-flight `ensureModels()` first so we don't pull
+    /// files out from under an active download (which would yield
+    /// half-installed state and a confusing failure mode).
+    func resetForRedownload() async throws {
+        if let inflight = hydrationTask {
+            inflight.cancel()
+            // Drain rather than throw — we expect a CancellationError
+            // here and that's not an error from the caller's view.
+            _ = try? await inflight.value
+        }
         let fm = FileManager.default
         if fm.fileExists(atPath: installRoot.path) {
             try fm.removeItem(at: installRoot)
@@ -133,28 +173,92 @@ actor ModelStore {
             withIntermediateDirectories: true
         )
 
-        // Path 1: already installed and valid.
+        // Path 1: already installed and valid (memoized hash).
         if FileManager.default.fileExists(atPath: installURL.path) {
-            if try await Self.sha256(of: installURL) == file.sha256 {
+            if try await verifiedHash(at: installURL, expected: file.sha256) {
                 AppLog.app.info("ModelStore: \(file.installPath, privacy: .public) installed (hash OK)")
                 await state.fileSatisfied(name: file.assetName, source: "installed")
                 return installURL
             }
             AppLog.app.warning("ModelStore: \(file.installPath, privacy: .public) hash mismatch; will re-download")
             try? FileManager.default.removeItem(at: installURL)
+            invalidateCachedHash(at: installURL)
         }
 
-        // Path 2: present in app bundle (dev build).
+        // Path 2: present in app bundle. Verify hash too — a stale bundle
+        // (e.g. Models/ on disk diverged from the manifest between an
+        // FP16 conversion and a manifest SHA bump) used to silently load
+        // a wrong model and only show up as a runtime SER failure with
+        // no clear root cause.
         if let bundleURL = file.bundleResource.locate() {
-            AppLog.app.info("ModelStore: \(file.installPath, privacy: .public) ← bundle (dev shortcut)")
-            await state.fileSatisfied(name: file.assetName, source: "bundle")
-            return bundleURL
+            if try await verifiedHash(at: bundleURL, expected: file.sha256) {
+                AppLog.app.info("ModelStore: \(file.installPath, privacy: .public) ← bundle (hash OK)")
+                await state.fileSatisfied(name: file.assetName, source: "bundle")
+                return bundleURL
+            }
+            AppLog.app.warning("ModelStore: \(file.installPath, privacy: .public) bundle hash mismatch; falling through to download")
+            invalidateCachedHash(at: bundleURL)
         }
 
         // Path 3: download from GitHub Release.
         let remoteURL = ModelManifest.releaseAssetBaseURL.appendingPathComponent(file.assetName)
         try await download(file: file, from: remoteURL, to: installURL)
         return installURL
+    }
+
+    // MARK: - Cached hashing
+    //
+    // SHA-256 of an 800 MB tree takes ~5 seconds on first cold launch
+    // even with the file system cache warm. Memoize per-path-per-version
+    // in UserDefaults so subsequent launches skip the work entirely while
+    // still catching corruption (file size changes invalidate the cache).
+    // Keyed by the manifest version so a `releaseTag` bump auto-flushes.
+
+    private static let hashCacheKey = "ModelStore.hashCache.v1"
+
+    private func cachedHashKey(for url: URL) -> String {
+        "\(ModelManifest.releaseTag)::\(url.path)"
+    }
+
+    private func cachedHashEntry(at url: URL) -> (size: Int64, hash: String)? {
+        guard let dict = userDefaults.dictionary(forKey: Self.hashCacheKey),
+              let entry = dict[cachedHashKey(for: url)] as? [String: Any],
+              let size = entry["size"] as? NSNumber,
+              let hash = entry["hash"] as? String
+        else { return nil }
+        return (size.int64Value, hash)
+    }
+
+    private func storeHash(_ hash: String, size: Int64, at url: URL) {
+        var dict = userDefaults.dictionary(forKey: Self.hashCacheKey) ?? [:]
+        dict[cachedHashKey(for: url)] = ["size": size, "hash": hash]
+        userDefaults.set(dict, forKey: Self.hashCacheKey)
+    }
+
+    private func invalidateCachedHash(at url: URL) {
+        var dict = userDefaults.dictionary(forKey: Self.hashCacheKey) ?? [:]
+        dict.removeValue(forKey: cachedHashKey(for: url))
+        userDefaults.set(dict, forKey: Self.hashCacheKey)
+    }
+
+    /// Returns true if the file at `url` hashes to `expected`. Uses the
+    /// per-version cache to skip rehashing when both the cached size and
+    /// hash match. Side-effect: stores a fresh entry on cache miss.
+    private func verifiedHash(at url: URL, expected: String) async throws -> Bool {
+        let currentSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? -1
+        if let cached = cachedHashEntry(at: url),
+           cached.size == currentSize,
+           cached.hash.caseInsensitiveCompare(expected) == .orderedSame {
+            return true
+        }
+        let actual = try await Self.sha256(of: url)
+        let matches = actual.caseInsensitiveCompare(expected) == .orderedSame
+        if matches {
+            storeHash(actual, size: currentSize, at: url)
+        } else {
+            invalidateCachedHash(at: url)
+        }
+        return matches
     }
 
     // MARK: - Download
@@ -191,6 +295,9 @@ actor ModelStore {
         try FileManager.default.moveItem(at: tempURL, to: install)
 
         let bytes = (try? install.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        // Seed the hash cache with the freshly verified value so the next
+        // launch skips the rehash for this file.
+        storeHash(actual, size: bytes, at: install)
         await state.completeFile(name: file.assetName, bytes: bytes)
         AppLog.app.info("ModelStore: installed \(file.installPath, privacy: .public) (\(bytes / 1024 / 1024) MB)")
     }

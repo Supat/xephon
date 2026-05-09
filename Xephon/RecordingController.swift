@@ -46,11 +46,27 @@ final class RecordingController {
     var elapsedSeconds: Double {
         Double(samplesCaptured) / PipelineAudio.sampleRate
     }
+    /// Live size of the rolling capture buffer (the chunk SER + diarization
+    /// slice from). Differs from `samplesCaptured`, which is monotonic for
+    /// the whole session — this one shrinks every time `trimProcessedAudio`
+    /// drops audio older than the diarization context window. Surfaced in
+    /// the pipeline visualization so the developer can see the buffer's
+    /// peak/steady-state footprint.
+    var bufferedSamples: Int { capturedSamples.count }
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
     let modelDownload: ModelDownloadState
-    private let modelStore: ModelStore
+    /// Optional because `ModelStore.init` can throw if Application Support
+    /// is inaccessible (sandbox edge cases). Nil here surfaces immediately
+    /// as a hydration failure instead of crashing in the controller's init.
+    private let modelStore: ModelStore?
+    /// Per-modality construction failures captured during pipeline
+    /// pre-warm. Surfaced in the main UI as a small banner so the user
+    /// knows when, e.g., the DeBERTa text SER silently dropped out
+    /// because its FP16 model failed ORT load. Empty when everything
+    /// loaded cleanly.
+    private(set) var pipelineDiagnostics: [String] = []
 
     private var capture: any AudioCapture
     private let micCapture: any AudioCapture
@@ -62,7 +78,7 @@ final class RecordingController {
         case file(URL)
     }
     private var pipeline: AnalysisPipeline?
-    private var pipelineTask: Task<AnalysisPipeline, Never>?
+    private var pipelineTask: Task<AutoConfiguredPipeline, Never>?
     private let exporter = JSONExporter()
     private var rawTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
@@ -79,6 +95,20 @@ final class RecordingController {
     /// concurrency. Helpers re-resolve the activity by id inside
     /// nonisolated methods before each update.
     private var liveActivityId: String?
+    /// Coalesces Live Activity updates: at most one in flight; subsequent
+    /// requests during a flight set `liveActivityNeedsCoalescedUpdate`
+    /// and the in-flight task re-runs once it completes. Without this,
+    /// a fire-and-forget `Task { … pushLiveActivityUpdate() }` per
+    /// segment floods the MainActor with `Activity.update` awaits that
+    /// the system rate-limits, queueing tasks faster than they drain.
+    private var liveActivityUpdateTask: Task<Void, Never>?
+    private var liveActivityNeedsCoalescedUpdate: Bool = false
+    /// Wall-clock time the current session began, captured at `start()`.
+    /// Used by the Lock Screen / Dynamic Island clock so it ticks at
+    /// real time even when fast-pace file analysis is racing through
+    /// audio at multi-x speed (where `samplesCaptured / sampleRate`
+    /// would jump in fast-forward).
+    private var sessionStartedAt: Date?
     private var capturedSamples: [Float] = []
     /// Audio-time (seconds) of `capturedSamples[0]`. Starts at 0 and advances
     /// each time we trim already-processed audio from the head of the buffer.
@@ -101,9 +131,20 @@ final class RecordingController {
         // so it's built here (synchronously) and shared with the
         // non-isolated ModelStore actor by reference.
         let downloadState = ModelDownloadState()
-        let resolvedStore = modelStore ?? ModelStore(state: downloadState)
-        self.modelStore = resolvedStore
         self.modelDownload = downloadState
+        let resolvedStore: ModelStore?
+        if let modelStore {
+            resolvedStore = modelStore
+        } else {
+            do {
+                resolvedStore = try ModelStore(state: downloadState)
+            } catch {
+                AppLog.app.error("ModelStore init failed: \(String(describing: error), privacy: .public)")
+                downloadState.markFailed("Couldn't open the app's Application Support directory. Restart the app and try again. (\(error.localizedDescription))")
+                resolvedStore = nil
+            }
+        }
+        self.modelStore = resolvedStore
         // If a pipeline was injected (tests), assume models are ready.
         // Otherwise the SetupView gates the main UI until the
         // background hydration completes.
@@ -116,7 +157,7 @@ final class RecordingController {
         // First-launch hydration of the models (download from GitHub Release
         // when the bundle doesn't ship them) happens inside the Task too —
         // SER constructors all depend on URLs the ModelStore resolves.
-        if pipeline == nil {
+        if pipeline == nil && resolvedStore != nil {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.hydrateAndWarm()
@@ -141,22 +182,33 @@ final class RecordingController {
     private func ensurePipeline() async -> AnalysisPipeline {
         if let pipeline { return pipeline }
         if let task = pipelineTask {
-            let configured = await task.value
-            self.pipeline = configured
+            let result = await task.value
+            self.pipeline = result.pipeline
+            self.pipelineDiagnostics = result.diagnostics
             self.pipelineTask = nil
-            await refreshTextSERState(from: configured)
+            await refreshTextSERState(from: result.pipeline)
+            return result.pipeline
+        }
+        guard let modelStore else {
+            // Should be unreachable: modelsReady gates the main UI on
+            // modelStore init success. Construct an empty pipeline so the
+            // app degrades gracefully rather than hanging on an await.
+            let configured = AnalysisPipeline()
+            self.pipeline = configured
             return configured
         }
-        let configured = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
-        self.pipeline = configured
-        await refreshTextSERState(from: configured)
-        return configured
+        let result = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
+        self.pipelineDiagnostics = result.diagnostics
+        self.pipeline = result.pipeline
+        await refreshTextSERState(from: result.pipeline)
+        return result.pipeline
     }
 
     /// Run model hydration → pipeline warm → text-SER state refresh.
     /// Splits cleanly so the SetupView can call `retryModelDownload()`
     /// after a failure without re-spawning the wrapping init Task.
     private func hydrateAndWarm() async {
+        guard let modelStore else { return }
         do {
             try await modelStore.ensureModels()
             self.modelsReady = true
@@ -168,22 +220,24 @@ final class RecordingController {
             return
         }
 
-        let warmTask = Task.detached(priority: .userInitiated) { [modelStore] in
-            let configured = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
+        let warmTask = Task.detached(priority: .userInitiated) {
+            let result = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
             AppLog.app.info("Pipeline pre-warm complete")
-            return configured
+            return result
         }
         self.pipelineTask = warmTask
-        let configured = await warmTask.value
+        let result = await warmTask.value
         guard self.pipeline == nil else { return }
-        self.pipeline = configured
+        self.pipeline = result.pipeline
+        self.pipelineDiagnostics = result.diagnostics
         self.pipelineTask = nil
-        await self.refreshTextSERState(from: configured)
+        await self.refreshTextSERState(from: result.pipeline)
     }
 
     /// Called from SetupView when the user taps Retry after a download
     /// failure. Resets the install dir and re-runs hydration.
     func retryModelDownload() async {
+        guard let modelStore else { return }
         do {
             try await modelStore.resetForRedownload()
         } catch {
@@ -234,13 +288,15 @@ final class RecordingController {
             utterances = []
             conversationSummary.reset()
             capturedSamples.removeAll(keepingCapacity: true)
+            // Pre-reserve the max we ever want to hold so Array's
+            // exponential capacity growth never triggers a multi-GB
+            // allocation when the buffer approaches the cap.
+            capturedSamples.reserveCapacity(Self.maxBufferedSamples)
             capturedSamplesOrigin = 0
-            // Pipeline is pre-warmed and reused across sessions; clear
-            // cumulative speaker history so the next recording starts
-            // numbering from S01 again.
-            if let pipeline = self.pipeline {
-                Task { await pipeline.resetSpeakerTracking() }
-            }
+            sessionStartedAt = Date()
+            // Speaker history reset is sequenced inside `analysisTask`
+            // below — it must complete BEFORE the first ingest, and a
+            // fire-and-forget Task here can't make that guarantee.
             // Surface the session on the Lock Screen / Dynamic Island.
             // Has to happen AFTER `sourceMode` is set (handled by
             // `startFromFile` for file-mode) so the activity captures
@@ -259,6 +315,17 @@ final class RecordingController {
                 for await buffer in streams.raw {
                     self.capturedSamples.append(contentsOf: buffer.samples)
                     self.samplesCaptured += buffer.samples.count
+                    // Enforce the hard cap from here so a stalled ASR
+                    // (no segment finalizing → no segment-driven trim)
+                    // can't let the buffer grow past `maxBufferedSamples`.
+                    // Drops the oldest excess and advances the origin so
+                    // `sliceForSegment` continues to compute correct
+                    // indices for any segments that do still finalize.
+                    if self.capturedSamples.count > Self.maxBufferedSamples {
+                        let excess = self.capturedSamples.count - Self.maxBufferedSamples
+                        self.capturedSamples.removeFirst(excess)
+                        self.capturedSamplesOrigin += Double(excess) / PipelineAudio.sampleRate
+                    }
                     self.inputLevel = Self.smoothLevel(
                         previous: self.inputLevel,
                         current: Self.perceptualLevel(buffer.samples)
@@ -301,20 +368,39 @@ final class RecordingController {
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 let pipeline = await self.ensurePipeline()
+                // Clear cumulative speaker history before the first
+                // segment lands. Awaiting the actor reset ensures the
+                // tracker is empty by the time `processSegment` calls
+                // `speakerTracker.ingest` — a previous fire-and-forget
+                // Task could be scheduled after the first segment's
+                // ingest, leaking last session's speaker numbering.
+                await pipeline.resetSpeakerTracking()
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
                         while self.inflightSegments >= Self.maxConcurrentSegments {
                             try? await Task.sleep(nanoseconds: 5_000_000)
                         }
                         let segmentBuffer = self.sliceForSegment(segment)
-                        // Snapshot the diarization window BEFORE the trim —
-                        // we want the previous ~60 s of audio plus this
-                        // segment so the diarizer can identify the speaker
-                        // by overlap with prior speech. Both buffers are
-                        // owned by the SER task once handed off; the trim
-                        // drops everything older than (segment.end - 60s).
-                        let diarContext = self.snapshotForDiarization()
+                        // Order matters here: slice → trim → snapshot.
+                        //
+                        // Slicing first reads the segment's range out of
+                        // the full pre-trim buffer, so the SER task gets
+                        // the right audio.
+                        //
+                        // Trimming next drops everything older than the
+                        // diarization context window (~60 s before
+                        // segment.end), which is exactly the audio the
+                        // diarizer doesn't need anyway.
+                        //
+                        // Snapshotting AFTER the trim is the memory win —
+                        // an earlier version snapshotted first and copied
+                        // the entire pre-trim buffer (potentially 100s of
+                        // MB if rawTask was ahead of analysisTask), making
+                        // peak memory `inflightCap × pre-trim buffer size`.
+                        // Now the snapshot is at most ~60 s × 16 kHz × 4 B
+                        // = ~3.8 MB regardless of how far ASR is behind.
                         self.trimProcessedAudio(below: segment.end)
+                        let diarContext = self.snapshotForDiarization()
                         self.beginSegmentInflight()
                         group.addTask { [weak self] in
                             do {
@@ -487,8 +573,30 @@ final class RecordingController {
         lastAcousticDuration = metrics.acousticDuration
         lastTextDuration = metrics.textDuration
         lastSegmentTotal = metrics.totalDuration
-        // Push the new state to the Lock Screen / Dynamic Island.
-        Task { await self.pushLiveActivityUpdate() }
+        // Coalesce Live Activity updates instead of spawning one task per
+        // segment — fast-pace fires segments faster than the system can
+        // process Activity updates, and the queued tasks themselves
+        // contribute to MainActor congestion.
+        scheduleLiveActivityUpdate()
+    }
+
+    /// Coalesce-then-update. If an update is already in flight, mark the
+    /// "needs another" flag so the in-flight task re-runs once it
+    /// completes, picking up the latest state. Multiple calls during one
+    /// flight all collapse into a single follow-up.
+    private func scheduleLiveActivityUpdate() {
+        if liveActivityUpdateTask != nil {
+            liveActivityNeedsCoalescedUpdate = true
+            return
+        }
+        liveActivityUpdateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                self.liveActivityNeedsCoalescedUpdate = false
+                await self.pushLiveActivityUpdate()
+            } while self.liveActivityNeedsCoalescedUpdate
+            self.liveActivityUpdateTask = nil
+        }
     }
 
     // MARK: - Live Activity lifecycle
@@ -532,8 +640,13 @@ final class RecordingController {
 
     private func pushLiveActivityUpdate() async {
         guard let id = liveActivityId else { return }
+        // Lock Screen clock = wall-clock since session start, NOT
+        // `samplesCaptured / sampleRate`. The latter accelerates wildly
+        // during fast-pace file analysis since the file pump yields
+        // hours of audio in minutes.
+        let liveElapsed = sessionStartedAt.map { Date().timeIntervalSince($0) } ?? elapsedSeconds
         let state = XephonActivityAttributes.ContentState(
-            elapsedSeconds: elapsedSeconds,
+            elapsedSeconds: liveElapsed,
             utteranceCount: utterances.count,
             topLabel: conversationSummary.topLabel,
             // Recenter to [-1, +1] for parity with the in-app summary.
@@ -550,8 +663,10 @@ final class RecordingController {
     private func endLiveActivity() async {
         guard let id = liveActivityId else { return }
         liveActivityId = nil
+        let liveElapsed = sessionStartedAt.map { Date().timeIntervalSince($0) } ?? elapsedSeconds
+        sessionStartedAt = nil
         let final = XephonActivityAttributes.ContentState(
-            elapsedSeconds: elapsedSeconds,
+            elapsedSeconds: liveElapsed,
             utteranceCount: utterances.count,
             topLabel: conversationSummary.topLabel,
             valence: conversationSummary.meanValence.map { $0 * 2 - 1 },
@@ -614,11 +729,33 @@ final class RecordingController {
     /// `diarizationContextSeconds * 16 kHz * 4 B` (~3.8 MB at 60 s) plus
     /// the not-yet-finalized rolling buffer, regardless of session length.
     private static let diarizationContextSeconds: TimeInterval = 60
+    /// Hard cap on the rolling capture buffer, enforced from inside the
+    /// raw-stream pump so `capturedSamples` can't grow unbounded when
+    /// ASR stalls. Without this, fast-pace file analysis with a long
+    /// volatile region (Japanese conversational speech with no clean
+    /// silence breaks) allows the file pump to keep appending to a
+    /// buffer that the analysisTask never gets a chance to trim — Swift
+    /// Array's 2× exponential capacity growth then attempts a
+    /// multi-100-MB allocation and the app aborts with `Fatal error:
+    /// failed to allocate <N> bytes`. 120 s leaves 60 s of headroom past
+    /// `diarizationContextSeconds` so segment-driven trim still keeps a
+    /// full diarization context window in normal operation.
+    private static let maxBufferedSeconds: TimeInterval = 120
+    private static var maxBufferedSamples: Int {
+        Int(maxBufferedSeconds * PipelineAudio.sampleRate)
+    }
     /// Cap on concurrent SER+fusion tasks. Fast-pace file analysis can
     /// otherwise stack dozens of in-flight segments before any finalize,
     /// each retaining its audio slice + ONNX I/O tensors — sufficient to
-    /// OOM on long files. 4 keeps GPU/ANE busy without runaway memory.
-    private static let maxConcurrentSegments: Int = 4
+    /// OOM on long files. 2 is empirically the highest value that doesn't
+    /// trigger `IOSurface creation failed: kIOReturnNoMemory` cascades
+    /// from CoreML EP under sustained fast-pace pressure on 16 GB iPad
+    /// Pro: each acoustic SER inference allocates IOSurface-backed
+    /// tensors per running call, and 2 segments × 2 acoustic models
+    /// (× 3 input bins worth of compiled MLModels each) saturates the
+    /// system IOSurface pool. ASR typically emits 1-2 segments/sec so
+    /// 2-wide concurrency is rarely the throughput bottleneck anyway.
+    private static let maxConcurrentSegments: Int = 2
     private func trimProcessedAudio(below boundary: TimeInterval) {
         let cutoff = boundary - Self.diarizationContextSeconds
         let dropSeconds = cutoff - capturedSamplesOrigin

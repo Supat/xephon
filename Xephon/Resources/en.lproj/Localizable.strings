@@ -5,6 +5,7 @@
 "settings.textSER.foundationModels" = "Apple FM";
 "transcript.empty.title" = "No utterances yet";
 "transcript.empty.subtitle" = "Tap Start recording to begin.";
+"transcript.newUtterance" = "New utterance";
 "pipeline.header" = "Pipeline";
 "pipeline.capture" = "Capture";
 "pipeline.asr" = "ASR (live)";
@@ -25,10 +26,10 @@
 "file.open" = "Open File";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";
-"pacing.message" = "Real-time pace matches the file's duration and gives results most consistent with live recording. Fast pace runs as quickly as the analyzer can keep up — typically several times faster — but the shorter volatile-stabilization window may produce slightly less accurate transcripts and emotion estimates.";
+"pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace runs at 4× real time — the highest speed at which the on-device speech recognizer's segment boundaries stay aligned with real-time, so SER classifications stay consistent.";
 "pacing.realtime" = "Real-time pace";
 "pacing.realtime.audio" = "Real-time pace (with audio)";
-"pacing.fast" = "Fast pace";
+"pacing.fast" = "Fast pace (4×)";
 "summary.header" = "Mood";
 "summary.calibrating" = "Calibrating…";
 "summary.utterances" = "%d utterances · %@";

@@ -117,6 +117,13 @@ targets:
         # principal class is resolved from the Swift `@main` entry.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        # Both fields must match the parent app or the embedded
+        # validation step warns: "CFBundleShortVersionString of an app
+        # extension ('1.0') must match that of its containing parent
+        # app ('0.1.0')." Reference the same build settings the main
+        # target uses so they bump in lockstep.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
     settings:
       base:
         PRODUCT_NAME: XephonWidget

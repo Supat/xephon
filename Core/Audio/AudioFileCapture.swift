@@ -11,12 +11,16 @@ import XephonLogging
 ///   - `realTimePacing: true`  — sleeps the chunk's source duration after
 ///     each yield, so volatile previews and stage animations look the same
 ///     as a live recording. A 5-min file analyzes in 5 min.
-///   - `realTimePacing: false` (default) — yields back-to-back so the
-///     analyzer ingests audio as fast as it can decode. SpeechAnalyzer's
-///     volatile/final logic doesn't depend on wall-clock time, so finals
-///     still stabilize correctly; the whole file finishes in roughly the
-///     time it takes the analyzer + SER to process it (typically several
-///     times faster than real time on M-series silicon).
+///   - `realTimePacing: false` (default) — fixed 4× real-time. Sleeps
+///     `chunkDuration / 4` after each yield, so a 5-min file finishes in
+///     ~75 s. Empirically the highest multiplier at which SpeechAnalyzer's
+///     volatile-stabilization window still fires consistently — going
+///     faster shifts the segment finalization timestamps relative to
+///     real-time mode, which (because `capForSER` quantizes audio length
+///     into 2/4/8 s bins) flips the dominant emotion label for the same
+///     utterance. 4× preserves segment boundaries → preserves SER input
+///     bytes → preserves labels. Earlier "as fast as the analyzer can
+///     keep up" was unbounded and produced both label drift AND OOMs.
 ///
 /// Streams use unbounded buffering in fast mode so the pump never has to
 /// drop chunks while downstream catches up — bounded by file size, since
@@ -26,6 +30,15 @@ import XephonLogging
 /// boost EQ doesn't apply to pre-recorded material. Input selection is
 /// disabled while a file is the active source.
 public actor AudioFileCapture: AudioCapture {
+    /// Multiplier used by fast-pace mode. 4× is empirically the fastest
+    /// pacing at which SpeechAnalyzer's segment finalization stays
+    /// aligned with real-time mode — the threshold above which segment
+    /// boundary timestamps drift, sometimes flipping a `capForSER` bin
+    /// and producing different SER labels for the same audio. Bumping
+    /// this requires re-validating SER label stability against a
+    /// reference set.
+    private static let fastPaceMultiplier: Int = 4
+
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
     private let realTimePacing: Bool
@@ -82,13 +95,23 @@ public actor AudioFileCapture: AudioCapture {
         }
         converter.primeMethod = .none
 
-        // Fast mode pumps faster than the consumer can drain, so unbounded
-        // buffering avoids dropping chunks. Memory is bounded by file size
-        // (16-bit-equivalent at 16 kHz mono Float32 = ~3.8 MB / minute).
-        // Real-time mode keeps the bounded policy used for the live mic
-        // since the producer is naturally rate-limited.
+        // Real-time keeps `.bufferingNewest(64)` — the producer is
+        // rate-limited by `Task.sleep` so the buffer rarely fills, and
+        // newest-keeps-newest is the right policy for a live mic.
+        //
+        // Fast-pace uses `.bufferingOldest(256)` PAIRED with retry-on-
+        // drop in the pump (`yieldWithBackpressure` below). With this
+        // policy, attempting to yield into a full buffer returns
+        // `.dropped(value:)` instead of overwriting the oldest entry —
+        // the pump catches that and sleeps until the consumer drains a
+        // slot. The result is true backpressure: the pump runs as fast
+        // as the consumer can keep up, never faster, no chunks lost.
+        // (An earlier `.bufferingNewest(256)` here silently dropped the
+        // oldest 99% of the file — fast-pace would only produce the
+        // final few utterances. `.unbounded` before that let the queue
+        // grow to 100s of MB and OOM'd the app.)
         let bufferingPolicy: AsyncStream<AudioChunk>.Continuation.BufferingPolicy =
-            realTimePacing ? .bufferingNewest(64) : .unbounded
+            realTimePacing ? .bufferingNewest(64) : .bufferingOldest(256)
         let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: bufferingPolicy)
         let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: bufferingPolicy)
         self.rawCont = rawCont
@@ -210,8 +233,16 @@ public actor AudioFileCapture: AudioCapture {
             // Both streams emit the same content — there's no upstream EQ to
             // diverge here, and downstream slicing/feeding code already
             // assumes parallel timelines.
-            rawCont.yield(chunk)
-            processedCont.yield(chunk)
+            //
+            // In fast-pace, the bounded `.bufferingOldest(256)` policy can
+            // return `.dropped(_)` when the consumer is behind. Retry
+            // until the chunk is enqueued so no audio is lost — this is
+            // the actual backpressure mechanism, replacing the previous
+            // (broken) "let memory grow" / "drop the oldest" approaches.
+            // Real-time pace's `.bufferingNewest(64)` doesn't return
+            // `.dropped`, so the helper is a no-op there.
+            await Self.yieldWithBackpressure(chunk, to: rawCont)
+            await Self.yieldWithBackpressure(chunk, to: processedCont)
 
             elapsed += chunkSecondsAtFile
             if realTimePacing {
@@ -219,15 +250,47 @@ public actor AudioFileCapture: AudioCapture {
                 // stage animations look identical to a live recording.
                 try? await Task.sleep(nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000))
             } else {
-                // Yield the actor briefly so we don't starve consumers on the
-                // same MainActor / scheduling pool. Zero-duration cooperative
-                // yield, no real wall-clock delay.
-                await Task.yield()
+                // Fixed 4× real-time pacing — see the type-level comment
+                // for the rationale. Critically, this is a *paced* fast
+                // mode rather than "as fast as possible": SpeechAnalyzer
+                // gets the same wall-clock breathing room as real-time
+                // for its stabilization timers, so segment boundaries
+                // line up with what real-time would produce, so SER
+                // labels stay stable across modes.
+                try? await Task.sleep(
+                    nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000 / Double(Self.fastPaceMultiplier))
+                )
             }
         }
 
         rawCont.finish()
         processedCont.finish()
+    }
+
+    /// Yield with retry-on-drop. Under `.bufferingOldest(N)`, attempting
+    /// to yield into a full buffer returns `.dropped(value:)` rather than
+    /// kicking out an existing element — we sleep briefly and retry until
+    /// the consumer drains a slot, giving the pump real backpressure.
+    /// Under `.bufferingNewest(N)` this is a single yield with no retry
+    /// since that policy returns `.enqueued` even when "full" (it just
+    /// silently evicts the oldest, which is what real-time mode wants).
+    private static func yieldWithBackpressure(
+        _ chunk: AudioChunk,
+        to cont: AsyncStream<AudioChunk>.Continuation
+    ) async {
+        while !Task.isCancelled {
+            switch cont.yield(chunk) {
+            case .enqueued, .terminated:
+                return
+            case .dropped:
+                // Short wait — long enough to let the consumer pull a
+                // few chunks, short enough that the pump stays close to
+                // consumer speed instead of pacing at fixed intervals.
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            @unknown default:
+                return
+            }
+        }
     }
 
     private func stopAccessingScopedResource() {

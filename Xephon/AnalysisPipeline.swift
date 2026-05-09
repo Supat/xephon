@@ -21,6 +21,15 @@ public struct ProcessingMetrics: Sendable, Hashable {
     public let totalDuration: TimeInterval
 }
 
+/// Result of `autoConfigured(modelStore:)`. Carries the pipeline plus
+/// any per-modality construction errors so the UI can surface them
+/// rather than silently dropping the affected modality. An empty
+/// `diagnostics` array means everything loaded.
+struct AutoConfiguredPipeline: Sendable {
+    let pipeline: AnalysisPipeline
+    let diagnostics: [String]
+}
+
 // Intentionally NOT @MainActor: heavy SER constructors (e.g. W2V2 ONNX load,
 // ~631 MB) and per-segment inference must not block the UI thread. All stored
 // references are themselves Sendable (actors / value types).
@@ -76,30 +85,51 @@ final class AnalysisPipeline: Sendable {
     static func autoConfigured(
         modelStore: ModelStore,
         enableDiarization: Bool = true
-    ) async -> AnalysisPipeline {
+    ) async -> AutoConfiguredPipeline {
         AppLog.app.info("AnalysisPipeline.autoConfigured starting…")
+
+        // Per-modality diagnostics aggregated as we go. Empty on success;
+        // non-empty surfaces in the UI as a banner so the user knows
+        // *which* component fell back rather than silently losing it.
+        var diagnostics: [String] = []
 
         let diarizer: (any Diarizer)? = enableDiarization ? FluidAudioDiarizer() : nil
 
-        let w2v2URL: URL? = await Self.tryResolveAsync("W2V2", path: "w2v2-msp-dim/model.onnx", store: modelStore)
+        let w2v2URL: URL? = await Self.tryResolveAsync("W2V2", path: "w2v2-msp-dim/model.onnx", store: modelStore, diagnostics: &diagnostics)
         let dimensional: (any DimensionalAcousticSER)? = w2v2URL.flatMap { url in
-            Self.tryInit("W2V2 dimensional SER", { try W2V2DimensionalSER(modelURL: url) })
+            Self.tryInit("W2V2 dimensional SER", diagnostics: &diagnostics) {
+                try W2V2DimensionalSER(modelURL: url)
+            }
         }
 
-        let emotion2vecURL: URL? = await Self.tryResolveAsync("emotion2vec", path: "emotion2vec_onnx/model.onnx", store: modelStore)
+        let emotion2vecURL: URL? = await Self.tryResolveAsync("emotion2vec", path: "emotion2vec_onnx/model.onnx", store: modelStore, diagnostics: &diagnostics)
         let categorical: (any CategoricalAcousticSER)? = emotion2vecURL.flatMap { url in
-            Self.tryInit("emotion2vec categorical SER", { try Emotion2VecCategoricalSER(modelURL: url) })
+            Self.tryInit("emotion2vec categorical SER", diagnostics: &diagnostics) {
+                try Emotion2VecCategoricalSER(modelURL: url)
+            }
         }
 
         // wrime needs both an ONNX file and a tokenizer directory. Resolve
         // both — they live under the same `wrime-roberta/` subdir.
-        let wrimeModelURL: URL? = await Self.tryResolveAsync("wrime model", path: "wrime-roberta/model.onnx", store: modelStore)
-        let wrimeTokenizerDir: URL? = await Self.tryResolveAsync("wrime tokenizer", path: "wrime-roberta/tokenizer.json", store: modelStore)
-            .map { $0.deletingLastPathComponent() }
+        let wrimeModelURL: URL? = await Self.tryResolveAsync("wrime model", path: "wrime-roberta/model.onnx", store: modelStore, diagnostics: &diagnostics)
+        let wrimeTokenizerURL: URL? = await Self.tryResolveAsync("wrime tokenizer", path: "wrime-roberta/tokenizer.json", store: modelStore, diagnostics: &diagnostics)
+        let wrimeTokenizerDir = wrimeTokenizerURL?.deletingLastPathComponent()
         let deberta: (any TextSER)?
         if let model = wrimeModelURL, let dir = wrimeTokenizerDir {
-            deberta = await Self.tryInitAsync("DeBERTa WRIME text SER") {
-                try await DeBERTaWRIME(modelURL: model, tokenizerDirectory: dir)
+            deberta = await Self.tryInitAsync("DeBERTa WRIME text SER", diagnostics: &diagnostics) {
+                // CPU-only by design: under fast-pace file analysis the
+                // two acoustic SER models on CoreML EP already saturate
+                // ANE/GPU memory (CoreML allocates IOSurface-backed
+                // tensor buffers per shape per running inference).
+                // Adding a third CoreML EP session for DeBERTa was the
+                // direct trigger of `IOSurface creation failed:
+                // kIOReturnNoMemory` cascades that culminated in a
+                // SIGABRT during AudioFileCapture's pump. DeBERTa's
+                // matmuls are small (seq 128 × hidden 768) and
+                // Accelerate handles them comfortably on CPU; the
+                // ~50 ms added latency per segment is far below ASR's
+                // per-segment budget.
+                try await DeBERTaWRIME(modelURL: model, tokenizerDirectory: dir, useCoreML: false)
             }
         } else {
             deberta = nil
@@ -113,32 +143,39 @@ final class AnalysisPipeline: Sendable {
             "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), deberta=\(deberta != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
         )
 
-        return AnalysisPipeline(
+        let pipeline = AnalysisPipeline(
             diarizer: diarizer,
             dimensionalSER: dimensional,
             categoricalSER: categorical,
             textSER: textSER
         )
+        return AutoConfiguredPipeline(pipeline: pipeline, diagnostics: diagnostics)
     }
 
     private static func tryInit<T>(
         _ name: String,
+        diagnostics: inout [String],
         _ build: () throws -> T
     ) -> T? {
         do { return try build() }
         catch {
+            let detail = "\(name) unavailable: \(error.localizedDescription)"
             AppLog.app.warning("\(name, privacy: .public) unavailable: \(String(describing: error), privacy: .public)")
+            diagnostics.append(detail)
             return nil
         }
     }
 
     private static func tryInitAsync<T>(
         _ name: String,
+        diagnostics: inout [String],
         _ build: () async throws -> T
     ) async -> T? {
         do { return try await build() }
         catch {
+            let detail = "\(name) unavailable: \(error.localizedDescription)"
             AppLog.app.warning("\(name, privacy: .public) unavailable: \(String(describing: error), privacy: .public)")
+            diagnostics.append(detail)
             return nil
         }
     }
@@ -150,11 +187,14 @@ final class AnalysisPipeline: Sendable {
     private static func tryResolveAsync(
         _ name: String,
         path: String,
-        store: ModelStore
+        store: ModelStore,
+        diagnostics: inout [String]
     ) async -> URL? {
         do { return try await store.resolvedURL(for: path) }
         catch {
+            let detail = "\(name) URL not resolved: \(error.localizedDescription)"
             AppLog.app.warning("\(name, privacy: .public) URL not resolved: \(String(describing: error), privacy: .public)")
+            diagnostics.append(detail)
             return nil
         }
     }

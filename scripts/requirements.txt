@@ -11,7 +11,13 @@ onnx>=1.16
 # FP16 quantization of the on-device ONNX models (scripts/quantize_onnx_fp16.py).
 # Halves the shipped model bytes; CoreML/ANE already compute in FP16 so the
 # accuracy impact is negligible for the encoders we ship.
+# `onnxruntime` is needed both for the transformer-aware FP16 converter
+# (`onnxruntime.transformers.float16`) used by quantize_onnx_fp16.py AND
+# for the ORT-load smoke tests in the export scripts. Pulled transitively
+# by funasr today, but pinning explicitly so the script works even if the
+# funasr dep ever changes.
 onnxconverter-common>=1.14
+onnxruntime>=1.20
 
 # emotion2vec ONNX export (scripts/export_emotion2vec_onnx.py). FunASR
 # bundles its own torch+kaldi+librosa dependencies; the install is also

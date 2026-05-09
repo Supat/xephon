@@ -32,6 +32,15 @@ public actor W2V2DimensionalSER: DimensionalAcousticSER {
         let env = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
+        // Cap graph optimization at `Extended`. The default `All` tier
+        // includes the SimplifiedLayerNormFusion pass, which doesn't know
+        // how to walk past the auto-inserted `InsertedPrecisionFreeCast_*`
+        // nodes the FP16 converter places around blocked ops — it crashes
+        // session init with "name does not exist". `Extended` keeps every
+        // useful optimization (constant folding, common subexpression
+        // elimination, layer-norm-without-fusion) but skips the strict
+        // tier that conflicts with our quantization layout.
+        try options.setGraphOptimizationLevel(.extended)
         if useCoreML, ORTIsCoreMLExecutionProviderAvailable() {
             let coreml = ORTCoreMLExecutionProviderOptions()
             coreml.enableOnSubgraphs = true

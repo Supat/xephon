@@ -109,6 +109,15 @@ struct ContentView: View {
     @State private var pendingFileURL: URL?
     @State private var showingFileDiscardConfirm: Bool = false
     @State private var showingPacingDialog: Bool = false
+    /// Currently-visible utterance row IDs. Maintained via per-row
+    /// `.onAppear`/`.onDisappear` so we can tell whether the most recent
+    /// utterance is in frame and decide between auto-scroll vs. surfacing
+    /// the "New utterance" capsule.
+    @State private var visibleUtteranceIDs: Set<UUID> = []
+    /// True when a new utterance has arrived while the user has scrolled
+    /// the most recent off-screen. Cleared when the most recent comes
+    /// back into view (either by user scroll or capsule tap).
+    @State private var hasUnreadUtterance: Bool = false
 
     var body: some View {
         if !recorder.modelsReady {
@@ -120,13 +129,18 @@ struct ContentView: View {
 
     private var mainBody: some View {
         NavigationStack {
-            GeometryReader { geo in
-                HStack(spacing: 0) {
-                    controlPane
-                        .frame(width: geo.size.width / 3)
-                    Divider()
-                    transcriptPane
-                        .frame(maxWidth: .infinity)
+            VStack(spacing: 0) {
+                if !recorder.pipelineDiagnostics.isEmpty {
+                    PipelineDiagnosticsBanner(messages: recorder.pipelineDiagnostics)
+                }
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        controlPane
+                            .frame(width: geo.size.width / 3)
+                        Divider()
+                        transcriptPane
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
             .navigationTitle("Xephon")
@@ -474,6 +488,14 @@ struct ContentView: View {
         Set(recorder.utterances.map { $0.speakerID }).count
     }
 
+    /// True iff the chronologically last utterance has been laid out and
+    /// is currently on-screen. Empty list counts as "visible" (no last
+    /// to track) so the capsule never appears in the empty state.
+    private var isLastUtteranceVisible: Bool {
+        guard let lastID = recorder.utterances.last?.id else { return true }
+        return visibleUtteranceIDs.contains(lastID)
+    }
+
     @ViewBuilder
     private var transcriptList: some View {
         ScrollViewReader { proxy in
@@ -484,14 +506,61 @@ struct ContentView: View {
                     isMultiSpeaker: distinctSpeakerCount > 1
                 )
                 .id(u.id)
+                .onAppear { visibleUtteranceIDs.insert(u.id) }
+                .onDisappear { visibleUtteranceIDs.remove(u.id) }
             }
             .listStyle(.plain)
-            .onChange(of: recorder.utterances.count) { _, count in
-                guard count > 0, let last = recorder.utterances.last else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(last.id, anchor: .bottom)
+            .onChange(of: recorder.utterances.last?.id) { oldLastID, newLastID in
+                // Session reset cleared the array.
+                guard let newLastID else {
+                    hasUnreadUtterance = false
+                    return
+                }
+                // "Was the user following along?" must be answered from
+                // the PREVIOUS last utterance — by the time this closure
+                // fires, the array's `last` is already the new entry,
+                // whose row hasn't been laid out yet, so its id can't
+                // be in `visibleUtteranceIDs`. Checking the new id was
+                // the bug behind "auto-scroll never fires when the list
+                // is at the bottom"; the old id, on the other hand,
+                // is still in `visibleUtteranceIDs` for as long as that
+                // row remains on screen.
+                let wasFollowing = oldLastID.map { visibleUtteranceIDs.contains($0) } ?? false
+                if oldLastID == nil || wasFollowing {
+                    // First utterance of a session, OR user was at the
+                    // bottom: jump to the new entry.
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(newLastID, anchor: .bottom)
+                    }
+                    hasUnreadUtterance = false
+                } else {
+                    // User has scrolled the most-recent off-screen.
+                    // Don't yank them; surface the capsule instead.
+                    hasUnreadUtterance = true
                 }
             }
+            .onChange(of: recorder.utterances.isEmpty) { _, isEmpty in
+                if isEmpty { hasUnreadUtterance = false }
+            }
+            .onChange(of: isLastUtteranceVisible) { _, visible in
+                // User scrolled (or list re-laid out) to bring the most
+                // recent utterance into view → no longer "unread".
+                if visible { hasUnreadUtterance = false }
+            }
+            .overlay(alignment: .bottom) {
+                if hasUnreadUtterance {
+                    NewUtteranceCapsule {
+                        guard let last = recorder.utterances.last else { return }
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                        hasUnreadUtterance = false
+                    }
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: hasUnreadUtterance)
         }
     }
 
@@ -687,9 +756,15 @@ private struct PipelineCard: View {
     private var captureState: StageRow.State {
         recorder.isRecording ? .active(recorder.inputLevel) : .idle
     }
+    /// Rolling buffer size, not session elapsed time. Once the trim
+    /// kicks in (after ~60 s of audio = the diarization context window)
+    /// this metric stops growing and oscillates near the cap, which is
+    /// the more useful signal — it shows the buffer's actual memory
+    /// footprint instead of restating the wall clock that's already
+    /// visible in the status row above.
     private var captureMetric: String {
         recorder.isRecording
-            ? String(format: "%.1f s", recorder.elapsedSeconds)
+            ? "\(formatCount(recorder.bufferedSamples)) buf"
             : "—"
     }
 
@@ -958,6 +1033,63 @@ private struct LevelMeterView: View {
         if ratio < 0.65 { return .green }
         if ratio < 0.88 { return .yellow }
         return .red
+    }
+}
+
+/// Floating "new utterance available" affordance shown over the bottom
+/// of the transcript when a new entry has arrived but the user has
+/// scrolled the list away from the latest row. Tapping scrolls back
+/// to the most recent utterance. Hidden when the latest is in view.
+private struct NewUtteranceCapsule: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down")
+                    .font(.caption.bold())
+                Text(String(localized: "transcript.newUtterance"))
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.tertiary, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Surfaces per-modality construction failures captured during pipeline
+/// pre-warm. Without this banner, a model that fails to load (e.g. an
+/// FP16 ONNX graph that ORT rejects) silently disappears from the
+/// available SER backends — the user sees a degraded picker with no
+/// hint as to why.
+private struct PipelineDiagnosticsBanner: View {
+    let messages: [String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Some models didn't load")
+                    .font(.caption.bold())
+                ForEach(messages, id: \.self) { msg in
+                    Text(msg)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.yellow.opacity(0.12))
     }
 }
 

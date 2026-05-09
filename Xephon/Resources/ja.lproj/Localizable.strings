@@ -5,6 +5,7 @@
 "settings.textSER.foundationModels" = "Apple FM";
 "transcript.empty.title" = "まだ発話がありません";
 "transcript.empty.subtitle" = "「録音を開始」をタップして始めてください。";
+"transcript.newUtterance" = "新しい発話";
 "pipeline.header" = "パイプライン";
 "pipeline.capture" = "収録";
 "pipeline.asr" = "ASR (ライブ)";
@@ -25,10 +26,10 @@
 "file.open" = "ファイルを開く";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
-"pacing.message" = "リアルタイムはファイルの長さに合わせて再生し、ライブ録音と同等の精度になります。高速は解析器が処理できる最大速度で進めるため通常は数倍速くなりますが、ボラタイル区間の安定化時間が短くなるため、文字起こしと感情推定の精度がやや低下する可能性があります。";
+"pacing.message" = "リアルタイムはファイル再生時間と同じ長さで進み、ライブ録音と同等の結果になります。高速は4倍速で進みます。これは音声認識器のセグメント境界がリアルタイムと一致する最大の速度で、SER分類結果が一致します。";
 "pacing.realtime" = "リアルタイム";
 "pacing.realtime.audio" = "リアルタイム（音声あり）";
-"pacing.fast" = "高速";
+"pacing.fast" = "高速 (4倍)";
 "summary.header" = "ムード";
 "summary.calibrating" = "校正中…";
 "summary.utterances" = "%d 件の発話 · %@";

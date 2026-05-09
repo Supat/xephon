@@ -90,6 +90,10 @@ public actor DeBERTaWRIME: TextSER {
         let env = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
+        // See W2V2DimensionalSER for rationale: the default `All` tier
+        // contains a layer-norm fusion that conflicts with FP16-conversion
+        // Cast nodes. Cap at `Extended` for safety across all SER models.
+        try options.setGraphOptimizationLevel(.extended)
         if useCoreML, ORTIsCoreMLExecutionProviderAvailable() {
             let coreml = ORTCoreMLExecutionProviderOptions()
             coreml.enableOnSubgraphs = true

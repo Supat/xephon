@@ -53,8 +53,8 @@ enum ModelManifest {
                     assetName: "w2v2-model.onnx",
                     installPath: "w2v2-msp-dim/model.onnx",
                     bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "w2v2-msp-dim"),
-                    approximateBytes: 316 * 1024 * 1024,
-                    sha256: "c54e352baaf2f4724748ed14ed96c814d9957eecfa051e67e1e023f6b145e1eb"
+                    approximateBytes: 330_752_344,
+                    sha256: "4306aaabb46cc8e2d0a40caac2b48bf2cbe706573866512fbd05ca1ebb60a8f7"
                 )
             ]
         ),
@@ -66,15 +66,15 @@ enum ModelManifest {
                     assetName: "emotion2vec-model.onnx",
                     installPath: "emotion2vec_onnx/model.onnx",
                     bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "emotion2vec_onnx"),
-                    approximateBytes: 200 * 1024,
-                    sha256: "7baab744cee1306cffdab928cec808e051ac3a780d390027b3564982e35b4c60"
+                    approximateBytes: 418_215,
+                    sha256: "b5bb76d2a68d54fb2544dce53c5128611d0e353f8246aaaee6e0f018f1c0a56f"
                 ),
                 ModelFile(
                     assetName: "emotion2vec-model.data",
                     installPath: "emotion2vec_onnx/model.data",
                     bundleResource: BundleLookup(name: "model", ext: "data", subdirectory: "emotion2vec_onnx"),
-                    approximateBytes: 310 * 1024 * 1024,
-                    sha256: "f673d6ecb11c21a1c9d6c30e0414eda1c6e87946dbfd9e082490e68cb09d0912"
+                    approximateBytes: 324_280_320,
+                    sha256: "ed475684ee8d36a1299b19f827f9f83a9c4b16b7a781f8f374015254a2c225ae"
                 ),
             ]
         ),
@@ -86,35 +86,35 @@ enum ModelManifest {
                     assetName: "wrime-model.onnx",
                     installPath: "wrime-roberta/model.onnx",
                     bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "wrime-roberta"),
-                    approximateBytes: 214 * 1024 * 1024,
+                    approximateBytes: 221_472_656,
                     sha256: "2d02488dccc856c193e02b4c8759b0cea8285bdf244d90b3d26b3feea223c9e3"
                 ),
                 ModelFile(
                     assetName: "wrime-tokenizer.json",
                     installPath: "wrime-roberta/tokenizer.json",
                     bundleResource: BundleLookup(name: "tokenizer", ext: "json", subdirectory: "wrime-roberta"),
-                    approximateBytes: 5 * 1024 * 1024,
+                    approximateBytes: 2_412_694,
                     sha256: "ea9b5801354f528f3b9073f3142d5e9a21cb919bd1bb8839f9787628df6894f4"
                 ),
                 ModelFile(
                     assetName: "wrime-tokenizer_config.json",
                     installPath: "wrime-roberta/tokenizer_config.json",
                     bundleResource: BundleLookup(name: "tokenizer_config", ext: "json", subdirectory: "wrime-roberta"),
-                    approximateBytes: 4 * 1024,
+                    approximateBytes: 1_411,
                     sha256: "8031b2a4f428f0a12089c12a0e8a6059554992607ce9d60033fddba08c306a5f"
                 ),
                 ModelFile(
                     assetName: "wrime-config.json",
                     installPath: "wrime-roberta/config.json",
                     bundleResource: BundleLookup(name: "config", ext: "json", subdirectory: "wrime-roberta"),
-                    approximateBytes: 4 * 1024,
+                    approximateBytes: 1_021,
                     sha256: "6da11037a2b57e01bae0f4a6070eac4e1b953e052c27ee5fd21ae3c410c7140f"
                 ),
                 ModelFile(
                     assetName: "wrime-special_tokens_map.json",
                     installPath: "wrime-roberta/special_tokens_map.json",
                     bundleResource: BundleLookup(name: "special_tokens_map", ext: "json", subdirectory: "wrime-roberta"),
-                    approximateBytes: 4 * 1024,
+                    approximateBytes: 969,
                     sha256: "f1711429f1addc9015fe127f2f4359c4e5a1e6f3c59a71073467bd552265cd26"
                 ),
             ]
