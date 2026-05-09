@@ -31,6 +31,10 @@ final class AnalysisPipeline: Sendable {
     private let categoricalSER: (any CategoricalAcousticSER)?
     private let textSER: (any TextSER)?
     private let fuser: any Fuser
+    /// Bridges per-call diarizer outputs to session-stable speaker IDs
+    /// by time-overlap matching. Reset between sessions via
+    /// `resetSpeakerTracking()`.
+    private let speakerTracker: StreamingSpeakerTracker
 
     init(
         transcriber: any Transcriber = SpeechAnalyzerTranscriber(),
@@ -38,7 +42,8 @@ final class AnalysisPipeline: Sendable {
         dimensionalSER: (any DimensionalAcousticSER)? = nil,
         categoricalSER: (any CategoricalAcousticSER)? = nil,
         textSER: (any TextSER)? = nil,
-        fuser: any Fuser = LateFusion()
+        fuser: any Fuser = LateFusion(),
+        speakerTracker: StreamingSpeakerTracker = StreamingSpeakerTracker()
     ) {
         self.transcriber = transcriber
         self.diarizer = diarizer
@@ -46,15 +51,27 @@ final class AnalysisPipeline: Sendable {
         self.categoricalSER = categoricalSER
         self.textSER = textSER
         self.fuser = fuser
+        self.speakerTracker = speakerTracker
+    }
+
+    /// Clear cumulative speaker history so the next session starts at S01.
+    /// Pipeline instances are pre-warmed and reused across recordings, so
+    /// without this the speaker numbering would carry over.
+    func resetSpeakerTracking() async {
+        await speakerTracker.reset()
     }
 
     /// Auto-detects bundled models. Modalities whose models aren't found are
     /// skipped — the pipeline still runs with whatever is available.
     /// Heavy SER constructors run here, so always call this off the MainActor.
-    /// `enableDiarization` defaults to false because FluidAudio downloads its
-    /// segmentation/embedding models on first use (~50 MB) — single-speaker
-    /// fallback (S01) is reasonable for the common solo-recording case.
-    static func autoConfigured(enableDiarization: Bool = false) async -> AnalysisPipeline {
+    /// `enableDiarization` defaults to true. FluidAudio downloads its
+    /// segmentation/embedding models on first use (~50 MB), so the first
+    /// session pays a one-time download cost; subsequent runs use the
+    /// cache. For solo recordings the diarizer just always returns one
+    /// speaker, so leaving it on is harmless — for multi-speaker
+    /// conversations it's the difference between every utterance being
+    /// labeled S01 and getting actual speaker identification.
+    static func autoConfigured(enableDiarization: Bool = true) async -> AnalysisPipeline {
         AppLog.app.info("AnalysisPipeline.autoConfigured starting…")
 
         let diarizer: (any Diarizer)? = enableDiarization ? FluidAudioDiarizer() : nil
@@ -135,7 +152,11 @@ final class AnalysisPipeline: Sendable {
         // 2. Diarization (best-effort; falls back to single-speaker S01).
         let diarized = await runDiarization(buffer)
 
-        // 3. Per-segment SER + fuse.
+        // 3. Per-segment SER + fuse. We've already diarized the whole
+        // buffer above, so resolve the speaker here and pass it as the
+        // fallback — `processSegment` will find an empty diarization
+        // context (we don't pass one in batch mode) and use the fallback
+        // verbatim.
         var estimates: [UtteranceEstimate] = []
         for segment in asrSegments {
             let speakerID = speakerForSegment(segment, in: diarized)
@@ -143,7 +164,7 @@ final class AnalysisPipeline: Sendable {
             let (estimate, _) = try await processSegment(
                 asr: segment,
                 segmentAudio: segmentBuffer,
-                speakerID: speakerID
+                fallbackSpeakerID: speakerID
             )
             estimates.append(estimate)
         }
@@ -153,16 +174,29 @@ final class AnalysisPipeline: Sendable {
     /// Per-segment SER + fusion. Used in both batch (`analyze(_:)`) and
     /// streaming flows. Caller is responsible for slicing the audio segment
     /// out of the source buffer.
+    ///
+    /// `diarizationContext` is the recent cumulative audio buffer (with its
+    /// origin timestamp on `AudioChunk.timestamp`) that the streaming caller
+    /// passes in for cross-segment speaker identification. When provided
+    /// alongside an active diarizer, this method runs diarization on the
+    /// context concurrently with SER and looks up the speaker ID for the
+    /// segment's midpoint via `speakerForSegment(_:in:)`. When omitted or
+    /// unavailable, the result falls back to `fallbackSpeakerID`.
     func processSegment(
         asr: ASRSegment,
         segmentAudio: AudioChunk,
-        speakerID: String = "S01"
+        diarizationContext: AudioChunk? = nil,
+        fallbackSpeakerID: String = "S01"
     ) async throws -> (UtteranceEstimate, ProcessingMetrics) {
         let totalStart = Date()
         let acousticStart = Date()
         async let dimensional = runDimensional(segmentAudio)
         async let categorical = runCategorical(segmentAudio)
         async let plutchik = runText(asr.text)
+        async let diarized: [DiarizedSegment] = {
+            guard let diarizationContext, diarizer != nil else { return [] }
+            return await self.runDiarization(diarizationContext)
+        }()
 
         // Acoustic timing = wall time until both dimensional + categorical
         // resolve (they're concurrent). Text timing = wall time until plutchik
@@ -174,6 +208,21 @@ final class AnalysisPipeline: Sendable {
         let dim = await dimensional
         let cat = await categorical
         let acousticDuration = Date().timeIntervalSince(acousticStart)
+
+        // Diarization runs in parallel with SER; this await just collects
+        // whatever's ready. The local speaker IDs FluidAudio returns
+        // ("speaker_0", …) aren't comparable across calls, so we route
+        // them through `speakerTracker.ingest` which remaps them to
+        // session-stable global IDs (`S01`, `S02`, …) by time-overlap
+        // matching against the cumulative history. Empty result →
+        // fallback to the supplied id.
+        let diarizedSegments = await diarized
+        let trackedSegments = diarizedSegments.isEmpty
+            ? []
+            : await speakerTracker.ingest(diarizedSegments)
+        let speakerID = trackedSegments.isEmpty
+            ? fallbackSpeakerID
+            : speakerForSegment(asr, in: trackedSegments)
 
         let baseEstimate = try await fuser.fuse(
             asr: asr,

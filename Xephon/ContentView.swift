@@ -51,6 +51,35 @@ private func formatSI(_ v: Double, _ suffix: String) -> String {
     return        String(format: "%.2f%@", v, suffix)
 }
 
+/// Render a stored speaker ID for display. The diarizer-tracker writes
+/// `S01`, `S02`, … internally; the row label uses an `M` prefix
+/// ("multi") when there are two or more distinct speakers in the
+/// session, leaving `S` ("single") for the simple case. Number is
+/// preserved either way.
+func formatSpeakerLabel(_ stored: String, multiSpeaker: Bool) -> String {
+    let prefix = multiSpeaker ? "M" : "S"
+    if let trail = stored.dropFirst().first, trail.isNumber {
+        return "\(prefix)\(stored.dropFirst())"
+    }
+    return stored
+}
+
+/// Per-speaker tint pulled from a small palette indexed by the speaker
+/// number embedded in the stored ID (`S01` → 1). The palette is meant
+/// to read as a row of colored chips at a glance; ordering matches the
+/// rough warmth gradient (cool → warm → neutral) so consecutive
+/// speakers stay distinguishable.
+func speakerTint(for stored: String) -> Color {
+    let palette: [Color] = [
+        .blue, .orange, .green, .pink, .purple,
+        .teal, .indigo, .brown, .mint, .red,
+    ]
+    let digits = stored.drop(while: { !$0.isNumber })
+    let n = Int(digits) ?? 1
+    let idx = max(0, n - 1) % palette.count
+    return palette[idx]
+}
+
 /// Color tint for a fused emotion label. Tracks the conventional Plutchik
 /// wheel where it overlaps; falls back to grey for unknown/neutral labels.
 /// File-scope so both `UtteranceRow` and `SummaryCard` reuse the same
@@ -427,12 +456,20 @@ struct ContentView: View {
         }
     }
 
+    private var distinctSpeakerCount: Int {
+        Set(recorder.utterances.map { $0.speakerID }).count
+    }
+
     @ViewBuilder
     private var transcriptList: some View {
         ScrollViewReader { proxy in
             List(Array(recorder.utterances.enumerated()), id: \.element.id) { idx, u in
-                UtteranceRow(number: idx + 1, utterance: u)
-                    .id(u.id)
+                UtteranceRow(
+                    number: idx + 1,
+                    utterance: u,
+                    isMultiSpeaker: distinctSpeakerCount > 1
+                )
+                .id(u.id)
             }
             .listStyle(.plain)
             .onChange(of: recorder.utterances.count) { _, count in
@@ -449,6 +486,7 @@ struct ContentView: View {
 private struct UtteranceRow: View {
     let number: Int
     let utterance: UtteranceEstimate
+    let isMultiSpeaker: Bool
 
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
     // so positive vs negative read naturally and 0 maps to "neutral grey".
@@ -461,9 +499,9 @@ private struct UtteranceRow: View {
                     Text("#\(number)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                    Text(utterance.speakerID)
+                    Text(formatSpeakerLabel(utterance.speakerID, multiSpeaker: isMultiSpeaker))
                         .font(.caption.bold())
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(speakerTint(for: utterance.speakerID))
                     if utterance.speechBoost == true {
                         Label("Boost", systemImage: "waveform.badge.plus")
                             .labelStyle(.titleAndIcon)

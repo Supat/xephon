@@ -172,6 +172,12 @@ final class RecordingController {
             conversationSummary.reset()
             capturedSamples.removeAll(keepingCapacity: true)
             capturedSamplesOrigin = 0
+            // Pipeline is pre-warmed and reused across sessions; clear
+            // cumulative speaker history so the next recording starts
+            // numbering from S01 again.
+            if let pipeline = self.pipeline {
+                Task { await pipeline.resetSpeakerTracking() }
+            }
 
             // Pump 1 (raw): drain → SER buffer + level meter. The raw stream
             // preserves prosody for SER and prosody analyses.
@@ -223,11 +229,13 @@ final class RecordingController {
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
                         let segmentBuffer = self.sliceForSegment(segment)
-                        // The SER task owns `segmentBuffer` (a copy);
-                        // it's safe to drop the head of `capturedSamples`
-                        // up to this segment's end now. Bounds session
-                        // memory: an 8-hour recording stays at a few MB
-                        // instead of growing to ~1.8 GB.
+                        // Snapshot the diarization window BEFORE the trim —
+                        // we want the previous ~60 s of audio plus this
+                        // segment so the diarizer can identify the speaker
+                        // by overlap with prior speech. Both buffers are
+                        // owned by the SER task once handed off; the trim
+                        // drops everything older than (segment.end - 60s).
+                        let diarContext = self.snapshotForDiarization()
                         self.trimProcessedAudio(below: segment.end)
                         self.beginSegmentInflight()
                         group.addTask { [weak self] in
@@ -235,7 +243,7 @@ final class RecordingController {
                                 let (estimate, metrics) = try await pipeline.processSegment(
                                     asr: segment,
                                     segmentAudio: segmentBuffer,
-                                    speakerID: "S01"
+                                    diarizationContext: diarContext
                                 )
                                 await self?.applySegmentResult(estimate: estimate, metrics: metrics)
                             } catch {
@@ -410,19 +418,36 @@ final class RecordingController {
         return AudioChunk(samples: slice, sampleRate: sampleRate, timestamp: asr.start)
     }
 
-    /// Drop processed audio up to `boundary` (audio-time seconds) from the
-    /// head of `capturedSamples`. Called after each segment is sliced —
-    /// the SER task already owns its own copy of the slice, so trimming
-    /// here is safe. Bounds session-long memory growth: peak capture
-    /// memory is now roughly the longest single utterance plus the
-    /// not-yet-finalized rolling buffer, regardless of session length.
+    /// Drop processed audio from the head of `capturedSamples`, keeping
+    /// the last `diarizationContextSeconds` of audio behind the latest
+    /// segment as cross-segment speaker context for the diarizer. Called
+    /// after each segment is sliced — the SER task already owns its own
+    /// copy of the slice, so trimming is safe. Bounds session-long
+    /// memory growth: peak capture memory is now roughly
+    /// `diarizationContextSeconds * 16 kHz * 4 B` (~3.8 MB at 60 s) plus
+    /// the not-yet-finalized rolling buffer, regardless of session length.
+    private static let diarizationContextSeconds: TimeInterval = 60
     private func trimProcessedAudio(below boundary: TimeInterval) {
-        let dropSeconds = boundary - capturedSamplesOrigin
+        let cutoff = boundary - Self.diarizationContextSeconds
+        let dropSeconds = cutoff - capturedSamplesOrigin
         guard dropSeconds > 0 else { return }
         let frames = min(Int(dropSeconds * PipelineAudio.sampleRate), capturedSamples.count)
         guard frames > 0 else { return }
         capturedSamples.removeFirst(frames)
         capturedSamplesOrigin += Double(frames) / PipelineAudio.sampleRate
+    }
+
+    /// Sendable copy of the current capture window for FluidAudio
+    /// diarization. The diarizer is `actor`-isolated and consumes its
+    /// argument on its own queue; we hand it a snapshot rather than a
+    /// reference to `capturedSamples` so MainActor mutations during
+    /// inference don't tear it.
+    private func snapshotForDiarization() -> AudioChunk {
+        AudioChunk(
+            samples: capturedSamples,
+            sampleRate: PipelineAudio.sampleRate,
+            timestamp: capturedSamplesOrigin
+        )
     }
 
     // MARK: - Level meter helpers
