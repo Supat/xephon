@@ -33,6 +33,15 @@ final class RecordingController {
     private(set) var lastAcousticDuration: TimeInterval?
     private(set) var lastTextDuration: TimeInterval?
     private(set) var lastSegmentTotal: TimeInterval?
+    /// Wall-clock delay from "speaker finished this utterance"
+    /// (`sessionStartedAt + segment.end`) to "analyzer emitted the final
+    /// for it" (Date() at the analysisTask receipt). Indicates how long
+    /// SpeechAnalyzer's volatile-stabilization window held the segment
+    /// before promoting it to a final — typical 200–800 ms on M-class.
+    /// Nil until the first finalize lands, and nil under fast-pace file
+    /// analysis (audio time != wall-clock time, so the delta has no
+    /// physical meaning).
+    private(set) var lastASRFinalizeLatency: TimeInterval?
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
     private(set) var conversationSummary: ConversationSummary = ConversationSummary()
@@ -109,6 +118,11 @@ final class RecordingController {
     /// audio at multi-x speed (where `samplesCaptured / sampleRate`
     /// would jump in fast-forward).
     private var sessionStartedAt: Date?
+    /// True when audio time progresses at wall-clock rate, so the ASR
+    /// finalize-latency metric is physically meaningful. Mic mode is
+    /// always wall-clock; file mode is wall-clock only when
+    /// `realTimePacing` was passed to `startFromFile`.
+    private var asrLatencyMeaningful: Bool = true
     private var capturedSamples: [Float] = []
     /// Audio-time (seconds) of `capturedSamples[0]`. Starts at 0 and advances
     /// each time we trim already-processed audio from the head of the buffer.
@@ -294,6 +308,7 @@ final class RecordingController {
             capturedSamples.reserveCapacity(Self.maxBufferedSamples)
             capturedSamplesOrigin = 0
             sessionStartedAt = Date()
+            lastASRFinalizeLatency = nil
             // Speaker history reset is sequenced inside `analysisTask`
             // below — it must complete BEFORE the first ingest, and a
             // fire-and-forget Task here can't make that guarantee.
@@ -377,6 +392,19 @@ final class RecordingController {
                 await pipeline.resetSpeakerTracking()
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
+                        // Record finalize latency at the moment of receipt:
+                        // wall-clock now minus the wall-clock when the audio
+                        // for this utterance ended. Only meaningful when
+                        // audio time tracks wall-clock (mic / real-time
+                        // file). Under fast-pace the audio pump runs
+                        // multi-x faster than real, so segment.end is in
+                        // accelerated audio time and the delta would be
+                        // negative — surface nil instead.
+                        if self.asrLatencyMeaningful, let started = self.sessionStartedAt {
+                            let endWallClock = started.addingTimeInterval(segment.end)
+                            let latency = Date().timeIntervalSince(endWallClock)
+                            self.lastASRFinalizeLatency = max(0, latency)
+                        }
                         while self.inflightSegments >= Self.maxConcurrentSegments {
                             try? await Task.sleep(nanoseconds: 5_000_000)
                         }
@@ -483,6 +511,7 @@ final class RecordingController {
         // remains in `utterances` for inspection/export.
         if case .file = sourceMode {
             sourceMode = .microphone
+            asrLatencyMeaningful = true
             capture = micCapture
             await refreshInputs()
         }
@@ -540,6 +569,11 @@ final class RecordingController {
     ) async {
         guard phase == .idle else { return }
         sourceMode = .file(url)
+        // ASR finalize latency only makes sense when audio time tracks
+        // wall-clock time. Fast-pace pumps audio multi-x faster than
+        // real, so segment.end ≠ wall-clock-end, and the latency
+        // computation would yield negative or meaningless deltas.
+        asrLatencyMeaningful = realTimePacing
         capture = AudioFileCapture(
             fileURL: url,
             realTimePacing: realTimePacing,

@@ -737,7 +737,7 @@ private struct PipelineCard: View {
                 icon: "circle.hexagongrid.fill",
                 name: String(localized: "pipeline.fusion"),
                 state: fusionState,
-                metric: recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count) utts"
+                metric: Text(recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count) utts")
             )
             StageRow(
                 icon: "square.and.arrow.up",
@@ -762,10 +762,10 @@ private struct PipelineCard: View {
     /// the more useful signal — it shows the buffer's actual memory
     /// footprint instead of restating the wall clock that's already
     /// visible in the status row above.
-    private var captureMetric: String {
-        recorder.isRecording
+    private var captureMetric: Text {
+        Text(recorder.isRecording
             ? "\(formatCount(recorder.bufferedSamples)) buf"
-            : "—"
+            : "—")
     }
 
     private var asrState: StageRow.State {
@@ -773,8 +773,19 @@ private struct PipelineCard: View {
         if !recorder.utterances.isEmpty { return .ready }
         return .idle
     }
-    private var asrMetric: String {
-        recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)"
+    /// Real-time / mic mode shows the most recent finalize latency
+    /// (wall clock from end-of-utterance to ASR-final-emitted). 200–800 ms
+    /// is the typical range on M-class. Fast-pace mode falls through to
+    /// the utterance count since audio time isn't wall-clock-aligned
+    /// there and the latency number would be meaningless.
+    /// The leading `backward.frame` glyph reads as "look back to the
+    /// most recent finalize" — replaces the verbose "last:" text.
+    private var asrMetric: Text {
+        if let latency = recorder.lastASRFinalizeLatency {
+            let ms = Int((latency * 1000).rounded())
+            return Text("\(Image(systemName: "backward.frame")) \(ms) ms")
+        }
+        return Text(recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)")
     }
 
     /// Per-segment stages (Acoustic SER, Text SER) flip to active while a
@@ -791,17 +802,17 @@ private struct PipelineCard: View {
         return recorder.utterances.isEmpty ? .idle : .ready
     }
 
-    private func latencyMetric(_ value: TimeInterval?) -> String {
-        guard let value else { return "—" }
-        if value >= 1 { return String(format: "%.2f s", value) }
-        return String(format: "%.0f ms", value * 1000)
+    private func latencyMetric(_ value: TimeInterval?) -> Text {
+        guard let value else { return Text("—") }
+        if value >= 1 { return Text(String(format: "%.2f s", value)) }
+        return Text(String(format: "%.0f ms", value * 1000))
     }
 
-    private var exportMetric: String {
-        guard let date = recorder.lastExportAt else { return "—" }
+    private var exportMetric: Text {
+        guard let date = recorder.lastExportAt else { return Text("—") }
         let interval = -date.timeIntervalSinceNow
-        if interval < 60 { return String(format: "%.0fs ago", interval) }
-        return String(format: "%.0fm ago", interval / 60)
+        if interval < 60 { return Text(String(format: "%.0fs ago", interval)) }
+        return Text(String(format: "%.0fm ago", interval / 60))
     }
 }
 
@@ -959,7 +970,9 @@ private struct StageRow: View {
     let icon: String
     let name: String
     let state: State
-    let metric: String
+    /// Right-aligned per-stage value. `Text` (not `String`) so callers
+    /// can embed SF Symbols inline via `Text("\(Image(systemName:)) …")`.
+    let metric: Text
 
     var body: some View {
         HStack(spacing: 8) {
@@ -971,8 +984,8 @@ private struct StageRow: View {
                 .font(.caption)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Text(metric)
-                .font(.caption.monospacedDigit())
+            metric
+                .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             stateGlyph
