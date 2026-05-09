@@ -61,8 +61,10 @@ final class AnalysisPipeline: Sendable {
         await speakerTracker.reset()
     }
 
-    /// Auto-detects bundled models. Modalities whose models aren't found are
-    /// skipped — the pipeline still runs with whatever is available.
+    /// Auto-configures from a `ModelStore` that has already resolved each
+    /// model's on-disk URL (downloading from the GitHub Release on first
+    /// launch if needed). Modalities whose models couldn't be resolved
+    /// are skipped — the pipeline still runs with whatever is available.
     /// Heavy SER constructors run here, so always call this off the MainActor.
     /// `enableDiarization` defaults to true. FluidAudio downloads its
     /// segmentation/embedding models on first use (~50 MB), so the first
@@ -71,23 +73,37 @@ final class AnalysisPipeline: Sendable {
     /// speaker, so leaving it on is harmless — for multi-speaker
     /// conversations it's the difference between every utterance being
     /// labeled S01 and getting actual speaker identification.
-    static func autoConfigured(enableDiarization: Bool = true) async -> AnalysisPipeline {
+    static func autoConfigured(
+        modelStore: ModelStore,
+        enableDiarization: Bool = true
+    ) async -> AnalysisPipeline {
         AppLog.app.info("AnalysisPipeline.autoConfigured starting…")
 
         let diarizer: (any Diarizer)? = enableDiarization ? FluidAudioDiarizer() : nil
 
-        let dimensional: (any DimensionalAcousticSER)? = Self.tryInit(
-            "W2V2 dimensional SER",
-            { try W2V2DimensionalSER() }
-        )
-        let categorical: (any CategoricalAcousticSER)? = Self.tryInit(
-            "emotion2vec categorical SER",
-            { try Emotion2VecCategoricalSER() }
-        )
-        let deberta: (any TextSER)? = await Self.tryInitAsync(
-            "DeBERTa WRIME text SER",
-            { try await DeBERTaWRIME() }
-        )
+        let w2v2URL: URL? = await Self.tryResolveAsync("W2V2", path: "w2v2-msp-dim/model.onnx", store: modelStore)
+        let dimensional: (any DimensionalAcousticSER)? = w2v2URL.flatMap { url in
+            Self.tryInit("W2V2 dimensional SER", { try W2V2DimensionalSER(modelURL: url) })
+        }
+
+        let emotion2vecURL: URL? = await Self.tryResolveAsync("emotion2vec", path: "emotion2vec_onnx/model.onnx", store: modelStore)
+        let categorical: (any CategoricalAcousticSER)? = emotion2vecURL.flatMap { url in
+            Self.tryInit("emotion2vec categorical SER", { try Emotion2VecCategoricalSER(modelURL: url) })
+        }
+
+        // wrime needs both an ONNX file and a tokenizer directory. Resolve
+        // both — they live under the same `wrime-roberta/` subdir.
+        let wrimeModelURL: URL? = await Self.tryResolveAsync("wrime model", path: "wrime-roberta/model.onnx", store: modelStore)
+        let wrimeTokenizerDir: URL? = await Self.tryResolveAsync("wrime tokenizer", path: "wrime-roberta/tokenizer.json", store: modelStore)
+            .map { $0.deletingLastPathComponent() }
+        let deberta: (any TextSER)?
+        if let model = wrimeModelURL, let dir = wrimeTokenizerDir {
+            deberta = await Self.tryInitAsync("DeBERTa WRIME text SER") {
+                try await DeBERTaWRIME(modelURL: model, tokenizerDirectory: dir)
+            }
+        } else {
+            deberta = nil
+        }
         let textSER: any TextSER = SwitchingTextSER(
             deberta: deberta,
             foundationModels: FoundationModelsSER()
@@ -123,6 +139,22 @@ final class AnalysisPipeline: Sendable {
         do { return try await build() }
         catch {
             AppLog.app.warning("\(name, privacy: .public) unavailable: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// `ModelStore.resolvedURL(for:)` throws when a path wasn't resolved
+    /// — typically because the user hasn't completed the download yet,
+    /// or a file legitimately failed (placeholder hash, network).
+    /// Convert to an optional so the pipeline degrades gracefully.
+    private static func tryResolveAsync(
+        _ name: String,
+        path: String,
+        store: ModelStore
+    ) async -> URL? {
+        do { return try await store.resolvedURL(for: path) }
+        catch {
+            AppLog.app.warning("\(name, privacy: .public) URL not resolved: \(String(describing: error), privacy: .public)")
             return nil
         }
     }
@@ -275,27 +307,51 @@ final class AnalysisPipeline: Sendable {
         }
     }
 
-    /// Cap audio length before feeding to acoustic SER models. Three reasons:
+    /// Snap audio length to one of a small set of bins before feeding the
+    /// acoustic SER models. Five reasons:
     ///   1. audeering's W2V2 dimensional model and emotion2vec+ are trained on
     ///      ≤10 s clips; longer inputs degrade accuracy without helping.
     ///   2. ONNX Runtime's CoreML EP compiles a per-input-shape MLModel for
-    ///      the W2V2 graph; at long, unique shapes it has been observed to
-    ///      crash inside the ANE compiler with EXC_BAD_ACCESS.
-    ///   3. Inference latency scales linearly with audio length, so capping
-    ///      directly improves the perceived ASR→SER lag.
-    /// Take the central window so we score the most representative speech
-    /// (turn boundaries are often less informative).
-    private static let serMaxSeconds: TimeInterval = 8.0
+    ///      the dynamic-time-axis W2V2/emotion2vec graphs and caches the
+    ///      result. Without binning, a long session with varied utterance
+    ///      lengths grows the cache monotonically — the dominant cause of
+    ///      Jetsam-style OOM kills around the 15 min mark of fast-pace
+    ///      file analysis. Three bins → at most three cached MLModels.
+    ///   3. At long unique shapes the EP has occasionally crashed the ANE
+    ///      compiler with EXC_BAD_ACCESS — pinning shape avoids that path.
+    ///   4. Inference latency scales linearly with audio length, so binning
+    ///      to the smallest fitting bin caps it.
+    ///   5. Binning lets us keep accuracy reasonable for short utterances
+    ///      (a 1.2 s utterance gets the 2 s bin, padded only ~0.8 s, vs.
+    ///      a fixed-8s shape that would dilute the 1.2 s of speech with
+    ///      6.8 s of silence).
+    /// Center-crop when over the bin; post-pad with zeros when under.
+    private static let serBinSeconds: [TimeInterval] = [2.0, 4.0, 8.0]
     private static func capForSER(_ buffer: AudioChunk) -> AudioChunk {
-        let maxSamples = Int(serMaxSeconds * buffer.sampleRate)
-        guard buffer.samples.count > maxSamples else { return buffer }
-        let extra = buffer.samples.count - maxSamples
-        let startIndex = extra / 2
-        let slice = Array(buffer.samples[startIndex..<(startIndex + maxSamples)])
+        let durSec = Double(buffer.samples.count) / buffer.sampleRate
+        let binSec = Self.serBinSeconds.first(where: { $0 >= durSec }) ?? Self.serBinSeconds.last!
+        let target = Int(binSec * buffer.sampleRate)
+        if buffer.samples.count == target { return buffer }
+        if buffer.samples.count > target {
+            let extra = buffer.samples.count - target
+            let startIndex = extra / 2
+            let slice = Array(buffer.samples[startIndex..<(startIndex + target)])
+            return AudioChunk(
+                samples: slice,
+                sampleRate: buffer.sampleRate,
+                timestamp: buffer.timestamp + Double(startIndex) / buffer.sampleRate
+            )
+        }
+        // Pad with zeros at the end. The acoustic models are mean-pool
+        // classifiers; trailing silence pulls predictions slightly toward
+        // neutral, which is a reasonable default for short utterances.
+        var padded = buffer.samples
+        padded.reserveCapacity(target)
+        padded.append(contentsOf: Array(repeating: 0, count: target - buffer.samples.count))
         return AudioChunk(
-            samples: slice,
+            samples: padded,
             sampleRate: buffer.sampleRate,
-            timestamp: buffer.timestamp + Double(startIndex) / buffer.sampleRate
+            timestamp: buffer.timestamp
         )
     }
 

@@ -8,6 +8,11 @@ transformers>=4.45
 torch>=2.4
 onnx>=1.16
 
+# FP16 quantization of the on-device ONNX models (scripts/quantize_onnx_fp16.py).
+# Halves the shipped model bytes; CoreML/ANE already compute in FP16 so the
+# accuracy impact is negligible for the encoders we ship.
+onnxconverter-common>=1.14
+
 # emotion2vec ONNX export (scripts/export_emotion2vec_onnx.py). FunASR
 # bundles its own torch+kaldi+librosa dependencies; the install is also
 # ~1 GB but reuses the torch + numpy already pinned above.

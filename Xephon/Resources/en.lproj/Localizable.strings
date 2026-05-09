@@ -27,6 +27,7 @@
 "pacing.title" = "Choose analysis pace";
 "pacing.message" = "Real-time pace matches the file's duration and gives results most consistent with live recording. Fast pace runs as quickly as the analyzer can keep up — typically several times faster — but the shorter volatile-stabilization window may produce slightly less accurate transcripts and emotion estimates.";
 "pacing.realtime" = "Real-time pace";
+"pacing.realtime.audio" = "Real-time pace (with audio)";
 "pacing.fast" = "Fast pace";
 "summary.header" = "Mood";
 "summary.calibrating" = "Calibrating…";

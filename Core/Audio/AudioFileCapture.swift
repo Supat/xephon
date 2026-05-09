@@ -29,19 +29,27 @@ public actor AudioFileCapture: AudioCapture {
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
     private let realTimePacing: Bool
+    /// When true and `realTimePacing` is also true, the file is played
+    /// out the device speaker alongside the analysis pump. Independent
+    /// of fast pacing, where playing the file at the analyzer's wall
+    /// clock would just produce chipmunked-up noise.
+    private let audioOutputEnabled: Bool
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var isAccessingScopedResource = false
+    private var audioPlayer: AVAudioPlayer?
 
     public init(
         fileURL: URL,
         chunkFrames: AVAudioFrameCount = 4096,
-        realTimePacing: Bool = false
+        realTimePacing: Bool = false,
+        audioOutputEnabled: Bool = false
     ) {
         self.fileURL = fileURL
         self.chunkFrames = chunkFrames
         self.realTimePacing = realTimePacing
+        self.audioOutputEnabled = audioOutputEnabled
     }
 
     public func start() async throws -> CaptureStreams {
@@ -91,6 +99,16 @@ public actor AudioFileCapture: AudioCapture {
             "File capture started: \(self.fileURL.lastPathComponent, privacy: .public) (\(totalFrames, privacy: .public) frames @ \(file.processingFormat.sampleRate, privacy: .public) Hz)"
         )
 
+        // Optional speaker playback: a separate AVAudioPlayer reads the
+        // same file from disk at native rate. The analysis pump runs
+        // alongside at its own wall-clock pace; both stay roughly
+        // aligned because real-time pacing matches the file timeline.
+        // We don't tap the player's output (no feedback loop into ASR);
+        // it's purely for the user's ear.
+        if realTimePacing && audioOutputEnabled {
+            startAudioPlayback()
+        }
+
         let chunkFrames = self.chunkFrames
         let realTimePacing = self.realTimePacing
         pumpTask = Task { [weak self] in
@@ -112,6 +130,8 @@ public actor AudioFileCapture: AudioCapture {
         pumpTask?.cancel()
         await pumpTask?.value
         pumpTask = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
         rawCont?.finish()
         processedCont?.finish()
         rawCont = nil
@@ -214,6 +234,33 @@ public actor AudioFileCapture: AudioCapture {
         if isAccessingScopedResource {
             fileURL.stopAccessingSecurityScopedResource()
             isAccessingScopedResource = false
+        }
+    }
+
+    /// Start the side-channel `AVAudioPlayer` for speaker playback.
+    /// Failures are non-fatal — the analysis pump runs regardless;
+    /// the user just doesn't hear anything.
+    private func startAudioPlayback() {
+        do {
+            #if os(iOS) || targetEnvironment(macCatalyst)
+            // The active session may have been left in `.record` mode by
+            // a prior live recording. Switch to `.playback` so the device
+            // unmutes the output route. Mode `.default` is fine — file
+            // analysis isn't a measurement context.
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            #endif
+            let player = try AVAudioPlayer(contentsOf: fileURL)
+            player.prepareToPlay()
+            if player.play() {
+                audioPlayer = player
+                AppLog.audio.info("audio playback started")
+            } else {
+                AppLog.audio.warning("audio playback play() returned false")
+            }
+        } catch {
+            AppLog.audio.warning("audio playback failed: \(String(describing: error), privacy: .public)")
         }
     }
 }

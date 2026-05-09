@@ -149,5 +149,28 @@ else
 fi
 
 echo
+echo "[step] FP16-quantizing on-device ONNX models…"
+# Idempotent: a sibling `<model>.fp16.tag` marks a model as already
+# converted so re-running fetch_models.sh is a no-op once weights are
+# halved. Delete the tag (or the model directory) to force a re-quantize.
+quantize_fp16() {
+  local model="$1"
+  local sentinel="${model}.fp16.tag"
+  if [ ! -f "$model" ]; then
+    echo "[skip] $model not present"
+    return
+  fi
+  if [ -f "$sentinel" ]; then
+    echo "[skip] $model (already FP16)"
+    return
+  fi
+  python scripts/quantize_onnx_fp16.py "$model"
+  touch "$sentinel"
+}
+quantize_fp16 Models/w2v2-msp-dim/model.onnx
+quantize_fp16 Models/wrime-roberta/model.onnx
+quantize_fp16 Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx
+
+echo
 echo "Models/ tree:"
 ls -la Models/

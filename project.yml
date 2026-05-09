@@ -37,29 +37,10 @@ targets:
       # APPICON_NAME below tells the compiler which `.icon` to use.
       - path: Xephon.icon
         type: file
-      # audeering W2V2 ONNX (~631 MB). Lands at Xephon.app/model.onnx.
-      # Hydrate via scripts/fetch_models.sh.
-      - path: Models/w2v2-msp-dim/model.onnx
-        type: file
-        buildPhase: resources
-        optional: true
-      # emotion2vec_plus_large full classifier ONNX (~600 MB). Folder
-      # reference because the model exceeds the 2 GB protobuf limit and is
-      # split into model.onnx (graph) + model.data (external weights),
-      # which must ship in the same directory. Hydrate via
-      # scripts/fetch_models.sh (which calls scripts/export_emotion2vec_onnx.py).
-      - path: Models/emotion2vec-plus-large/emotion2vec_onnx
-        type: folder
-        buildPhase: resources
-        optional: true
-      # WRIME-fine-tuned RoBERTa (~425 MB ONNX + tokenizer). Folder reference
-      # so the subdirectory `wrime-roberta/` is preserved in the app bundle —
-      # avoids `model.onnx` name collision with the W2V2 file above. Hydrate
-      # via scripts/export_wrime_onnx.py.
-      - path: Models/wrime-roberta
-        type: folder
-        buildPhase: resources
-        optional: true
+      # ML model weights (W2V2, emotion2vec, WRIME RoBERTa) are NOT
+      # bundled — they ship via a GitHub Release attached to the
+      # `models-v1` tag and download on first launch. See
+      # `Xephon/ModelStore.swift` and `scripts/upload_models_to_github_release.sh`.
     info:
       path: Xephon/Info.plist
       properties:
@@ -87,6 +68,9 @@ targets:
         # (to submit GPU work from background)".
         UIBackgroundModes:
           - audio
+        # Required entitlement for ActivityKit Live Activities. Without
+        # this key the system silently rejects `Activity.request`.
+        NSSupportsLiveActivities: true
     settings:
       base:
         PRODUCT_NAME: Xephon
@@ -104,6 +88,42 @@ targets:
     dependencies:
       - package: Xephon
         product: XephonCore
+      - target: XephonWidget
+        embed: true
+        codeSign: true
+
+  XephonWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: XephonWidget
+        excludes:
+          - "Info.plist"
+      # Compiled into both the main app target (via the `Xephon` source
+      # path above) and this extension. ActivityKit identifies the
+      # attributes type by name + Codable shape, so two compiled copies
+      # interoperate fine.
+      - path: Xephon/XephonActivityAttributes.swift
+        type: file
+    info:
+      path: XephonWidget/Info.plist
+      properties:
+        # `NSExtension` is mandatory for any app extension. Real-device
+        # installd rejects appex bundles missing this dict with
+        # MIInstallerErrorDomain code 39 (`AppexBundleMissingNSExtensionDict`);
+        # simulator installd is lenient. WidgetKit extensions driven
+        # by `@main WidgetBundle` only need the point identifier — the
+        # principal class is resolved from the Swift `@main` entry.
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: XephonWidget
+        PRODUCT_BUNDLE_IDENTIFIER: com.supatsaetia.xephon.widget
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: NO
+        SWIFT_EMIT_LOC_STRINGS: YES
 
   XephonTests:
     type: bundle.unit-test
@@ -143,7 +163,13 @@ schemes:
         XephonTests: [test]
         XephonEvalTests: [test]
     run:
-      config: Debug
+      # Release rather than Debug for the Run action so on-device installs
+      # (especially over Wi-Fi) ship the stripped, optimized binary —
+      # ~100 MB smaller than the Debug dylib. Tests still build Debug
+      # (separate `test.config` below), so unit-test debugging is
+      # unaffected. Use the Profile action (Cmd+I) for instrumentation
+      # builds; use Archive for distribution.
+      config: Release
     test:
       config: Debug
       gatherCoverageData: true

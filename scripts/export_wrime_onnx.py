@@ -43,6 +43,10 @@ def main() -> None:
 
     onnx_path = OUT_DIR / "model.onnx"
     with torch.no_grad():
+        # `dynamo=False` pins the legacy TorchScript-based exporter — the
+        # newer dynamo exporter (default in recent torch) writes weights
+        # to a sibling `.data` file even for sub-2GB models, which breaks
+        # the single-file shipping contract our ModelManifest assumes.
         torch.onnx.export(
             model,
             (input_ids, attention_mask),
@@ -56,6 +60,7 @@ def main() -> None:
             },
             opset_version=17,
             do_constant_folding=True,
+            dynamo=False,
         )
     size_mb = onnx_path.stat().st_size / 1024 / 1024
     print(f"Wrote {onnx_path} ({size_mb:.1f} MB)")

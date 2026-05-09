@@ -26,6 +26,8 @@
 	<string>Xephon records short conversational audio to estimate per-speaker emotion. Audio is processed entirely on this device unless you toggle Cloud ASR fallback.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Xephon transcribes Japanese conversational audio on-device using Apple Speech.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

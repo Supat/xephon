@@ -111,6 +111,14 @@ struct ContentView: View {
     @State private var showingPacingDialog: Bool = false
 
     var body: some View {
+        if !recorder.modelsReady {
+            SetupView(controller: recorder)
+        } else {
+            mainBody
+        }
+    }
+
+    private var mainBody: some View {
         NavigationStack {
             GeometryReader { geo in
                 HStack(spacing: 0) {
@@ -206,6 +214,12 @@ struct ContentView: View {
                 Button(String(localized: "pacing.realtime")) {
                     if let url = pendingFileURL {
                         Task { await recorder.startFromFile(url, realTimePacing: true) }
+                    }
+                    pendingFileURL = nil
+                }
+                Button(String(localized: "pacing.realtime.audio")) {
+                    if let url = pendingFileURL {
+                        Task { await recorder.startFromFile(url, realTimePacing: true, audioOutputEnabled: true) }
                     }
                     pendingFileURL = nil
                 }

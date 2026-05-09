@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 @preconcurrency import AVFoundation
+import ActivityKit
 import Audio
 import ASR
 import Fusion
@@ -35,6 +36,9 @@ final class RecordingController {
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
     private(set) var conversationSummary: ConversationSummary = ConversationSummary()
+    /// Set once `modelStore.ensureModels()` succeeds. Until then the
+    /// SetupView is shown in place of the main UI.
+    private(set) var modelsReady: Bool = false
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
@@ -42,6 +46,11 @@ final class RecordingController {
     var elapsedSeconds: Double {
         Double(samplesCaptured) / PipelineAudio.sampleRate
     }
+
+    /// MainActor-confined progress mirror the SetupView observes during
+    /// first-launch model hydration.
+    let modelDownload: ModelDownloadState
+    private let modelStore: ModelStore
 
     private var capture: any AudioCapture
     private let micCapture: any AudioCapture
@@ -61,6 +70,15 @@ final class RecordingController {
     private var routeWatcherTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
+    /// Lock-Screen / Dynamic Island activity. Started in `start()`,
+    /// updated from `applySegmentResult`, ended in `stop()`. All updates
+    /// are local — no APNs. Stored as the activity *ID* (Sendable
+    /// `String`) rather than the Activity reference itself —
+    /// `Activity<T>` is a non-Sendable class and storing it as
+    /// MainActor state risks data races under Swift 6 strict
+    /// concurrency. Helpers re-resolve the activity by id inside
+    /// nonisolated methods before each update.
+    private var liveActivityId: String?
     private var capturedSamples: [Float] = []
     /// Audio-time (seconds) of `capturedSamples[0]`. Starts at 0 and advances
     /// each time we trim already-processed audio from the head of the buffer.
@@ -72,31 +90,36 @@ final class RecordingController {
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
         streamingTranscriber: (any StreamingTranscriber)? = nil,
-        pipeline: AnalysisPipeline? = nil
+        pipeline: AnalysisPipeline? = nil,
+        modelStore: ModelStore? = nil
     ) {
         self.capture = capture
         self.micCapture = capture
         self.streamingTranscriber = streamingTranscriber ?? StreamingSpeechAnalyzerTranscriber()
         self.pipeline = pipeline
+        // ModelDownloadState is @MainActor — RecordingController is too,
+        // so it's built here (synchronously) and shared with the
+        // non-isolated ModelStore actor by reference.
+        let downloadState = ModelDownloadState()
+        let resolvedStore = modelStore ?? ModelStore(state: downloadState)
+        self.modelStore = resolvedStore
+        self.modelDownload = downloadState
+        // If a pipeline was injected (tests), assume models are ready.
+        // Otherwise the SetupView gates the main UI until the
+        // background hydration completes.
+        if pipeline != nil {
+            self.modelsReady = true
+        }
         // Pre-warm the pipeline in the background at first construction so heavy
         // SER constructors (W2V2 ONNX ~631 MB) and the SpeechAnalyzer asset
         // install can complete before the user finishes their first sentence.
+        // First-launch hydration of the models (download from GitHub Release
+        // when the bundle doesn't ship them) happens inside the Task too —
+        // SER constructors all depend on URLs the ModelStore resolves.
         if pipeline == nil {
-            let warmTask = Task.detached(priority: .userInitiated) {
-                let configured = await AnalysisPipeline.autoConfigured()
-                AppLog.app.info("Pipeline pre-warm complete")
-                return configured
-            }
-            self.pipelineTask = warmTask
-            // Surface text-SER backend availability as soon as the pre-warm
-            // resolves, so the DeBERTa/Apple FM picker can appear before the
-            // user records for the first time.
             Task { @MainActor [weak self] in
-                let configured = await warmTask.value
-                guard let self, self.pipeline == nil else { return }
-                self.pipeline = configured
-                self.pipelineTask = nil
-                await self.refreshTextSERState(from: configured)
+                guard let self else { return }
+                await self.hydrateAndWarm()
             }
         }
 
@@ -124,10 +147,50 @@ final class RecordingController {
             await refreshTextSERState(from: configured)
             return configured
         }
-        let configured = await AnalysisPipeline.autoConfigured()
+        let configured = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
         self.pipeline = configured
         await refreshTextSERState(from: configured)
         return configured
+    }
+
+    /// Run model hydration → pipeline warm → text-SER state refresh.
+    /// Splits cleanly so the SetupView can call `retryModelDownload()`
+    /// after a failure without re-spawning the wrapping init Task.
+    private func hydrateAndWarm() async {
+        do {
+            try await modelStore.ensureModels()
+            self.modelsReady = true
+        } catch {
+            await MainActor.run {
+                self.modelDownload.markFailed(String(describing: error))
+            }
+            AppLog.app.error("model hydration failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+
+        let warmTask = Task.detached(priority: .userInitiated) { [modelStore] in
+            let configured = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
+            AppLog.app.info("Pipeline pre-warm complete")
+            return configured
+        }
+        self.pipelineTask = warmTask
+        let configured = await warmTask.value
+        guard self.pipeline == nil else { return }
+        self.pipeline = configured
+        self.pipelineTask = nil
+        await self.refreshTextSERState(from: configured)
+    }
+
+    /// Called from SetupView when the user taps Retry after a download
+    /// failure. Resets the install dir and re-runs hydration.
+    func retryModelDownload() async {
+        do {
+            try await modelStore.resetForRedownload()
+        } catch {
+            AppLog.app.warning("resetForRedownload failed: \(String(describing: error), privacy: .public)")
+        }
+        modelDownload.reset()
+        await hydrateAndWarm()
     }
 
     private func refreshTextSERState(from pipeline: AnalysisPipeline) async {
@@ -178,6 +241,11 @@ final class RecordingController {
             if let pipeline = self.pipeline {
                 Task { await pipeline.resetSpeakerTracking() }
             }
+            // Surface the session on the Lock Screen / Dynamic Island.
+            // Has to happen AFTER `sourceMode` is set (handled by
+            // `startFromFile` for file-mode) so the activity captures
+            // the right source label.
+            startLiveActivity()
 
             // Pump 1 (raw): drain → SER buffer + level meter. The raw stream
             // preserves prosody for SER and prosody analyses.
@@ -223,11 +291,21 @@ final class RecordingController {
             // text-SER LLM call on segment N doesn't block segment N+1.
             // Results are inserted in start-time order regardless of which
             // task finishes first.
+            //
+            // Concurrency is capped at `maxConcurrentSegments` to bound peak
+            // memory during fast-pace file analysis. Without the cap, the
+            // file capture pump can deliver tens of segments before any have
+            // finalized, each holding its own audio slice + ONNX I/O tensors
+            // — enough to OOM on long files. The poll-and-yield wait is
+            // coarse but lets the MainActor service updates between checks.
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 let pipeline = await self.ensurePipeline()
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
+                        while self.inflightSegments >= Self.maxConcurrentSegments {
+                            try? await Task.sleep(nanoseconds: 5_000_000)
+                        }
                         let segmentBuffer = self.sliceForSegment(segment)
                         // Snapshot the diarization window BEFORE the trim —
                         // we want the previous ~60 s of audio plus this
@@ -307,10 +385,12 @@ final class RecordingController {
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
         // finalize + per-segment SER for any tail audio).
         phase = .analyzing
+        await pushLiveActivityUpdate()
         await streamingTranscriber.finish()
         await analysisTask?.value
         analysisTask = nil
         phase = .idle
+        await endLiveActivity()
 
         // File-backed sessions are one-shot: drop back to the live mic so
         // the next Record tap behaves normally. The file analysis output
@@ -363,10 +443,22 @@ final class RecordingController {
     ///   audio is yielded as fast as the analyzer can ingest, which can
     ///   complete several times faster than real time at some risk to
     ///   accuracy on long files.
-    func startFromFile(_ url: URL, realTimePacing: Bool = false) async {
+    /// - Parameter audioOutputEnabled: only meaningful with real-time
+    ///   pacing — plays the file out the speaker alongside analysis so
+    ///   the user can hear what's being transcribed. Ignored under
+    ///   fast pacing (no useful audio at multi-x speed).
+    func startFromFile(
+        _ url: URL,
+        realTimePacing: Bool = false,
+        audioOutputEnabled: Bool = false
+    ) async {
         guard phase == .idle else { return }
         sourceMode = .file(url)
-        capture = AudioFileCapture(fileURL: url, realTimePacing: realTimePacing)
+        capture = AudioFileCapture(
+            fileURL: url,
+            realTimePacing: realTimePacing,
+            audioOutputEnabled: audioOutputEnabled
+        )
         availableInputs = []
         currentInputUID = nil
         await start()
@@ -395,6 +487,101 @@ final class RecordingController {
         lastAcousticDuration = metrics.acousticDuration
         lastTextDuration = metrics.textDuration
         lastSegmentTotal = metrics.totalDuration
+        // Push the new state to the Lock Screen / Dynamic Island.
+        Task { await self.pushLiveActivityUpdate() }
+    }
+
+    // MARK: - Live Activity lifecycle
+
+    /// Start the Activity at session start. Failures are logged and
+    /// non-fatal — the session keeps running, the Lock Screen just
+    /// shows nothing.
+    private func startLiveActivity() {
+        guard liveActivityId == nil else { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            AppLog.app.info("Live Activities disabled by user; skipping")
+            return
+        }
+        let label: String
+        switch sourceMode {
+        case .microphone: label = "Microphone"
+        case .file(let url): label = url.lastPathComponent
+        }
+        let attrs = XephonActivityAttributes(
+            sessionStartedAt: Date(),
+            sourceLabel: label
+        )
+        let initial = XephonActivityAttributes.ContentState(
+            elapsedSeconds: 0,
+            utteranceCount: 0,
+            topLabel: nil,
+            valence: nil,
+            arousal: nil,
+            isAnalyzing: false
+        )
+        do {
+            let activity = try Activity.request(
+                attributes: attrs,
+                content: ActivityContent(state: initial, staleDate: nil)
+            )
+            liveActivityId = activity.id
+        } catch {
+            AppLog.app.warning("Live Activity start failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func pushLiveActivityUpdate() async {
+        guard let id = liveActivityId else { return }
+        let state = XephonActivityAttributes.ContentState(
+            elapsedSeconds: elapsedSeconds,
+            utteranceCount: utterances.count,
+            topLabel: conversationSummary.topLabel,
+            // Recenter to [-1, +1] for parity with the in-app summary.
+            valence: conversationSummary.meanValence.map { $0 * 2 - 1 },
+            arousal: conversationSummary.meanArousal.map { $0 * 2 - 1 },
+            isAnalyzing: phase == .analyzing
+        )
+        await Self.update(activityId: id, state: state)
+    }
+
+    /// End the Activity at session stop. We dismiss after a short
+    /// linger so the user can glance at the final state on the Lock
+    /// Screen before it disappears.
+    private func endLiveActivity() async {
+        guard let id = liveActivityId else { return }
+        liveActivityId = nil
+        let final = XephonActivityAttributes.ContentState(
+            elapsedSeconds: elapsedSeconds,
+            utteranceCount: utterances.count,
+            topLabel: conversationSummary.topLabel,
+            valence: conversationSummary.meanValence.map { $0 * 2 - 1 },
+            arousal: conversationSummary.meanArousal.map { $0 * 2 - 1 },
+            isAnalyzing: false
+        )
+        await Self.end(activityId: id, finalState: final)
+    }
+
+    /// Nonisolated helpers — the `Activity<T>` reference never leaves
+    /// these functions, so it never crosses an isolation boundary.
+    nonisolated private static func update(
+        activityId: String,
+        state: XephonActivityAttributes.ContentState
+    ) async {
+        guard let activity = Activity<XephonActivityAttributes>.activities
+            .first(where: { $0.id == activityId }) else { return }
+        await activity.update(ActivityContent(state: state, staleDate: nil))
+    }
+
+    nonisolated private static func end(
+        activityId: String,
+        finalState: XephonActivityAttributes.ContentState
+    ) async {
+        guard let activity = Activity<XephonActivityAttributes>.activities
+            .first(where: { $0.id == activityId }) else { return }
+        await activity.end(
+            ActivityContent(state: finalState, staleDate: nil),
+            dismissalPolicy: .after(Date().addingTimeInterval(120))
+        )
     }
 
     fileprivate func beginSegmentInflight() {
@@ -427,6 +614,11 @@ final class RecordingController {
     /// `diarizationContextSeconds * 16 kHz * 4 B` (~3.8 MB at 60 s) plus
     /// the not-yet-finalized rolling buffer, regardless of session length.
     private static let diarizationContextSeconds: TimeInterval = 60
+    /// Cap on concurrent SER+fusion tasks. Fast-pace file analysis can
+    /// otherwise stack dozens of in-flight segments before any finalize,
+    /// each retaining its audio slice + ONNX I/O tensors — sufficient to
+    /// OOM on long files. 4 keeps GPU/ANE busy without runaway memory.
+    private static let maxConcurrentSegments: Int = 4
     private func trimProcessedAudio(below boundary: TimeInterval) {
         let cutoff = boundary - Self.diarizationContextSeconds
         let dropSeconds = cutoff - capturedSamplesOrigin
