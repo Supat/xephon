@@ -2,11 +2,25 @@ import Foundation
 @preconcurrency import AVFoundation
 import XephonLogging
 
-/// `AudioCapture` implementation that streams an audio file as if it were
-/// being captured live. Reads `fileURL` in fixed-size chunks, resamples to
-/// the pipeline's 16 kHz mono Float32 format, and yields chunks paced to
-/// real-time so the rest of the pipeline (SpeechAnalyzer's volatile previews,
-/// per-segment SER, the live UI) behaves exactly as it does for the mic.
+/// `AudioCapture` implementation that streams an audio file through the
+/// same pipeline used for the mic. Reads `fileURL` in fixed-size chunks,
+/// resamples to 16 kHz mono Float32, and yields chunks to the raw and
+/// processed streams.
+///
+/// Two pacing modes:
+///   - `realTimePacing: true`  — sleeps the chunk's source duration after
+///     each yield, so volatile previews and stage animations look the same
+///     as a live recording. A 5-min file analyzes in 5 min.
+///   - `realTimePacing: false` (default) — yields back-to-back so the
+///     analyzer ingests audio as fast as it can decode. SpeechAnalyzer's
+///     volatile/final logic doesn't depend on wall-clock time, so finals
+///     still stabilize correctly; the whole file finishes in roughly the
+///     time it takes the analyzer + SER to process it (typically several
+///     times faster than real time on M-series silicon).
+///
+/// Streams use unbounded buffering in fast mode so the pump never has to
+/// drop chunks while downstream catches up — bounded by file size, since
+/// the pump exits at EOF.
 ///
 /// Both `raw` and `processed` streams carry the same content — the speech
 /// boost EQ doesn't apply to pre-recorded material. Input selection is
@@ -14,14 +28,20 @@ import XephonLogging
 public actor AudioFileCapture: AudioCapture {
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
+    private let realTimePacing: Bool
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var isAccessingScopedResource = false
 
-    public init(fileURL: URL, chunkFrames: AVAudioFrameCount = 4096) {
+    public init(
+        fileURL: URL,
+        chunkFrames: AVAudioFrameCount = 4096,
+        realTimePacing: Bool = false
+    ) {
         self.fileURL = fileURL
         self.chunkFrames = chunkFrames
+        self.realTimePacing = realTimePacing
     }
 
     public func start() async throws -> CaptureStreams {
@@ -54,8 +74,15 @@ public actor AudioFileCapture: AudioCapture {
         }
         converter.primeMethod = .none
 
-        let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
-        let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        // Fast mode pumps faster than the consumer can drain, so unbounded
+        // buffering avoids dropping chunks. Memory is bounded by file size
+        // (16-bit-equivalent at 16 kHz mono Float32 = ~3.8 MB / minute).
+        // Real-time mode keeps the bounded policy used for the live mic
+        // since the producer is naturally rate-limited.
+        let bufferingPolicy: AsyncStream<AudioChunk>.Continuation.BufferingPolicy =
+            realTimePacing ? .bufferingNewest(64) : .unbounded
+        let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: bufferingPolicy)
+        let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: bufferingPolicy)
         self.rawCont = rawCont
         self.processedCont = processedCont
 
@@ -65,12 +92,14 @@ public actor AudioFileCapture: AudioCapture {
         )
 
         let chunkFrames = self.chunkFrames
+        let realTimePacing = self.realTimePacing
         pumpTask = Task { [weak self] in
             await self?.pump(
                 file: file,
                 converter: converter,
                 outputFormat: outputFormat,
                 chunkFrames: chunkFrames,
+                realTimePacing: realTimePacing,
                 rawCont: rawCont,
                 processedCont: processedCont
             )
@@ -106,6 +135,7 @@ public actor AudioFileCapture: AudioCapture {
         converter: AVAudioConverter,
         outputFormat: AVAudioFormat,
         chunkFrames: AVAudioFrameCount,
+        realTimePacing: Bool,
         rawCont: AsyncStream<AudioChunk>.Continuation,
         processedCont: AsyncStream<AudioChunk>.Continuation
     ) async {
@@ -164,9 +194,16 @@ public actor AudioFileCapture: AudioCapture {
             processedCont.yield(chunk)
 
             elapsed += chunkSecondsAtFile
-            // Real-time pace so SpeechAnalyzer's volatile→final stabilization
-            // and the SER pipeline behave as they do for live capture.
-            try? await Task.sleep(nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000))
+            if realTimePacing {
+                // Match wall-clock to file timeline so volatile previews and
+                // stage animations look identical to a live recording.
+                try? await Task.sleep(nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000))
+            } else {
+                // Yield the actor briefly so we don't starve consumers on the
+                // same MainActor / scheduling pool. Zero-duration cooperative
+                // yield, no real wall-clock delay.
+                await Task.yield()
+            }
         }
 
         rawCont.finish()

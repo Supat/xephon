@@ -77,7 +77,7 @@ final class AnalysisPipeline: Sendable {
         )
 
         AppLog.app.info(
-            "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), text=\(textSER != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
+            "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), deberta=\(deberta != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
         )
 
         return AnalysisPipeline(

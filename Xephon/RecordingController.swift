@@ -307,13 +307,18 @@ final class RecordingController {
     // MARK: - File-backed source
 
     /// Switch to a file-backed audio source and immediately begin streaming
-    /// it through the same pipeline used for the microphone. The file plays
-    /// at real-time pace so SpeechAnalyzer's volatile→final stabilization
-    /// and per-segment SER behave the same way they do for live audio.
-    func startFromFile(_ url: URL) async {
+    /// it through the same pipeline used for the microphone.
+    ///
+    /// - Parameter realTimePacing: when `true`, audio is yielded at the
+    ///   file's wall-clock duration so SpeechAnalyzer behaves identically
+    ///   to a live recording (best ASR/SER quality). When `false` (default),
+    ///   audio is yielded as fast as the analyzer can ingest, which can
+    ///   complete several times faster than real time at some risk to
+    ///   accuracy on long files.
+    func startFromFile(_ url: URL, realTimePacing: Bool = false) async {
         guard phase == .idle else { return }
         sourceMode = .file(url)
-        capture = AudioFileCapture(fileURL: url)
+        capture = AudioFileCapture(fileURL: url, realTimePacing: realTimePacing)
         availableInputs = []
         currentInputUID = nil
         await start()
