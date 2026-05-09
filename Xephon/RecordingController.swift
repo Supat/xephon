@@ -328,19 +328,33 @@ final class RecordingController {
             rawTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 for await buffer in streams.raw {
-                    self.capturedSamples.append(contentsOf: buffer.samples)
-                    self.samplesCaptured += buffer.samples.count
                     // Enforce the hard cap from here so a stalled ASR
                     // (no segment finalizing → no segment-driven trim)
                     // can't let the buffer grow past `maxBufferedSamples`.
                     // Drops the oldest excess and advances the origin so
                     // `sliceForSegment` continues to compute correct
                     // indices for any segments that do still finalize.
-                    if self.capturedSamples.count > Self.maxBufferedSamples {
-                        let excess = self.capturedSamples.count - Self.maxBufferedSamples
+                    //
+                    // Trim BEFORE append, not after: append-then-trim lets
+                    // the array's count momentarily exceed the reserved
+                    // capacity, which forces Array to double its backing
+                    // store (a 16 MB+ allocation). Under sustained memory
+                    // pressure that allocation occasionally fails and
+                    // crashes the recording task. Trimming first keeps
+                    // count ≤ reserved capacity so no reallocation ever
+                    // happens. `removeFirst` shifts in place and does not
+                    // shrink capacity, so the next append fits.
+                    let projected = self.capturedSamples.count + buffer.samples.count
+                    if projected > Self.maxBufferedSamples {
+                        // `min` guards against a hypothetical capture chunk
+                        // larger than `maxBufferedSamples` itself — without
+                        // it `removeFirst` would trap on n > count.
+                        let excess = min(projected - Self.maxBufferedSamples, self.capturedSamples.count)
                         self.capturedSamples.removeFirst(excess)
                         self.capturedSamplesOrigin += Double(excess) / PipelineAudio.sampleRate
                     }
+                    self.capturedSamples.append(contentsOf: buffer.samples)
+                    self.samplesCaptured += buffer.samples.count
                     self.inputLevel = Self.smoothLevel(
                         previous: self.inputLevel,
                         current: Self.perceptualLevel(buffer.samples)

@@ -305,47 +305,52 @@ struct ContentView: View {
     // MARK: - Left pane (1/3): controls
 
     private var controlPane: some View {
-        VStack(spacing: 16) {
-            inputPicker
+        // Wrapped in a ScrollView so the cards (Settings + Pipeline +
+        // Summary + Statistics) can extend below the visible area
+        // without clipping. On smaller iPad split-screens or with all
+        // cards expanded, the stack outgrows the viewport — without a
+        // scroll container the Statistics card falls off-screen.
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                inputPicker
 
-            HStack(spacing: 12) {
-                recordButton
-                openFileButton
+                HStack(spacing: 12) {
+                    recordButton
+                    openFileButton
+                }
+
+                if recorder.isRecording {
+                    LevelMeterView(level: recorder.inputLevel)
+                        .frame(maxWidth: 280)
+                }
+
+                statusLine
+
+                if let error = recorder.errorMessage {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                        .multilineTextAlignment(.center)
+                }
+
+                SettingsCard(
+                    speechBoostToggle: { speechBoostToggle },
+                    textSERPicker: { textSERPicker }
+                )
+
+                PipelineCard(recorder: recorder)
+
+                SummaryCard(
+                    summary: recorder.conversationSummary,
+                    totalDuration: recorder.conversationSummary.totalDuration
+                )
+
+                StatisticsCard(summary: recorder.conversationSummary)
             }
-
-            if recorder.isRecording {
-                LevelMeterView(level: recorder.inputLevel)
-                    .frame(maxWidth: 280)
-            }
-
-            statusLine
-
-            if let error = recorder.errorMessage {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
-                    .multilineTextAlignment(.center)
-            }
-
-            SettingsCard(
-                speechBoostToggle: { speechBoostToggle },
-                textSERPicker: { textSERPicker }
-            )
-
-            PipelineCard(recorder: recorder)
-
-            SummaryCard(
-                summary: recorder.conversationSummary,
-                totalDuration: recorder.conversationSummary.totalDuration
-            )
-
-            StatisticsCard(summary: recorder.conversationSummary)
-
-            Spacer(minLength: 0)
+            .padding()
+            .frame(maxWidth: .infinity)
         }
-        .padding()
-        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Right pane (2/3): transcript
