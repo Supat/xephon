@@ -77,11 +77,19 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showingFilePicker = true
+                        Task {
+                            if let url = await recorder.exportJSON() {
+                                shareURL = url
+                            }
+                        }
                     } label: {
-                        Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
+                        Label(String(localized: "export.json"), systemImage: "square.and.arrow.up")
                     }
-                    .disabled(recorder.isRecording || recorder.isAnalyzing)
+                    .disabled(
+                        recorder.utterances.isEmpty
+                            || recorder.isRecording
+                            || recorder.isAnalyzing
+                    )
                 }
             }
             .sheet(item: $shareURL) { url in
@@ -176,7 +184,10 @@ struct ContentView: View {
 
             inputPicker
 
-            recordButton
+            HStack(spacing: 12) {
+                recordButton
+                openFileButton
+            }
 
             if recorder.isRecording {
                 LevelMeterView(level: recorder.inputLevel)
@@ -197,10 +208,6 @@ struct ContentView: View {
                 .padding(.top, 4)
 
             Spacer(minLength: 0)
-
-            if !recorder.utterances.isEmpty {
-                exportButton
-            }
         }
         .padding()
         .frame(maxHeight: .infinity)
@@ -348,6 +355,18 @@ struct ContentView: View {
         .disabled(recorder.isAnalyzing)
     }
 
+    private var openFileButton: some View {
+        Button {
+            showingFilePicker = true
+        } label: {
+            Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
+                .font(.title3)
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .disabled(recorder.isRecording || recorder.isAnalyzing)
+    }
+
     @ViewBuilder
     private var statusLine: some View {
         if recorder.isRecording {
@@ -399,18 +418,6 @@ struct ContentView: View {
         }
     }
 
-    private var exportButton: some View {
-        Button {
-            Task {
-                if let url = await recorder.exportJSON() {
-                    shareURL = url
-                }
-            }
-        } label: {
-            Label(String(localized: "export.json"), systemImage: "square.and.arrow.up")
-        }
-        .buttonStyle(.bordered)
-    }
 }
 
 private struct UtteranceRow: View {
@@ -551,14 +558,19 @@ private struct PipelineCard: View {
                     state: asrState,
                     metric: asrMetric
                 )
-                if !recorder.volatileText.isEmpty {
-                    Text("“\(recorder.volatileText)…”")
-                        .font(.caption2.italic())
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 24)
-                        .lineLimit(2)
-                        .truncationMode(.head)
-                }
+                // Always render the volatile-preview region, even when empty,
+                // so the pipeline panel keeps a fixed height and doesn't
+                // shift the rows below as text streams in. `reservesSpace`
+                // pads the Text to its line limit regardless of content;
+                // `.head` truncation keeps the most recent words visible
+                // when the preview overflows the 5-line budget.
+                Text(recorder.volatileText.isEmpty ? " " : "“\(recorder.volatileText)…”")
+                    .font(.caption2.italic())
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 24)
+                    .lineLimit(5, reservesSpace: true)
+                    .truncationMode(.head)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             StageRow(
                 icon: "waveform",
