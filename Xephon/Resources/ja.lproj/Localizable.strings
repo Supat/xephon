@@ -28,3 +28,7 @@
 "pacing.message" = "リアルタイムはファイルの長さに合わせて再生し、ライブ録音と同等の精度になります。高速は解析器が処理できる最大速度で進めるため通常は数倍速くなりますが、ボラタイル区間の安定化時間が短くなるため、文字起こしと感情推定の精度がやや低下する可能性があります。";
 "pacing.realtime" = "リアルタイム";
 "pacing.fast" = "高速";
+"summary.header" = "ムード";
+"summary.calibrating" = "校正中…";
+"summary.utterances" = "%d 件の発話 · %@";
+"summary.dispersion" = "± %.2f";

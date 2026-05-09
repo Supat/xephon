@@ -34,6 +34,7 @@ final class RecordingController {
     private(set) var lastSegmentTotal: TimeInterval?
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
+    private(set) var conversationSummary: ConversationSummary = ConversationSummary()
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
@@ -168,6 +169,7 @@ final class RecordingController {
             errorMessage = nil
             samplesCaptured = 0
             utterances = []
+            conversationSummary.reset()
             capturedSamples.removeAll(keepingCapacity: true)
             capturedSamplesOrigin = 0
 
@@ -381,6 +383,7 @@ final class RecordingController {
         let stamped = estimate.withSpeechBoost(isSpeechBoostEnabled)
         let index = utterances.firstIndex { $0.start > stamped.start } ?? utterances.endIndex
         utterances.insert(stamped, at: index)
+        conversationSummary.update(with: stamped)
         lastAcousticDuration = metrics.acousticDuration
         lastTextDuration = metrics.textDuration
         lastSegmentTotal = metrics.totalDuration
