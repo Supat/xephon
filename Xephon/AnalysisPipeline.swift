@@ -382,12 +382,26 @@ final class AnalysisPipeline: Sendable {
                 timestamp: buffer.timestamp + Double(startIndex) / buffer.sampleRate
             )
         }
-        // Pad with zeros at the end. The acoustic models are mean-pool
-        // classifiers; trailing silence pulls predictions slightly toward
-        // neutral, which is a reasonable default for short utterances.
+        // Repeat-pad rather than zero-pad. The acoustic models are
+        // mean-pool classifiers, and silence has a non-trivial bias on
+        // both: W2V2 predicts roughly `A=0.61, V=0.39` on silence (the
+        // "mild middle"), and emotion2vec predicts `sad≈99%`. Padding a
+        // 3 s utterance to a 4 s bin with zeros pulls the mean ~25%
+        // toward those silence baselines — enough to flip a borderline
+        // categorical label and visibly skew V/A/D. Looping the original
+        // samples instead keeps the bin filled with the utterance's own
+        // acoustic character, so the mean-pool window represents the
+        // speech rather than a speech/silence blend. The micro-clicks
+        // at the loop seams are spectrally negligible compared to the
+        // 25% silence-mean shift the prior approach introduced.
+        guard !buffer.samples.isEmpty else { return buffer }
         var padded = buffer.samples
         padded.reserveCapacity(target)
-        padded.append(contentsOf: Array(repeating: 0, count: target - buffer.samples.count))
+        while padded.count < target {
+            let needed = target - padded.count
+            let chunk = min(needed, buffer.samples.count)
+            padded.append(contentsOf: buffer.samples.prefix(chunk))
+        }
         return AudioChunk(
             samples: padded,
             sampleRate: buffer.sampleRate,

@@ -26,10 +26,10 @@
 "file.open" = "Open File";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";
-"pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace runs at 4× real time — the highest speed at which the on-device speech recognizer's segment boundaries stay aligned with real-time, so SER classifications stay consistent.";
+"pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace runs at 8× real time, preserving the on-device speech recognizer's segment boundaries closely enough that SER classifications stay consistent with real-time.";
 "pacing.realtime" = "Real-time pace";
 "pacing.realtime.audio" = "Real-time pace (with audio)";
-"pacing.fast" = "Fast pace (4×)";
+"pacing.fast" = "Fast pace (8×)";
 "summary.header" = "Mood";
 "summary.calibrating" = "Calibrating…";
 "summary.utterances" = "%d utterances · %@";

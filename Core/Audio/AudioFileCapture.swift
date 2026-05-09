@@ -11,16 +11,16 @@ import XephonLogging
 ///   - `realTimePacing: true`  — sleeps the chunk's source duration after
 ///     each yield, so volatile previews and stage animations look the same
 ///     as a live recording. A 5-min file analyzes in 5 min.
-///   - `realTimePacing: false` (default) — fixed 4× real-time. Sleeps
-///     `chunkDuration / 4` after each yield, so a 5-min file finishes in
-///     ~75 s. Empirically the highest multiplier at which SpeechAnalyzer's
-///     volatile-stabilization window still fires consistently — going
-///     faster shifts the segment finalization timestamps relative to
-///     real-time mode, which (because `capForSER` quantizes audio length
-///     into 2/4/8 s bins) flips the dominant emotion label for the same
-///     utterance. 4× preserves segment boundaries → preserves SER input
-///     bytes → preserves labels. Earlier "as fast as the analyzer can
-///     keep up" was unbounded and produced both label drift AND OOMs.
+///   - `realTimePacing: false` (default) — fixed N× real-time per
+///     `fastPaceMultiplier`. Sleeps `chunkDuration / N` after each yield,
+///     so a 5-min file finishes in `5 min / N`. Empirically 4–8× still
+///     preserves SpeechAnalyzer's volatile-stabilization timing relative
+///     to real-time, which (because `capForSER` quantizes audio length
+///     into 2/4/8 s bins) is what keeps SER labels stable across modes.
+///     Going significantly higher shifts segment finalization
+///     timestamps and can flip dominant labels. The earlier "as fast as
+///     the analyzer can keep up" approach was unbounded and produced
+///     both label drift AND OOMs.
 ///
 /// Streams use unbounded buffering in fast mode so the pump never has to
 /// drop chunks while downstream catches up — bounded by file size, since
@@ -30,14 +30,14 @@ import XephonLogging
 /// boost EQ doesn't apply to pre-recorded material. Input selection is
 /// disabled while a file is the active source.
 public actor AudioFileCapture: AudioCapture {
-    /// Multiplier used by fast-pace mode. 4× is empirically the fastest
-    /// pacing at which SpeechAnalyzer's segment finalization stays
-    /// aligned with real-time mode — the threshold above which segment
-    /// boundary timestamps drift, sometimes flipping a `capForSER` bin
-    /// and producing different SER labels for the same audio. Bumping
-    /// this requires re-validating SER label stability against a
-    /// reference set.
-    private static let fastPaceMultiplier: Int = 4
+    /// Multiplier used by fast-pace mode. Empirically 4–8× preserves
+    /// SpeechAnalyzer's segment-boundary alignment with real-time mode
+    /// on M-class iPads; above this range the volatile-stabilization
+    /// timers fire at different timestamps, sometimes flipping a
+    /// `capForSER` bin and producing different SER labels for the same
+    /// audio. Bumping this requires re-validating SER label stability
+    /// against a reference set.
+    private static let fastPaceMultiplier: Int = 8
 
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
