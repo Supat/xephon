@@ -11,10 +11,10 @@
           "image-name" : "waveformandmic.png",
           "name" : "waveformandmic",
           "position" : {
-            "scale" : 0.75,
+            "scale" : 0.6,
             "translation-in-points" : [
-              -105,
-              -52
+              -70,
+              -50
             ]
           }
         }

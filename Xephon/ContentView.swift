@@ -58,6 +58,7 @@ struct ContentView: View {
     @State private var showingFilePicker: Bool = false
     @State private var pendingFileURL: URL?
     @State private var showingFileDiscardConfirm: Bool = false
+    @State private var showingPacingDialog: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -94,11 +95,11 @@ struct ContentView: View {
                 switch result {
                 case .success(let urls):
                     guard let url = urls.first else { return }
+                    pendingFileURL = url
                     if !recorder.utterances.isEmpty {
-                        pendingFileURL = url
                         showingFileDiscardConfirm = true
                     } else {
-                        Task { await recorder.startFromFile(url) }
+                        showingPacingDialog = true
                     }
                 case .failure(let error):
                     AppLog.app.error("file picker: \(String(describing: error), privacy: .public)")
@@ -125,10 +126,9 @@ struct ContentView: View {
                 isPresented: $showingFileDiscardConfirm
             ) {
                 Button(String(localized: "record.discardConfirm.confirm"), role: .destructive) {
-                    if let url = pendingFileURL {
-                        Task { await recorder.startFromFile(url) }
-                    }
-                    pendingFileURL = nil
+                    // Discard accepted — proceed to pacing choice. The
+                    // pendingFileURL is preserved across alerts.
+                    showingPacingDialog = true
                 }
                 Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
                     pendingFileURL = nil
@@ -140,6 +140,28 @@ struct ContentView: View {
                         recorder.utterances.count
                     )
                 )
+            }
+            .alert(
+                String(localized: "pacing.title"),
+                isPresented: $showingPacingDialog
+            ) {
+                Button(String(localized: "pacing.realtime")) {
+                    if let url = pendingFileURL {
+                        Task { await recorder.startFromFile(url, realTimePacing: true) }
+                    }
+                    pendingFileURL = nil
+                }
+                Button(String(localized: "pacing.fast")) {
+                    if let url = pendingFileURL {
+                        Task { await recorder.startFromFile(url, realTimePacing: false) }
+                    }
+                    pendingFileURL = nil
+                }
+                Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
+                    pendingFileURL = nil
+                }
+            } message: {
+                Text(String(localized: "pacing.message"))
             }
         }
     }
