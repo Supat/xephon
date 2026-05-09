@@ -1,6 +1,7 @@
 import Foundation
 import OnnxRuntimeBindings
 import Audio
+import SERRuntime
 import XephonLogging
 
 // audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim → V/A/D in [0, 1].
@@ -29,7 +30,8 @@ public actor W2V2DimensionalSER: DimensionalAcousticSER {
     }
 
     private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
-        let env = try ORTEnv(loggingLevel: .warning)
+        // Process-wide ORTEnv. See `SERRuntime.ORTRuntime` for why.
+        let env = ORTRuntime.sharedEnv
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
         // Cap graph optimization at `Extended`. The default `All` tier

@@ -26,6 +26,7 @@ let package = Package(
                 "Audio",
                 "ASR",
                 "Diarization",
+                "SERRuntime",
                 "SERAcoustic",
                 "SERText",
                 "Fusion",
@@ -35,6 +36,7 @@ let package = Package(
         .library(name: "Audio",         targets: ["Audio"]),
         .library(name: "ASR",           targets: ["ASR"]),
         .library(name: "Diarization",   targets: ["Diarization"]),
+        .library(name: "SERRuntime",    targets: ["SERRuntime"]),
         .library(name: "SERAcoustic",   targets: ["SERAcoustic"]),
         .library(name: "SERText",       targets: ["SERText"]),
         .library(name: "Fusion",        targets: ["Fusion"]),
@@ -78,10 +80,18 @@ let package = Package(
             path: "Core/Diarization"
         ),
         .target(
+            name: "SERRuntime",
+            dependencies: [
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
+            ],
+            path: "Core/SER/Runtime"
+        ),
+        .target(
             name: "SERAcoustic",
             dependencies: [
                 "XephonLogging",
                 "Audio",
+                "SERRuntime",
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
             ],
             path: "Core/SER/Acoustic"
@@ -90,6 +100,7 @@ let package = Package(
             name: "SERText",
             dependencies: [
                 "XephonLogging",
+                "SERRuntime",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
             ],

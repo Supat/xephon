@@ -2,6 +2,7 @@ import Foundation
 import OnnxRuntimeBindings
 import Tokenizers
 import Hub
+import SERRuntime
 import XephonLogging
 
 // On-device WRIME text-emotion classifier. Despite the type name (kept for
@@ -87,7 +88,8 @@ public actor DeBERTaWRIME: TextSER {
     }
 
     private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
-        let env = try ORTEnv(loggingLevel: .warning)
+        // Process-wide ORTEnv. See `SERRuntime.ORTRuntime` for why.
+        let env = ORTRuntime.sharedEnv
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
         // See W2V2DimensionalSER for rationale: the default `All` tier

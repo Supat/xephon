@@ -1,6 +1,7 @@
 import Foundation
 import OnnxRuntimeBindings
 import Audio
+import SERRuntime
 import XephonLogging
 
 // emotion2vec_plus_large → 9-class softmax (angry, disgusted, fearful, happy,
@@ -41,7 +42,8 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
     }
 
     private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
-        let env = try ORTEnv(loggingLevel: .warning)
+        // Process-wide ORTEnv. See `SERRuntime.ORTRuntime` for why.
+        let env = ORTRuntime.sharedEnv
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(2)
         // See W2V2DimensionalSER for rationale: the default `All` tier
