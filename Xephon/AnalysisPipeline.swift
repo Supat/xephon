@@ -689,21 +689,30 @@ final class AnalysisPipeline: Sendable {
             tokens: asr.tokens
         )
 
-        // Boundary-to-largest-pause: when the sentence has exactly
-        // two speakers, snap the boundary to the largest internal
-        // gap between consecutive tokens (the natural silence
-        // where the speaker change happened). Different signal
-        // from VAD-snap (which is energy-based, ±2 tokens) — this
-        // is gap-based and full-sentence, so it catches "off by
-        // 3-5 tokens" boundaries that fell outside VAD-snap's
-        // range. Targets the audio-file failure mode where the
-        // tail of speaker A's last word bleeds into speaker B's
-        // run because Apple finalized one ASR segment over both
-        // speakers' speech.
-        let assignments = Self.snapBoundaryToLargestPause(
+        // Voice-based boundary confirmation: for 2-speaker
+        // sentences, score each candidate gap by extracting a
+        // speaker embedding from the audio on each side and
+        // computing cosine distance. The gap where the two-side
+        // distance is highest is where the speaker change actually
+        // is — independent of which gap is largest, which token
+        // the diarizer flagged, or where the energy minimum sits.
+        // Falls back to the gap-only largest-pause snap when the
+        // diarizer / embeddings aren't available or no candidate
+        // hit the distance threshold.
+        let voiceSnapped = await snapBoundaryByVoiceComparison(
             assignments: smoothed,
-            tokens: asr.tokens
+            tokens: asr.tokens,
+            segmentAudio: segmentAudio
         )
+        let assignments: [String]
+        if voiceSnapped != smoothed {
+            assignments = voiceSnapped
+        } else {
+            assignments = Self.snapBoundaryToLargestPause(
+                assignments: smoothed,
+                tokens: asr.tokens
+            )
+        }
 
         // Note: we previously had a per-sub-segment embedding-based
         // override that re-queried FluidAudio's SpeakerManager via
@@ -1104,6 +1113,136 @@ final class AnalysisPipeline: Sendable {
             }
             i = runEnd + 1
         }
+        return result
+    }
+
+    // MARK: - Voice-based boundary comparison
+
+    /// Minimum audio duration (seconds) required on each side of a
+    /// candidate boundary for voice comparison to be meaningful.
+    /// FluidAudio's WeSpeaker model is trained on multi-second
+    /// windows; under ~1 s the embedding has too little acoustic
+    /// content to be a confident speaker fingerprint, so candidates
+    /// where either side is too short are skipped.
+    private static let voiceComparisonMinSideDurationSec: TimeInterval = 1.0
+    /// Minimum cosine distance between the two halves' embeddings
+    /// for the boundary to count as "voice-confirmed". 0.6 is well
+    /// above same-speaker distances (typically < 0.4 even across
+    /// prosody shifts) and below the diarizer's own clusteringThreshold,
+    /// so it requires clear acoustic separation without being so
+    /// strict that legitimate boundaries fail to confirm.
+    private static let voiceComparisonMinDistance: Float = 0.6
+    /// Minimum gap to even consider as a candidate. Below this,
+    /// gaps within a sentence are too short to be a meaningful
+    /// speaker-change marker.
+    private static let voiceComparisonMinGapSec: TimeInterval = 0.15
+
+    /// For sentences with exactly 2 speakers and a single
+    /// diarizer-detected boundary, find the candidate gap (≥ 150 ms,
+    /// each side ≥ 1 s) where the two-side speaker embeddings are
+    /// MOST distinct, and snap the boundary there if the cosine
+    /// distance ≥ voiceComparisonMinDistance.
+    ///
+    /// Different from largest-pause snap (which assumes the largest
+    /// gap is the boundary) — voice comparison directly answers
+    /// "are the speakers actually different on each side?" so it
+    /// won't mis-snap when the largest gap happens to be one
+    /// speaker's mid-sentence pause. Falls back to returning the
+    /// input unchanged when no candidate confirms; the caller can
+    /// then chain the largest-pause snap as a fallback.
+    private func snapBoundaryByVoiceComparison(
+        assignments: [String],
+        tokens: [ASRSegment.Token],
+        segmentAudio: AudioChunk
+    ) async -> [String] {
+        guard let diarizer else { return assignments }
+        guard tokens.count >= 2, Set(assignments).count == 2 else { return assignments }
+
+        var currentBoundary: Int? = nil
+        for i in 1..<assignments.count where assignments[i] != assignments[i - 1] {
+            if currentBoundary != nil { return assignments }
+            currentBoundary = i
+        }
+        guard currentBoundary != nil else { return assignments }
+
+        let firstStart = tokens[0].start
+        let lastEnd = tokens[tokens.count - 1].end
+
+        // Collect candidate gap positions. Skipping ones too short
+        // for confident embedding extraction on either side keeps
+        // cost bounded — typical sentence has 1–3 candidates.
+        var candidates: [Int] = []
+        for i in 1..<tokens.count {
+            let gap = tokens[i].start - tokens[i - 1].end
+            guard gap >= Self.voiceComparisonMinGapSec else { continue }
+            let beforeDuration = tokens[i - 1].end - firstStart
+            let afterDuration = lastEnd - tokens[i].start
+            guard beforeDuration >= Self.voiceComparisonMinSideDurationSec,
+                  afterDuration >= Self.voiceComparisonMinSideDurationSec
+            else { continue }
+            candidates.append(i)
+        }
+        guard !candidates.isEmpty else { return assignments }
+
+        // For each candidate, slice audio on both sides, extract
+        // embeddings, compute cosine distance. Pick the candidate
+        // with the maximum distance — that's where the speaker
+        // change most cleanly partitions the audio.
+        var bestCandidate: Int? = nil
+        var bestDistance: Float = -.infinity
+        for candidate in candidates {
+            let beforeAudio = Self.sliceRelative(
+                segmentAudio,
+                fromAudioTime: firstStart,
+                toAudioTime: tokens[candidate - 1].end
+            )
+            let afterAudio = Self.sliceRelative(
+                segmentAudio,
+                fromAudioTime: tokens[candidate].start,
+                toAudioTime: lastEnd
+            )
+            do {
+                guard let beforeEmb = try await diarizer.embedding(for: beforeAudio.samples),
+                      let afterEmb = try await diarizer.embedding(for: afterAudio.samples),
+                      beforeEmb.count == afterEmb.count
+                else { continue }
+                // Embeddings are L2-normalized, so cosine similarity
+                // = dot product. Distance = 1 - similarity.
+                var dot: Float = 0
+                for k in 0..<beforeEmb.count {
+                    dot += beforeEmb[k] * afterEmb[k]
+                }
+                let distance = 1.0 - dot
+                if distance > bestDistance {
+                    bestDistance = distance
+                    bestCandidate = candidate
+                }
+            } catch {
+                continue
+            }
+        }
+
+        guard let best = bestCandidate,
+              bestDistance >= Self.voiceComparisonMinDistance
+        else { return assignments }
+
+        // Even if `best == currentBoundary`, the existing chain
+        // already had it right and we don't need to re-stamp;
+        // returning input unchanged tells the caller "voice
+        // confirmed but no change needed", which the caller
+        // distinguishes from "voice didn't fire" only by seeing
+        // assignment equality. So always re-stamp when confirmed —
+        // the result is identical when best == currentBoundary
+        // anyway, avoiding the edge-case ambiguity.
+        let speakerBefore = assignments[0]
+        let speakerAfter = assignments[assignments.count - 1]
+        var result = assignments
+        for k in 0..<result.count {
+            result[k] = k < best ? speakerBefore : speakerAfter
+        }
+        AppLog.diarization.info(
+            "voice-confirmed boundary at token \(best, privacy: .public) (d=\(bestDistance, privacy: .public))"
+        )
         return result
     }
 
