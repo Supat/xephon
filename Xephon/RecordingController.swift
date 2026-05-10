@@ -317,9 +317,18 @@ final class RecordingController {
             lastAcousticDuration = nil
             lastTextDuration = nil
             lastSegmentTotal = nil
-            // Speaker history reset is sequenced inside `analysisTask`
-            // below — it must complete BEFORE the first ingest, and a
-            // fire-and-forget Task here can't make that guarantee.
+            // Reset speaker recognition (cumulative timeline AND
+            // FluidAudio's embedding-based SpeakerManager database)
+            // BEFORE any pump task starts. Doing it here, in the
+            // synchronous prologue of `start()`, guarantees no
+            // observation from the new session can land before the
+            // reset — earlier this lived inside `analysisTask` where
+            // `continuousDiarizeTask` could in principle fire its
+            // first tick before the reset awaited. The reset has to
+            // run after `ensurePipeline` so the diarizer instance is
+            // available to clear, but before the recording-time
+            // tasks are spawned below.
+            await ensurePipeline().resetSpeakerTracking()
             // Surface the session on the Lock Screen / Dynamic Island.
             // Has to happen AFTER `sourceMode` is set (handled by
             // `startFromFile` for file-mode) so the activity captures
@@ -415,13 +424,10 @@ final class RecordingController {
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 let pipeline = await self.ensurePipeline()
-                // Clear cumulative speaker history before the first
-                // segment lands. Awaiting the actor reset ensures the
-                // tracker is empty by the time `processSegment` calls
-                // `speakerTracker.ingest` — a previous fire-and-forget
-                // Task could be scheduled after the first segment's
-                // ingest, leaking last session's speaker numbering.
-                await pipeline.resetSpeakerTracking()
+                // Speaker tracking + FluidAudio's SpeakerManager are
+                // already reset in `start()`'s synchronous prologue
+                // before this task is spawned, so no further reset
+                // is needed here.
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
                         // Record finalize latency at the moment of receipt:

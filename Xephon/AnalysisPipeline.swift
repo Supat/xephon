@@ -68,6 +68,13 @@ final class AnalysisPipeline: Sendable {
     /// without this the speaker numbering would carry over.
     func resetSpeakerTracking() async {
         await speakerTracker.reset()
+        // FluidAudio's SpeakerManager has its own embedding-based
+        // database that's independent of `speakerTracker.cumulative`.
+        // Without this reset, an earlier session's centroid for "S01"
+        // would attract embeddings from the new session's first
+        // speaker via cosine similarity, conflating two different
+        // people under the same ID.
+        await diarizer?.resetSpeakers()
     }
 
     /// Run the diarizer on a window of audio and merge the result
@@ -553,18 +560,32 @@ final class AnalysisPipeline: Sendable {
             diarizationContext: diarizationContext
         )
 
-        // Singleton-run smoothing: absorb single short tokens whose
-        // neighbors share the same speaker. The diarizer occasionally
-        // flips one short backchannel ("うん", "あの", …) to a
-        // different speaker because the embedding signal in <400 ms
-        // of audio is too weak to assign reliably. Smoothing those
-        // reduces the visible "one-word turn" misclassifications
-        // without erasing legitimate single-word interjections,
-        // which tend to be longer / more emphatic.
-        let assignments = Self.absorbSingletonRuns(
+        // Short-run smoothing: absorb 1–3-token runs (~< 700 ms
+        // total) whose neighbors share the same speaker. The
+        // diarizer occasionally flips one short word — sometimes
+        // emitted as several character-tokens — to a different
+        // speaker because the embedding signal in <1 s of audio is
+        // too weak to assign reliably. Smoothing those reduces the
+        // visible "one wrong word" misclassifications without
+        // erasing legitimate single-word interjections, which tend
+        // to be longer / more emphatic.
+        let assignments = Self.absorbShortRuns(
             assignments: refined,
             tokens: asr.tokens
         )
+
+        // Note: we previously had a per-sub-segment embedding-based
+        // override that re-queried FluidAudio's SpeakerManager via
+        // cosine similarity. It was removed because (1) FluidAudio's
+        // `performCompleteDiarization` already does embedding-based
+        // clustering internally — assignSpeaker is called per
+        // diarized segment with the WeSpeaker embedding, returning
+        // session-stable IDs, so the override was duplicative; and
+        // (2) running an extra extractSpeakerEmbedding + findSpeaker
+        // per sub-segment serialized at the diarizer actor on top of
+        // the continuous diarize task and boundary re-diarize, which
+        // backed up the segment processing queue enough to drop
+        // utterances under conversational pace.
 
         // Group consecutive tokens by speaker; emit one sub-segment per
         // group. The order of `assignments` matches the order of
@@ -880,45 +901,77 @@ final class AnalysisPipeline: Sendable {
         return nil
     }
 
-    // MARK: - Singleton smoothing
+    // MARK: - Short-run smoothing
 
-    /// Maximum duration of a token eligible for singleton-run
-    /// absorption. Backchannels and very short interjections from
-    /// the other speaker are typically <400 ms; longer single-word
-    /// runs are more likely legitimate turns and shouldn't be
-    /// smoothed over. The threshold is conservative on purpose —
-    /// false absorptions (a real one-word turn going silent) are
-    /// worse than failing to absorb a real diarizer mistake.
-    private static let singletonAbsorbDurationSec: TimeInterval = 0.4
+    /// Maximum total duration for a same-speaker run to be eligible
+    /// for absorption. Up to ~700 ms covers a typical short
+    /// Japanese word; real one-word turns longer than that pass
+    /// through. Tightening this threshold biased earlier versions
+    /// toward keeping diarizer mistakes intact when a word
+    /// happened to be 400–700 ms long.
+    private static let shortRunAbsorbDurationSec: TimeInterval = 0.7
+    /// Maximum length (in tokens) of a run eligible for
+    /// absorption. SpeechAnalyzer sometimes emits one Japanese
+    /// word as 2–3 character / syllable runs, so capping at 3
+    /// catches "one wrong word" misclassifications even when they
+    /// span multiple tokens. Longer runs are likely real turns
+    /// even if total duration is short.
+    private static let shortRunAbsorbMaxLength: Int = 3
 
-    /// Absorb single-token runs whose neighbors share the same
-    /// speaker and whose duration is below
-    /// `singletonAbsorbDurationSec`. Targets the failure pattern
-    /// where the diarizer flips one short token (especially
-    /// backchannels with weak embedding signal) to a different
-    /// speaker even though both surrounding tokens agree on the
-    /// real speaker. Requires both the same-speaker sandwich AND
-    /// the duration cap so legitimate brief interjections that
-    /// happen to be longer or sit at run boundaries pass through.
-    /// First/last tokens are intentionally not smoothed — the
-    /// surrounding context (the previous/next ASR segment) lives
-    /// outside this function's view, so we can't safely judge
-    /// whether they're spurious.
-    private static func absorbSingletonRuns(
+    /// Absorb same-speaker runs whose neighboring runs agree on a
+    /// single different speaker and whose total duration is below
+    /// `shortRunAbsorbDurationSec` and length below
+    /// `shortRunAbsorbMaxLength`. Targets the failure pattern
+    /// where the diarizer assigns a few consecutive tokens
+    /// (often one word's worth) to the wrong speaker even though
+    /// both surrounding runs agree on the real speaker. Requires
+    /// both the same-speaker sandwich AND the duration / length
+    /// caps so legitimate brief interjections that happen to be
+    /// longer or sit at run boundaries pass through.
+    ///
+    /// Runs touching the segment's first or last token are
+    /// intentionally not smoothed — the surrounding context (the
+    /// previous / next ASR segment) lives outside this function's
+    /// view, so we can't safely judge whether they're spurious.
+    private static func absorbShortRuns(
         assignments: [String],
         tokens: [ASRSegment.Token]
     ) -> [String] {
         guard assignments.count >= 3 else { return assignments }
         var result = assignments
-        for i in 1..<(result.count - 1) {
-            guard result[i - 1] != result[i],
-                  result[i] != result[i + 1],
-                  result[i - 1] == result[i + 1]
-            else { continue }
-            let duration = tokens[i].end - tokens[i].start
-            if duration < singletonAbsorbDurationSec {
-                result[i] = result[i - 1]
+        var i = 1
+        while i < result.count - 1 {
+            // Skip if no run boundary at i.
+            if result[i - 1] == result[i] {
+                i += 1
+                continue
             }
+            // Walk forward to the end of this run.
+            var runEnd = i
+            while runEnd + 1 < result.count && result[runEnd + 1] == result[i] {
+                runEnd += 1
+            }
+            // Skip if the run extends to the segment's last token —
+            // we don't have an "after" speaker to validate against.
+            guard runEnd < result.count - 1 else {
+                i = runEnd + 1
+                continue
+            }
+            // Same speaker on both sides?
+            guard result[i - 1] == result[runEnd + 1] else {
+                i = runEnd + 1
+                continue
+            }
+            let runLength = runEnd - i + 1
+            let duration = tokens[runEnd].end - tokens[i].start
+            if runLength <= shortRunAbsorbMaxLength,
+               duration < shortRunAbsorbDurationSec {
+                let surrounding = result[i - 1]
+                for k in i...runEnd {
+                    result[k] = surrounding
+                }
+            }
+            i = runEnd + 1
         }
         return result
     }
