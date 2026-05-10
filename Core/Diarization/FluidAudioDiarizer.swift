@@ -20,15 +20,16 @@ public actor FluidAudioDiarizer: Diarizer {
     /// Default config tuned for conversational speech. The two
     /// values that differ from `DiarizerConfig.default` are:
     ///
-    /// - `clusteringThreshold = 0.85` (default 0.7). Higher value =
+    /// - `clusteringThreshold = 0.78` (default 0.7). Higher value =
     ///   more permissive matching to existing speakers. The same
     ///   voice across small acoustic variations (prosody shift,
     ///   brief noise, microphone position change) stays under one
     ///   ID instead of spawning a new one. FluidAudio derives
     ///   `speakerThreshold = clusteringThreshold × 1.2` from this
     ///   and `embeddingThreshold = clusteringThreshold × 0.8`.
-    ///   Tradeoff: two distinct people with similar voices are
-    ///   slightly more likely to merge under one ID.
+    ///   0.78 is the empirical sweet spot — 0.85 collapsed
+    ///   distinct speakers with similar voices, 0.7 (the default)
+    ///   over-segmented the same speaker.
     ///
     /// - `minSpeechDuration = 1.5` s (default 1.0). Briefer audio
     ///   isn't allowed to create a *new* speaker — it gets assigned
@@ -40,7 +41,7 @@ public actor FluidAudioDiarizer: Diarizer {
     ///
     /// Other fields stay at FluidAudio's defaults.
     public static let conversationalConfig = DiarizerConfig(
-        clusteringThreshold: 0.85,
+        clusteringThreshold: 0.78,
         minSpeechDuration: 1.5
     )
 
