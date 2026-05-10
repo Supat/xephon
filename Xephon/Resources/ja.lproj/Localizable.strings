@@ -8,6 +8,7 @@
 "transcript.newUtterance" = "新しい発話";
 "filter.search.placeholder" = "発話を検索";
 "filter.label.all" = "すべてのラベル";
+"filter.speaker.all" = "すべての話者";
 "filter.noMatches.title" = "一致なし";
 "filter.noMatches.subtitle" = "検索テキストまたはラベルフィルタを調整してください。";
 "filter.noMatches.clear" = "フィルタをクリア";

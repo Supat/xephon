@@ -34,6 +34,10 @@ struct ContentView: View {
     /// Label filter. Nil = "All labels"; non-nil only shows utterances
     /// whose fused top label matches.
     @State private var selectedLabelFilter: String?
+    /// Speaker filter. Nil = all speakers; non-nil only shows
+    /// utterances stamped with the matching `speakerID`. Toggled by
+    /// tapping the chip row directly under the filter bar.
+    @State private var selectedSpeakerFilter: String?
     /// Keyboard focus for the search field. Driven by ⌘F (sets it
     /// true) and Esc (sets it false). `@FocusState` is the only
     /// mechanism that programmatically moves focus into a TextField.
@@ -275,6 +279,7 @@ struct ContentView: View {
         } else {
             VStack(spacing: 0) {
                 filterBar
+                speakerChipBar
                 if filteredIndexedUtterances.isEmpty {
                     noMatchesView
                 } else {
@@ -388,6 +393,70 @@ struct ContentView: View {
         return String(localized: "filter.label.all")
     }
 
+    /// Horizontal chip row of every speaker seen this session, plus
+    /// an "All" chip on the left that clears the speaker filter.
+    /// Tapping a speaker chip toggles it as the active speaker
+    /// filter — tapping the same chip again returns to "All". Hidden
+    /// when only one speaker has been detected (no point filtering
+    /// when there's nothing to choose between).
+    @ViewBuilder
+    private var speakerChipBar: some View {
+        let speakers = availableSpeakers
+        if speakers.count >= 2 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    speakerChip(
+                        text: String(localized: "filter.speaker.all"),
+                        tint: .secondary,
+                        isSelected: selectedSpeakerFilter == nil
+                    ) {
+                        selectedSpeakerFilter = nil
+                    }
+                    ForEach(speakers, id: \.self) { id in
+                        let label = formatSpeakerLabel(id, multiSpeaker: true)
+                        let tint = speakerTint(for: id)
+                        speakerChip(
+                            text: label,
+                            tint: tint,
+                            isSelected: selectedSpeakerFilter == id
+                        ) {
+                            selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func speakerChip(
+        text: String,
+        tint: Color,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.caption.bold())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    tint.opacity(isSelected ? 0.25 : 0.08),
+                    in: Capsule()
+                )
+                .overlay(
+                    Capsule().strokeBorder(
+                        tint.opacity(isSelected ? 0.6 : 0.2),
+                        lineWidth: isSelected ? 1.0 : 0.5
+                    )
+                )
+                .foregroundStyle(tint)
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private var noMatchesView: some View {
         ContentUnavailableView {
@@ -401,6 +470,7 @@ struct ContentView: View {
             Button(String(localized: "filter.noMatches.clear")) {
                 searchText = ""
                 selectedLabelFilter = nil
+                selectedSpeakerFilter = nil
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -587,6 +657,22 @@ struct ContentView: View {
         Set(recorder.utterances.compactMap { $0.fusedTopLabel }).sorted()
     }
 
+    /// Distinct speaker IDs in the order they first appear in the
+    /// session. First-appearance order (rather than alphabetical)
+    /// keeps the chip row stable as new utterances arrive — a new
+    /// speaker is appended at the end instead of reshuffling
+    /// existing chips, and the row reads in the same order as the
+    /// utterance list.
+    private var availableSpeakers: [String] {
+        var seen: Set<String> = []
+        var ordered: [String] = []
+        for u in recorder.utterances where !seen.contains(u.speakerID) {
+            seen.insert(u.speakerID)
+            ordered.append(u.speakerID)
+        }
+        return ordered
+    }
+
     /// `(originalIndex, utterance)` pairs surviving both filters. The
     /// original index is preserved so each row's "#N" badge keeps the
     /// utterance's stable session number even when the list is
@@ -598,6 +684,10 @@ struct ContentView: View {
             (idx, u) -> (idx: Int, u: UtteranceEstimate)? in
             if let filterLabel = selectedLabelFilter,
                u.fusedTopLabel != filterLabel {
+                return nil
+            }
+            if let filterSpeaker = selectedSpeakerFilter,
+               u.speakerID != filterSpeaker {
                 return nil
             }
             if !trimmed.isEmpty,

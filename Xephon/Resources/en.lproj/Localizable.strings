@@ -8,6 +8,7 @@
 "transcript.newUtterance" = "New utterance";
 "filter.search.placeholder" = "Search utterances";
 "filter.label.all" = "All labels";
+"filter.speaker.all" = "All speakers";
 "filter.noMatches.title" = "No matches";
 "filter.noMatches.subtitle" = "Adjust the search text or label filter.";
 "filter.noMatches.clear" = "Clear filters";
