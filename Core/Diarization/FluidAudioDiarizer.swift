@@ -17,7 +17,37 @@ public actor FluidAudioDiarizer: Diarizer {
     // inside an actor and call its async methods.
     private nonisolated(unsafe) let manager: DiarizerManager
 
-    public init(kind: FluidDiarizerKind = .sortformer, config: DiarizerConfig = .default) {
+    /// Default config tuned for conversational speech. The two
+    /// values that differ from `DiarizerConfig.default` are:
+    ///
+    /// - `clusteringThreshold = 0.85` (default 0.7). Higher value =
+    ///   more permissive matching to existing speakers. The same
+    ///   voice across small acoustic variations (prosody shift,
+    ///   brief noise, microphone position change) stays under one
+    ///   ID instead of spawning a new one. FluidAudio derives
+    ///   `speakerThreshold = clusteringThreshold × 1.2` from this
+    ///   and `embeddingThreshold = clusteringThreshold × 0.8`.
+    ///   Tradeoff: two distinct people with similar voices are
+    ///   slightly more likely to merge under one ID.
+    ///
+    /// - `minSpeechDuration = 1.5` s (default 1.0). Briefer audio
+    ///   isn't allowed to create a *new* speaker — it gets assigned
+    ///   to the closest existing one. Cuts spurious speaker
+    ///   creation from short clips where the embedding is too
+    ///   noisy to be a confident fingerprint. Tradeoff: a real new
+    ///   speaker who only utters one short word at first won't get
+    ///   their own ID until they speak longer.
+    ///
+    /// Other fields stay at FluidAudio's defaults.
+    public static let conversationalConfig = DiarizerConfig(
+        clusteringThreshold: 0.85,
+        minSpeechDuration: 1.5
+    )
+
+    public init(
+        kind: FluidDiarizerKind = .sortformer,
+        config: DiarizerConfig = FluidAudioDiarizer.conversationalConfig
+    ) {
         self.kind = kind
         self.manager = DiarizerManager(config: config)
     }
