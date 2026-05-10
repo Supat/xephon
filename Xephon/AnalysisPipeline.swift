@@ -547,10 +547,23 @@ final class AnalysisPipeline: Sendable {
         // we snap the boundary to the token gap closest to the local
         // change time. No-op when the diarizer can't confirm a
         // change in the local window (overlapping speech, etc.).
-        let assignments = await refineBoundariesByReDiarize(
+        let refined = await refineBoundariesByReDiarize(
             assignments: snapped,
             tokens: asr.tokens,
             diarizationContext: diarizationContext
+        )
+
+        // Singleton-run smoothing: absorb single short tokens whose
+        // neighbors share the same speaker. The diarizer occasionally
+        // flips one short backchannel ("うん", "あの", …) to a
+        // different speaker because the embedding signal in <400 ms
+        // of audio is too weak to assign reliably. Smoothing those
+        // reduces the visible "one-word turn" misclassifications
+        // without erasing legitimate single-word interjections,
+        // which tend to be longer / more emphatic.
+        let assignments = Self.absorbSingletonRuns(
+            assignments: refined,
+            tokens: asr.tokens
         )
 
         // Group consecutive tokens by speaker; emit one sub-segment per
@@ -865,6 +878,49 @@ final class AnalysisPipeline: Sendable {
             return sorted[k].start
         }
         return nil
+    }
+
+    // MARK: - Singleton smoothing
+
+    /// Maximum duration of a token eligible for singleton-run
+    /// absorption. Backchannels and very short interjections from
+    /// the other speaker are typically <400 ms; longer single-word
+    /// runs are more likely legitimate turns and shouldn't be
+    /// smoothed over. The threshold is conservative on purpose —
+    /// false absorptions (a real one-word turn going silent) are
+    /// worse than failing to absorb a real diarizer mistake.
+    private static let singletonAbsorbDurationSec: TimeInterval = 0.4
+
+    /// Absorb single-token runs whose neighbors share the same
+    /// speaker and whose duration is below
+    /// `singletonAbsorbDurationSec`. Targets the failure pattern
+    /// where the diarizer flips one short token (especially
+    /// backchannels with weak embedding signal) to a different
+    /// speaker even though both surrounding tokens agree on the
+    /// real speaker. Requires both the same-speaker sandwich AND
+    /// the duration cap so legitimate brief interjections that
+    /// happen to be longer or sit at run boundaries pass through.
+    /// First/last tokens are intentionally not smoothed — the
+    /// surrounding context (the previous/next ASR segment) lives
+    /// outside this function's view, so we can't safely judge
+    /// whether they're spurious.
+    private static func absorbSingletonRuns(
+        assignments: [String],
+        tokens: [ASRSegment.Token]
+    ) -> [String] {
+        guard assignments.count >= 3 else { return assignments }
+        var result = assignments
+        for i in 1..<(result.count - 1) {
+            guard result[i - 1] != result[i],
+                  result[i] != result[i + 1],
+                  result[i - 1] == result[i + 1]
+            else { continue }
+            let duration = tokens[i].end - tokens[i].start
+            if duration < singletonAbsorbDurationSec {
+                result[i] = result[i - 1]
+            }
+        }
+        return result
     }
 
     // MARK: - Buffer slicing
