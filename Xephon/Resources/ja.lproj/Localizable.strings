@@ -8,6 +8,7 @@
 "transcript.newUtterance" = "新しい発話";
 "filter.search.placeholder" = "発話を検索";
 "filter.label.all" = "すべてのラベル";
+"filter.speaker.all" = "すべての話者";
 "filter.noMatches.title" = "一致なし";
 "filter.noMatches.subtitle" = "検索テキストまたはラベルフィルタを調整してください。";
 "filter.noMatches.clear" = "フィルタをクリア";
@@ -25,6 +26,7 @@
 "record.discardConfirm.cancel" = "キャンセル";
 "record.start" = "録音を開始";
 "record.stop" = "録音を停止";
+"record.stop.file" = "再生を停止";
 "record.status.format" = "%@ · %@ サンプル";
 "analyze.inProgress" = "解析中…";
 "warmup.inProgress" = "モデルを読み込み中…";
@@ -35,10 +37,11 @@
 "menu.findInUtterances" = "発話を検索…";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
-"pacing.message" = "リアルタイムはファイル再生時間と同じ長さで進み、ライブ録音と同等の結果になります。高速は8倍速で進みます。音声認識器のセグメント境界をリアルタイムに近い形で保ち、SER分類結果が一致します。";
+"pacing.message" = "リアルタイムはライブ録音と完全に同じ結果になります。8倍は最速ですが、エッジケースで ASR/SER ラベルがずれることがあります。4倍はずれを半減（解析時間は2倍）。";
 "pacing.realtime" = "リアルタイム";
 "pacing.realtime.audio" = "リアルタイム（音声あり）";
-"pacing.fast" = "高速 (8倍)";
+"pacing.fast8x" = "高速 (8倍)";
+"pacing.fast4x" = "高速 (4倍)";
 "summary.header" = "ムード";
 "summary.calibrating" = "校正中…";
 "summary.utterances" = "%d 件の発話 · %@";

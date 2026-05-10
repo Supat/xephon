@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import Audio
 import ASR
 import Diarization
@@ -68,6 +69,13 @@ final class AnalysisPipeline: Sendable {
     /// without this the speaker numbering would carry over.
     func resetSpeakerTracking() async {
         await speakerTracker.reset()
+        // FluidAudio's SpeakerManager has its own embedding-based
+        // database that's independent of `speakerTracker.cumulative`.
+        // Without this reset, an earlier session's centroid for "S01"
+        // would attract embeddings from the new session's first
+        // speaker via cosine similarity, conflating two different
+        // people under the same ID.
+        await diarizer?.resetSpeakers()
     }
 
     /// Run the diarizer on a window of audio and merge the result
@@ -451,6 +459,79 @@ final class AnalysisPipeline: Sendable {
         return fillers.contains(trimmed)
     }
 
+    // MARK: - Sentence splitting (punctuation + long-pause fallback)
+
+    /// Minimum inter-token gap (seconds) that forces a sub-segment
+    /// split even when no punctuation is involved. 700 ms is well
+    /// above breath pauses and below most mid-sentence hesitations
+    /// — long enough that "this is a new sentence" is unambiguous
+    /// even without Apple emitting `。`. Apple's SpeechTranscriber
+    /// usually punctuates between sentences, but it sometimes
+    /// omits the mark on incomplete/elliptical speech; this catches
+    /// those.
+    private static let sentenceSplitMinPauseSec: TimeInterval = 0.7
+    /// Sentence-ending characters in JP and EN. SpeechTranscriber
+    /// emits punctuation as a tail on the preceding token, so a
+    /// `text.last`-only check catches them.
+    private static let sentenceEndChars: Set<Character> = [
+        "。", "！", "？", "．", ".", "!", "?",
+    ]
+
+    /// Split an `ASRSegment` so each sub-segment contains at most
+    /// one sentence. Splits after every token whose `text.last` is
+    /// in `sentenceEndChars` (the primary rule — Apple's JP
+    /// recognizer punctuates sentence boundaries reliably), and
+    /// also after any inter-token gap ≥ `sentenceSplitMinPauseSec`
+    /// (the fallback for un-punctuated long pauses).
+    ///
+    /// Returns the segment unchanged when no boundary qualifies,
+    /// when the segment has fewer than two tokens, or when the
+    /// transcriber didn't supply per-token timing. Independent of
+    /// speaker detection — runs upstream of `splitOnSpeakerChange`
+    /// so the speaker pipeline operates on per-sentence inputs.
+    static func splitIntoSentences(_ asr: ASRSegment) -> [ASRSegment] {
+        guard asr.tokens.count >= 2 else { return [asr] }
+
+        var splitAfter: [Int] = []
+        for i in 0..<(asr.tokens.count - 1) {
+            if let lastChar = asr.tokens[i].text.last,
+               sentenceEndChars.contains(lastChar) {
+                splitAfter.append(i)
+                continue
+            }
+            let gap = asr.tokens[i + 1].start - asr.tokens[i].end
+            if gap >= sentenceSplitMinPauseSec {
+                splitAfter.append(i)
+            }
+        }
+
+        guard !splitAfter.isEmpty else { return [asr] }
+
+        var result: [ASRSegment] = []
+        var start = 0
+        let endpoints = splitAfter + [asr.tokens.count - 1]
+        for end in endpoints {
+            let subTokens = Array(asr.tokens[start...end])
+            let subText = subTokens.map(\.text).joined()
+            let subStart = subTokens.first?.start ?? asr.start
+            let subEnd = subTokens.last?.end ?? asr.end
+            result.append(ASRSegment(
+                text: subText,
+                start: subStart,
+                end: subEnd,
+                // Sub-segments inherit the parent's whole-segment
+                // confidence — we don't compute a per-sub mean
+                // because it'd require averaging per-token confidence
+                // that SpeechAttributes already discards in
+                // `averageConfidence`.
+                confidence: asr.confidence,
+                tokens: subTokens
+            ))
+            start = end + 1
+        }
+        return result
+    }
+
     // MARK: - Speaker-change splitting
 
     /// One sub-segment produced by `splitOnSpeakerChange`. Each carries
@@ -461,6 +542,75 @@ final class AnalysisPipeline: Sendable {
         let asr: ASRSegment
         let audio: AudioChunk
         let speaker: String
+    }
+
+    /// Sentence-level split with one dominant speaker per sentence.
+    ///
+    /// Runs `splitIntoSentences` and emits one `SegmentSplit` per
+    /// resulting sub-segment, tagged with whichever speaker the
+    /// cumulative diarizer timeline says occupied the most audio
+    /// time inside `[sentence.start, sentence.end]`. A sentence is
+    /// never sub-divided by mid-sentence speaker changes — sentence
+    /// integrity wins over speaker boundary precision. When the
+    /// diarizer occasionally mis-classifies a few tokens inside a
+    /// sentence, the majority-overlap tally absorbs that noise
+    /// instead of cutting the sentence into fragments.
+    ///
+    /// `diarizationContext` is accepted for signature compatibility
+    /// but no longer used here — per-sentence speaker resolution
+    /// reads `speakerTracker` directly. The continuous diarize task
+    /// in RecordingController is what keeps that timeline fresh.
+    func splitForProcessing(
+        asr: ASRSegment,
+        segmentAudio: AudioChunk,
+        diarizationContext: AudioChunk?,
+        fallbackSpeakerID: String = "S01"
+    ) async -> [SegmentSplit] {
+        let sentenceSplits = Self.splitIntoSentences(asr)
+        var result: [SegmentSplit] = []
+        for sentence in sentenceSplits {
+            let sentenceAudio: AudioChunk = sentenceSplits.count == 1
+                ? segmentAudio
+                : Self.sliceRelative(
+                    segmentAudio,
+                    fromAudioTime: sentence.start,
+                    toAudioTime: sentence.end
+                )
+            let speaker = await dominantSpeaker(
+                from: sentence.start,
+                to: sentence.end,
+                fallback: fallbackSpeakerID
+            )
+            result.append(SegmentSplit(
+                asr: sentence,
+                audio: sentenceAudio,
+                speaker: speaker
+            ))
+        }
+        return result
+    }
+
+    /// Speaker the cumulative diarizer timeline reports as
+    /// dominant in `[start, end]`, picked by total time-overlap.
+    /// Falls back to `fallback` only when the timeline is empty
+    /// (very early in the session, before the continuous-diarize
+    /// stride task has fired) or when no entry overlaps the range
+    /// at all (diarizer gap).
+    private func dominantSpeaker(
+        from start: TimeInterval,
+        to end: TimeInterval,
+        fallback: String
+    ) async -> String {
+        let timeline = await speakerTracker.cumulativeSnapshot()
+        guard !timeline.isEmpty, end > start else { return fallback }
+        var totals: [String: TimeInterval] = [:]
+        for entry in timeline {
+            let lo = max(entry.start, start)
+            let hi = min(entry.end, end)
+            guard hi > lo else { continue }
+            totals[entry.speakerID, default: 0] += hi - lo
+        }
+        return totals.max(by: { $0.value < $1.value })?.key ?? fallback
     }
 
     /// Diarize the segment's context once and emit one sub-segment per
@@ -553,18 +703,79 @@ final class AnalysisPipeline: Sendable {
             diarizationContext: diarizationContext
         )
 
-        // Singleton-run smoothing: absorb single short tokens whose
-        // neighbors share the same speaker. The diarizer occasionally
-        // flips one short backchannel ("うん", "あの", …) to a
-        // different speaker because the embedding signal in <400 ms
-        // of audio is too weak to assign reliably. Smoothing those
-        // reduces the visible "one-word turn" misclassifications
-        // without erasing legitimate single-word interjections,
-        // which tend to be longer / more emphatic.
-        let assignments = Self.absorbSingletonRuns(
+        // Short-run smoothing: absorb 1–3-token runs (~< 700 ms
+        // total) whose neighbors share the same speaker. The
+        // diarizer occasionally flips one short word — sometimes
+        // emitted as several character-tokens — to a different
+        // speaker because the embedding signal in <1 s of audio is
+        // too weak to assign reliably. Smoothing those reduces the
+        // visible "one wrong word" misclassifications without
+        // erasing legitimate single-word interjections, which tend
+        // to be longer / more emphatic.
+        let smoothed = Self.absorbShortRuns(
             assignments: refined,
             tokens: asr.tokens
         )
+
+        // Voice-based boundary confirmation: for 2-speaker
+        // sentences, score each candidate gap by extracting a
+        // speaker embedding from the audio on each side and
+        // computing cosine distance. The gap where the two-side
+        // distance is highest is where the speaker change actually
+        // is — independent of which gap is largest, which token
+        // the diarizer flagged, or where the energy minimum sits.
+        // Falls back to the gap-only largest-pause snap when the
+        // diarizer / embeddings aren't available or no candidate
+        // hit the distance threshold.
+        let voiceOutcome = await snapBoundaryByVoiceComparison(
+            assignments: smoothed,
+            tokens: asr.tokens,
+            segmentAudio: segmentAudio
+        )
+        let acousticallySnapped: [String]
+        switch voiceOutcome {
+        case .fired(let confirmed):
+            // Voice authoritatively confirmed the boundary (with or
+            // without movement). Skip largest-pause — letting it
+            // run could move a voice-confirmed boundary onto a
+            // different gap that just happens to be larger but is
+            // a same-speaker mid-sentence pause.
+            acousticallySnapped = confirmed
+        case .notFired:
+            acousticallySnapped = Self.snapBoundaryToLargestPause(
+                assignments: smoothed,
+                tokens: asr.tokens
+            )
+        }
+
+        // Grammatical-boundary snap: nudge the boundary to the
+        // nearest natural cut point in the text using NLTokenizer's
+        // JP word segmenter plus a particle/punctuation check on
+        // each word's tail. Catches "split mid-word" and "split
+        // mid-phrase" failures that the audio-based passes can't
+        // see — they reason about energy, embeddings, and gaps,
+        // not about whether the text reads naturally on each side.
+        // Phrase ends (after particle, polite verb ending, or
+        // punctuation) score higher than plain word boundaries,
+        // with a small distance penalty so we don't drift far for
+        // marginal grammatical gains.
+        let assignments = Self.snapBoundaryToGrammaticalCut(
+            assignments: acousticallySnapped,
+            tokens: asr.tokens
+        )
+
+        // Note: we previously had a per-sub-segment embedding-based
+        // override that re-queried FluidAudio's SpeakerManager via
+        // cosine similarity. It was removed because (1) FluidAudio's
+        // `performCompleteDiarization` already does embedding-based
+        // clustering internally — assignSpeaker is called per
+        // diarized segment with the WeSpeaker embedding, returning
+        // session-stable IDs, so the override was duplicative; and
+        // (2) running an extra extractSpeakerEmbedding + findSpeaker
+        // per sub-segment serialized at the diarizer actor on top of
+        // the continuous diarize task and boundary re-diarize, which
+        // backed up the segment processing queue enough to drop
+        // utterances under conversational pace.
 
         // Group consecutive tokens by speaker; emit one sub-segment per
         // group. The order of `assignments` matches the order of
@@ -874,54 +1085,567 @@ final class AnalysisPipeline: Sendable {
         guard local.count >= 2 else { return nil }
 
         let sorted = local.sorted { $0.start < $1.start }
+        // Pick the transition flanked by the two longest-duration
+        // adjacent segments (max of `min(prev.duration, next.duration)`).
+        // The first transition in time order can be a transient — a
+        // 0.3 s blip of speaker B before A's main turn — which would
+        // pull the boundary onto noise. Weighting by min adjacent
+        // duration favors transitions where both sides have enough
+        // signal to be a real turn-take.
+        var bestTime: TimeInterval? = nil
+        var bestSupport: TimeInterval = 0
         for k in 1..<sorted.count where sorted[k].speakerID != sorted[k - 1].speakerID {
-            return sorted[k].start
+            let prevDur = sorted[k - 1].end - sorted[k - 1].start
+            let nextDur = sorted[k].end - sorted[k].start
+            let support = min(prevDur, nextDur)
+            if support > bestSupport {
+                bestSupport = support
+                bestTime = sorted[k].start
+            }
         }
-        return nil
+        return bestTime
     }
 
-    // MARK: - Singleton smoothing
+    // MARK: - Short-run smoothing
 
-    /// Maximum duration of a token eligible for singleton-run
-    /// absorption. Backchannels and very short interjections from
-    /// the other speaker are typically <400 ms; longer single-word
-    /// runs are more likely legitimate turns and shouldn't be
-    /// smoothed over. The threshold is conservative on purpose —
-    /// false absorptions (a real one-word turn going silent) are
-    /// worse than failing to absorb a real diarizer mistake.
-    private static let singletonAbsorbDurationSec: TimeInterval = 0.4
+    /// Maximum total duration for a same-speaker run to be eligible
+    /// for absorption. Up to ~700 ms covers a typical short
+    /// Japanese word; real one-word turns longer than that pass
+    /// through. Tightening this threshold biased earlier versions
+    /// toward keeping diarizer mistakes intact when a word
+    /// happened to be 400–700 ms long.
+    private static let shortRunAbsorbDurationSec: TimeInterval = 0.7
+    /// Maximum length (in tokens) of a run eligible for
+    /// absorption. SpeechAnalyzer sometimes emits one Japanese
+    /// word as 2–3 character / syllable runs, so capping at 3
+    /// catches "one wrong word" misclassifications even when they
+    /// span multiple tokens. Longer runs are likely real turns
+    /// even if total duration is short.
+    private static let shortRunAbsorbMaxLength: Int = 3
 
-    /// Absorb single-token runs whose neighbors share the same
-    /// speaker and whose duration is below
-    /// `singletonAbsorbDurationSec`. Targets the failure pattern
-    /// where the diarizer flips one short token (especially
-    /// backchannels with weak embedding signal) to a different
-    /// speaker even though both surrounding tokens agree on the
-    /// real speaker. Requires both the same-speaker sandwich AND
-    /// the duration cap so legitimate brief interjections that
-    /// happen to be longer or sit at run boundaries pass through.
-    /// First/last tokens are intentionally not smoothed — the
-    /// surrounding context (the previous/next ASR segment) lives
-    /// outside this function's view, so we can't safely judge
-    /// whether they're spurious.
-    private static func absorbSingletonRuns(
+    /// Absorb same-speaker runs whose neighboring runs agree on a
+    /// single different speaker and whose total duration is below
+    /// `shortRunAbsorbDurationSec` and length below
+    /// `shortRunAbsorbMaxLength`. Targets the failure pattern
+    /// where the diarizer assigns a few consecutive tokens
+    /// (often one word's worth) to the wrong speaker even though
+    /// both surrounding runs agree on the real speaker. Requires
+    /// both the same-speaker sandwich AND the duration / length
+    /// caps so legitimate brief interjections that happen to be
+    /// longer or sit at run boundaries pass through.
+    ///
+    /// Runs touching the segment's first or last token are
+    /// intentionally not smoothed — the surrounding context (the
+    /// previous / next ASR segment) lives outside this function's
+    /// view, so we can't safely judge whether they're spurious.
+    private static func absorbShortRuns(
         assignments: [String],
         tokens: [ASRSegment.Token]
     ) -> [String] {
         guard assignments.count >= 3 else { return assignments }
         var result = assignments
-        for i in 1..<(result.count - 1) {
-            guard result[i - 1] != result[i],
-                  result[i] != result[i + 1],
-                  result[i - 1] == result[i + 1]
+        var i = 1
+        while i < result.count - 1 {
+            // Skip if no run boundary at i.
+            if result[i - 1] == result[i] {
+                i += 1
+                continue
+            }
+            // Walk forward to the end of this run.
+            var runEnd = i
+            while runEnd + 1 < result.count && result[runEnd + 1] == result[i] {
+                runEnd += 1
+            }
+            // Skip if the run extends to the segment's last token —
+            // we don't have an "after" speaker to validate against.
+            guard runEnd < result.count - 1 else {
+                i = runEnd + 1
+                continue
+            }
+            // Same speaker on both sides?
+            guard result[i - 1] == result[runEnd + 1] else {
+                i = runEnd + 1
+                continue
+            }
+            let runLength = runEnd - i + 1
+            let duration = tokens[runEnd].end - tokens[i].start
+            if runLength <= shortRunAbsorbMaxLength,
+               duration < shortRunAbsorbDurationSec {
+                let surrounding = result[i - 1]
+                for k in i...runEnd {
+                    result[k] = surrounding
+                }
+            }
+            i = runEnd + 1
+        }
+        return result
+    }
+
+    // MARK: - Voice-based boundary comparison
+
+    /// Minimum audio duration (seconds) required on each side of a
+    /// candidate boundary for voice comparison to be meaningful.
+    /// FluidAudio's WeSpeaker model is trained on multi-second
+    /// windows; under ~1 s the embedding has too little acoustic
+    /// content to be a confident speaker fingerprint, so candidates
+    /// where either side is too short are skipped.
+    private static let voiceComparisonMinSideDurationSec: TimeInterval = 1.0
+    /// Minimum cosine distance between the two halves' embeddings
+    /// for the boundary to count as "voice-confirmed". 0.6 is well
+    /// above same-speaker distances (typically < 0.4 even across
+    /// prosody shifts) and below the diarizer's own clusteringThreshold,
+    /// so it requires clear acoustic separation without being so
+    /// strict that legitimate boundaries fail to confirm.
+    private static let voiceComparisonMinDistance: Float = 0.6
+    /// Minimum gap to even consider as a candidate. Below this,
+    /// gaps within a sentence are too short to be a meaningful
+    /// speaker-change marker.
+    private static let voiceComparisonMinGapSec: TimeInterval = 0.15
+    /// Required improvement over the original boundary's distance
+    /// before voice comparison MOVES the boundary. Below this, the
+    /// improvement is within embedding noise and the original
+    /// position stays put — but voice still counts as "fired",
+    /// telling the chain to skip the largest-pause fallback.
+    private static let voiceComparisonMinMargin: Float = 0.05
+
+    /// Outcome of `snapBoundaryByVoiceComparison`. Distinguishes
+    /// "voice authoritatively confirmed a boundary (whether or not
+    /// it moved)" from "voice didn't reach a confident decision",
+    /// so the caller can skip the largest-pause fallback in the
+    /// former case. Without this distinction, voice-confirmed
+    /// boundaries that didn't need to move would be silently
+    /// overridden by the fallback's largest-pause heuristic.
+    private enum VoiceSnapOutcome {
+        case fired([String])
+        case notFired
+    }
+
+    /// For sentences with exactly 2 speakers and a single
+    /// diarizer-detected boundary, find the candidate gap (≥ 150 ms,
+    /// each side ≥ 1 s) where the two-side speaker embeddings are
+    /// MOST distinct, and snap the boundary there if the cosine
+    /// distance ≥ voiceComparisonMinDistance.
+    ///
+    /// Different from largest-pause snap (which assumes the largest
+    /// gap is the boundary) — voice comparison directly answers
+    /// "are the speakers actually different on each side?" so it
+    /// won't mis-snap when the largest gap happens to be one
+    /// speaker's mid-sentence pause. Falls back to returning the
+    /// input unchanged when no candidate confirms; the caller can
+    /// then chain the largest-pause snap as a fallback.
+    private func snapBoundaryByVoiceComparison(
+        assignments: [String],
+        tokens: [ASRSegment.Token],
+        segmentAudio: AudioChunk
+    ) async -> VoiceSnapOutcome {
+        guard let diarizer else { return .notFired }
+        guard tokens.count >= 2, Set(assignments).count == 2 else { return .notFired }
+
+        var currentBoundaryOpt: Int? = nil
+        for i in 1..<assignments.count where assignments[i] != assignments[i - 1] {
+            if currentBoundaryOpt != nil { return .notFired }
+            currentBoundaryOpt = i
+        }
+        guard let currentBoundary = currentBoundaryOpt else { return .notFired }
+
+        let firstStart = tokens[0].start
+        let lastEnd = tokens[tokens.count - 1].end
+
+        // Collect candidate gap positions. Skipping ones too short
+        // for confident embedding extraction on either side keeps
+        // cost bounded — typical sentence has 1–3 candidates.
+        var candidates: [Int] = []
+        for i in 1..<tokens.count {
+            let gap = tokens[i].start - tokens[i - 1].end
+            guard gap >= Self.voiceComparisonMinGapSec else { continue }
+            let beforeDuration = tokens[i - 1].end - firstStart
+            let afterDuration = lastEnd - tokens[i].start
+            guard beforeDuration >= Self.voiceComparisonMinSideDurationSec,
+                  afterDuration >= Self.voiceComparisonMinSideDurationSec
             else { continue }
-            let duration = tokens[i].end - tokens[i].start
-            if duration < singletonAbsorbDurationSec {
-                result[i] = result[i - 1]
+            candidates.append(i)
+        }
+        guard !candidates.isEmpty else { return .notFired }
+
+        // For each candidate, slice audio on both sides, extract
+        // embeddings, compute cosine distance. Track both the best
+        // candidate's distance and the current boundary's distance
+        // (when current qualifies as a candidate) so we can require
+        // a margin over the current position before moving.
+        var bestCandidate: Int? = nil
+        var bestDistance: Float = -.infinity
+        var originalDistance: Float = -.infinity
+        for candidate in candidates {
+            let beforeAudio = Self.sliceRelative(
+                segmentAudio,
+                fromAudioTime: firstStart,
+                toAudioTime: tokens[candidate - 1].end
+            )
+            let afterAudio = Self.sliceRelative(
+                segmentAudio,
+                fromAudioTime: tokens[candidate].start,
+                toAudioTime: lastEnd
+            )
+            do {
+                guard let beforeEmb = try await diarizer.embedding(for: beforeAudio.samples),
+                      let afterEmb = try await diarizer.embedding(for: afterAudio.samples),
+                      beforeEmb.count == afterEmb.count
+                else { continue }
+                // Embeddings are L2-normalized, so cosine similarity
+                // = dot product. Distance = 1 - similarity.
+                var dot: Float = 0
+                for k in 0..<beforeEmb.count {
+                    dot += beforeEmb[k] * afterEmb[k]
+                }
+                let distance = 1.0 - dot
+                if candidate == currentBoundary {
+                    originalDistance = distance
+                }
+                if distance > bestDistance {
+                    bestDistance = distance
+                    bestCandidate = candidate
+                }
+            } catch {
+                continue
+            }
+        }
+
+        guard let best = bestCandidate,
+              bestDistance >= Self.voiceComparisonMinDistance
+        else { return .notFired }
+
+        // Margin gate: require a meaningful improvement over the
+        // current position before moving. Same threshold-passed
+        // candidates with bestDistance ≈ originalDistance are
+        // within embedding noise — moving on noise causes drift.
+        // When the current boundary doesn't qualify as a candidate
+        // (originalDistance stayed -.infinity), any threshold-passed
+        // candidate is automatically a sufficient improvement.
+        let beatsMarginOverOriginal =
+            originalDistance == -.infinity ||
+            bestDistance >= originalDistance + Self.voiceComparisonMinMargin
+        let shouldMove = best != currentBoundary && beatsMarginOverOriginal
+
+        guard shouldMove else {
+            // Voice fired (a candidate cleared the threshold) but
+            // the result doesn't justify movement. Return the
+            // original assignments tagged as fired so the caller
+            // skips the largest-pause fallback — voice's verdict
+            // (this boundary is correct as-is) stands.
+            AppLog.diarization.info(
+                "voice-confirmed boundary at token \(currentBoundary, privacy: .public) (d=\(bestDistance, privacy: .public), original d=\(originalDistance, privacy: .public))"
+            )
+            return .fired(assignments)
+        }
+
+        let speakerBefore = assignments[0]
+        let speakerAfter = assignments[assignments.count - 1]
+        var result = assignments
+        for k in 0..<result.count {
+            result[k] = k < best ? speakerBefore : speakerAfter
+        }
+        AppLog.diarization.info(
+            "voice-snapped boundary \(currentBoundary, privacy: .public) → \(best, privacy: .public) (d=\(bestDistance, privacy: .public), original d=\(originalDistance, privacy: .public))"
+        )
+        return .fired(result)
+    }
+
+    // MARK: - Boundary-to-largest-pause snap
+
+    /// Minimum inter-token gap (seconds) for the largest-pause snap
+    /// to apply. Below this, gaps within a sentence are too short
+    /// to be a meaningful speaker-change marker — they're often
+    /// just recognizer-internal token boundaries with no real
+    /// pause. Set well below `sentenceSplitMinPauseSec` (700 ms)
+    /// so this catches within-sentence turn-takes that the
+    /// pause-split intentionally let through.
+    private static let largestPauseSnapMinGapSec: TimeInterval = 0.15
+
+    /// For each detected boundary in `assignments`, snap it to the
+    /// largest token gap inside the surrounding same-speaker runs —
+    /// the natural silence where the speaker change actually
+    /// happened. Targets the failure mode where Apple finalized
+    /// one ASR segment spanning a speaker change and the diarizer's
+    /// boundary lands a token or two off, so one speaker's last
+    /// word "bleeds" into the other's run.
+    ///
+    /// Per-boundary local search (clamped to surrounding same-
+    /// speaker runs) generalizes to multi-speaker / multi-
+    /// boundary segments — each boundary picks the largest gap in
+    /// its own neighborhood without affecting others. For the
+    /// 1-boundary case the surrounding window covers the whole
+    /// segment, matching the previous global-max behavior.
+    private static func snapBoundaryToLargestPause(
+        assignments: [String],
+        tokens: [ASRSegment.Token]
+    ) -> [String] {
+        guard tokens.count >= 2, assignments.count == tokens.count else { return assignments }
+
+        var result = assignments
+        var i = 1
+        while i < tokens.count {
+            guard result[i - 1] != result[i] else {
+                i += 1
+                continue
+            }
+
+            // Run bounds — same logic as VAD-snap and re-diarize.
+            // Clamp candidate range so a snap can't collapse a
+            // neighboring same-speaker run to zero tokens or cross
+            // an adjacent boundary.
+            var runStart = i - 1
+            while runStart > 0 && result[runStart - 1] == result[i - 1] {
+                runStart -= 1
+            }
+            var nextRunEnd = i
+            while nextRunEnd < tokens.count - 1 && result[nextRunEnd + 1] == result[i] {
+                nextRunEnd += 1
+            }
+
+            let lo = runStart + 1
+            let hi = nextRunEnd
+            guard lo <= hi else {
+                i = nextRunEnd + 1
+                continue
+            }
+
+            var maxGap: TimeInterval = 0
+            var maxGapAt = i
+            for j in lo...hi {
+                let gap = tokens[j].start - tokens[j - 1].end
+                if gap > maxGap {
+                    maxGap = gap
+                    maxGapAt = j
+                }
+            }
+
+            if maxGap >= largestPauseSnapMinGapSec, maxGapAt != i {
+                let oldSpeaker = result[i - 1]
+                let newSpeaker = result[i]
+                if maxGapAt < i {
+                    for k in maxGapAt..<i { result[k] = newSpeaker }
+                } else {
+                    for k in i..<maxGapAt { result[k] = oldSpeaker }
+                }
+                i = maxGapAt + 1
+            } else {
+                i = nextRunEnd + 1
             }
         }
         return result
     }
+
+    // MARK: - Grammatical-boundary snap (NLTokenizer)
+
+    /// Search radius in tokens for the grammatical-boundary snap.
+    /// Same scale as the other snap passes — keeps the boundary
+    /// in the local neighborhood while letting it move to the
+    /// nearest grammatical seam.
+    private static let grammaticalSnapRadius: Int = 3
+    /// Per-character distance penalty in the snap scoring. Small
+    /// enough that a clear phrase end ~5 chars away beats a
+    /// mid-word at the original position; large enough that we
+    /// don't drift across a long stretch for marginal grammatical
+    /// improvement.
+    private static let grammaticalDistancePenalty: Double = 0.05
+
+    private struct CutInfo {
+        let isWordBoundary: Bool
+        let isPhraseEnd: Bool
+    }
+
+    /// For each detected boundary, snap it to the nearest natural
+    /// cut point in the text. Phrase ends (after particle, polite
+    /// verb ending, or punctuation) score highest; plain word
+    /// boundaries are next; mid-word positions score worst.
+    /// Distance penalty prefers candidates close to the original
+    /// boundary.
+    ///
+    /// Per-boundary local search clamped to surrounding same-
+    /// speaker runs, so a snap can't collapse a neighboring run
+    /// to zero tokens or cross an adjacent boundary. NLTokenizer's
+    /// word boundaries are good but not perfect on conversational
+    /// JP — uncommon names and code-switched terms may not snap
+    /// cleanly, in which case we leave the boundary alone.
+    private static func snapBoundaryToGrammaticalCut(
+        assignments: [String],
+        tokens: [ASRSegment.Token]
+    ) -> [String] {
+        guard tokens.count >= 2, assignments.count == tokens.count else { return assignments }
+
+        // Build text + per-token character offset map. tokenStart[i]
+        // is the character index (in the concatenated text) where
+        // token i begins; the gap between tokens i-1 and i lands
+        // at character index tokenStart[i].
+        var tokenStart: [Int] = []
+        var totalText = ""
+        for token in tokens {
+            tokenStart.append(totalText.count)
+            totalText += token.text
+        }
+
+        let cuts = grammaticalCutPoints(in: totalText)
+
+        var result = assignments
+        var i = 1
+        while i < tokens.count {
+            guard result[i - 1] != result[i] else {
+                i += 1
+                continue
+            }
+
+            // Run bounds — same logic as VAD-snap and re-diarize.
+            var runStart = i - 1
+            while runStart > 0 && result[runStart - 1] == result[i - 1] {
+                runStart -= 1
+            }
+            var nextRunEnd = i
+            while nextRunEnd < tokens.count - 1 && result[nextRunEnd + 1] == result[i] {
+                nextRunEnd += 1
+            }
+
+            let lo = max(runStart + 1, i - Self.grammaticalSnapRadius)
+            let hi = min(nextRunEnd, i + Self.grammaticalSnapRadius)
+            guard lo <= hi else {
+                i = nextRunEnd + 1
+                continue
+            }
+            let originCharPos = tokenStart[i]
+
+            func score(at tokenIdx: Int) -> Double {
+                let charPos = tokenStart[tokenIdx]
+                let distance = Double(abs(charPos - originCharPos))
+                let distancePenalty = distance * Self.grammaticalDistancePenalty
+                if let info = cuts[charPos] {
+                    if info.isPhraseEnd { return 2.0 - distancePenalty }
+                    if info.isWordBoundary { return 1.0 - distancePenalty }
+                }
+                // Mid-word — no entry in `cuts` for this char index.
+                return -distancePenalty
+            }
+
+            var bestPos = i
+            var bestScore = score(at: i)
+            for j in lo...hi where j != i {
+                let s = score(at: j)
+                if s > bestScore {
+                    bestScore = s
+                    bestPos = j
+                }
+            }
+
+            if bestPos != i {
+                AppLog.diarization.info(
+                    "grammatical snap: token boundary \(i, privacy: .public) → \(bestPos, privacy: .public) (score \(bestScore, privacy: .public))"
+                )
+                let oldSpeaker = result[i - 1]
+                let newSpeaker = result[i]
+                if bestPos < i {
+                    for k in bestPos..<i { result[k] = newSpeaker }
+                } else {
+                    for k in i..<bestPos { result[k] = oldSpeaker }
+                }
+                i = bestPos + 1
+            } else {
+                i = nextRunEnd + 1
+            }
+        }
+        return result
+    }
+
+    /// Use NLTokenizer's JP word segmenter to map each word's
+    /// start character index to a `CutInfo`. The "phrase end" flag
+    /// is set when the *previous* word is a particle or has a
+    /// polite-form verb ending, OR the position immediately
+    /// follows a punctuation character in the source text — those
+    /// are the natural seams in JP where a sentence can be cut
+    /// without leaving a sub-segment that reads as a sentence
+    /// fragment. Indices not in the dictionary are inside a word.
+    ///
+    /// Two limitations the implementation works around:
+    /// 1. NLTagger's `.lexicalClass` scheme does not tag JP
+    ///    particles/verbs/punctuation reliably even with an
+    ///    explicit `.japanese` language hint (observed on iOS 26:
+    ///    27 word starts → 0 POS-tagged tokens), so the
+    ///    phrase-end check works directly off each word's text.
+    /// 2. NLTokenizer's `.word` unit silently omits punctuation
+    ///    tokens from JP enumeration — 「だな。ちょっと」 yields
+    ///    [だ, な, ちょっと] with 「。」 missing, so detecting
+    ///    sentence boundaries via "previous word ended in 。"
+    ///    fails for nominal endings (e.g., 「親父殿。」). We patch
+    ///    that by scanning the text for punctuation directly and
+    ///    marking the position after each as a phrase-end.
+    private static func grammaticalCutPoints(in text: String) -> [Int: CutInfo] {
+        guard !text.isEmpty else { return [:] }
+        var info: [Int: CutInfo] = [:]
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        // Force JP segmentation. Auto-detection misclassifies
+        // short fragments as undetermined, which falls back to a
+        // whitespace tokenizer that produces one giant token for
+        // unspaced JP text.
+        tokenizer.setLanguage(.japanese)
+        var lastWordText: Substring? = nil
+        tokenizer.enumerateTokens(
+            in: text.startIndex..<text.endIndex
+        ) { tokenRange, _ in
+            let charIdx = text.distance(from: text.startIndex, to: tokenRange.lowerBound)
+            let isPhraseEnd = lastWordText.map { Self.isPhraseEndingWord($0) } ?? false
+            info[charIdx] = CutInfo(isWordBoundary: true, isPhraseEnd: isPhraseEnd)
+            lastWordText = text[tokenRange]
+            return true
+        }
+        // Punctuation augmentation — see (2) in the doc comment.
+        let totalChars = text.count
+        for (i, ch) in text.enumerated() {
+            guard Self.phraseEndPunctuation.contains(ch) else { continue }
+            let nextIdx = i + 1
+            guard nextIdx < totalChars else { continue }
+            info[nextIdx] = CutInfo(isWordBoundary: true, isPhraseEnd: true)
+        }
+        AppLog.diarization.debug(
+            "NLTokenizer cuts in \"\(text, privacy: .public)\": \(info.count, privacy: .public) word starts, \(info.values.filter { $0.isPhraseEnd }.count, privacy: .public) phrase-ends"
+        )
+        return info
+    }
+
+    /// Phrase-end heuristic for a JP word. Fires when the word
+    /// ends a natural clause: punctuation tail, a single-char
+    /// case/sentence-final particle, a known multi-char particle
+    /// or conjunction, or a polite-form verb ending
+    /// (です／ます／でした／ました).
+    private static func isPhraseEndingWord(_ word: Substring) -> Bool {
+        guard let last = word.last else { return false }
+        if Self.phraseEndPunctuation.contains(last) { return true }
+        if word.count == 1, Self.singleCharParticles.contains(last) {
+            return true
+        }
+        if Self.multiCharParticles.contains(String(word)) { return true }
+        if word.hasSuffix("です") || word.hasSuffix("ます")
+            || word.hasSuffix("でした") || word.hasSuffix("ました") {
+            return true
+        }
+        return false
+    }
+
+    private static let phraseEndPunctuation: Set<Character> = [
+        "。", "、", "！", "？", "…",
+        "!", "?", ".", ",",
+        "」", "』", ")", "）",
+    ]
+    /// Hiragana that, as a standalone one-character word, signal
+    /// a clause boundary: case particles (は・が・を・に・で・と・へ),
+    /// inclusive/listing markers (も・や), and question /
+    /// sentence-final particles (か・ね・よ・な・わ・ぞ・ぜ・さ).
+    private static let singleCharParticles: Set<Character> = [
+        "は", "が", "を", "に", "で", "と", "へ", "も", "や",
+        "か", "ね", "よ", "な", "わ", "ぞ", "ぜ", "さ",
+    ]
+    private static let multiCharParticles: Set<String> = [
+        "から", "まで", "より", "には", "では", "とは",
+        "って", "けど", "けれど", "のに", "ので", "なら",
+        "じゃ", "だけ", "しか", "ばかり", "ほど",
+    ]
 
     // MARK: - Buffer slicing
 

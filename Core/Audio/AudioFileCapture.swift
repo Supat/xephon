@@ -35,13 +35,20 @@ public actor AudioFileCapture: AudioCapture {
     /// on M-class iPads; above this range the volatile-stabilization
     /// timers fire at different timestamps, sometimes flipping a
     /// `capForSER` bin and producing different SER labels for the same
-    /// audio. Bumping this requires re-validating SER label stability
-    /// against a reference set.
-    private static let fastPaceMultiplier: Int = 8
+    /// audio. 8× is the throughput sweet spot but has been observed
+    /// to nudge a few SER labels off versus real-time on edge cases;
+    /// 4× cuts that drift roughly in half at the cost of doubled
+    /// wall-clock analysis time. Bumping above 8× requires
+    /// re-validating SER label stability against a reference set.
 
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
     private let realTimePacing: Bool
+    /// Multiplier applied to fast-pace chunk-sleep duration. Ignored
+    /// when `realTimePacing` is true. 8× is the default; the file
+    /// importer dialog also exposes 4× when accuracy matters more
+    /// than throughput.
+    private let fastPaceMultiplier: Int
     /// When true and `realTimePacing` is also true, the file is played
     /// out the device speaker alongside the analysis pump. Independent
     /// of fast pacing, where playing the file at the analyzer's wall
@@ -57,11 +64,13 @@ public actor AudioFileCapture: AudioCapture {
         fileURL: URL,
         chunkFrames: AVAudioFrameCount = 4096,
         realTimePacing: Bool = false,
+        fastPaceMultiplier: Int = 8,
         audioOutputEnabled: Bool = false
     ) {
         self.fileURL = fileURL
         self.chunkFrames = chunkFrames
         self.realTimePacing = realTimePacing
+        self.fastPaceMultiplier = fastPaceMultiplier
         self.audioOutputEnabled = audioOutputEnabled
     }
 
@@ -134,6 +143,7 @@ public actor AudioFileCapture: AudioCapture {
 
         let chunkFrames = self.chunkFrames
         let realTimePacing = self.realTimePacing
+        let fastPaceMultiplier = self.fastPaceMultiplier
         pumpTask = Task { [weak self] in
             await self?.pump(
                 file: file,
@@ -141,6 +151,7 @@ public actor AudioFileCapture: AudioCapture {
                 outputFormat: outputFormat,
                 chunkFrames: chunkFrames,
                 realTimePacing: realTimePacing,
+                fastPaceMultiplier: fastPaceMultiplier,
                 rawCont: rawCont,
                 processedCont: processedCont
             )
@@ -179,6 +190,7 @@ public actor AudioFileCapture: AudioCapture {
         outputFormat: AVAudioFormat,
         chunkFrames: AVAudioFrameCount,
         realTimePacing: Bool,
+        fastPaceMultiplier: Int,
         rawCont: AsyncStream<AudioChunk>.Continuation,
         processedCont: AsyncStream<AudioChunk>.Continuation
     ) async {
@@ -250,15 +262,16 @@ public actor AudioFileCapture: AudioCapture {
                 // stage animations look identical to a live recording.
                 try? await Task.sleep(nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000))
             } else {
-                // Fixed 4× real-time pacing — see the type-level comment
-                // for the rationale. Critically, this is a *paced* fast
-                // mode rather than "as fast as possible": SpeechAnalyzer
-                // gets the same wall-clock breathing room as real-time
-                // for its stabilization timers, so segment boundaries
-                // line up with what real-time would produce, so SER
+                // Configurable fast-pace multiplier — see the
+                // type-level comment for the rationale. Critically,
+                // this is a *paced* fast mode rather than "as fast
+                // as possible": SpeechAnalyzer gets the same
+                // wall-clock breathing room as real-time for its
+                // stabilization timers, so segment boundaries line
+                // up with what real-time would produce, so SER
                 // labels stay stable across modes.
                 try? await Task.sleep(
-                    nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000 / Double(Self.fastPaceMultiplier))
+                    nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000 / Double(fastPaceMultiplier))
                 )
             }
         }

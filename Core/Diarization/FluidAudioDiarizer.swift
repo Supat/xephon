@@ -17,7 +17,38 @@ public actor FluidAudioDiarizer: Diarizer {
     // inside an actor and call its async methods.
     private nonisolated(unsafe) let manager: DiarizerManager
 
-    public init(kind: FluidDiarizerKind = .sortformer, config: DiarizerConfig = .default) {
+    /// Default config tuned for conversational speech. The two
+    /// values that differ from `DiarizerConfig.default` are:
+    ///
+    /// - `clusteringThreshold = 0.78` (default 0.7). Higher value =
+    ///   more permissive matching to existing speakers. The same
+    ///   voice across small acoustic variations (prosody shift,
+    ///   brief noise, microphone position change) stays under one
+    ///   ID instead of spawning a new one. FluidAudio derives
+    ///   `speakerThreshold = clusteringThreshold × 1.2` from this
+    ///   and `embeddingThreshold = clusteringThreshold × 0.8`.
+    ///   0.78 is the empirical sweet spot — 0.85 collapsed
+    ///   distinct speakers with similar voices, 0.7 (the default)
+    ///   over-segmented the same speaker.
+    ///
+    /// - `minSpeechDuration = 1.5` s (default 1.0). Briefer audio
+    ///   isn't allowed to create a *new* speaker — it gets assigned
+    ///   to the closest existing one. Cuts spurious speaker
+    ///   creation from short clips where the embedding is too
+    ///   noisy to be a confident fingerprint. Tradeoff: a real new
+    ///   speaker who only utters one short word at first won't get
+    ///   their own ID until they speak longer.
+    ///
+    /// Other fields stay at FluidAudio's defaults.
+    public static let conversationalConfig = DiarizerConfig(
+        clusteringThreshold: 0.78,
+        minSpeechDuration: 1.5
+    )
+
+    public init(
+        kind: FluidDiarizerKind = .sortformer,
+        config: DiarizerConfig = FluidAudioDiarizer.conversationalConfig
+    ) {
         self.kind = kind
         self.manager = DiarizerManager(config: config)
     }
@@ -36,11 +67,52 @@ public actor FluidAudioDiarizer: Diarizer {
         )
         return result.segments.map {
             DiarizedSegment(
-                speakerID: $0.speakerId,
+                speakerID: Self.formatGlobalID($0.speakerId),
                 start: TimeInterval($0.startTimeSeconds),
                 end: TimeInterval($0.endTimeSeconds)
             )
         }
+    }
+
+    /// Reset FluidAudio's session-wide speaker database. Without this,
+    /// speakers from a prior recording carry over — the next session's
+    /// "S01" might unify with a previous "S01" purely because the
+    /// embedding centroids happen to be close, conflating two
+    /// unrelated people.
+    public func resetSpeakers() async {
+        guard manager.isAvailable else { return }
+        await manager.speakerManager.reset()
+        AppLog.diarization.info("FluidAudio speaker database reset")
+    }
+
+    /// Extract a 256-dimensional L2-normalized speaker embedding for
+    /// `audio`. Returns nil before models load. Callers should pass
+    /// audio of a single speaker for meaningful results — the
+    /// embedding extractor uses an all-ones mask, so mixed-speaker
+    /// input averages embeddings together.
+    public func embedding(for audio: [Float]) async throws -> [Float]? {
+        guard manager.isAvailable else { return nil }
+        return try manager.extractSpeakerEmbedding(from: audio)
+    }
+
+    /// Look up the closest known speaker in FluidAudio's database via
+    /// cosine similarity. Returns nil before models load.
+    public func findSpeaker(byEmbedding embedding: [Float]) async -> SpeakerMatch? {
+        guard manager.isAvailable else { return nil }
+        let result = await manager.speakerManager.findSpeaker(with: embedding)
+        let mapped = result.id.map { Self.formatGlobalID($0) }
+        return SpeakerMatch(id: mapped, distance: result.distance)
+    }
+
+    /// Bridge FluidAudio's numeric speaker IDs ("1", "2", …) to our
+    /// display convention ("S01", "S02", …). Keeps everything
+    /// downstream — UI labels, exports, JSON schema — agnostic of
+    /// the upstream library's representation.
+    private static func formatGlobalID(_ raw: String) -> String {
+        if let n = Int(raw) {
+            return String(format: "S%02d", n)
+        }
+        return raw
     }
 
     private func loadModels() async throws {

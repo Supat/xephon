@@ -69,6 +69,11 @@ final class RecordingController {
     /// did, not the running total. 0 before any segment has been
     /// processed and resets each `start()`.
     private(set) var lastChunkSpeakerCount: Int = 0
+    /// Sentence count of the most recently-finalized ASR segment —
+    /// the number of sub-segments `splitIntoSentences` produced
+    /// from it. Surfaces in the pipeline visualization's ASR row.
+    /// 0 before the first segment finalizes; reset each `start()`.
+    private(set) var lastChunkSentenceCount: Int = 0
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
@@ -308,6 +313,7 @@ final class RecordingController {
             sessionStartedAt = Date()
             lastASRFinalizeLatency = nil
             lastChunkSpeakerCount = 0
+            lastChunkSentenceCount = 0
             // Reset per-segment latencies so the pipeline visualization's
             // SER rows return to .idle when a new session starts.
             // Without this, lastAcousticDuration / lastTextDuration
@@ -317,9 +323,18 @@ final class RecordingController {
             lastAcousticDuration = nil
             lastTextDuration = nil
             lastSegmentTotal = nil
-            // Speaker history reset is sequenced inside `analysisTask`
-            // below — it must complete BEFORE the first ingest, and a
-            // fire-and-forget Task here can't make that guarantee.
+            // Reset speaker recognition (cumulative timeline AND
+            // FluidAudio's embedding-based SpeakerManager database)
+            // BEFORE any pump task starts. Doing it here, in the
+            // synchronous prologue of `start()`, guarantees no
+            // observation from the new session can land before the
+            // reset — earlier this lived inside `analysisTask` where
+            // `continuousDiarizeTask` could in principle fire its
+            // first tick before the reset awaited. The reset has to
+            // run after `ensurePipeline` so the diarizer instance is
+            // available to clear, but before the recording-time
+            // tasks are spawned below.
+            await ensurePipeline().resetSpeakerTracking()
             // Surface the session on the Lock Screen / Dynamic Island.
             // Has to happen AFTER `sourceMode` is set (handled by
             // `startFromFile` for file-mode) so the activity captures
@@ -415,13 +430,10 @@ final class RecordingController {
             analysisTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 let pipeline = await self.ensurePipeline()
-                // Clear cumulative speaker history before the first
-                // segment lands. Awaiting the actor reset ensures the
-                // tracker is empty by the time `processSegment` calls
-                // `speakerTracker.ingest` — a previous fire-and-forget
-                // Task could be scheduled after the first segment's
-                // ingest, leaking last session's speaker numbering.
-                await pipeline.resetSpeakerTracking()
+                // Speaker tracking + FluidAudio's SpeakerManager are
+                // already reset in `start()`'s synchronous prologue
+                // before this task is spawned, so no further reset
+                // is needed here.
                 await withTaskGroup(of: Void.self) { group in
                     for await segment in segmentStream {
                         // Record finalize latency at the moment of receipt:
@@ -471,7 +483,12 @@ final class RecordingController {
                             // skips re-running the diarizer per sub.
                             // Single-speaker segments come back as a
                             // one-element array, so the loop is uniform.
-                            let splits = await pipeline.splitOnSpeakerChange(
+                            // Combined pipeline: sentence-level split
+                            // (pause + punctuation, independent of
+                            // speakers), then speaker-change split per
+                            // resulting sentence. See
+                            // `AnalysisPipeline.splitForProcessing`.
+                            let splits = await pipeline.splitForProcessing(
                                 asr: segment,
                                 segmentAudio: segmentBuffer,
                                 diarizationContext: diarContext
@@ -484,6 +501,7 @@ final class RecordingController {
                             await self?.recordChunkSpeakerCount(
                                 Set(splits.map(\.speaker)).count
                             )
+                            await self?.recordChunkSentenceCount(splits.count)
                             for split in splits {
                                 do {
                                     let (estimate, metrics) = try await pipeline.processSegment(
@@ -625,6 +643,7 @@ final class RecordingController {
     func startFromFile(
         _ url: URL,
         realTimePacing: Bool = false,
+        fastPaceMultiplier: Int = 8,
         audioOutputEnabled: Bool = false
     ) async {
         guard phase == .idle else { return }
@@ -637,6 +656,7 @@ final class RecordingController {
         capture = AudioFileCapture(
             fileURL: url,
             realTimePacing: realTimePacing,
+            fastPaceMultiplier: fastPaceMultiplier,
             audioOutputEnabled: audioOutputEnabled
         )
         availableInputs = []
@@ -716,6 +736,10 @@ final class RecordingController {
     /// just-diarized chunk rather than a running session total.
     fileprivate func recordChunkSpeakerCount(_ count: Int) {
         lastChunkSpeakerCount = count
+    }
+
+    fileprivate func recordChunkSentenceCount(_ count: Int) {
+        lastChunkSentenceCount = count
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {
