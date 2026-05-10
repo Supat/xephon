@@ -36,7 +36,7 @@
 "menu.findInUtterances" = "Find in Utterances…";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";
-"pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace at 8× is the throughput sweet spot but feeds audio to SpeechAnalyzer faster than its volatile-stabilization timers expect — segment boundaries shift slightly, which can nudge both ASR transcripts and SER labels off versus real-time on edge cases. If that accuracy cost is too high, try 4× (cuts the drift roughly in half at the cost of doubled wall-clock analysis time).";
+"pacing.message" = "Real-time matches a live recording exactly. 8× is fastest but can drift ASR/SER labels on edge cases. 4× halves the drift at 2× the time.";
 "pacing.realtime" = "Real-time pace";
 "pacing.realtime.audio" = "Real-time pace (with audio)";
 "pacing.fast8x" = "Fast pace (8×)";
