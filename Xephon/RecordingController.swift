@@ -69,6 +69,11 @@ final class RecordingController {
     /// did, not the running total. 0 before any segment has been
     /// processed and resets each `start()`.
     private(set) var lastChunkSpeakerCount: Int = 0
+    /// Sentence count of the most recently-finalized ASR segment —
+    /// the number of sub-segments `splitIntoSentences` produced
+    /// from it. Surfaces in the pipeline visualization's ASR row.
+    /// 0 before the first segment finalizes; reset each `start()`.
+    private(set) var lastChunkSentenceCount: Int = 0
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
@@ -308,6 +313,7 @@ final class RecordingController {
             sessionStartedAt = Date()
             lastASRFinalizeLatency = nil
             lastChunkSpeakerCount = 0
+            lastChunkSentenceCount = 0
             // Reset per-segment latencies so the pipeline visualization's
             // SER rows return to .idle when a new session starts.
             // Without this, lastAcousticDuration / lastTextDuration
@@ -495,6 +501,7 @@ final class RecordingController {
                             await self?.recordChunkSpeakerCount(
                                 Set(splits.map(\.speaker)).count
                             )
+                            await self?.recordChunkSentenceCount(splits.count)
                             for split in splits {
                                 do {
                                     let (estimate, metrics) = try await pipeline.processSegment(
@@ -729,6 +736,10 @@ final class RecordingController {
     /// just-diarized chunk rather than a running session total.
     fileprivate func recordChunkSpeakerCount(_ count: Int) {
         lastChunkSpeakerCount = count
+    }
+
+    fileprivate func recordChunkSentenceCount(_ count: Int) {
+        lastChunkSentenceCount = count
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {

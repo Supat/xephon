@@ -258,11 +258,11 @@ struct ContentView: View {
                     PipelineCard(recorder: recorder)
 
                     SummaryCard(
-                        summary: recorder.conversationSummary,
-                        totalDuration: recorder.conversationSummary.totalDuration
+                        summary: displayedSummary,
+                        totalDuration: displayedSummary.totalDuration
                     )
 
-                    StatisticsCard(summary: recorder.conversationSummary)
+                    StatisticsCard(summary: displayedSummary)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -595,9 +595,7 @@ struct ContentView: View {
             }
         } label: {
             Label(
-                recorder.isRecording
-                    ? String(localized: "record.stop")
-                    : String(localized: "record.start"),
+                recordButtonTitle,
                 systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill"
             )
             .font(.title3)
@@ -605,6 +603,16 @@ struct ContentView: View {
         .buttonStyle(.borderedProminent)
         .tint(recorder.isRecording ? .red : .accentColor)
         .disabled(recorder.isAnalyzing)
+    }
+
+    private var recordButtonTitle: String {
+        guard recorder.isRecording else {
+            return String(localized: "record.start")
+        }
+        if case .file = recorder.sourceMode {
+            return String(localized: "record.stop.file")
+        }
+        return String(localized: "record.stop")
     }
 
     private var openFileButton: some View {
@@ -655,6 +663,25 @@ struct ContentView: View {
 
     private var distinctSpeakerCount: Int {
         Set(recorder.utterances.map { $0.speakerID }).count
+    }
+
+    /// Summary derived from whatever's currently displayed in the
+    /// transcript list. When all filters are off this matches the
+    /// recorder's running `conversationSummary` exactly (same input
+    /// utterances, same fold). When any filter is active — search
+    /// text, label, speaker — this re-folds only the visible
+    /// utterances, so the Summary and Statistics panels read the
+    /// filtered slice instead of the lifetime totals.
+    ///
+    /// O(n) per render. Negligible for typical session sizes (a few
+    /// hundred utterances); SwiftUI's view-diffing means it only
+    /// runs when the filter or utterance state actually changes.
+    private var displayedSummary: ConversationSummary {
+        var summary = ConversationSummary()
+        for (_, u) in filteredIndexedUtterances {
+            summary.update(with: u)
+        }
+        return summary
     }
 
     /// Distinct top labels seen so far this session, used to populate

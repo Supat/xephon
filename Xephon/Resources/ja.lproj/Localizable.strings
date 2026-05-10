@@ -26,6 +26,7 @@
 "record.discardConfirm.cancel" = "キャンセル";
 "record.start" = "録音を開始";
 "record.stop" = "録音を停止";
+"record.stop.file" = "再生を停止";
 "record.status.format" = "%@ · %@ サンプル";
 "analyze.inProgress" = "解析中…";
 "warmup.inProgress" = "モデルを読み込み中…";

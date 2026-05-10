@@ -85,7 +85,7 @@ struct PipelineCard: View {
     /// visible in the status row above.
     private var captureMetric: Text {
         Text(recorder.isRecording
-            ? "\(formatCount(recorder.bufferedSamples)) buf"
+            ? "\(formatCount(recorder.bufferedSamples)) smpl"
             : "—")
     }
 
@@ -94,20 +94,33 @@ struct PipelineCard: View {
         if !recorder.utterances.isEmpty { return .ready }
         return .idle
     }
-    /// Real-time / mic mode shows the most recent finalize latency
-    /// (wall clock from end-of-utterance to ASR-final-emitted). 200–800 ms
-    /// is the typical range on M-class. Fast-pace mode falls through to
-    /// the utterance count since audio time isn't wall-clock-aligned
-    /// there and the latency number would be meaningless.
-    /// The leading `backward.frame` glyph reads as "look back to the
-    /// most recent finalize" — replaces the verbose "last:" text.
+    /// Sentence count for the chunk the ASR row currently
+    /// represents. While recording, shows the count of completed
+    /// sentences in the live volatile preview (terminators that
+    /// have already been recognized). When idle, falls back to the
+    /// last finalized chunk's sentence count so the row keeps a
+    /// useful value between sessions.
+    ///
+    /// Volatile counting is a quick scan over `volatileText` for
+    /// sentence-ending punctuation — the recognizer can revoke a
+    /// punctuation mark as it refines its hypothesis, so the
+    /// number may briefly flicker downward; settles within the
+    /// stability window (~200 ms typical).
     private var asrMetric: Text {
-        if let latency = recorder.lastASRFinalizeLatency {
-            let ms = Int((latency * 1000).rounded())
-            return Text("\(Image(systemName: "backward.frame")) \(ms) ms")
+        let n: Int
+        if recorder.isRecording {
+            n = recorder.volatileText.reduce(0) {
+                Self.sentenceEndChars.contains($1) ? $0 + 1 : $0
+            }
+        } else {
+            n = recorder.lastChunkSentenceCount
         }
-        return Text(recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)")
+        return Text(n == 0 ? "—" : "\(n) snt")
     }
+
+    private static let sentenceEndChars: Set<Character> = [
+        "。", "！", "？", "．", ".", "!", "?",
+    ]
 
     /// Per-segment stages (Acoustic SER, Text SER): active while a
     /// segment is in flight, ready once a result has landed, idle

@@ -459,51 +459,48 @@ final class AnalysisPipeline: Sendable {
         return fillers.contains(trimmed)
     }
 
-    // MARK: - Sentence splitting (pause + punctuation)
+    // MARK: - Sentence splitting (punctuation + long-pause fallback)
 
-    /// Minimum inter-token gap (seconds) that triggers a sentence
-    /// split when no punctuation is involved. 700 ms is well above
-    /// breath pauses and below most mid-sentence hesitations — long
-    /// enough that "this is a new sentence" is unambiguous. Apple's
-    /// SpeechTranscriber sometimes holds two real sentences inside
-    /// one final result when the speaker pauses but doesn't reset
-    /// the language-model context; this catches those.
+    /// Minimum inter-token gap (seconds) that forces a sub-segment
+    /// split even when no punctuation is involved. 700 ms is well
+    /// above breath pauses and below most mid-sentence hesitations
+    /// — long enough that "this is a new sentence" is unambiguous
+    /// even without Apple emitting `。`. Apple's SpeechTranscriber
+    /// usually punctuates between sentences, but it sometimes
+    /// omits the mark on incomplete/elliptical speech; this catches
+    /// those.
     private static let sentenceSplitMinPauseSec: TimeInterval = 0.7
-    /// Minimum gap when the preceding token ends with sentence-
-    /// ending punctuation. Apple inserts a token boundary after
-    /// "。/.", but the gap itself is often just 100–200 ms. We
-    /// require at least some pause so we don't split on punctuation
-    /// embedded mid-utterance (rare but possible).
-    private static let sentenceSplitMinPunctGapSec: TimeInterval = 0.1
     /// Sentence-ending characters in JP and EN. SpeechTranscriber
     /// emits punctuation as a tail on the preceding token, so a
     /// `text.last`-only check catches them.
     private static let sentenceEndChars: Set<Character> = [
-        "。", "！", "？", "．", ".", "!", "?"
+        "。", "！", "？", "．", ".", "!", "?",
     ]
 
-    /// Split an `ASRSegment` into one sub-segment per detected
-    /// sentence boundary — long inter-token pause OR sentence-
-    /// ending punctuation followed by any pause. Returns the
-    /// segment unchanged when no boundary qualifies, when the
-    /// segment has fewer than two tokens, or when the transcriber
-    /// didn't supply per-token timing. Independent of speaker
-    /// detection — runs upstream of `splitOnSpeakerChange` so the
-    /// speaker pipeline operates on whichever sentences naturally
-    /// remain.
-    static func splitByPauseAndPunctuation(_ asr: ASRSegment) -> [ASRSegment] {
+    /// Split an `ASRSegment` so each sub-segment contains at most
+    /// one sentence. Splits after every token whose `text.last` is
+    /// in `sentenceEndChars` (the primary rule — Apple's JP
+    /// recognizer punctuates sentence boundaries reliably), and
+    /// also after any inter-token gap ≥ `sentenceSplitMinPauseSec`
+    /// (the fallback for un-punctuated long pauses).
+    ///
+    /// Returns the segment unchanged when no boundary qualifies,
+    /// when the segment has fewer than two tokens, or when the
+    /// transcriber didn't supply per-token timing. Independent of
+    /// speaker detection — runs upstream of `splitOnSpeakerChange`
+    /// so the speaker pipeline operates on per-sentence inputs.
+    static func splitIntoSentences(_ asr: ASRSegment) -> [ASRSegment] {
         guard asr.tokens.count >= 2 else { return [asr] }
 
         var splitAfter: [Int] = []
         for i in 0..<(asr.tokens.count - 1) {
-            let gap = asr.tokens[i + 1].start - asr.tokens[i].end
-            if gap >= sentenceSplitMinPauseSec {
+            if let lastChar = asr.tokens[i].text.last,
+               sentenceEndChars.contains(lastChar) {
                 splitAfter.append(i)
                 continue
             }
-            if let lastChar = asr.tokens[i].text.last,
-               sentenceEndChars.contains(lastChar),
-               gap >= sentenceSplitMinPunctGapSec {
+            let gap = asr.tokens[i + 1].start - asr.tokens[i].end
+            if gap >= sentenceSplitMinPauseSec {
                 splitAfter.append(i)
             }
         }
@@ -547,43 +544,73 @@ final class AnalysisPipeline: Sendable {
         let speaker: String
     }
 
-    /// Combined sentence + speaker split. Runs `splitByPauseAndPunctuation`
-    /// first (independent of speakers), then `splitOnSpeakerChange` on
-    /// each resulting sentence sub-segment. The combined output is what
-    /// `processSegment` iterates over for SER. The two-stage chain
-    /// composes cleanly: sentence boundaries land at token-pause /
-    /// punctuation, speaker boundaries land within or across them.
+    /// Sentence-level split with one dominant speaker per sentence.
+    ///
+    /// Runs `splitIntoSentences` and emits one `SegmentSplit` per
+    /// resulting sub-segment, tagged with whichever speaker the
+    /// cumulative diarizer timeline says occupied the most audio
+    /// time inside `[sentence.start, sentence.end]`. A sentence is
+    /// never sub-divided by mid-sentence speaker changes — sentence
+    /// integrity wins over speaker boundary precision. When the
+    /// diarizer occasionally mis-classifies a few tokens inside a
+    /// sentence, the majority-overlap tally absorbs that noise
+    /// instead of cutting the sentence into fragments.
+    ///
+    /// `diarizationContext` is accepted for signature compatibility
+    /// but no longer used here — per-sentence speaker resolution
+    /// reads `speakerTracker` directly. The continuous diarize task
+    /// in RecordingController is what keeps that timeline fresh.
     func splitForProcessing(
         asr: ASRSegment,
         segmentAudio: AudioChunk,
         diarizationContext: AudioChunk?,
         fallbackSpeakerID: String = "S01"
     ) async -> [SegmentSplit] {
-        let sentenceSplits = Self.splitByPauseAndPunctuation(asr)
-        if sentenceSplits.count == 1 {
-            return await splitOnSpeakerChange(
-                asr: asr,
-                segmentAudio: segmentAudio,
-                diarizationContext: diarizationContext,
-                fallbackSpeakerID: fallbackSpeakerID
-            )
-        }
-        var allSplits: [SegmentSplit] = []
+        let sentenceSplits = Self.splitIntoSentences(asr)
+        var result: [SegmentSplit] = []
         for sentence in sentenceSplits {
-            let sentenceAudio = Self.sliceRelative(
-                segmentAudio,
-                fromAudioTime: sentence.start,
-                toAudioTime: sentence.end
+            let sentenceAudio: AudioChunk = sentenceSplits.count == 1
+                ? segmentAudio
+                : Self.sliceRelative(
+                    segmentAudio,
+                    fromAudioTime: sentence.start,
+                    toAudioTime: sentence.end
+                )
+            let speaker = await dominantSpeaker(
+                from: sentence.start,
+                to: sentence.end,
+                fallback: fallbackSpeakerID
             )
-            let speakerSplits = await splitOnSpeakerChange(
+            result.append(SegmentSplit(
                 asr: sentence,
-                segmentAudio: sentenceAudio,
-                diarizationContext: diarizationContext,
-                fallbackSpeakerID: fallbackSpeakerID
-            )
-            allSplits.append(contentsOf: speakerSplits)
+                audio: sentenceAudio,
+                speaker: speaker
+            ))
         }
-        return allSplits
+        return result
+    }
+
+    /// Speaker the cumulative diarizer timeline reports as
+    /// dominant in `[start, end]`, picked by total time-overlap.
+    /// Falls back to `fallback` only when the timeline is empty
+    /// (very early in the session, before the continuous-diarize
+    /// stride task has fired) or when no entry overlaps the range
+    /// at all (diarizer gap).
+    private func dominantSpeaker(
+        from start: TimeInterval,
+        to end: TimeInterval,
+        fallback: String
+    ) async -> String {
+        let timeline = await speakerTracker.cumulativeSnapshot()
+        guard !timeline.isEmpty, end > start else { return fallback }
+        var totals: [String: TimeInterval] = [:]
+        for entry in timeline {
+            let lo = max(entry.start, start)
+            let hi = min(entry.end, end)
+            guard hi > lo else { continue }
+            totals[entry.speakerID, default: 0] += hi - lo
+        }
+        return totals.max(by: { $0.value < $1.value })?.key ?? fallback
     }
 
     /// Diarize the segment's context once and emit one sub-segment per
