@@ -109,13 +109,14 @@ struct PipelineCard: View {
         return Text(recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)")
     }
 
-    /// Per-segment stages (Acoustic SER, Text SER) flip to active while a
-    /// segment is in flight, otherwise idle. Latency value is shown in the
-    /// metric column, but the glyph state itself doesn't latch to .ready —
-    /// otherwise the stage looks "done" forever even though it'll fire again
-    /// on the next segment.
-    private func perSegmentState(latency _: TimeInterval?) -> StageRow.State {
-        recorder.inflightSegments > 0 ? .active(0) : .idle
+    /// Per-segment stages (Acoustic SER, Text SER): active while a
+    /// segment is in flight, ready once a result has landed, idle
+    /// before the first one. Same pattern as fusion/diarizer/ASR —
+    /// .ready means "we have output and aren't busy right now" and
+    /// will flip back to .active when the next segment arrives.
+    private func perSegmentState(latency: TimeInterval?) -> StageRow.State {
+        if recorder.inflightSegments > 0 { return .active(0) }
+        return latency == nil ? .idle : .ready
     }
 
     private var fusionState: StageRow.State {
