@@ -308,6 +308,15 @@ final class RecordingController {
             sessionStartedAt = Date()
             lastASRFinalizeLatency = nil
             lastChunkSpeakerCount = 0
+            // Reset per-segment latencies so the pipeline visualization's
+            // SER rows return to .idle when a new session starts.
+            // Without this, lastAcousticDuration / lastTextDuration
+            // carry over from the previous session, leaving the SER
+            // glyphs latched to .ready before the first segment of the
+            // new session has even processed.
+            lastAcousticDuration = nil
+            lastTextDuration = nil
+            lastSegmentTotal = nil
             // Speaker history reset is sequenced inside `analysisTask`
             // below — it must complete BEFORE the first ingest, and a
             // fire-and-forget Task here can't make that guarantee.
