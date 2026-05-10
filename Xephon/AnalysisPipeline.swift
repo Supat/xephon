@@ -874,17 +874,30 @@ final class AnalysisPipeline: Sendable {
         return Self.speakerAt(midpoint: mid, in: diarized, fallback: "S01")
     }
 
-    /// Pick the diarized speaker covering `mid`, falling back to the
-    /// closest segment by midpoint when `mid` lands in a diarizer gap.
-    /// `fallback` is used only when `tracked` is empty.
+    /// Pick the diarized speaker covering `mid` by majority vote
+    /// across every segment in `tracked` that contains `mid`. With a
+    /// single diarizer call's output (e.g. inside `processSegment`'s
+    /// in-pipeline diarization path), each audio time is covered by
+    /// at most one segment, so voting reduces to "pick the
+    /// containing segment". With the streaming timeline's
+    /// multi-observation snapshot (~5 overlapping windows per
+    /// moment), voting picks the speaker the majority of recent
+    /// diarize calls agreed on — robust to single-call
+    /// misclassifications. Falls back to the closest segment by
+    /// midpoint distance when no segment contains `mid`; `fallback`
+    /// applies only when `tracked` is entirely empty.
     private static func speakerAt(
         midpoint mid: TimeInterval,
         in tracked: [DiarizedSegment],
         fallback: String
     ) -> String {
         guard !tracked.isEmpty else { return fallback }
-        if let containing = tracked.first(where: { $0.start <= mid && mid <= $0.end }) {
-            return containing.speakerID
+        var votes: [String: Int] = [:]
+        for s in tracked where s.start <= mid && mid <= s.end {
+            votes[s.speakerID, default: 0] += 1
+        }
+        if let best = votes.max(by: { $0.value < $1.value }) {
+            return best.key
         }
         let closest = tracked.min(by: { abs(($0.start + $0.end) / 2 - mid) < abs(($1.start + $1.end) / 2 - mid) })
         return closest?.speakerID ?? fallback

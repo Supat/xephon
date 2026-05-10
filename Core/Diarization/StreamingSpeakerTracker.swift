@@ -27,12 +27,24 @@ public actor StreamingSpeakerTracker {
     private let overlapThreshold: TimeInterval
 
     /// Cap on `cumulative` so very long sessions don't grow the matching
-    /// arena indefinitely. Old entries fall off the head — speakers from
-    /// >~1 hour ago will be re-allocated as new global IDs if they
-    /// reappear, which is acceptable.
-    public static let cumulativeCap: Int = 2048
+    /// arena indefinitely. Old entries fall off the head — speakers
+    /// silent for longer than the cap's audio-time coverage will be
+    /// re-allocated as new global IDs if they reappear. Bumped from
+    /// 2048 once the tracker switched to multi-observation voting:
+    /// the continuous diarizer (10 s window, 2 s stride) covers each
+    /// audio moment with ~5 overlapping calls, so 8192 entries
+    /// represents roughly the same wall-clock coverage 2048 used to
+    /// give in single-observation mode.
+    public static let cumulativeCap: Int = 8192
 
-    public init(overlapThreshold: TimeInterval = 0.5) {
+    /// Sum of overlap (seconds) required to consider a new local
+    /// speaker the "same" as an existing global. Bumped from 0.5 to
+    /// 1.5 because voting mode keeps every overlapping observation,
+    /// so `bestOverlapMatch` sums across ~5x as many entries per
+    /// audio moment — the original 0.5 s threshold became too easy
+    /// to clear and would conflate distinct speakers in adjacent
+    /// windows.
+    public init(overlapThreshold: TimeInterval = 1.5) {
         self.overlapThreshold = overlapThreshold
     }
 
@@ -62,13 +74,17 @@ public actor StreamingSpeakerTracker {
             )
         }
 
-        // Replace any cumulative entries entirely within the new
-        // call's time range — they're now superseded by the latest
-        // result. Append the new mapped segments and re-sort. Outside
-        // the new range we keep the previous history intact.
-        let lo = incoming.lazy.map { $0.start }.min() ?? 0
-        let hi = incoming.lazy.map { $0.end }.max() ?? 0
-        cumulative.removeAll { $0.start >= lo && $0.end <= hi }
+        // Append-only: every diarize call's verdict is preserved as
+        // an independent observation. The query path
+        // (`speakerAt` / `cumulativeSnapshot` consumers) tallies
+        // votes across overlapping observations to decide who
+        // covered a given audio time. Earlier behavior — replacing
+        // overlapping entries with the latest call — was effectively
+        // "newest wins" and let single-call misclassifications stay
+        // permanent until evicted by the cap. Voting smooths over
+        // those by requiring a majority across the ~5 overlapping
+        // windows that cover each audio moment under continuous
+        // diarization.
         cumulative.append(contentsOf: mapped)
         cumulative.sort { $0.start < $1.start }
 
@@ -99,13 +115,22 @@ public actor StreamingSpeakerTracker {
     /// realistic sessions (≤ `cumulativeCap` entries × ~40 B).
     public func cumulativeSnapshot() -> [DiarizedSegment] { cumulative }
 
-    /// Speaker ID covering `audioTime`, by midpoint-fallback rule.
-    /// Returns nil only when the timeline is empty — falls back to
-    /// the closest segment when the time lands in a diarizer gap.
+    /// Speaker ID covering `audioTime`. Tallies votes across every
+    /// observation containing `audioTime` and returns the majority
+    /// global ID — under continuous diarization, ~5 overlapping
+    /// windows cover each moment, and a majority across them is more
+    /// stable than any single window's verdict. Returns nil only
+    /// when the timeline is empty; falls back to the closest segment
+    /// (by midpoint) when no observations contain `audioTime`
+    /// (diarizer gap, very early in the session).
     public func speakerAt(_ audioTime: TimeInterval) -> String? {
         guard !cumulative.isEmpty else { return nil }
-        if let containing = cumulative.first(where: { $0.start <= audioTime && audioTime <= $0.end }) {
-            return containing.speakerID
+        var votes: [String: Int] = [:]
+        for s in cumulative where s.start <= audioTime && audioTime <= s.end {
+            votes[s.speakerID, default: 0] += 1
+        }
+        if let best = votes.max(by: { $0.value < $1.value }) {
+            return best.key
         }
         return cumulative.min(by: {
             abs(($0.start + $0.end) / 2 - audioTime) < abs(($1.start + $1.end) / 2 - audioTime)
