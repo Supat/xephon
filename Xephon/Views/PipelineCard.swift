@@ -37,6 +37,12 @@ struct PipelineCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             StageRow(
+                icon: "person.2.fill",
+                name: String(localized: "pipeline.diarizer"),
+                state: diarizerState,
+                metric: diarizerMetric
+            )
+            StageRow(
                 icon: "waveform",
                 name: String(localized: "pipeline.acousticSER"),
                 state: perSegmentState(latency: recorder.lastAcousticDuration),
@@ -115,6 +121,21 @@ struct PipelineCard: View {
     private var fusionState: StageRow.State {
         if recorder.inflightSegments > 0 { return .active(0) }
         return recorder.utterances.isEmpty ? .idle : .ready
+    }
+
+    /// Diarizer runs in parallel with SER on each segment; its glyph
+    /// follows the same active/ready/idle pattern as fusion since
+    /// "ready" here means "we have at least one identified speaker".
+    private var diarizerState: StageRow.State {
+        if recorder.inflightSegments > 0 { return .active(0) }
+        return recorder.distinctSpeakers == 0 ? .idle : .ready
+    }
+
+    /// Number of distinct speakers detected so far. `spk` matches the
+    /// existing `utts` shorthand on the fusion row for visual rhythm.
+    private var diarizerMetric: Text {
+        let count = recorder.distinctSpeakers
+        return Text(count == 0 ? "—" : "\(count) spk")
     }
 
     private func latencyMetric(_ value: TimeInterval?) -> Text {

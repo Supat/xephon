@@ -436,17 +436,141 @@ final class AnalysisPipeline: Sendable {
         return fillers.contains(trimmed)
     }
 
+    // MARK: - Speaker-change splitting
+
+    /// One sub-segment produced by `splitOnSpeakerChange`. Each carries
+    /// its own ASR slice, the audio for that slice, and a pre-resolved
+    /// speaker so the caller can pass it as `fallbackSpeakerID` and skip
+    /// re-running the diarizer inside `processSegment`.
+    struct SegmentSplit: Sendable {
+        let asr: ASRSegment
+        let audio: AudioChunk
+        let speaker: String
+    }
+
+    /// Diarize the segment's context once and emit one sub-segment per
+    /// contiguous run of same-speaker tokens. When the diarizer reports
+    /// only one speaker (or isn't available, or `asr.tokens` is empty),
+    /// returns a single-element array equivalent to the original
+    /// segment so the caller's loop is uniform either way.
+    ///
+    /// Splitting happens at *token* boundaries — never mid-token —
+    /// because SpeechAnalyzer's per-run timing is the finest grain we
+    /// have for the text-side cut. Diarizer accuracy on short windows
+    /// is ±200–500 ms, so a hard mid-segment cut at the diarizer's
+    /// reported instant could land inside a word; snapping to the
+    /// nearest token boundary keeps each sub-segment's text grammatical.
+    func splitOnSpeakerChange(
+        asr: ASRSegment,
+        segmentAudio: AudioChunk,
+        diarizationContext: AudioChunk?,
+        fallbackSpeakerID: String = "S01"
+    ) async -> [SegmentSplit] {
+        let single = SegmentSplit(asr: asr, audio: segmentAudio, speaker: fallbackSpeakerID)
+
+        // Need both per-token timing AND a diarizer to do the split.
+        // Either missing → return the original segment unchanged.
+        guard let diarizationContext, diarizer != nil, !asr.tokens.isEmpty else {
+            return [single]
+        }
+
+        let diarized = await runDiarization(diarizationContext)
+        guard !diarized.isEmpty else { return [single] }
+        let tracked = await speakerTracker.ingest(diarized)
+        guard !tracked.isEmpty else { return [single] }
+
+        // Per-token speaker assignment by midpoint. Falls back to the
+        // closest segment when the midpoint falls in a diarizer gap.
+        func speakerForToken(_ token: ASRSegment.Token) -> String {
+            let mid = (token.start + token.end) / 2
+            return Self.speakerAt(midpoint: mid, in: tracked, fallback: fallbackSpeakerID)
+        }
+
+        // Single-speaker fast path. If every token resolves to the same
+        // speaker, no need to allocate a list of splits — return the
+        // original segment with that speaker baked in.
+        let assignments = asr.tokens.map(speakerForToken)
+        let distinct = Set(assignments)
+        if distinct.count <= 1 {
+            return [SegmentSplit(
+                asr: asr,
+                audio: segmentAudio,
+                speaker: distinct.first ?? fallbackSpeakerID
+            )]
+        }
+
+        // Group consecutive tokens by speaker; emit one sub-segment per
+        // group. The order of `assignments` matches the order of
+        // `asr.tokens`, so a forward scan with a running speaker is
+        // enough — no sort required.
+        var splits: [SegmentSplit] = []
+        var groupStart = 0
+        var current = assignments[0]
+        for i in 1..<assignments.count {
+            if assignments[i] != current {
+                splits.append(Self.buildSplit(
+                    tokens: Array(asr.tokens[groupStart..<i]),
+                    speaker: current,
+                    parent: asr,
+                    segmentAudio: segmentAudio
+                ))
+                current = assignments[i]
+                groupStart = i
+            }
+        }
+        splits.append(Self.buildSplit(
+            tokens: Array(asr.tokens[groupStart..<asr.tokens.count]),
+            speaker: current,
+            parent: asr,
+            segmentAudio: segmentAudio
+        ))
+        return splits
+    }
+
+    private static func buildSplit(
+        tokens: [ASRSegment.Token],
+        speaker: String,
+        parent: ASRSegment,
+        segmentAudio: AudioChunk
+    ) -> SegmentSplit {
+        let text = tokens.map(\.text).joined()
+        let start = tokens.first?.start ?? parent.start
+        let end = tokens.last?.end ?? parent.end
+        let subAsr = ASRSegment(
+            text: text,
+            start: start,
+            end: end,
+            // Sub-segments inherit the parent's whole-segment confidence;
+            // SpeechAnalyzer doesn't expose per-run confidence we'd need
+            // to recompute a per-sub mean against.
+            confidence: parent.confidence,
+            tokens: tokens
+        )
+        let subAudio = sliceRelative(segmentAudio, fromAudioTime: start, toAudioTime: end)
+        return SegmentSplit(asr: subAsr, audio: subAudio, speaker: speaker)
+    }
+
     // MARK: - Buffer slicing
 
     private func speakerForSegment(_ asr: ASRSegment, in diarized: [DiarizedSegment]) -> String {
-        guard !diarized.isEmpty else { return "S01" }
         let mid = (asr.start + asr.end) / 2
-        // Pick the speaker whose segment contains the midpoint; otherwise the closest.
-        if let containing = diarized.first(where: { $0.start <= mid && mid <= $0.end }) {
+        return Self.speakerAt(midpoint: mid, in: diarized, fallback: "S01")
+    }
+
+    /// Pick the diarized speaker covering `mid`, falling back to the
+    /// closest segment by midpoint when `mid` lands in a diarizer gap.
+    /// `fallback` is used only when `tracked` is empty.
+    private static func speakerAt(
+        midpoint mid: TimeInterval,
+        in tracked: [DiarizedSegment],
+        fallback: String
+    ) -> String {
+        guard !tracked.isEmpty else { return fallback }
+        if let containing = tracked.first(where: { $0.start <= mid && mid <= $0.end }) {
             return containing.speakerID
         }
-        let closest = diarized.min(by: { abs(($0.start + $0.end) / 2 - mid) < abs(($1.start + $1.end) / 2 - mid) })
-        return closest?.speakerID ?? "S01"
+        let closest = tracked.min(by: { abs(($0.start + $0.end) / 2 - mid) < abs(($1.start + $1.end) / 2 - mid) })
+        return closest?.speakerID ?? fallback
     }
 
     private func sliceBuffer(_ buffer: AudioChunk, start: TimeInterval, end: TimeInterval) -> AudioChunk {
@@ -455,11 +579,34 @@ final class AnalysisPipeline: Sendable {
 
     /// Slice a captured-audio buffer to [start, end] seconds. Public for
     /// streaming callers that already hold the cumulative samples.
+    /// Uses absolute audio-time when the buffer's `timestamp` is 0
+    /// (i.e. it was captured from session start) — otherwise prefer
+    /// `sliceRelative` which respects the buffer's timeline origin.
     static func slice(_ buffer: AudioChunk, start: TimeInterval, end: TimeInterval) -> AudioChunk {
         let total = Double(buffer.samples.count)
         let startIndex = max(0, min(Int(start * buffer.sampleRate), buffer.samples.count))
         let endIndex = max(startIndex, min(Int(end * buffer.sampleRate), buffer.samples.count))
         guard startIndex < endIndex, total > 0 else { return buffer }
+        let slice = Array(buffer.samples[startIndex..<endIndex])
+        return AudioChunk(samples: slice, sampleRate: buffer.sampleRate, timestamp: start)
+    }
+
+    /// Slice an audio chunk by audio time, respecting the chunk's
+    /// `timestamp` origin. Used by `splitOnSpeakerChange` where
+    /// `segmentAudio` covers `[asr.start, asr.end]` and we need to
+    /// extract a sub-range `[subStart, subEnd]` relative to that.
+    private static func sliceRelative(
+        _ buffer: AudioChunk,
+        fromAudioTime start: TimeInterval,
+        toAudioTime end: TimeInterval
+    ) -> AudioChunk {
+        let relStart = max(0, start - buffer.timestamp)
+        let relEnd = max(relStart, end - buffer.timestamp)
+        let startIndex = min(Int(relStart * buffer.sampleRate), buffer.samples.count)
+        let endIndex = min(Int(relEnd * buffer.sampleRate), buffer.samples.count)
+        guard startIndex < endIndex else {
+            return AudioChunk(samples: [], sampleRate: buffer.sampleRate, timestamp: start)
+        }
         let slice = Array(buffer.samples[startIndex..<endIndex])
         return AudioChunk(samples: slice, sampleRate: buffer.sampleRate, timestamp: start)
     }

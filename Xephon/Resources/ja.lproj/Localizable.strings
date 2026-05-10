@@ -16,6 +16,7 @@
 "pipeline.asr" = "ASR (ライブ)";
 "pipeline.acousticSER" = "音響SER";
 "pipeline.textSER" = "テキストSER";
+"pipeline.diarizer" = "話者識別";
 "pipeline.fusion" = "融合";
 "pipeline.export" = "書き出し";
 "record.discardConfirm.title" = "現在の結果を破棄しますか？";

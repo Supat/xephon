@@ -61,6 +61,12 @@ final class RecordingController {
     /// the pipeline visualization so the developer can see the buffer's
     /// peak/steady-state footprint.
     var bufferedSamples: Int { capturedAudio.count }
+    /// Distinct speakers detected across the session. Derived from the
+    /// `speakerID` field stamped onto each utterance by the diarization
+    /// path; surfaces in the pipeline visualization's Diarizer row.
+    var distinctSpeakers: Int {
+        Set(utterances.map { $0.speakerID }).count
+    }
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
@@ -405,15 +411,31 @@ final class RecordingController {
                         let diarContext = self.snapshotForDiarization()
                         self.beginSegmentInflight()
                         group.addTask { [weak self] in
-                            do {
-                                let (estimate, metrics) = try await pipeline.processSegment(
-                                    asr: segment,
-                                    segmentAudio: segmentBuffer,
-                                    diarizationContext: diarContext
-                                )
-                                await self?.applySegmentResult(estimate: estimate, metrics: metrics)
-                            } catch {
-                                AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                            // Diarize once, then split the segment at
+                            // speaker-change token boundaries. Each sub
+                            // gets its own SER+fusion pass with the
+                            // pre-resolved speaker — passing
+                            // `diarizationContext: nil` to processSegment
+                            // skips re-running the diarizer per sub.
+                            // Single-speaker segments come back as a
+                            // one-element array, so the loop is uniform.
+                            let splits = await pipeline.splitOnSpeakerChange(
+                                asr: segment,
+                                segmentAudio: segmentBuffer,
+                                diarizationContext: diarContext
+                            )
+                            for split in splits {
+                                do {
+                                    let (estimate, metrics) = try await pipeline.processSegment(
+                                        asr: split.asr,
+                                        segmentAudio: split.audio,
+                                        diarizationContext: nil,
+                                        fallbackSpeakerID: split.speaker
+                                    )
+                                    await self?.applySegmentResult(estimate: estimate, metrics: metrics)
+                                } catch {
+                                    AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                                }
                             }
                             await self?.endSegmentInflight()
                         }

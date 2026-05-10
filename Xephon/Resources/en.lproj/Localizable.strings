@@ -16,6 +16,7 @@
 "pipeline.asr" = "ASR (live)";
 "pipeline.acousticSER" = "Acoustic SER";
 "pipeline.textSER" = "Text SER";
+"pipeline.diarizer" = "Diarizer";
 "pipeline.fusion" = "Fusion";
 "pipeline.export" = "Export";
 "record.discardConfirm.title" = "Discard current results?";

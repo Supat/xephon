@@ -168,7 +168,8 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
                 text: text,
                 start: result.range.start.seconds,
                 end: result.range.end.seconds,
-                confidence: SpeechAttributes.averageConfidence(in: result.text)
+                confidence: SpeechAttributes.averageConfidence(in: result.text),
+                tokens: SpeechAttributes.tokens(in: result.text)
             )
             outputCont?.yield(segment)
         } else {
