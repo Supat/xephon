@@ -61,12 +61,14 @@ final class RecordingController {
     /// the pipeline visualization so the developer can see the buffer's
     /// peak/steady-state footprint.
     var bufferedSamples: Int { capturedAudio.count }
-    /// Distinct speakers detected across the session. Derived from the
-    /// `speakerID` field stamped onto each utterance by the diarization
-    /// path; surfaces in the pipeline visualization's Diarizer row.
-    var distinctSpeakers: Int {
-        Set(utterances.map { $0.speakerID }).count
-    }
+    /// Distinct speakers detected in the most recently-diarized
+    /// segment chunk (i.e. the last `splitOnSpeakerChange` call's
+    /// output). Surfaces in the pipeline visualization's Diarizer row
+    /// as a per-chunk indicator, distinct from a session-wide
+    /// cumulative — the row's job is to show what the diarizer just
+    /// did, not the running total. 0 before any segment has been
+    /// processed and resets each `start()`.
+    private(set) var lastChunkSpeakerCount: Int = 0
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
@@ -297,6 +299,7 @@ final class RecordingController {
             capturedAudio.reset()
             sessionStartedAt = Date()
             lastASRFinalizeLatency = nil
+            lastChunkSpeakerCount = 0
             // Speaker history reset is sequenced inside `analysisTask`
             // below — it must complete BEFORE the first ingest, and a
             // fire-and-forget Task here can't make that guarantee.
@@ -423,6 +426,14 @@ final class RecordingController {
                                 asr: segment,
                                 segmentAudio: segmentBuffer,
                                 diarizationContext: diarContext
+                            )
+                            // Distinct speakers in this chunk's
+                            // diarization output → Diarizer pipeline row.
+                            // Read off the splits' speaker IDs since they
+                            // already reflect VAD-snap + boundary
+                            // re-diarize refinements.
+                            await self?.recordChunkSpeakerCount(
+                                Set(splits.map(\.speaker)).count
                             )
                             for split in splits {
                                 do {
@@ -645,6 +656,14 @@ final class RecordingController {
 
     fileprivate func endSegmentInflight() {
         if inflightSegments > 0 { inflightSegments -= 1 }
+    }
+
+    /// Update the per-chunk speaker count surfaced on the Diarizer
+    /// pipeline row. Called from the analysisTask immediately after
+    /// `splitOnSpeakerChange` returns, so the row reflects the
+    /// just-diarized chunk rather than a running session total.
+    fileprivate func recordChunkSpeakerCount(_ count: Int) {
+        lastChunkSpeakerCount = count
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {

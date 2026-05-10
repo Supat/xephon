@@ -123,18 +123,21 @@ struct PipelineCard: View {
         return recorder.utterances.isEmpty ? .idle : .ready
     }
 
-    /// Diarizer runs in parallel with SER on each segment; its glyph
-    /// follows the same active/ready/idle pattern as fusion since
-    /// "ready" here means "we have at least one identified speaker".
+    /// Diarizer runs first on each segment; its glyph follows the
+    /// same active/ready/idle pattern as fusion. "Ready" means the
+    /// last chunk produced at least one speaker — the row reflects
+    /// per-chunk activity, not a session-wide accumulator.
     private var diarizerState: StageRow.State {
         if recorder.inflightSegments > 0 { return .active(0) }
-        return recorder.distinctSpeakers == 0 ? .idle : .ready
+        return recorder.lastChunkSpeakerCount == 0 ? .idle : .ready
     }
 
-    /// Number of distinct speakers detected so far. `spk` matches the
-    /// existing `utts` shorthand on the fusion row for visual rhythm.
+    /// Distinct speakers in the most recently-diarized chunk. `spk`
+    /// matches the `utts` shorthand on the fusion row for visual
+    /// rhythm. Distinct from a cumulative session count: this row's
+    /// job is to show what the diarizer just did, not the total.
     private var diarizerMetric: Text {
-        let count = recorder.distinctSpeakers
+        let count = recorder.lastChunkSpeakerCount
         return Text(count == 0 ? "—" : "\(count) spk")
     }
 

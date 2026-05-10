@@ -489,8 +489,8 @@ final class AnalysisPipeline: Sendable {
         // Single-speaker fast path. If every token resolves to the same
         // speaker, no need to allocate a list of splits — return the
         // original segment with that speaker baked in.
-        let assignments = asr.tokens.map(speakerForToken)
-        let distinct = Set(assignments)
+        let rawAssignments = asr.tokens.map(speakerForToken)
+        let distinct = Set(rawAssignments)
         if distinct.count <= 1 {
             return [SegmentSplit(
                 asr: asr,
@@ -498,6 +498,32 @@ final class AnalysisPipeline: Sendable {
                 speaker: distinct.first ?? fallbackSpeakerID
             )]
         }
+
+        // VAD-snap: nudge each detected boundary to the nearest local
+        // energy minimum within ±2 tokens. The diarizer has ~200–500 ms
+        // boundary uncertainty (≈ 1 JP word), so the diarizer-reported
+        // change often lands inside a word rather than at the natural
+        // silence between speakers. Snapping at silence keeps each
+        // sub-segment's text aligned with its actual speaker turn.
+        let snapped = Self.snapBoundariesToSilence(
+            assignments: rawAssignments,
+            tokens: asr.tokens,
+            in: segmentAudio
+        )
+
+        // Boundary re-diarize: VAD-snap can't help in fast-pace
+        // conversation, where speakers cut into each other with no
+        // clean pause to snap to. Re-running the diarizer on a tight
+        // ±1.5 s window around each remaining boundary gives a
+        // sharper local opinion than the 60 s-context call did, and
+        // we snap the boundary to the token gap closest to the local
+        // change time. No-op when the diarizer can't confirm a
+        // change in the local window (overlapping speech, etc.).
+        let assignments = await refineBoundariesByReDiarize(
+            assignments: snapped,
+            tokens: asr.tokens,
+            diarizationContext: diarizationContext
+        )
 
         // Group consecutive tokens by speaker; emit one sub-segment per
         // group. The order of `assignments` matches the order of
@@ -548,6 +574,269 @@ final class AnalysisPipeline: Sendable {
         )
         let subAudio = sliceRelative(segmentAudio, fromAudioTime: start, toAudioTime: end)
         return SegmentSplit(asr: subAsr, audio: subAudio, speaker: speaker)
+    }
+
+    // MARK: - VAD-snap
+
+    /// Half-window for the gap-energy probe. 50 ms is wide enough to
+    /// average out single-frame outliers (a 16-frame, 1-ms click) but
+    /// narrow enough to read a real pause distinct from voiced audio
+    /// on either side.
+    private static let snapHalfWindowSec: TimeInterval = 0.05
+    /// Snap radius in tokens. ±2 covers the "off by a word or two"
+    /// failure mode without giving the snap-to-silence heuristic enough
+    /// rope to override the diarizer entirely on rapid back-and-forth.
+    private static let snapTokenRadius: Int = 2
+    /// Snap only when the alternative gap's mean-square energy is
+    /// ≤ this fraction of the original. 0.5 = "twice as quiet" — strict
+    /// enough that boundaries through voiced audio with marginally
+    /// quieter neighbors don't drift, lenient enough that real pauses
+    /// pull the boundary in.
+    private static let snapEnergyRatio: Float = 0.5
+
+    /// Pull each detected boundary toward the nearest within-radius
+    /// gap whose energy is meaningfully lower than the original
+    /// boundary's gap. The diarizer assigns one speaker per token by
+    /// midpoint; near a boundary, the prediction can drift by ±1–2
+    /// tokens because the model's own boundary timing is uncertain.
+    /// Snapping at silence captures the actual turn-take location.
+    ///
+    /// Snap candidates are clamped to the surrounding same-speaker
+    /// runs so we never collapse a run to zero tokens — at worst the
+    /// boundary moves to the very start (one previous token retained)
+    /// or very end (one next token retained) of the snap window.
+    private static func snapBoundariesToSilence(
+        assignments: [String],
+        tokens: [ASRSegment.Token],
+        in audio: AudioChunk
+    ) -> [String] {
+        guard tokens.count >= 2, !audio.samples.isEmpty else { return assignments }
+        var result = assignments
+        var i = 1
+        while i < tokens.count {
+            guard result[i - 1] != result[i] else {
+                i += 1
+                continue
+            }
+            // Run bounds. The previous run is `tokens[runStart ..< i]`
+            // (all `result[i-1]`); the next run starts at `i` and ends
+            // at `nextRunEnd` inclusive.
+            var runStart = i - 1
+            while runStart > 0 && result[runStart - 1] == result[i - 1] {
+                runStart -= 1
+            }
+            var nextRunEnd = i
+            while nextRunEnd < tokens.count - 1 && result[nextRunEnd + 1] == result[i] {
+                nextRunEnd += 1
+            }
+
+            // Candidate boundary positions. `lo = runStart + 1` keeps
+            // ≥ 1 previous-speaker token; `hi = nextRunEnd` keeps ≥ 1
+            // next-speaker token (the boundary at position `nextRunEnd
+            // + 1` would be the *next* boundary in the sequence).
+            let lo = max(runStart + 1, i - snapTokenRadius)
+            let hi = min(nextRunEnd, i + snapTokenRadius)
+            guard lo <= hi else {
+                i = nextRunEnd + 1
+                continue
+            }
+
+            let originalEnergy = gapEnergyAt(position: i, tokens: tokens, audio: audio)
+            var bestPos = i
+            var bestEnergy = originalEnergy
+            for j in lo...hi where j != i {
+                let e = gapEnergyAt(position: j, tokens: tokens, audio: audio)
+                if e < bestEnergy {
+                    bestEnergy = e
+                    bestPos = j
+                }
+            }
+
+            if bestPos != i && bestEnergy <= originalEnergy * snapEnergyRatio {
+                let oldSpeaker = result[i - 1]
+                let newSpeaker = result[i]
+                if bestPos < i {
+                    // Boundary moves earlier: tokens [bestPos..i-1]
+                    // were the old speaker per the diarizer but the
+                    // silence says they belong with the new run.
+                    for k in bestPos..<i { result[k] = newSpeaker }
+                } else {
+                    // Boundary moves later: tokens [i..bestPos-1] flip
+                    // back to the old speaker.
+                    for k in i..<bestPos { result[k] = oldSpeaker }
+                }
+                // Skip past the snapped boundary to avoid reprocessing
+                // the tokens we just rewrote.
+                i = bestPos + 1
+            } else {
+                // No good snap target; advance past this whole next run
+                // so we don't re-evaluate the same boundary.
+                i = nextRunEnd + 1
+            }
+        }
+        return result
+    }
+
+    /// Mean-square energy in a `±snapHalfWindowSec` window around the
+    /// gap before `tokens[position]`. `position == 0` probes audio
+    /// start; `position == tokens.count` probes audio end. Indexing
+    /// is buffer-relative — respects `audio.timestamp` so callers pass
+    /// absolute audio-time positions without pre-shifting.
+    private static func gapEnergyAt(
+        position: Int,
+        tokens: [ASRSegment.Token],
+        audio: AudioChunk
+    ) -> Float {
+        let gapTime: TimeInterval
+        if position <= 0 {
+            gapTime = tokens.first?.start ?? audio.timestamp
+        } else if position >= tokens.count {
+            gapTime = tokens.last?.end ?? audio.timestamp
+        } else {
+            gapTime = (tokens[position - 1].end + tokens[position].start) / 2
+        }
+        let sr = audio.sampleRate
+        let centerFrame = Int((gapTime - audio.timestamp) * sr)
+        let halfFrames = Int(snapHalfWindowSec * sr)
+        let windowLo = max(0, centerFrame - halfFrames)
+        let windowHi = min(audio.samples.count, centerFrame + halfFrames)
+        guard windowLo < windowHi else { return 0 }
+        var sumSq: Float = 0
+        for k in windowLo..<windowHi {
+            let s = audio.samples[k]
+            sumSq += s * s
+        }
+        return sumSq / Float(windowHi - windowLo)
+    }
+
+    // MARK: - Boundary re-diarize
+
+    /// Half-window for the boundary re-diarize. The diarizer needs
+    /// enough acoustic context to extract reliable speaker
+    /// embeddings — Sortformer is trained on multi-second windows —
+    /// so a sub-second probe would just produce noise. 1.5 s on
+    /// each side gives a 3 s window: wide enough for the model to
+    /// score speaker membership confidently, narrow enough that the
+    /// boundary timing is sharper than the 60 s-context call's.
+    private static let boundaryReDiarizeHalfWindowSec: TimeInterval = 1.5
+
+    /// For each detected boundary in `assignments`, re-run the
+    /// diarizer on a tight window centered on the boundary and snap
+    /// the boundary to the token gap closest to the local
+    /// speaker-change time. Bounded by the surrounding same-speaker
+    /// runs so we never collapse a run to zero tokens — the
+    /// re-diarize can disagree with the main pass about *where* the
+    /// boundary is but not *whether* there is one.
+    ///
+    /// Returns `assignments` unchanged when the diarizer is missing
+    /// or `diarizationContext` is nil. Per-boundary calls are
+    /// sequential because the underlying diarizer is actor-isolated
+    /// — concurrent calls would just queue at the actor anyway.
+    private func refineBoundariesByReDiarize(
+        assignments: [String],
+        tokens: [ASRSegment.Token],
+        diarizationContext: AudioChunk?
+    ) async -> [String] {
+        guard tokens.count >= 2,
+              let diarizationContext,
+              diarizer != nil
+        else { return assignments }
+
+        var result = assignments
+        var i = 1
+        while i < tokens.count {
+            guard result[i - 1] != result[i] else {
+                i += 1
+                continue
+            }
+
+            // Run bounds — same logic as VAD-snap. We never let the
+            // boundary cross a same-speaker run boundary, so each
+            // run stays non-empty post-snap.
+            var runStart = i - 1
+            while runStart > 0 && result[runStart - 1] == result[i - 1] {
+                runStart -= 1
+            }
+            var nextRunEnd = i
+            while nextRunEnd < tokens.count - 1 && result[nextRunEnd + 1] == result[i] {
+                nextRunEnd += 1
+            }
+
+            let originalGapTime = (tokens[i - 1].end + tokens[i].start) / 2
+            guard let localChangeTime = await localBoundaryTime(
+                around: originalGapTime,
+                in: diarizationContext
+            ) else {
+                i = nextRunEnd + 1
+                continue
+            }
+
+            let lo = max(runStart + 1, i - Self.snapTokenRadius)
+            let hi = min(nextRunEnd, i + Self.snapTokenRadius)
+            guard lo <= hi else {
+                i = nextRunEnd + 1
+                continue
+            }
+
+            // Pick the token gap whose midpoint is closest to the
+            // local re-diarize change time.
+            var bestPos = i
+            var bestDist = abs(originalGapTime - localChangeTime)
+            for j in lo...hi where j != i {
+                let gapTime = (tokens[j - 1].end + tokens[j].start) / 2
+                let dist = abs(gapTime - localChangeTime)
+                if dist < bestDist {
+                    bestDist = dist
+                    bestPos = j
+                }
+            }
+
+            if bestPos != i {
+                let oldSpeaker = result[i - 1]
+                let newSpeaker = result[i]
+                if bestPos < i {
+                    for k in bestPos..<i { result[k] = newSpeaker }
+                } else {
+                    for k in i..<bestPos { result[k] = oldSpeaker }
+                }
+                i = bestPos + 1
+            } else {
+                i = nextRunEnd + 1
+            }
+        }
+        return result
+    }
+
+    /// Local speaker-change time inside a `±boundaryReDiarizeHalfWindowSec`
+    /// window around `center`. Slices `context` to the window and runs
+    /// the diarizer on it; returns the start time of the first
+    /// transition between adjacent local-ID segments. Local speaker
+    /// IDs aren't comparable across calls, but within this single
+    /// call they're stable, which is all we need to pinpoint a
+    /// change time. Returns nil when the local diarizer reports a
+    /// single speaker (overlapping speech, marginal window) or the
+    /// window can't be sliced (boundary off the context's timeline).
+    private func localBoundaryTime(
+        around center: TimeInterval,
+        in context: AudioChunk
+    ) async -> TimeInterval? {
+        let halfWindow = Self.boundaryReDiarizeHalfWindowSec
+        let lo = max(context.timestamp, center - halfWindow)
+        let contextEnd = context.timestamp + Double(context.samples.count) / context.sampleRate
+        let hi = min(contextEnd, center + halfWindow)
+        guard lo < hi else { return nil }
+
+        let chunk = Self.sliceRelative(context, fromAudioTime: lo, toAudioTime: hi)
+        guard !chunk.samples.isEmpty else { return nil }
+
+        let local = await runDiarization(chunk)
+        guard local.count >= 2 else { return nil }
+
+        let sorted = local.sorted { $0.start < $1.start }
+        for k in 1..<sorted.count where sorted[k].speakerID != sorted[k - 1].speakerID {
+            return sorted[k].start
+        }
+        return nil
     }
 
     // MARK: - Buffer slicing
