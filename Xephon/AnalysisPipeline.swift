@@ -590,12 +590,27 @@ final class AnalysisPipeline: Sendable {
         return result
     }
 
-    /// Speaker the cumulative diarizer timeline reports as
-    /// dominant in `[start, end]`, picked by total time-overlap.
-    /// Falls back to `fallback` only when the timeline is empty
-    /// (very early in the session, before the continuous-diarize
-    /// stride task has fired) or when no entry overlaps the range
-    /// at all (diarizer gap).
+    /// Speaker the cumulative diarizer timeline reports as dominant
+    /// in `[start, end]`. Two-stage vote:
+    ///
+    /// 1. **Per-instant majority.** At each sample point, tally
+    ///    overlapping observations and pick the per-instant winner.
+    ///    The continuous diarize task accumulates ~5 overlapping
+    ///    observations per audio moment, so a single noisy window
+    ///    can't outvote the consensus at that instant.
+    /// 2. **Mode across instants.** Aggregate per-instant winners
+    ///    across the sentence range and return the most common one.
+    ///    This is duration-weighted (every sample point contributes
+    ///    one vote) but immune to the duration × observation-count
+    ///    skew of a flat overlap-sum.
+    ///
+    /// Sample step is 50 ms — well below the diarizer's segment
+    /// granularity (~200–500 ms) — and capped so a long sentence
+    /// doesn't blow up the inner loop. When the timeline is empty
+    /// or no entry overlaps any sample, falls back to the timeline
+    /// entry whose midpoint is closest to the sentence's midpoint
+    /// (matching `speakerTracker.speakerAt`'s fallback) and finally
+    /// to the supplied default.
     private func dominantSpeaker(
         from start: TimeInterval,
         to end: TimeInterval,
@@ -603,14 +618,30 @@ final class AnalysisPipeline: Sendable {
     ) async -> String {
         let timeline = await speakerTracker.cumulativeSnapshot()
         guard !timeline.isEmpty, end > start else { return fallback }
-        var totals: [String: TimeInterval] = [:]
-        for entry in timeline {
-            let lo = max(entry.start, start)
-            let hi = min(entry.end, end)
-            guard hi > lo else { continue }
-            totals[entry.speakerID, default: 0] += hi - lo
+
+        let dt: TimeInterval = 0.05
+        let sampleCount = min(256, max(8, Int(((end - start) / dt).rounded(.up))))
+        let step = (end - start) / TimeInterval(sampleCount)
+
+        var votes: [String: Int] = [:]
+        for i in 0..<sampleCount {
+            let t = start + (TimeInterval(i) + 0.5) * step
+            var instant: [String: Int] = [:]
+            for entry in timeline where entry.start <= t && t <= entry.end {
+                instant[entry.speakerID, default: 0] += 1
+            }
+            if let winner = instant.max(by: { $0.value < $1.value })?.key {
+                votes[winner, default: 0] += 1
+            }
         }
-        return totals.max(by: { $0.value < $1.value })?.key ?? fallback
+        if let mode = votes.max(by: { $0.value < $1.value })?.key {
+            return mode
+        }
+
+        let mid = (start + end) / 2
+        return timeline.min(by: {
+            abs(($0.start + $0.end) / 2 - mid) < abs(($1.start + $1.end) / 2 - mid)
+        })?.speakerID ?? fallback
     }
 
     /// Diarize the segment's context once and emit one sub-segment per

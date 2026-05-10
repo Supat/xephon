@@ -20,29 +20,27 @@ public actor FluidAudioDiarizer: Diarizer {
     /// Default config tuned for conversational speech. The two
     /// values that differ from `DiarizerConfig.default` are:
     ///
-    /// - `clusteringThreshold = 0.78` (default 0.7). Higher value =
-    ///   more permissive matching to existing speakers. The same
-    ///   voice across small acoustic variations (prosody shift,
-    ///   brief noise, microphone position change) stays under one
-    ///   ID instead of spawning a new one. FluidAudio derives
+    /// - `clusteringThreshold = 0.72` (default 0.7). Lower value =
+    ///   stricter matching, so similar-but-distinct voices are more
+    ///   likely to get separate IDs. FluidAudio derives
     ///   `speakerThreshold = clusteringThreshold × 1.2` from this
-    ///   and `embeddingThreshold = clusteringThreshold × 0.8`.
-    ///   0.78 is the empirical sweet spot — 0.85 collapsed
-    ///   distinct speakers with similar voices, 0.7 (the default)
-    ///   over-segmented the same speaker.
+    ///   and `embeddingThreshold = clusteringThreshold × 0.8`. We
+    ///   used to run at 0.78 to suppress over-segmentation, but
+    ///   `dominantSpeaker` now picks each sentence's speaker via
+    ///   mode-vote across sample points, which absorbs the extra
+    ///   observation noise that a more sensitive threshold creates.
     ///
-    /// - `minSpeechDuration = 1.5` s (default 1.0). Briefer audio
-    ///   isn't allowed to create a *new* speaker — it gets assigned
-    ///   to the closest existing one. Cuts spurious speaker
-    ///   creation from short clips where the embedding is too
-    ///   noisy to be a confident fingerprint. Tradeoff: a real new
-    ///   speaker who only utters one short word at first won't get
-    ///   their own ID until they speak longer.
+    /// - `minSpeechDuration = 1.0` s (FluidAudio default). Lets a
+    ///   real new speaker who only says a short turn first still
+    ///   get their own ID; the per-instant majority vote in
+    ///   `dominantSpeaker` filters out spurious one-window
+    ///   creations from background noise so the cost of a lower
+    ///   floor is small.
     ///
     /// Other fields stay at FluidAudio's defaults.
     public static let conversationalConfig = DiarizerConfig(
-        clusteringThreshold: 0.78,
-        minSpeechDuration: 1.5
+        clusteringThreshold: 0.72,
+        minSpeechDuration: 1.0
     )
 
     public init(
