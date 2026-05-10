@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 @preconcurrency import AVFoundation
-import ActivityKit
 import Audio
 import ASR
 import Fusion
@@ -61,7 +60,7 @@ final class RecordingController {
     /// drops audio older than the diarization context window. Surfaced in
     /// the pipeline visualization so the developer can see the buffer's
     /// peak/steady-state footprint.
-    var bufferedSamples: Int { capturedSamples.count }
+    var bufferedSamples: Int { capturedAudio.count }
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
@@ -95,23 +94,10 @@ final class RecordingController {
     private var routeWatcherTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
-    /// Lock-Screen / Dynamic Island activity. Started in `start()`,
-    /// updated from `applySegmentResult`, ended in `stop()`. All updates
-    /// are local — no APNs. Stored as the activity *ID* (Sendable
-    /// `String`) rather than the Activity reference itself —
-    /// `Activity<T>` is a non-Sendable class and storing it as
-    /// MainActor state risks data races under Swift 6 strict
-    /// concurrency. Helpers re-resolve the activity by id inside
-    /// nonisolated methods before each update.
-    private var liveActivityId: String?
-    /// Coalesces Live Activity updates: at most one in flight; subsequent
-    /// requests during a flight set `liveActivityNeedsCoalescedUpdate`
-    /// and the in-flight task re-runs once it completes. Without this,
-    /// a fire-and-forget `Task { … pushLiveActivityUpdate() }` per
-    /// segment floods the MainActor with `Activity.update` awaits that
-    /// the system rate-limits, queueing tasks faster than they drain.
-    private var liveActivityUpdateTask: Task<Void, Never>?
-    private var liveActivityNeedsCoalescedUpdate: Bool = false
+    /// Lock-Screen / Dynamic Island integration. See
+    /// `LiveActivityController` for the activity-id, coalescing, and
+    /// nonisolated update plumbing.
+    private let liveActivity = LiveActivityController()
     /// Wall-clock time the current session began, captured at `start()`.
     /// Used by the Lock Screen / Dynamic Island clock so it ticks at
     /// real time even when fast-pace file analysis is racing through
@@ -123,13 +109,14 @@ final class RecordingController {
     /// always wall-clock; file mode is wall-clock only when
     /// `realTimePacing` was passed to `startFromFile`.
     private var asrLatencyMeaningful: Bool = true
-    private var capturedSamples: [Float] = []
-    /// Audio-time (seconds) of `capturedSamples[0]`. Starts at 0 and advances
-    /// each time we trim already-processed audio from the head of the buffer.
-    /// Without this, sample-rate × audio-time indexing would land at the
-    /// wrong frame after a trim. Long sessions would otherwise grow
-    /// `capturedSamples` linearly forever (~64 KB / sec at 16 kHz mono Float32).
-    private var capturedSamplesOrigin: TimeInterval = 0
+    /// Bounded rolling buffer over the raw capture stream. Owns the
+    /// trim-before-append cap, the deep-copy-on-snapshot discipline,
+    /// and the audio-time → buffer-index origin tracking. See
+    /// `RollingAudioBuffer` for the invariants enforced.
+    private var capturedAudio = RollingAudioBuffer(
+        maxSeconds: 120,
+        contextSeconds: 60
+    )
 
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
@@ -301,12 +288,7 @@ final class RecordingController {
             samplesCaptured = 0
             utterances = []
             conversationSummary.reset()
-            capturedSamples.removeAll(keepingCapacity: true)
-            // Pre-reserve the max we ever want to hold so Array's
-            // exponential capacity growth never triggers a multi-GB
-            // allocation when the buffer approaches the cap.
-            capturedSamples.reserveCapacity(Self.maxBufferedSamples)
-            capturedSamplesOrigin = 0
+            capturedAudio.reset()
             sessionStartedAt = Date()
             lastASRFinalizeLatency = nil
             // Speaker history reset is sequenced inside `analysisTask`
@@ -316,44 +298,22 @@ final class RecordingController {
             // Has to happen AFTER `sourceMode` is set (handled by
             // `startFromFile` for file-mode) so the activity captures
             // the right source label.
-            startLiveActivity()
+            liveActivity.start(sourceLabel: liveActivitySourceLabel)
 
             // Pump 1 (raw): drain → SER buffer + level meter. The raw stream
             // preserves prosody for SER and prosody analyses.
             //
             // `samplesCaptured` is a monotonic session counter (drives the
-            // elapsed-time display); it must NOT track `capturedSamples.count`
+            // elapsed-time display); it must NOT track `capturedAudio.count`
             // because the rolling buffer is trimmed each time a segment is
             // sliced for SER, which would make the timer jump backward.
             rawTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 for await buffer in streams.raw {
-                    // Enforce the hard cap from here so a stalled ASR
-                    // (no segment finalizing → no segment-driven trim)
-                    // can't let the buffer grow past `maxBufferedSamples`.
-                    // Drops the oldest excess and advances the origin so
-                    // `sliceForSegment` continues to compute correct
-                    // indices for any segments that do still finalize.
-                    //
-                    // Trim BEFORE append, not after: append-then-trim lets
-                    // the array's count momentarily exceed the reserved
-                    // capacity, which forces Array to double its backing
-                    // store (a 16 MB+ allocation). Under sustained memory
-                    // pressure that allocation occasionally fails and
-                    // crashes the recording task. Trimming first keeps
-                    // count ≤ reserved capacity so no reallocation ever
-                    // happens. `removeFirst` shifts in place and does not
-                    // shrink capacity, so the next append fits.
-                    let projected = self.capturedSamples.count + buffer.samples.count
-                    if projected > Self.maxBufferedSamples {
-                        // `min` guards against a hypothetical capture chunk
-                        // larger than `maxBufferedSamples` itself — without
-                        // it `removeFirst` would trap on n > count.
-                        let excess = min(projected - Self.maxBufferedSamples, self.capturedSamples.count)
-                        self.capturedSamples.removeFirst(excess)
-                        self.capturedSamplesOrigin += Double(excess) / PipelineAudio.sampleRate
-                    }
-                    self.capturedSamples.append(contentsOf: buffer.samples)
+                    // The trim-before-append cap and origin advance
+                    // both live inside RollingAudioBuffer. See its
+                    // doc comment for why the order matters.
+                    self.capturedAudio.append(buffer.samples)
                     self.samplesCaptured += buffer.samples.count
                     self.inputLevel = Self.smoothLevel(
                         previous: self.inputLevel,
@@ -513,12 +473,13 @@ final class RecordingController {
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
         // finalize + per-segment SER for any tail audio).
         phase = .analyzing
-        await pushLiveActivityUpdate()
+        liveActivity.scheduleUpdate(currentLiveActivityState)
         await streamingTranscriber.finish()
         await analysisTask?.value
         analysisTask = nil
         phase = .idle
-        await endLiveActivity()
+        await liveActivity.end(finalState: currentLiveActivityState)
+        sessionStartedAt = nil
 
         // File-backed sessions are one-shot: drop back to the live mic so
         // the next Record tap behaves normally. The file analysis output
@@ -625,125 +586,34 @@ final class RecordingController {
         // segment — fast-pace fires segments faster than the system can
         // process Activity updates, and the queued tasks themselves
         // contribute to MainActor congestion.
-        scheduleLiveActivityUpdate()
+        liveActivity.scheduleUpdate(currentLiveActivityState)
     }
 
-    /// Coalesce-then-update. If an update is already in flight, mark the
-    /// "needs another" flag so the in-flight task re-runs once it
-    /// completes, picking up the latest state. Multiple calls during one
-    /// flight all collapse into a single follow-up.
-    private func scheduleLiveActivityUpdate() {
-        if liveActivityUpdateTask != nil {
-            liveActivityNeedsCoalescedUpdate = true
-            return
-        }
-        liveActivityUpdateTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            repeat {
-                self.liveActivityNeedsCoalescedUpdate = false
-                await self.pushLiveActivityUpdate()
-            } while self.liveActivityNeedsCoalescedUpdate
-            self.liveActivityUpdateTask = nil
-        }
-    }
+    // MARK: - Live Activity state
 
-    // MARK: - Live Activity lifecycle
-
-    /// Start the Activity at session start. Failures are logged and
-    /// non-fatal — the session keeps running, the Lock Screen just
-    /// shows nothing.
-    private func startLiveActivity() {
-        guard liveActivityId == nil else { return }
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            AppLog.app.info("Live Activities disabled by user; skipping")
-            return
-        }
-        let label: String
+    /// Source label rendered in the Lock Screen / Dynamic Island.
+    /// Pulled from `sourceMode` at start time.
+    private var liveActivitySourceLabel: String {
         switch sourceMode {
-        case .microphone: label = "Microphone"
-        case .file(let url): label = url.lastPathComponent
-        }
-        let attrs = XephonActivityAttributes(
-            sessionStartedAt: Date(),
-            sourceLabel: label
-        )
-        let initial = XephonActivityAttributes.ContentState(
-            elapsedSeconds: 0,
-            utteranceCount: 0,
-            topLabel: nil,
-            valence: nil,
-            arousal: nil,
-            isAnalyzing: false
-        )
-        do {
-            let activity = try Activity.request(
-                attributes: attrs,
-                content: ActivityContent(state: initial, staleDate: nil)
-            )
-            liveActivityId = activity.id
-        } catch {
-            AppLog.app.warning("Live Activity start failed: \(String(describing: error), privacy: .public)")
+        case .microphone: return "Microphone"
+        case .file(let url): return url.lastPathComponent
         }
     }
 
-    private func pushLiveActivityUpdate() async {
-        guard let id = liveActivityId else { return }
-        // Lock Screen clock = wall-clock since session start, NOT
-        // `samplesCaptured / sampleRate`. The latter accelerates wildly
-        // during fast-pace file analysis since the file pump yields
-        // hours of audio in minutes.
+    /// Current snapshot for the Live Activity. Lock Screen clock uses
+    /// wall-clock since session start, NOT `samplesCaptured /
+    /// sampleRate` — the latter accelerates wildly during fast-pace
+    /// file analysis since the pump yields hours of audio in minutes.
+    /// Recenters V/A to [-1, +1] for parity with the in-app summary.
+    private var currentLiveActivityState: XephonActivityAttributes.ContentState {
         let liveElapsed = sessionStartedAt.map { Date().timeIntervalSince($0) } ?? elapsedSeconds
-        let state = XephonActivityAttributes.ContentState(
+        return XephonActivityAttributes.ContentState(
             elapsedSeconds: liveElapsed,
             utteranceCount: utterances.count,
             topLabel: conversationSummary.topLabel,
-            // Recenter to [-1, +1] for parity with the in-app summary.
             valence: conversationSummary.meanValence.map { $0 * 2 - 1 },
             arousal: conversationSummary.meanArousal.map { $0 * 2 - 1 },
             isAnalyzing: phase == .analyzing
-        )
-        await Self.update(activityId: id, state: state)
-    }
-
-    /// End the Activity at session stop. We dismiss after a short
-    /// linger so the user can glance at the final state on the Lock
-    /// Screen before it disappears.
-    private func endLiveActivity() async {
-        guard let id = liveActivityId else { return }
-        liveActivityId = nil
-        let liveElapsed = sessionStartedAt.map { Date().timeIntervalSince($0) } ?? elapsedSeconds
-        sessionStartedAt = nil
-        let final = XephonActivityAttributes.ContentState(
-            elapsedSeconds: liveElapsed,
-            utteranceCount: utterances.count,
-            topLabel: conversationSummary.topLabel,
-            valence: conversationSummary.meanValence.map { $0 * 2 - 1 },
-            arousal: conversationSummary.meanArousal.map { $0 * 2 - 1 },
-            isAnalyzing: false
-        )
-        await Self.end(activityId: id, finalState: final)
-    }
-
-    /// Nonisolated helpers — the `Activity<T>` reference never leaves
-    /// these functions, so it never crosses an isolation boundary.
-    nonisolated private static func update(
-        activityId: String,
-        state: XephonActivityAttributes.ContentState
-    ) async {
-        guard let activity = Activity<XephonActivityAttributes>.activities
-            .first(where: { $0.id == activityId }) else { return }
-        await activity.update(ActivityContent(state: state, staleDate: nil))
-    }
-
-    nonisolated private static func end(
-        activityId: String,
-        finalState: XephonActivityAttributes.ContentState
-    ) async {
-        guard let activity = Activity<XephonActivityAttributes>.activities
-            .first(where: { $0.id == activityId }) else { return }
-        await activity.end(
-            ActivityContent(state: finalState, staleDate: nil),
-            dismissalPolicy: .after(Date().addingTimeInterval(120))
         )
     }
 
@@ -756,42 +626,9 @@ final class RecordingController {
     }
 
     private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {
-        let sampleRate = PipelineAudio.sampleRate
-        let localStart = max(0, asr.start - capturedSamplesOrigin)
-        let localEnd   = max(localStart, asr.end - capturedSamplesOrigin)
-        let startIndex = min(Int(localStart * sampleRate), capturedSamples.count)
-        let endIndex   = min(Int(localEnd   * sampleRate), capturedSamples.count)
-        guard startIndex < endIndex else {
-            return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: asr.start)
-        }
-        let slice = Array(capturedSamples[startIndex..<endIndex])
-        return AudioChunk(samples: slice, sampleRate: sampleRate, timestamp: asr.start)
+        capturedAudio.slice(start: asr.start, end: asr.end)
     }
 
-    /// Drop processed audio from the head of `capturedSamples`, keeping
-    /// the last `diarizationContextSeconds` of audio behind the latest
-    /// segment as cross-segment speaker context for the diarizer. Called
-    /// after each segment is sliced — the SER task already owns its own
-    /// copy of the slice, so trimming is safe. Bounds session-long
-    /// memory growth: peak capture memory is now roughly
-    /// `diarizationContextSeconds * 16 kHz * 4 B` (~3.8 MB at 60 s) plus
-    /// the not-yet-finalized rolling buffer, regardless of session length.
-    private static let diarizationContextSeconds: TimeInterval = 60
-    /// Hard cap on the rolling capture buffer, enforced from inside the
-    /// raw-stream pump so `capturedSamples` can't grow unbounded when
-    /// ASR stalls. Without this, fast-pace file analysis with a long
-    /// volatile region (Japanese conversational speech with no clean
-    /// silence breaks) allows the file pump to keep appending to a
-    /// buffer that the analysisTask never gets a chance to trim — Swift
-    /// Array's 2× exponential capacity growth then attempts a
-    /// multi-100-MB allocation and the app aborts with `Fatal error:
-    /// failed to allocate <N> bytes`. 120 s leaves 60 s of headroom past
-    /// `diarizationContextSeconds` so segment-driven trim still keeps a
-    /// full diarization context window in normal operation.
-    private static let maxBufferedSeconds: TimeInterval = 120
-    private static var maxBufferedSamples: Int {
-        Int(maxBufferedSeconds * PipelineAudio.sampleRate)
-    }
     /// Cap on concurrent SER+fusion tasks. Fast-pace file analysis can
     /// otherwise stack dozens of in-flight segments before any finalize,
     /// each retaining its audio slice + ONNX I/O tensors — sufficient to
@@ -804,50 +641,13 @@ final class RecordingController {
     /// system IOSurface pool. ASR typically emits 1-2 segments/sec so
     /// 2-wide concurrency is rarely the throughput bottleneck anyway.
     private static let maxConcurrentSegments: Int = 2
+
     private func trimProcessedAudio(below boundary: TimeInterval) {
-        let cutoff = boundary - Self.diarizationContextSeconds
-        let dropSeconds = cutoff - capturedSamplesOrigin
-        guard dropSeconds > 0 else { return }
-        let frames = min(Int(dropSeconds * PipelineAudio.sampleRate), capturedSamples.count)
-        guard frames > 0 else { return }
-        capturedSamples.removeFirst(frames)
-        capturedSamplesOrigin += Double(frames) / PipelineAudio.sampleRate
+        capturedAudio.trimProcessed(below: boundary)
     }
 
-    /// Sendable copy of the current capture window for FluidAudio
-    /// diarization. The diarizer is `actor`-isolated and consumes its
-    /// argument on its own queue; we hand it a snapshot rather than a
-    /// reference to `capturedSamples` so MainActor mutations during
-    /// inference don't tear it.
-    ///
-    /// CRITICAL: this forces a deep copy of the samples buffer rather
-    /// than letting Swift Array's CoW share storage. The naive
-    /// `samples: capturedSamples` form bumps the refcount and aliases
-    /// the live buffer — the next `append` on the rawTask path then
-    /// triggers CoW, reallocating `capturedSamples` with a fresh
-    /// buffer whose capacity isn't bounded by the prior reservation.
-    /// Across many snapshots, this lets capacity ratchet past
-    /// `maxBufferedSamples`, defeating the trim-before-append cap and
-    /// eventually attempting a multi-MB doubling that fails under
-    /// memory pressure (observed: SIGABRT on `append(contentsOf:)` at
-    /// 16–18 MB allocation requests). The deep copy keeps
-    /// `capturedSamples` exclusively owned by rawTask, so its capacity
-    /// stays at the original `reserveCapacity` allocation forever.
     private func snapshotForDiarization() -> AudioChunk {
-        let isolated = capturedSamples.withUnsafeBufferPointer { src -> [Float] in
-            guard let base = src.baseAddress else { return [] }
-            return [Float](unsafeUninitializedCapacity: src.count) { dst, initializedCount in
-                if let dstBase = dst.baseAddress {
-                    dstBase.update(from: base, count: src.count)
-                }
-                initializedCount = src.count
-            }
-        }
-        return AudioChunk(
-            samples: isolated,
-            sampleRate: PipelineAudio.sampleRate,
-            timestamp: capturedSamplesOrigin
-        )
+        capturedAudio.snapshotForDiarization()
     }
 
     // MARK: - Level meter helpers

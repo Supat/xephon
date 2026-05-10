@@ -13,7 +13,7 @@ import Foundation
 /// targets compiling their own copies work fine as long as the
 /// definitions stay byte-for-byte identical.
 public struct XephonActivityAttributes: ActivityAttributes {
-    public struct ContentState: Codable, Hashable {
+    public struct ContentState: Codable, Hashable, Sendable {
         /// Session elapsed time in audio-time seconds (matches the
         /// in-app status line). Used by the widget to render the clock.
         public var elapsedSeconds: TimeInterval
