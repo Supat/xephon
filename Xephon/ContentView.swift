@@ -195,9 +195,15 @@ struct ContentView: View {
                     }
                     pendingFileURL = nil
                 }
-                Button(String(localized: "pacing.fast")) {
+                Button(String(localized: "pacing.fast8x")) {
                     if let url = pendingFileURL {
-                        Task { await recorder.startFromFile(url, realTimePacing: false) }
+                        Task { await recorder.startFromFile(url, realTimePacing: false, fastPaceMultiplier: 8) }
+                    }
+                    pendingFileURL = nil
+                }
+                Button(String(localized: "pacing.fast4x")) {
+                    if let url = pendingFileURL {
+                        Task { await recorder.startFromFile(url, realTimePacing: false, fastPaceMultiplier: 4) }
                     }
                     pendingFileURL = nil
                 }

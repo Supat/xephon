@@ -36,10 +36,11 @@
 "menu.findInUtterances" = "Find in Utterances…";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";
-"pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace runs at 8× real time, preserving the on-device speech recognizer's segment boundaries closely enough that SER classifications stay consistent with real-time.";
+"pacing.message" = "Real-time pace matches the file's duration and gives results identical to a live recording. Fast pace at 8× is the throughput sweet spot but feeds audio to SpeechAnalyzer faster than its volatile-stabilization timers expect — segment boundaries shift slightly, which can nudge both ASR transcripts and SER labels off versus real-time on edge cases. If that accuracy cost is too high, try 4× (cuts the drift roughly in half at the cost of doubled wall-clock analysis time).";
 "pacing.realtime" = "Real-time pace";
 "pacing.realtime.audio" = "Real-time pace (with audio)";
-"pacing.fast" = "Fast pace (8×)";
+"pacing.fast8x" = "Fast pace (8×)";
+"pacing.fast4x" = "Fast pace (4×)";
 "summary.header" = "Mood";
 "summary.calibrating" = "Calibrating…";
 "summary.utterances" = "%d utterances · %@";

@@ -636,6 +636,7 @@ final class RecordingController {
     func startFromFile(
         _ url: URL,
         realTimePacing: Bool = false,
+        fastPaceMultiplier: Int = 8,
         audioOutputEnabled: Bool = false
     ) async {
         guard phase == .idle else { return }
@@ -648,6 +649,7 @@ final class RecordingController {
         capture = AudioFileCapture(
             fileURL: url,
             realTimePacing: realTimePacing,
+            fastPaceMultiplier: fastPaceMultiplier,
             audioOutputEnabled: audioOutputEnabled
         )
         availableInputs = []

@@ -36,10 +36,11 @@
 "menu.findInUtterances" = "発話を検索…";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
-"pacing.message" = "リアルタイムはファイル再生時間と同じ長さで進み、ライブ録音と同等の結果になります。高速は8倍速で進みます。音声認識器のセグメント境界をリアルタイムに近い形で保ち、SER分類結果が一致します。";
+"pacing.message" = "リアルタイムはファイル再生時間と同じ長さで進み、ライブ録音と同等の結果になります。高速 8倍は処理速度の最適解ですが、SpeechAnalyzerの安定化タイマーに対して音声を速く送りすぎるため、セグメント境界がずれて ASR 文字起こしや SER ラベルがリアルタイムと異なる場合があります。精度を優先する場合は 4倍 をお試しください（精度のずれが約半分になりますが、解析時間は約2倍になります）。";
 "pacing.realtime" = "リアルタイム";
 "pacing.realtime.audio" = "リアルタイム（音声あり）";
-"pacing.fast" = "高速 (8倍)";
+"pacing.fast8x" = "高速 (8倍)";
+"pacing.fast4x" = "高速 (4倍)";
 "summary.header" = "ムード";
 "summary.calibrating" = "校正中…";
 "summary.utterances" = "%d 件の発話 · %@";
