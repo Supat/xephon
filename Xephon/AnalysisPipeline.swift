@@ -458,6 +458,82 @@ final class AnalysisPipeline: Sendable {
         return fillers.contains(trimmed)
     }
 
+    // MARK: - Sentence splitting (pause + punctuation)
+
+    /// Minimum inter-token gap (seconds) that triggers a sentence
+    /// split when no punctuation is involved. 700 ms is well above
+    /// breath pauses and below most mid-sentence hesitations — long
+    /// enough that "this is a new sentence" is unambiguous. Apple's
+    /// SpeechTranscriber sometimes holds two real sentences inside
+    /// one final result when the speaker pauses but doesn't reset
+    /// the language-model context; this catches those.
+    private static let sentenceSplitMinPauseSec: TimeInterval = 0.7
+    /// Minimum gap when the preceding token ends with sentence-
+    /// ending punctuation. Apple inserts a token boundary after
+    /// "。/.", but the gap itself is often just 100–200 ms. We
+    /// require at least some pause so we don't split on punctuation
+    /// embedded mid-utterance (rare but possible).
+    private static let sentenceSplitMinPunctGapSec: TimeInterval = 0.1
+    /// Sentence-ending characters in JP and EN. SpeechTranscriber
+    /// emits punctuation as a tail on the preceding token, so a
+    /// `text.last`-only check catches them.
+    private static let sentenceEndChars: Set<Character> = [
+        "。", "！", "？", "．", ".", "!", "?"
+    ]
+
+    /// Split an `ASRSegment` into one sub-segment per detected
+    /// sentence boundary — long inter-token pause OR sentence-
+    /// ending punctuation followed by any pause. Returns the
+    /// segment unchanged when no boundary qualifies, when the
+    /// segment has fewer than two tokens, or when the transcriber
+    /// didn't supply per-token timing. Independent of speaker
+    /// detection — runs upstream of `splitOnSpeakerChange` so the
+    /// speaker pipeline operates on whichever sentences naturally
+    /// remain.
+    static func splitByPauseAndPunctuation(_ asr: ASRSegment) -> [ASRSegment] {
+        guard asr.tokens.count >= 2 else { return [asr] }
+
+        var splitAfter: [Int] = []
+        for i in 0..<(asr.tokens.count - 1) {
+            let gap = asr.tokens[i + 1].start - asr.tokens[i].end
+            if gap >= sentenceSplitMinPauseSec {
+                splitAfter.append(i)
+                continue
+            }
+            if let lastChar = asr.tokens[i].text.last,
+               sentenceEndChars.contains(lastChar),
+               gap >= sentenceSplitMinPunctGapSec {
+                splitAfter.append(i)
+            }
+        }
+
+        guard !splitAfter.isEmpty else { return [asr] }
+
+        var result: [ASRSegment] = []
+        var start = 0
+        let endpoints = splitAfter + [asr.tokens.count - 1]
+        for end in endpoints {
+            let subTokens = Array(asr.tokens[start...end])
+            let subText = subTokens.map(\.text).joined()
+            let subStart = subTokens.first?.start ?? asr.start
+            let subEnd = subTokens.last?.end ?? asr.end
+            result.append(ASRSegment(
+                text: subText,
+                start: subStart,
+                end: subEnd,
+                // Sub-segments inherit the parent's whole-segment
+                // confidence — we don't compute a per-sub mean
+                // because it'd require averaging per-token confidence
+                // that SpeechAttributes already discards in
+                // `averageConfidence`.
+                confidence: asr.confidence,
+                tokens: subTokens
+            ))
+            start = end + 1
+        }
+        return result
+    }
+
     // MARK: - Speaker-change splitting
 
     /// One sub-segment produced by `splitOnSpeakerChange`. Each carries
@@ -468,6 +544,45 @@ final class AnalysisPipeline: Sendable {
         let asr: ASRSegment
         let audio: AudioChunk
         let speaker: String
+    }
+
+    /// Combined sentence + speaker split. Runs `splitByPauseAndPunctuation`
+    /// first (independent of speakers), then `splitOnSpeakerChange` on
+    /// each resulting sentence sub-segment. The combined output is what
+    /// `processSegment` iterates over for SER. The two-stage chain
+    /// composes cleanly: sentence boundaries land at token-pause /
+    /// punctuation, speaker boundaries land within or across them.
+    func splitForProcessing(
+        asr: ASRSegment,
+        segmentAudio: AudioChunk,
+        diarizationContext: AudioChunk?,
+        fallbackSpeakerID: String = "S01"
+    ) async -> [SegmentSplit] {
+        let sentenceSplits = Self.splitByPauseAndPunctuation(asr)
+        if sentenceSplits.count == 1 {
+            return await splitOnSpeakerChange(
+                asr: asr,
+                segmentAudio: segmentAudio,
+                diarizationContext: diarizationContext,
+                fallbackSpeakerID: fallbackSpeakerID
+            )
+        }
+        var allSplits: [SegmentSplit] = []
+        for sentence in sentenceSplits {
+            let sentenceAudio = Self.sliceRelative(
+                segmentAudio,
+                fromAudioTime: sentence.start,
+                toAudioTime: sentence.end
+            )
+            let speakerSplits = await splitOnSpeakerChange(
+                asr: sentence,
+                segmentAudio: sentenceAudio,
+                diarizationContext: diarizationContext,
+                fallbackSpeakerID: fallbackSpeakerID
+            )
+            allSplits.append(contentsOf: speakerSplits)
+        }
+        return allSplits
     }
 
     /// Diarize the segment's context once and emit one sub-segment per
@@ -569,8 +684,24 @@ final class AnalysisPipeline: Sendable {
         // visible "one wrong word" misclassifications without
         // erasing legitimate single-word interjections, which tend
         // to be longer / more emphatic.
-        let assignments = Self.absorbShortRuns(
+        let smoothed = Self.absorbShortRuns(
             assignments: refined,
+            tokens: asr.tokens
+        )
+
+        // Boundary-to-largest-pause: when the sentence has exactly
+        // two speakers, snap the boundary to the largest internal
+        // gap between consecutive tokens (the natural silence
+        // where the speaker change happened). Different signal
+        // from VAD-snap (which is energy-based, ±2 tokens) — this
+        // is gap-based and full-sentence, so it catches "off by
+        // 3-5 tokens" boundaries that fell outside VAD-snap's
+        // range. Targets the audio-file failure mode where the
+        // tail of speaker A's last word bleeds into speaker B's
+        // run because Apple finalized one ASR segment over both
+        // speakers' speech.
+        let assignments = Self.snapBoundaryToLargestPause(
+            assignments: smoothed,
             tokens: asr.tokens
         )
 
@@ -972,6 +1103,73 @@ final class AnalysisPipeline: Sendable {
                 }
             }
             i = runEnd + 1
+        }
+        return result
+    }
+
+    // MARK: - Boundary-to-largest-pause snap
+
+    /// Minimum inter-token gap (seconds) for the largest-pause snap
+    /// to apply. Below this, gaps within a sentence are too short
+    /// to be a meaningful speaker-change marker — they're often
+    /// just recognizer-internal token boundaries with no real
+    /// pause. Set well below `sentenceSplitMinPauseSec` (700 ms)
+    /// so this catches within-sentence turn-takes that the
+    /// pause-split intentionally let through.
+    private static let largestPauseSnapMinGapSec: TimeInterval = 0.15
+
+    /// For sentences with exactly two distinct speakers and a
+    /// single boundary in `assignments`, snap that boundary to
+    /// the largest gap between consecutive tokens — the natural
+    /// silence where the speaker change actually happened.
+    /// Targets the failure mode where Apple finalized one ASR
+    /// segment containing the tail of speaker A and the start of
+    /// speaker B, and the diarizer's boundary lands a token or
+    /// two off so A's last word "bleeds" into B's run.
+    ///
+    /// Only fires for the clean 2-speaker / 1-boundary case
+    /// because it has an unambiguous "right answer" (the largest
+    /// pause between the two speakers' speech). Multi-boundary
+    /// or 3+ speaker cases are left to the rest of the chain —
+    /// they don't have a single obvious silence to snap to.
+    private static func snapBoundaryToLargestPause(
+        assignments: [String],
+        tokens: [ASRSegment.Token]
+    ) -> [String] {
+        guard tokens.count >= 2 else { return assignments }
+        guard Set(assignments).count == 2 else { return assignments }
+
+        var currentBoundary: Int? = nil
+        for i in 1..<assignments.count where assignments[i] != assignments[i - 1] {
+            if currentBoundary != nil { return assignments }
+            currentBoundary = i
+        }
+        guard let boundary = currentBoundary else { return assignments }
+
+        var maxGap: TimeInterval = 0
+        var maxGapAt = boundary
+        for i in 1..<tokens.count {
+            let gap = tokens[i].start - tokens[i - 1].end
+            if gap > maxGap {
+                maxGap = gap
+                maxGapAt = i
+            }
+        }
+
+        guard maxGap >= largestPauseSnapMinGapSec, maxGapAt != boundary
+        else { return assignments }
+
+        // Re-stamp every token based on the snapped boundary.
+        // `assignments[0]` is the first token's original speaker,
+        // `assignments.last!` is the last token's. With exactly
+        // one boundary, those are the two speakers in order;
+        // preserving that order keeps the new boundary aligned
+        // with the audio.
+        let speakerBefore = assignments[0]
+        let speakerAfter = assignments[assignments.count - 1]
+        var result = assignments
+        for i in 0..<result.count {
+            result[i] = i < maxGapAt ? speakerBefore : speakerAfter
         }
         return result
     }

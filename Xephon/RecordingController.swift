@@ -477,7 +477,12 @@ final class RecordingController {
                             // skips re-running the diarizer per sub.
                             // Single-speaker segments come back as a
                             // one-element array, so the loop is uniform.
-                            let splits = await pipeline.splitOnSpeakerChange(
+                            // Combined pipeline: sentence-level split
+                            // (pause + punctuation, independent of
+                            // speakers), then speaker-change split per
+                            // resulting sentence. See
+                            // `AnalysisPipeline.splitForProcessing`.
+                            let splits = await pipeline.splitForProcessing(
                                 asr: segment,
                                 segmentAudio: segmentBuffer,
                                 diarizationContext: diarContext
