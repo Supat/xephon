@@ -53,17 +53,48 @@ struct SummaryCard: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    /// Top three labels sorted by confidence-weighted score
+    /// (descending). Empty until at least one labeled utterance has
+    /// arrived. Used by `topLabelRow` to render relative-confidence
+    /// chips horizontally — the runner-up labels are sized
+    /// proportionally to their score relative to the top.
+    private var topThreeLabels: [(label: String, score: Float)] {
+        Array(
+            summary.labelScores
+                .sorted { $0.value > $1.value }
+                .prefix(3)
+                .map { (label: $0.key, score: $0.value) }
+        )
+    }
+
     @ViewBuilder
     private var topLabelRow: some View {
-        if let label = summary.topLabel {
-            let tint = emotionTint(for: label)
-            Text(label.capitalized(with: Locale(identifier: "en_US")))
-                .font(.body.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(tint.opacity(0.18), in: Capsule())
-                .foregroundStyle(tint)
+        let entries = topThreeLabels
+        if let topScore = entries.first?.score, topScore > 0 {
+            HStack(alignment: .center, spacing: 6) {
+                ForEach(entries, id: \.label) { entry in
+                    labelCapsule(for: entry.label, ratio: entry.score / topScore)
+                }
+            }
         }
+    }
+
+    /// Capsule sized proportionally to `ratio` (the label's confidence
+    /// score divided by the top label's). Top label has `ratio == 1`
+    /// and renders at the original `.body.bold` size; runner-ups
+    /// shrink, but a `0.65` floor keeps the smallest capsule readable
+    /// — the goal is relative hierarchy, not literally proportional
+    /// shrinkage that would render minor labels illegible.
+    @ViewBuilder
+    private func labelCapsule(for label: String, ratio: Float) -> some View {
+        let scale = max(0.65, Double(ratio).squareRoot())
+        let tint = emotionTint(for: label)
+        Text(label.capitalized(with: Locale(identifier: "en_US")))
+            .font(.system(size: 17 * scale, weight: .bold))
+            .padding(.horizontal, 8 * scale)
+            .padding(.vertical, 3 * scale)
+            .background(tint.opacity(0.18 * scale), in: Capsule())
+            .foregroundStyle(tint)
     }
 
     @ViewBuilder

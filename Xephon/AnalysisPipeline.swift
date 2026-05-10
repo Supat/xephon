@@ -70,6 +70,21 @@ final class AnalysisPipeline: Sendable {
         await speakerTracker.reset()
     }
 
+    /// Run the diarizer on a window of audio and merge the result
+    /// into the cumulative speaker timeline via `speakerTracker`.
+    /// Called by the continuous-diarization side task in
+    /// RecordingController on every stride tick. No-op when the
+    /// diarizer is unavailable or returns empty for this window.
+    /// The audio's `timestamp` is the absolute audio-time origin of
+    /// the window, so the tracker's history stays in the same time
+    /// frame as ASRSegment / token timings.
+    func ingestDiarizationWindow(_ audio: AudioChunk) async {
+        guard diarizer != nil, !audio.samples.isEmpty else { return }
+        let diarized = await runDiarization(audio)
+        guard !diarized.isEmpty else { return }
+        _ = await speakerTracker.ingest(diarized)
+    }
+
     /// Auto-configures from a `ModelStore` that has already resolved each
     /// model's on-disk URL (downloading from the GitHub Release on first
     /// launch if needed). Modalities whose models couldn't be resolved
@@ -474,10 +489,23 @@ final class AnalysisPipeline: Sendable {
             return [single]
         }
 
-        let diarized = await runDiarization(diarizationContext)
-        guard !diarized.isEmpty else { return [single] }
-        let tracked = await speakerTracker.ingest(diarized)
-        guard !tracked.isEmpty else { return [single] }
+        // Prefer the streaming timeline (continuously refreshed by the
+        // sliding-window task) over a one-shot per-segment diarize.
+        // The timeline tracks shorter windows (~10 s) than the
+        // per-segment context (~60 s), so its boundary timings are
+        // sharper. Fall back to per-segment diarize only when the
+        // timeline hasn't been populated yet (e.g. the first segment
+        // arrives before the side task has fired).
+        let tracked: [DiarizedSegment]
+        if await speakerTracker.isPopulated {
+            tracked = await speakerTracker.cumulativeSnapshot()
+        } else {
+            let diarized = await runDiarization(diarizationContext)
+            guard !diarized.isEmpty else { return [single] }
+            let mapped = await speakerTracker.ingest(diarized)
+            guard !mapped.isEmpty else { return [single] }
+            tracked = mapped
+        }
 
         // Per-token speaker assignment by midpoint. Falls back to the
         // closest segment when the midpoint falls in a diarizer gap.

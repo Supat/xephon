@@ -142,4 +142,31 @@ public struct RollingAudioBuffer: Sendable {
             timestamp: origin
         )
     }
+
+    /// Deep-copy snapshot of the trailing `seconds` of audio. Used
+    /// by the continuous-diarization path which only needs a short
+    /// (~10 s) sliding window, not the full rolling buffer. Same
+    /// CoW-isolation guarantee as `snapshotForDiarization` so the
+    /// snapshot doesn't alias the live buffer.
+    public func snapshotTail(seconds: TimeInterval) -> AudioChunk {
+        guard !samples.isEmpty else {
+            return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: origin)
+        }
+        let totalSeconds = Double(samples.count) / sampleRate
+        if seconds >= totalSeconds {
+            return snapshotForDiarization()
+        }
+        let count = Int(seconds * sampleRate)
+        let startIndex = samples.count - count
+        let timestamp = origin + Double(startIndex) / sampleRate
+        let isolated = [Float](unsafeUninitializedCapacity: count) { dst, initializedCount in
+            samples.withUnsafeBufferPointer { src in
+                if let dstBase = dst.baseAddress, let srcBase = src.baseAddress {
+                    dstBase.update(from: srcBase + startIndex, count: count)
+                }
+            }
+            initializedCount = count
+        }
+        return AudioChunk(samples: isolated, sampleRate: sampleRate, timestamp: timestamp)
+    }
 }

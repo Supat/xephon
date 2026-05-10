@@ -102,6 +102,14 @@ final class RecordingController {
     private var routeWatcherTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
+    /// Sliding-window continuous diarization. Fires every
+    /// `continuousDiarizeStrideSec` while recording and feeds the
+    /// last `continuousDiarizeWindowSec` of audio to the pipeline's
+    /// speaker timeline. The timeline is what `splitOnSpeakerChange`
+    /// queries per token — running it continuously rather than
+    /// per-segment gives sharper speaker boundaries on fast-pace
+    /// turn-takes (the per-segment 60 s context blurs them).
+    private var continuousDiarizeTask: Task<Void, Never>?
     /// Lock-Screen / Dynamic Island integration. See
     /// `LiveActivityController` for the activity-id, coalescing, and
     /// nonisolated update plumbing.
@@ -351,6 +359,38 @@ final class RecordingController {
                 }
             }
 
+            // Continuous diarization: every stride, snapshot the last
+            // window of audio and feed it to the speaker timeline. The
+            // timeline is what splitOnSpeakerChange queries — keeping
+            // it fresh means per-token speaker assignment is based on
+            // a recent ~10 s window rather than a 60 s lump that
+            // averages embeddings across many turns.
+            //
+            // First tick waits one stride, so a segment finalizing in
+            // the first ~2 s falls back to per-segment diarize (handled
+            // inside splitOnSpeakerChange). Subsequent ticks get
+            // increasingly accurate timeline coverage.
+            //
+            // Awaits `ensurePipeline` first because the diarizer lives
+            // inside the pipeline. Skipped when the pipeline failed to
+            // load a diarizer (`ingestDiarizationWindow` is a no-op).
+            continuousDiarizeTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                let pipeline = await self.ensurePipeline()
+                while !Task.isCancelled {
+                    try? await Task.sleep(
+                        nanoseconds: UInt64(Self.continuousDiarizeStrideSec * 1_000_000_000)
+                    )
+                    if Task.isCancelled { return }
+                    guard self.isRecording else { continue }
+                    let window = self.capturedAudio.snapshotTail(
+                        seconds: Self.continuousDiarizeWindowSec
+                    )
+                    guard !window.samples.isEmpty else { continue }
+                    await pipeline.ingestDiarizationWindow(window)
+                }
+            }
+
             // Pump 2: drain finalized ASR segments → SER+fuse → append.
             // Each segment is processed concurrently (TaskGroup) so a slow
             // text-SER LLM call on segment N doesn't block segment N+1.
@@ -501,6 +541,9 @@ final class RecordingController {
 
         volatilePollTask?.cancel()
         volatilePollTask = nil
+
+        continuousDiarizeTask?.cancel()
+        continuousDiarizeTask = nil
         volatileText = ""
 
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
@@ -682,6 +725,19 @@ final class RecordingController {
     /// system IOSurface pool. ASR typically emits 1-2 segments/sec so
     /// 2-wide concurrency is rarely the throughput bottleneck anyway.
     private static let maxConcurrentSegments: Int = 2
+
+    /// Sliding-window length for continuous diarization. 10 s is the
+    /// shortest window where Sortformer's speaker embeddings are
+    /// reliable — much shorter and the embedding noise dominates the
+    /// turn-take signal. Going wider averages embeddings across more
+    /// turns and undoes the whole reason we're running continuously.
+    private static let continuousDiarizeWindowSec: TimeInterval = 10
+    /// Stride between consecutive continuous-diarize calls. 2 s gives
+    /// each new boundary < 2 s of latency before the timeline learns
+    /// about it, while keeping diarizer load to ~0.5 calls/s. Going
+    /// shorter spends CPU on overlapping windows that mostly agree;
+    /// going longer makes fast-pace turn-takes show up late.
+    private static let continuousDiarizeStrideSec: TimeInterval = 2
 
     private func trimProcessedAudio(below boundary: TimeInterval) {
         capturedAudio.trimProcessed(below: boundary)

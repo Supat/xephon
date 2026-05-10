@@ -84,6 +84,34 @@ public actor StreamingSpeakerTracker {
         nextSpeakerNumber = 1
     }
 
+    /// True once at least one diarization call has populated the
+    /// cumulative timeline. Callers querying by audio time should
+    /// gate on this — `speakerAt` returns nil when empty, which the
+    /// caller would otherwise have to treat as a fallback path.
+    public var isPopulated: Bool { !cumulative.isEmpty }
+
+    /// Snapshot of the cumulative speaker timeline, sorted by start
+    /// time. Returned by value so callers can do many lookups
+    /// against it without paying actor-await cost per query —
+    /// per-token assignment at sub-segment splitting needs O(N
+    /// tokens) lookups, and waking the actor for each one would
+    /// dominate split latency. The copy itself is a few KB on
+    /// realistic sessions (≤ `cumulativeCap` entries × ~40 B).
+    public func cumulativeSnapshot() -> [DiarizedSegment] { cumulative }
+
+    /// Speaker ID covering `audioTime`, by midpoint-fallback rule.
+    /// Returns nil only when the timeline is empty — falls back to
+    /// the closest segment when the time lands in a diarizer gap.
+    public func speakerAt(_ audioTime: TimeInterval) -> String? {
+        guard !cumulative.isEmpty else { return nil }
+        if let containing = cumulative.first(where: { $0.start <= audioTime && audioTime <= $0.end }) {
+            return containing.speakerID
+        }
+        return cumulative.min(by: {
+            abs(($0.start + $0.end) / 2 - audioTime) < abs(($1.start + $1.end) / 2 - audioTime)
+        })?.speakerID
+    }
+
     /// Total time-overlap (seconds) between the candidate local segments
     /// and each known global speaker's history. Returns the global ID
     /// with the most overlap, provided it exceeds `overlapThreshold`.
