@@ -1013,15 +1013,15 @@ final class RecordingController {
 
     // MARK: - Per-utterance re-evaluate
 
-    /// Padding applied to the original utterance boundary on each side
-    /// before re-feeding the audio to offline ASR. The streaming
+    /// Front-only padding applied before the original utterance's
+    /// start when re-feeding audio to offline ASR. The streaming
     /// pass's finalizer cuts segments at the volatile-stabilization
-    /// boundary, which often clips the first phoneme of an utterance
-    /// or the trailing tail of sentence-final particles. 500 ms is
-    /// enough breathing room to recover those without dragging in
-    /// neighbour-speaker audio — the sentence-aware trim in
-    /// `AnalysisPipeline.reevaluate` already drops anything past the
-    /// last terminator, so we don't need wider context.
+    /// boundary, which often clips the first phoneme of an utterance;
+    /// 500 ms of lead-in gives offline ASR a chance to recover it.
+    /// No back padding is applied — the segment's tail is already
+    /// preserved by streaming, and the sentence-aware trim in
+    /// `AnalysisPipeline.reevaluate` drops anything past the last
+    /// terminator anyway.
     private static let reevaluationPaddingSec: TimeInterval = 0.5
 
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
@@ -1051,7 +1051,13 @@ final class RecordingController {
         }
 
         let extendedStart = max(0, utterance.start - Self.reevaluationPaddingSec)
-        let extendedEnd = utterance.end + Self.reevaluationPaddingSec
+        // No back padding: the streaming pass already keeps audio up
+        // to the segment's tail, and the sentence-aware trim in
+        // `AnalysisPipeline.reevaluate` drops anything past the last
+        // terminator anyway. Front padding is the only side that
+        // meaningfully helps offline ASR recover a clipped leading
+        // phoneme.
+        let extendedEnd = utterance.end
         let speakerID = utterance.speakerID
         let originalStart = utterance.start
         let originalEnd = utterance.end
