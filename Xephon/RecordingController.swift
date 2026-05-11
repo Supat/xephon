@@ -642,10 +642,44 @@ final class RecordingController {
     // MARK: - Audio input selection
 
     func refreshInputs() async {
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        // `session.availableInputs` filters by the current category.
+        // Under `.playback` (or default) it returns only the built-in
+        // mic; Bluetooth inputs like AirPods only show up under
+        // `.record` / `.playAndRecord` with bluetooth options. To
+        // make the input picker reflect a freshly-connected AirPods
+        // without committing to mic recording, briefly set the
+        // category to `.playAndRecord` for the query, then restore
+        // the previous declared category.
+        //
+        // We never call `setActive(true)`, so this is metadata-only
+        // — the hardware route doesn't change, which is what kept
+        // the playback-silence bug from coming back. Gated on idle
+        // + no active playback because changing category on an
+        // already-active session leaves the route latched (see
+        // docs/playback_silence_postmortem.md).
+        let canReconfigure = phase == .idle && playbackPlayer == nil
+        let session = AVAudioSession.sharedInstance()
+        let priorCategory = session.category
+        let priorMode = session.mode
+        let priorOptions = session.categoryOptions
+        if canReconfigure {
+            try? session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetoothHFP, .defaultToSpeaker]
+            )
+        }
+        #endif
         let inputs = await capture.availableInputs()
         let current = await capture.currentInput()
         self.availableInputs = inputs
         self.currentInputUID = current?.uid
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        if canReconfigure {
+            try? session.setCategory(priorCategory, mode: priorMode, options: priorOptions)
+        }
+        #endif
     }
 
     /// React to `AVAudioSession.routeChangeNotification`. Refreshes
