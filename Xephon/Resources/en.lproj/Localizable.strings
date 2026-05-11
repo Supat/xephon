@@ -32,10 +32,10 @@
 "warmup.inProgress" = "Loading models…";
 "export.json" = "Export JSON";
 "file.open" = "Open File";
-"menu.openAudioFile" = "Open…";
+"menu.openAudioFile" = "Open Audio File…";
 "menu.exportJSON" = "Export to JSON…";
 "menu.saveSession" = "Save Session…";
-"menu.importSession" = "Import Session…";
+"menu.importSession" = "Open Session…";
 "menu.findInUtterances" = "Find in Utterances…";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";

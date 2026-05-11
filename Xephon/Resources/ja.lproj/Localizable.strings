@@ -32,10 +32,10 @@
 "warmup.inProgress" = "モデルを読み込み中…";
 "export.json" = "JSON書き出し";
 "file.open" = "ファイルを開く";
-"menu.openAudioFile" = "開く…";
+"menu.openAudioFile" = "音声ファイルを開く…";
 "menu.exportJSON" = "JSONを書き出す…";
 "menu.saveSession" = "セッションを保存…";
-"menu.importSession" = "セッションを読み込む…";
+"menu.importSession" = "セッションを開く…";
 "menu.findInUtterances" = "発話を検索…";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
