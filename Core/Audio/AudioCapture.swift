@@ -260,8 +260,19 @@ public actor AVAudioEngineCapture: AudioCapture {
 
     public func availableInputs() async -> [AudioInputDescription] {
         #if os(iOS) || targetEnvironment(macCatalyst)
+        // Pure query — must not change the session category. Earlier
+        // this helper called `configureCategoryIfNeeded` to make
+        // `session.availableInputs` non-nil under arbitrary session
+        // state, but that turned an innocent UI refresh into a
+        // session-trampling side effect: every route-change
+        // notification (AirPods plug, screen-off, etc.) would flip
+        // the active category to `.record / .measurement` and
+        // silently break the next `AVAudioPlayer.play()`. Returning
+        // an empty list when the current category doesn't expose
+        // inputs is acceptable — the picker shows a default label
+        // and the next mic-record start (`AVAudioEngineCapture.start`)
+        // configures the category itself.
         let session = AVAudioSession.sharedInstance()
-        configureCategoryIfNeeded(session)
         return (session.availableInputs ?? []).map(Self.describe)
         #else
         return []
@@ -270,8 +281,9 @@ public actor AVAudioEngineCapture: AudioCapture {
 
     public func currentInput() async -> AudioInputDescription? {
         #if os(iOS) || targetEnvironment(macCatalyst)
+        // Same purity rule as `availableInputs` above — no category
+        // writes here.
         let session = AVAudioSession.sharedInstance()
-        configureCategoryIfNeeded(session)
         if let port = session.currentRoute.inputs.first {
             return Self.describe(port)
         }
