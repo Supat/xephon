@@ -621,8 +621,16 @@ struct ContentView: View {
 
     @ViewBuilder
     private var inputPicker: some View {
-        if !recorder.availableInputs.isEmpty {
-            Menu {
+        // Always render, even when the inputs list is empty (file
+        // mode, or before the first refresh) or contains only the
+        // built-in mic. Keeping the picker visible keeps the
+        // toolbar layout stable across state transitions and gives
+        // the user a permanent at-a-glance indicator of which input
+        // would be used if recording started now.
+        Menu {
+            if recorder.availableInputs.isEmpty {
+                Text(String(localized: "input.default"))
+            } else {
                 ForEach(recorder.availableInputs) { input in
                     Button {
                         Task { await recorder.selectInput(uid: input.uid) }
@@ -634,23 +642,33 @@ struct ContentView: View {
                         }
                     }
                 }
-            } label: {
-                let current = recorder.availableInputs.first(where: { $0.uid == recorder.currentInputUID })
-                HStack(spacing: 6) {
-                    Image(systemName: Self.symbol(for: current?.kind ?? .builtInMic))
-                    Text(current?.displayName ?? String(localized: "input.default"))
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .font(.footnote)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.tint.opacity(0.12), in: Capsule())
             }
-            .disabled(recorder.isRecording)
+        } label: {
+            let current = recorder.availableInputs.first(where: { $0.uid == recorder.currentInputUID })
+            HStack(spacing: 6) {
+                Image(systemName: Self.symbol(for: current?.kind ?? .builtInMic))
+                Text(current?.displayName ?? String(localized: "input.default"))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.tint.opacity(0.12), in: Capsule())
         }
+        .disabled(inputPickerDisabled)
+    }
+
+    /// True when there's nothing actionable for the input picker:
+    /// a session is in flight, the source is a file (mic isn't
+    /// used), or there's at most one input to choose from.
+    private var inputPickerDisabled: Bool {
+        if recorder.isRecording { return true }
+        if recorder.isAnalyzing { return true }
+        if case .file = recorder.sourceMode { return true }
+        return recorder.availableInputs.count <= 1
     }
 
     private static func symbol(for kind: AudioInputDescription.Kind) -> String {

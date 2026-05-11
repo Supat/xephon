@@ -233,7 +233,7 @@ final class RecordingController {
             )
             for await _ in notifications {
                 guard let self else { break }
-                await self.refreshInputs()
+                await self.handleAudioRouteChange()
             }
         }
     }
@@ -646,6 +646,36 @@ final class RecordingController {
         let current = await capture.currentInput()
         self.availableInputs = inputs
         self.currentInputUID = current?.uid
+    }
+
+    /// React to `AVAudioSession.routeChangeNotification`. Refreshes
+    /// the visible input list and, when we're idle, fully deactivates
+    /// the shared session so the next playback or record activation
+    /// rebinds against the current route.
+    ///
+    /// Without this, AirPods that disconnect mid-app-session and then
+    /// reconnect leave the session bound to a stale (dead) route:
+    /// both AirPods playback and the built-in speaker silently fail
+    /// until the user backgrounds the app, which forces the OS to
+    /// reclaim the session. Deactivating here mimics that recovery
+    /// path without requiring user intervention.
+    ///
+    /// Active playback gets a hard stop on any route change — Apple's
+    /// human-interface guidance is that an unplugged or disconnected
+    /// output should pause / stop playback rather than silently
+    /// continue through whatever the OS falls back to.
+    private func handleAudioRouteChange() async {
+        await refreshInputs()
+        if playbackPlayer != nil {
+            stopPlayback()
+        }
+        guard phase == .idle else { return }
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+        #endif
     }
 
     func setSpeechBoostEnabled(_ enabled: Bool) async {
