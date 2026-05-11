@@ -409,6 +409,13 @@ struct UtteranceRow: View {
                         onRevert()
                     }
             )
+            // Haptic-only confirmation when the 3 s long-press fires.
+            // The closure form prevents the reset-to-false transition
+            // (when the next tap clears the flag) from also producing
+            // a haptic — only the false → true edge counts.
+            .sensoryFeedback(trigger: revertJustFired) { _, new in
+                new ? .success : nil
+            }
         }
     }
 
