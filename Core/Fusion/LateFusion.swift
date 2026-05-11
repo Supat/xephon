@@ -34,7 +34,14 @@ public actor LateFusion: Fuser {
     /// Constant weight applied to the acoustic modality. Not scaled
     /// by ASR confidence — the acoustic side doesn't depend on the
     /// transcript being correct.
-    public static let defaultAcousticWeight: Float = 1.0
+    ///
+    /// Lowered from 1.0 → 0.7 → 0.35 across iterations to give the
+    /// text SER more pull on the fused V/A. At 0.35, with ASR
+    /// confidence 0.9: text contributes ~72%, acoustic ~28%. At
+    /// confidence 0.5: text ~59%, acoustic ~41%. Even at the
+    /// textWeightFloor (0.2), text contributes ~36% so acoustic
+    /// can't fully outvote a low-confidence transcript.
+    public static let defaultAcousticWeight: Float = 0.35
 
     private let textWeightFloor: Float
     private let acousticWeight: Float
@@ -62,41 +69,68 @@ public actor LateFusion: Fuser {
     /// acoustic-categorical names used by `topLabel`. Public so the
     /// view layer can attribute per-label contributions back to each
     /// modality without re-stating the mapping.
+    ///
+    /// `.trust` and `.anticipation` route to `"other"` rather than
+    /// `"happy"` — they share Russell-quadrant overlap with `.joy`
+    /// but the 3:1-into-happy accumulation under the previous
+    /// mapping was the dominant contributor to the Happy-skewed
+    /// fused label (see `docs/acoustic_ser_bias.md`). `"other"` is
+    /// emotion2vec's sink class; `topLabel` already filters acoustic
+    /// `"other"`/`"unknown"` from contributing, so trust /
+    /// anticipation text votes effectively drop out of the label
+    /// argmax under this mapping while still showing up in the
+    /// inspector's Text-SER probability bars.
     public static let plutchikToAcousticLabelMapping: [PlutchikScore.Label: String] = [
         .joy: "happy", .sadness: "sad", .anger: "angry",
         .fear: "fearful", .disgust: "disgusted", .surprise: "surprised",
-        .trust: "happy", .anticipation: "happy",
+        .trust: "other", .anticipation: "other",
     ]
 
-    /// Normalized (acoustic, text) fraction of the merged score that
-    /// went to `label` during `topLabel` argmax. Returns nil when
-    /// neither side contributed (e.g. a label that no modality
-    /// produced, or both inputs missing). Acoustic side contributes
-    /// `prob`; text side contributes `prob × asrConfidence`, summed
-    /// across all Plutchik labels that map to `label`.
+    /// Normalized (acoustic, text) fraction of the **total** score
+    /// each modality contributed to the `topLabel` argmax, summed
+    /// across every label bucket — not the share within the
+    /// winning bucket alone. The "winning bucket only" view that
+    /// this method used to compute frequently produced 100% / 0%
+    /// splits when the strongest Plutchik categories happened to
+    /// map to a different acoustic label than the one acoustic was
+    /// most confident about, which was misleading because text
+    /// often contributed plenty of score — just to non-winning
+    /// buckets.
+    ///
+    /// Both sides use the same weighting curve as the V/A weighted
+    /// average:
+    ///
+    /// - Acoustic total = Σ over valid (non-unknown/other) labels
+    ///   of `prob × defaultAcousticWeight`.
+    /// - Text total = (Σ over Plutchik labels that have a mapping
+    ///   into the acoustic label space) of `prob`, then multiplied
+    ///   by `max(defaultTextWeightFloor, asrConfidence)`.
+    ///
+    /// Returns nil only when neither side contributed any score
+    /// (both inputs missing or all probabilities zero).
     public static func defaultLabelFusionShare(
-        forLabel label: String,
         acoustic: CategoricalEmotion?,
         plutchik: PlutchikScore?,
         asrConfidence: Float
     ) -> (acoustic: Float, text: Float)? {
-        var acousticContrib: Float = 0
-        if let a = acoustic,
-           let key = CategoricalEmotion.Label(rawValue: label),
-           key != .unknown, key != .other {
-            acousticContrib = a.probabilities[key] ?? 0
+        let textWeight = max(defaultTextWeightFloor, asrConfidence)
+        var acousticTotal: Float = 0
+        if let a = acoustic {
+            for (k, v) in a.probabilities where k != .unknown && k != .other {
+                acousticTotal += v * defaultAcousticWeight
+            }
         }
-        var textContrib: Float = 0
+        var textTotal: Float = 0
         if let p = plutchik {
             for (k, v) in p.probabilities
-                where plutchikToAcousticLabelMapping[k] == label {
-                textContrib += v
+                where plutchikToAcousticLabelMapping[k] != nil {
+                textTotal += v
             }
-            textContrib *= asrConfidence
+            textTotal *= textWeight
         }
-        let total = acousticContrib + textContrib
+        let total = acousticTotal + textTotal
         guard total > 0 else { return nil }
-        return (acoustic: acousticContrib / total, text: textContrib / total)
+        return (acoustic: acousticTotal / total, text: textTotal / total)
     }
 
     public func fuse(
@@ -191,23 +225,46 @@ public actor LateFusion: Fuser {
         return max(0, min(1, 0.5 + raw * 0.3))
     }
 
+    /// Argmax over the per-label score combining acoustic-categorical
+    /// (emotion2vec) and Plutchik (text SER) contributions.
+    ///
+    /// Acoustic side scales by `defaultAcousticWeight`; text side
+    /// scales by `max(defaultTextWeightFloor, asrConfidence)` — same
+    /// weighting curve as the V/A weighted average in `fuse`, so the
+    /// green chip and the V/A axis line up under one consistent
+    /// "text weight vs acoustic weight" knob.
+    ///
+    /// When the raw argmax winner lands on a sink bucket
+    /// (`"other"` / `"unknown"`) — which under the current Plutchik
+    /// mapping happens when `trust` + `anticipation` votes outweigh
+    /// every emotion-bearing bucket — the function falls back to
+    /// the text SER's own top Plutchik label so the chip stays
+    /// meaningful instead of grey-uncategorized.
     private static func topLabel(
         acoustic: CategoricalEmotion?,
         plutchik: PlutchikScore?,
         asrConfidence: Float
     ) -> String? {
+        let textWeight = max(defaultTextWeightFloor, asrConfidence)
         var scores: [String: Float] = [:]
         if let a = acoustic {
             for (k, v) in a.probabilities where k != .unknown && k != .other {
-                scores[k.rawValue, default: 0] += v
+                scores[k.rawValue, default: 0] += v * defaultAcousticWeight
             }
         }
         if let p = plutchik {
             for (k, v) in p.probabilities {
                 guard let mapped = plutchikToAcousticLabelMapping[k] else { continue }
-                scores[mapped, default: 0] += v * asrConfidence
+                scores[mapped, default: 0] += v * textWeight
             }
         }
-        return scores.max(by: { $0.value < $1.value })?.key
+        let winner = scores.max(by: { $0.value < $1.value })?.key
+        if winner == "other" || winner == "unknown" {
+            if let p = plutchik,
+               let topPlutchik = p.probabilities.max(by: { $0.value < $1.value })?.key {
+                return topPlutchik.rawValue
+            }
+        }
+        return winner
     }
 }
