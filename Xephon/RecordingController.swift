@@ -1007,10 +1007,11 @@ final class RecordingController {
     /// before re-feeding the audio to offline ASR. The streaming pass's
     /// finalizer cuts segments at the volatile-stabilization boundary,
     /// which often clips the first phoneme of an utterance or the
-    /// trailing tail of sentence-final particles. 500 ms is wide
-    /// enough to recover those without dragging in neighbour-speaker
-    /// audio in typical conversational pacing.
-    private static let reevaluationPaddingSec: TimeInterval = 0.5
+    /// trailing tail of sentence-final particles. 1 s leaves room to
+    /// recover those plus a beat of prosodic context for SER, without
+    /// dragging in neighbour-speaker audio in typical conversational
+    /// pacing.
+    private static let reevaluationPaddingSec: TimeInterval = 1.0
 
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
     /// on each side) to offline ASR, then run SER + fusion on the new
