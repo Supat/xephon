@@ -54,6 +54,17 @@ struct ContentView: View {
     /// the selected list item. Kept here (not on the row) so a
     /// rebuild of the row doesn't drop the expansion state.
     @State private var expandedUtteranceIDs: Set<UUID> = []
+    /// Normalized (Hepburn romaji, lowercased) form of each utterance's
+    /// transcript, keyed by utterance ID. Populated off-MainActor in
+    /// `refreshSearchCache()` so the filter loop is a dictionary
+    /// lookup per row instead of an N-per-keystroke CFStringTokenizer
+    /// pass. Survives utterance additions because we only normalize
+    /// the new arrivals on each utterance-count change.
+    @State private var normalizedTranscriptCache: [UUID: String] = [:]
+    /// Background task that's currently rebuilding `normalizedTranscriptCache`.
+    /// Cancelled and replaced on every utterance-count change so a
+    /// fast-arriving stream of utterances doesn't spawn unbounded work.
+    @State private var searchCacheTask: Task<Void, Never>?
 
     var body: some View {
         if !recorder.modelsReady {
@@ -749,12 +760,59 @@ struct ContentView: View {
                 return nil
             }
             if !normalizedQuery.isEmpty {
-                let normalizedText = JapaneseSearchNormalizer.normalize(u.transcript)
+                // Fall back to inline normalization when the cache
+                // hasn't caught up yet (a brand-new utterance arrived
+                // mid-search). The async refresher will populate it
+                // momentarily; the per-row inline call is rare.
+                let normalizedText = normalizedTranscriptCache[u.id]
+                    ?? JapaneseSearchNormalizer.normalize(u.transcript)
                 if !normalizedText.contains(normalizedQuery) {
                     return nil
                 }
             }
             return (idx, u)
+        }
+    }
+
+    /// Bring `normalizedTranscriptCache` up to date with the recorder's
+    /// current utterance list. Only normalizes utterances that aren't
+    /// already in the cache, so steady-state utterance arrivals each
+    /// pay one normalize call (not N). Normalization runs concurrently
+    /// across the missing entries via `TaskGroup`, off the MainActor;
+    /// completed results are merged back into `@State` in one hop so
+    /// the view body doesn't re-evaluate per row.
+    private func refreshSearchCache() {
+        let utterances = recorder.utterances
+        let cached = normalizedTranscriptCache
+        let missing = utterances.filter { cached[$0.id] == nil }
+        guard !missing.isEmpty else { return }
+
+        searchCacheTask?.cancel()
+        searchCacheTask = Task.detached(priority: .userInitiated) {
+            // Hand each utterance to its own child task; the work is
+            // CPU-bound CFStringTokenizer calls, so the cooperative
+            // pool will parallelize across the device's cores.
+            let normalized = await withTaskGroup(
+                of: (UUID, String).self
+            ) { group -> [(UUID, String)] in
+                for u in missing {
+                    if Task.isCancelled { break }
+                    group.addTask {
+                        (u.id, JapaneseSearchNormalizer.normalize(u.transcript))
+                    }
+                }
+                var out: [(UUID, String)] = []
+                for await pair in group {
+                    out.append(pair)
+                }
+                return out
+            }
+            if Task.isCancelled { return }
+            await MainActor.run {
+                for (id, text) in normalized {
+                    normalizedTranscriptCache[id] = text
+                }
+            }
         }
     }
 
@@ -946,7 +1004,11 @@ struct ContentView: View {
                 if isEmpty {
                     hasUnreadUtterance = false
                     selectedUtteranceID = nil
+                    normalizedTranscriptCache.removeAll(keepingCapacity: true)
                 }
+            }
+            .onChange(of: recorder.utterances.count, initial: true) { _, _ in
+                refreshSearchCache()
             }
             .onChange(of: isLastUtteranceVisible) { _, visible in
                 // User scrolled (or list re-laid out) to bring the most
