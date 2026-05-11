@@ -50,3 +50,8 @@
 "summary.dispersion" = "± %.2f";
 "statistics.header" = "統計";
 "statistics.empty" = "まだラベルがありません。";
+"speaker.rename.title" = "話者の名前を変更";
+"speaker.rename.placeholder" = "話者名";
+"speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";
+"speaker.rename.save" = "保存";
+"speaker.rename.cancel" = "キャンセル";

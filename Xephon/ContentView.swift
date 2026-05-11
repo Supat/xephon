@@ -86,6 +86,12 @@ struct ContentView: View {
     /// Cancelled and replaced on every utterance-count change so a
     /// fast-arriving stream of utterances doesn't spawn unbounded work.
     @State private var searchCacheTask: Task<Void, Never>?
+    /// Stored speaker id whose Rename alert is currently presented
+    /// (or `nil` when no alert is up). Set by the row's
+    /// context-menu Rename action, cleared on alert dismiss.
+    @State private var editingSpeakerStored: String?
+    /// Pending text in the Rename TextField, bound to the alert.
+    @State private var editingSpeakerName: String = ""
     /// Memoization layer for `filteredIndexedUtterances` and
     /// `displayedSummary`. SwiftUI re-evaluates the view body on
     /// every observed-state change (playback state, pipeline metrics,
@@ -282,6 +288,37 @@ struct ContentView: View {
                 }
             } message: {
                 Text(String(localized: "pacing.message"))
+            }
+            // Speaker rename alert — raised by the row's context
+            // menu "Rename Speaker…" action. `editingSpeakerStored`
+            // is the stored speaker id (e.g. `S01`); the bound text
+            // is pre-filled with the current override if any.
+            // Confirming with a blank field clears the override
+            // (reverts to the default `S01`/`M01` formatting).
+            .alert(
+                String(localized: "speaker.rename.title"),
+                isPresented: Binding(
+                    get: { editingSpeakerStored != nil },
+                    set: { presented in if !presented { editingSpeakerStored = nil } }
+                )
+            ) {
+                TextField(
+                    String(localized: "speaker.rename.placeholder"),
+                    text: $editingSpeakerName
+                )
+                Button(String(localized: "speaker.rename.save")) {
+                    if let stored = editingSpeakerStored {
+                        recorder.renameSpeaker(stored: stored, to: editingSpeakerName)
+                    }
+                    editingSpeakerStored = nil
+                }
+                Button(String(localized: "speaker.rename.cancel"), role: .cancel) {
+                    editingSpeakerStored = nil
+                }
+            } message: {
+                if let stored = editingSpeakerStored {
+                    Text(String(format: String(localized: "speaker.rename.message"), stored))
+                }
             }
         }
     }
@@ -490,7 +527,11 @@ struct ContentView: View {
                             selectedSpeakerFilter = nil
                         }
                         ForEach(speakers, id: \.self) { id in
-                            let label = formatSpeakerLabel(id, multiSpeaker: true)
+                            let label = formatSpeakerLabel(
+                                id,
+                                multiSpeaker: true,
+                                customName: recorder.speakerDisplayName(forStored: id)
+                            )
                             let tint = speakerTint(for: id)
                             speakerChip(
                                 text: label,
@@ -1110,7 +1151,13 @@ struct ContentView: View {
                     onReevaluate: {
                         Task { await recorder.reevaluate(item.u) }
                     },
-                    onRevert: { recorder.revertReevaluation(item.u) }
+                    onRevert: { recorder.revertReevaluation(item.u) },
+                    speakerCustomName: recorder.speakerDisplayName(forStored: item.u.speakerID),
+                    onRenameSpeaker: {
+                        editingSpeakerStored = item.u.speakerID
+                        editingSpeakerName = recorder
+                            .speakerDisplayName(forStored: item.u.speakerID) ?? ""
+                    }
                 )
                 .id(item.u.id)
                 .onAppear { visibleUtteranceIDs.insert(item.u.id) }

@@ -46,13 +46,21 @@ public struct SessionDocument: Codable, Sendable {
     /// equivalent `.json` could be extracted.
     public let utterances: [UtteranceEstimate]
 
+    /// User-supplied display names keyed by stored speaker id
+    /// (e.g. `"S01" → "Alice"`). Optional so v1 bundles without
+    /// this field continue to decode cleanly — Swift's Codable
+    /// treats a missing key on an optional as nil rather than a
+    /// decode error, so no `formatVersion` bump is needed.
+    public let speakerNames: [String: String]?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
 
     /// Current schema version. Bumped here when the layout changes;
-    /// readers compare against this to decide whether to accept the
-    /// file.
+    /// readers compare against this to accept the file. Adding a
+    /// new optional field doesn't qualify as an incompatible
+    /// change.
     public static let currentFormatVersion: Int = 1
 
     public init(
@@ -61,7 +69,8 @@ public struct SessionDocument: Codable, Sendable {
         sourceKind: SourceKind,
         audioFilename: String?,
         audio: Data?,
-        utterances: [UtteranceEstimate]
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -69,6 +78,7 @@ public struct SessionDocument: Codable, Sendable {
         self.audioFilename = audioFilename
         self.audio = audio
         self.utterances = utterances
+        self.speakerNames = speakerNames
     }
 }
 

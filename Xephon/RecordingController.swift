@@ -88,6 +88,15 @@ final class RecordingController {
     /// `revertReevaluation`, and wholesale by `start()` / `loadSession`.
     /// Not persisted — revert history is session-scoped only.
     private var preReevaluationSnapshots: [UUID: UtteranceEstimate] = [:]
+    /// User-supplied display names keyed by stored speaker id
+    /// (e.g. `"S01" → "Alice"`). When present, takes precedence
+    /// over the default `S01` / `M01` formatting that
+    /// `formatSpeakerLabel` produces. Cleared at session start;
+    /// restored from the `.xph` bundle on `loadSession`. The stored
+    /// id stays canonical — diarizer matching, JSON identity, and
+    /// per-speaker tint keying all keep operating on the original
+    /// `S01`-style key.
+    private(set) var speakerNameOverrides: [String: String] = [:]
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
@@ -372,6 +381,7 @@ final class RecordingController {
             samplesCaptured = 0
             utterances = []
             preReevaluationSnapshots.removeAll()
+            speakerNameOverrides.removeAll()
             conversationSummary.reset()
             capturedAudio.reset()
             sessionStartedAt = Date()
@@ -845,6 +855,7 @@ final class RecordingController {
     /// fresh before calling — `togglePlayback`-tested URLs are good.
     func makeSessionDocument() throws -> SessionDocument {
         let utts = utterances
+        let names = speakerNameOverrides.isEmpty ? nil : speakerNameOverrides
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -856,7 +867,8 @@ final class RecordingController {
                     sourceKind: .file,
                     audioFilename: url.lastPathComponent,
                     audio: audioData,
-                    utterances: utts
+                    utterances: utts,
+                    speakerNames: names
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -868,7 +880,8 @@ final class RecordingController {
             sourceKind: .microphone,
             audioFilename: nil,
             audio: nil,
-            utterances: utts
+            utterances: utts,
+            speakerNames: names
         )
     }
 
@@ -882,6 +895,7 @@ final class RecordingController {
         stopPlayback()
         utterances = document.utterances
         preReevaluationSnapshots.removeAll()
+        speakerNameOverrides = document.speakerNames ?? [:]
         // Same-length imports would otherwise hit the filter memo;
         // bump defensively so the cache rebuilds for any load.
         utterancesVersion &+= 1
@@ -1301,6 +1315,34 @@ final class RecordingController {
         utterancesVersion &+= 1
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// Set a custom display name for `stored` (e.g. `S01`). Pass an
+    /// empty / whitespace-only `name` to clear the override (revert
+    /// to the default `S01` / `M01` formatting). Bumps
+    /// `utterancesVersion` so the ContentView filter memo
+    /// invalidates and every row re-renders with the new label.
+    func renameSpeaker(stored: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            guard speakerNameOverrides.removeValue(forKey: stored) != nil else { return }
+            AppLog.app.info(
+                "speaker rename: cleared override for \(stored, privacy: .public)"
+            )
+        } else {
+            if speakerNameOverrides[stored] == trimmed { return }
+            speakerNameOverrides[stored] = trimmed
+            AppLog.app.info(
+                "speaker rename: \(stored, privacy: .public) → \(trimmed, privacy: .public)"
+            )
+        }
+        utterancesVersion &+= 1
+    }
+
+    /// Custom display name for `stored` if the user has renamed it,
+    /// nil otherwise. Convenience for the view layer.
+    func speakerDisplayName(forStored stored: String) -> String? {
+        speakerNameOverrides[stored]
     }
 
     /// Restore the utterance to its pre-first-reeval state. Invoked

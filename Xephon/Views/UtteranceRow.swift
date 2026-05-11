@@ -57,6 +57,15 @@ struct UtteranceRow: View {
     let reevaluate: ReevaluateAvailability
     let onReevaluate: () -> Void
     let onRevert: () -> Void
+    /// Custom name for this row's speaker if the user renamed it,
+    /// nil otherwise. Drives the chip display.
+    let speakerCustomName: String?
+    /// Fires when the user long-presses the speaker chip.
+    /// ContentView's binding raises a TextField alert pre-filled
+    /// with the current name; confirming there calls
+    /// `recorder.renameSpeaker`. Clearing the field + Save reverts
+    /// to the default `S01`/`M01` label.
+    let onRenameSpeaker: () -> Void
 
     /// Set by a 3-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
@@ -110,9 +119,29 @@ struct UtteranceRow: View {
                 Text("#\(number)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Text(formatSpeakerLabel(utterance.speakerID, multiSpeaker: isMultiSpeaker))
+                // Speaker chip — half-second long-press on the chip
+                // text raises the Rename alert. `.contextMenu` was
+                // the earlier approach but SwiftUI escalates a
+                // context menu attached to a leaf inside a List row
+                // to the row's full bounds, so long-pressing the
+                // re-evaluate button (3 s for revert) tripped the
+                // chip's menu at the 0.5 s threshold and never
+                // reached 3 s. An explicit `.onLongPressGesture` on
+                // just the Text stays inside the chip's hit area,
+                // so the re-evaluate button's long-press is
+                // untouched. Reset-name is folded into the alert
+                // (clear the TextField + Save) rather than a
+                // separate affordance.
+                Text(formatSpeakerLabel(
+                    utterance.speakerID,
+                    multiSpeaker: isMultiSpeaker,
+                    customName: speakerCustomName
+                ))
                     .font(.caption.bold())
                     .foregroundStyle(speakerTint(for: utterance.speakerID))
+                    .onLongPressGesture(minimumDuration: 0.5) {
+                        onRenameSpeaker()
+                    }
                 if utterance.speechBoost == true {
                     Label("Boost", systemImage: "waveform.badge.plus")
                         .labelStyle(.titleAndIcon)

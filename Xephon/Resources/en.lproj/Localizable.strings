@@ -50,3 +50,8 @@
 "summary.dispersion" = "± %.2f";
 "statistics.header" = "Statistics";
 "statistics.empty" = "No labels yet.";
+"speaker.rename.title" = "Rename Speaker";
+"speaker.rename.placeholder" = "Speaker name";
+"speaker.rename.message" = "Pick a custom name for speaker %@. Leave blank to revert to the default.";
+"speaker.rename.save" = "Save";
+"speaker.rename.cancel" = "Cancel";
