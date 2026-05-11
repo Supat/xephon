@@ -1095,13 +1095,18 @@ struct ContentView: View {
             }
             .listStyle(.plain)
             // Any tap on the list — row, dead-space between rows,
-            // header gap, anywhere — should yield keyboard focus
-            // away from the search field. `simultaneousGesture`
-            // runs alongside the List's own tap-to-select so this
-            // doesn't interfere with row selection or row taps.
+            // header gap, anywhere — clears the previously selected
+            // utterance's focus highlight and dismisses any
+            // keyboard focus on the search field. When the tap
+            // lands on a row, the List's own tap-to-select handler
+            // runs after this gesture and writes the row's id back
+            // into `selectedUtteranceID`, so legitimate row
+            // selection still works; only "stale" focus that the
+            // user has moved past gets cleared.
             .simultaneousGesture(
                 TapGesture().onEnded {
                     if searchFieldFocused { searchFieldFocused = false }
+                    if selectedUtteranceID != nil { selectedUtteranceID = nil }
                 }
             )
             // Keep the selected row scrolled into view when the user
