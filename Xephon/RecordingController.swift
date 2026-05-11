@@ -1115,6 +1115,18 @@ final class RecordingController {
             // Grow back-padding in steps and rerun offline ASR until
             // the transcript contains a sentence terminator (or the
             // pad cap is reached, or the file is exhausted).
+            //
+            // No front pad on this path: when the original is shorter
+            // than 1 s the streaming pass usually finalized late
+            // (volatile-stabilization caught it mid-sentence), so
+            // `utterance.start` already sits well inside the sentence
+            // rather than at its true beginning. Adding 500 ms of
+            // lead-in then drags in the *previous* sentence's tail,
+            // and that tail's own terminator confuses the
+            // `segmentsContainFullSentence` check — the loop sees a
+            // terminator on iteration 1 from the prior sentence and
+            // commits to a result that doesn't actually cover the
+            // utterance we wanted to refresh.
             AppLog.app.info(
                 "reevaluate: short utterance (\(originalDuration, privacy: .public)s) — entering back-pad retry loop"
             )
@@ -1128,7 +1140,7 @@ final class RecordingController {
                 let chunk = try await Task.detached(priority: .userInitiated) {
                     try Self.readAudioChunkForReevaluation(
                         fileURL: url,
-                        start: extendedStart,
+                        start: originalStart,
                         end: currentEnd
                     )
                 }.value
