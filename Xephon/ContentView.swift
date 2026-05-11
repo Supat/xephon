@@ -86,6 +86,15 @@ struct ContentView: View {
     /// Cancelled and replaced on every utterance-count change so a
     /// fast-arriving stream of utterances doesn't spawn unbounded work.
     @State private var searchCacheTask: Task<Void, Never>?
+    /// Memoization layer for `filteredIndexedUtterances` and
+    /// `displayedSummary`. SwiftUI re-evaluates the view body on
+    /// every observed-state change (playback state, pipeline metrics,
+    /// scroll position…), and naïvely those computed properties
+    /// re-ran the full O(N) filter + summary fold per render. Stored
+    /// as a `final class` so we can mutate it from inside the getters
+    /// without triggering a SwiftUI re-render — `@State` retains it
+    /// across renders but doesn't observe its internal properties.
+    @State private var filterMemo = FilterMemo()
 
     var body: some View {
         if !recorder.modelsReady {
@@ -755,11 +764,8 @@ struct ContentView: View {
     /// hundred utterances); SwiftUI's view-diffing means it only
     /// runs when the filter or utterance state actually changes.
     private var displayedSummary: ConversationSummary {
-        var summary = ConversationSummary()
-        for (_, u) in filteredIndexedUtterances {
-            summary.update(with: u)
-        }
-        return summary
+        refreshFilterMemoIfNeeded()
+        return filterMemo.summary
     }
 
     /// Distinct top labels seen so far this session, used to populate
@@ -790,38 +796,61 @@ struct ContentView: View {
     /// filtered (a row labeled #15 always points at the 15th utterance
     /// of the recording).
     private var filteredIndexedUtterances: [(idx: Int, u: UtteranceEstimate)] {
+        refreshFilterMemoIfNeeded()
+        return filterMemo.results
+    }
+
+    /// Recompute the filter + summary memo when any input dependency
+    /// has changed since the last render. No-op when nothing changed
+    /// — the cached `results` and `summary` are returned as-is. The
+    /// dependency key intentionally only fingerprints inputs that
+    /// affect the filter outcome; render-only state (selection,
+    /// playback, scroll) doesn't invalidate the memo.
+    private func refreshFilterMemoIfNeeded() {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Normalize the query once via JapaneseSearchNormalizer so a
-        // search for "しぶや" / "シブヤ" / "shibuya" / "渋谷" all
-        // resolve to the same comparable form. Normalized form is
-        // empty only when the query is empty — in which case the
-        // search filter is skipped entirely.
-        let normalizedQuery = trimmed.isEmpty
-            ? ""
-            : JapaneseSearchNormalizer.normalize(trimmed)
-        return recorder.utterances.enumerated().compactMap {
-            (idx, u) -> (idx: Int, u: UtteranceEstimate)? in
-            if let filterLabel = selectedLabelFilter,
-               u.fusedTopLabel != filterLabel {
-                return nil
-            }
-            if let filterSpeaker = selectedSpeakerFilter,
-               u.speakerID != filterSpeaker {
-                return nil
-            }
-            if !normalizedQuery.isEmpty {
-                // Fall back to inline normalization when the cache
-                // hasn't caught up yet (a brand-new utterance arrived
-                // mid-search). The async refresher will populate it
-                // momentarily; the per-row inline call is rare.
-                let normalizedText = normalizedTranscriptCache[u.id]
-                    ?? JapaneseSearchNormalizer.normalize(u.transcript)
-                if !normalizedText.contains(normalizedQuery) {
+        let key = FilterDepsKey(
+            normalizedQuery: trimmed.isEmpty
+                ? ""
+                : JapaneseSearchNormalizer.normalize(trimmed),
+            labelFilter: selectedLabelFilter,
+            speakerFilter: selectedSpeakerFilter,
+            utteranceCount: recorder.utterances.count
+        )
+        if filterMemo.lastKey == key { return }
+
+        let results: [(idx: Int, u: UtteranceEstimate)] = recorder
+            .utterances
+            .enumerated()
+            .compactMap { idx, u in
+                if let filterLabel = key.labelFilter,
+                   u.fusedTopLabel != filterLabel {
                     return nil
                 }
+                if let filterSpeaker = key.speakerFilter,
+                   u.speakerID != filterSpeaker {
+                    return nil
+                }
+                if !key.normalizedQuery.isEmpty {
+                    // Fall back to inline normalization when the
+                    // async cache hasn't caught up yet. The async
+                    // refresher will populate it momentarily; the
+                    // per-row inline call is rare.
+                    let normalizedText = normalizedTranscriptCache[u.id]
+                        ?? JapaneseSearchNormalizer.normalize(u.transcript)
+                    if !normalizedText.contains(key.normalizedQuery) {
+                        return nil
+                    }
+                }
+                return (idx, u)
             }
-            return (idx, u)
+
+        var summary = ConversationSummary()
+        for (_, u) in results {
+            summary.update(with: u)
         }
+        filterMemo.lastKey = key
+        filterMemo.results = results
+        filterMemo.summary = summary
     }
 
     /// Bring `normalizedTranscriptCache` up to date with the recorder's
@@ -1147,6 +1176,33 @@ struct ContentView: View {
         }
     }
 
+}
+
+/// Fingerprint of the inputs that affect `filteredIndexedUtterances`
+/// and `displayedSummary`. `Equatable` so the memo can early-exit on
+/// no-change renders.
+private struct FilterDepsKey: Equatable {
+    /// Already-normalized search query, so we don't re-tokenize the
+    /// query string on every change-check.
+    let normalizedQuery: String
+    let labelFilter: String?
+    let speakerFilter: String?
+    /// Utterance count is sufficient identity for this app — the
+    /// list is append-only within a session, and full replacements
+    /// (session import, recorder reset) always change the count.
+    let utteranceCount: Int
+}
+
+/// Reference-typed memo for the filter + summary derivation in
+/// ContentView. Held via `@State` so it survives view-body
+/// re-evaluations; mutating its stored properties does NOT
+/// re-trigger the body (which is what we want — the memo is read
+/// during the current render pass).
+@MainActor
+private final class FilterMemo {
+    var lastKey: FilterDepsKey?
+    var results: [(idx: Int, u: UtteranceEstimate)] = []
+    var summary: ConversationSummary = ConversationSummary()
 }
 
 

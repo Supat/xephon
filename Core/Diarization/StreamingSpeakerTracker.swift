@@ -36,11 +36,43 @@ public actor StreamingSpeakerTracker {
 
     /// Append every diarize call's verdict as an independent
     /// observation. No remapping — incoming IDs are trusted as
-    /// session-stable. Sort and cap.
+    /// session-stable.
+    ///
+    /// Merges in O(N + M) instead of sorting the union in O((N+M)
+    /// log(N+M)). `cumulative` stays sorted by `start` as an
+    /// invariant; `incoming` is sorted defensively (it's small —
+    /// usually a handful of segments per FluidAudio call — so an
+    /// in-place sort there is cheap) and then merged with
+    /// cumulative via a two-pointer linear walk. On the continuous-
+    /// diarization stride (~every 2 s during recording) this cuts
+    /// the sustained sort cost out of the realtime path.
     public func ingest(_ incoming: [DiarizedSegment]) -> [DiarizedSegment] {
         guard !incoming.isEmpty else { return [] }
-        cumulative.append(contentsOf: incoming)
-        cumulative.sort { $0.start < $1.start }
+
+        let sortedIncoming: [DiarizedSegment] = incoming
+            .sorted { $0.start < $1.start }
+
+        var merged: [DiarizedSegment] = []
+        merged.reserveCapacity(cumulative.count + sortedIncoming.count)
+        var i = 0
+        var j = 0
+        while i < cumulative.count && j < sortedIncoming.count {
+            if cumulative[i].start <= sortedIncoming[j].start {
+                merged.append(cumulative[i])
+                i += 1
+            } else {
+                merged.append(sortedIncoming[j])
+                j += 1
+            }
+        }
+        if i < cumulative.count {
+            merged.append(contentsOf: cumulative[i...])
+        }
+        if j < sortedIncoming.count {
+            merged.append(contentsOf: sortedIncoming[j...])
+        }
+        cumulative = merged
+
         if cumulative.count > Self.cumulativeCap {
             cumulative.removeFirst(cumulative.count - Self.cumulativeCap)
         }

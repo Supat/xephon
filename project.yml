@@ -71,20 +71,20 @@ targets:
         # Required entitlement for ActivityKit Live Activities. Without
         # this key the system silently rejects `Activity.request`.
         NSSupportsLiveActivities: true
-        # Declaring CFBundleDocumentTypes implies the app can open
-        # files. The OS warns at link time without an explicit
-        # answer to "in place, or copy?". We open by reading the
-        # file's bytes once and decoding into in-memory state plus a
-        # sandboxed temp copy of the embedded audio — never editing
-        # the original — so in-place semantics are fine here.
-        LSSupportsOpeningDocumentsInPlace: true
-        # Register the `.xph` Xephon session bundle as an owned
-        # document type. Doing this in Info.plist (rather than only
-        # in code via `UTType(filenameExtension:)`) makes the system
-        # file picker grey out non-`.xph` files when the Import
-        # Session importer is opened — the picker checks
-        # `allowedContentTypes` against the file's declared UTType,
-        # which only resolves cleanly for registered types.
+        # Register the `.xph` Xephon session bundle as an exported
+        # UTType so the in-app file picker can grey out non-`.xph`
+        # files when Import Session is invoked.
+        #
+        # We deliberately do NOT declare `CFBundleDocumentTypes`. As
+        # soon as that key is present, iOS/macOS treats the app as
+        # document-based and replaces our custom File menu items
+        # (Open Audio, Import Session, Save Session, Export to JSON)
+        # with the system's "Open / Open Recent" duo, suppressing
+        # the SwiftUI `.commands { CommandGroup(replacing: .newItem)
+        # … }` block. We don't need the document-app integration —
+        # `.xph` files are only opened from within Xephon via our
+        # own picker, so the exported UTType alone is enough for
+        # filename-extension filtering.
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.supatsaetia.xephon.session
             UTTypeDescription: Xephon Session
@@ -95,12 +95,6 @@ targets:
                 - xph
               public.mime-type:
                 - application/x-xephon-session
-        CFBundleDocumentTypes:
-          - CFBundleTypeName: Xephon Session
-            CFBundleTypeRole: Editor
-            LSHandlerRank: Owner
-            LSItemContentTypes:
-              - com.supatsaetia.xephon.session
     settings:
       base:
         PRODUCT_NAME: Xephon
