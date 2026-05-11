@@ -1014,14 +1014,15 @@ final class RecordingController {
     // MARK: - Per-utterance re-evaluate
 
     /// Padding applied to the original utterance boundary on each side
-    /// before re-feeding the audio to offline ASR. The streaming pass's
-    /// finalizer cuts segments at the volatile-stabilization boundary,
-    /// which often clips the first phoneme of an utterance or the
-    /// trailing tail of sentence-final particles. 1 s leaves room to
-    /// recover those plus a beat of prosodic context for SER, without
-    /// dragging in neighbour-speaker audio in typical conversational
-    /// pacing.
-    private static let reevaluationPaddingSec: TimeInterval = 1.0
+    /// before re-feeding the audio to offline ASR. The streaming
+    /// pass's finalizer cuts segments at the volatile-stabilization
+    /// boundary, which often clips the first phoneme of an utterance
+    /// or the trailing tail of sentence-final particles. 500 ms is
+    /// enough breathing room to recover those without dragging in
+    /// neighbour-speaker audio — the sentence-aware trim in
+    /// `AnalysisPipeline.reevaluate` already drops anything past the
+    /// last terminator, so we don't need wider context.
+    private static let reevaluationPaddingSec: TimeInterval = 0.5
 
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
     /// on each side) to offline ASR, then run SER + fusion on the new

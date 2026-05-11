@@ -274,35 +274,36 @@ final class AnalysisPipeline: Sendable {
         guard !combinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
-        // Keep only the first complete sentence. The 1 s pad on each
-        // side of the original utterance often picks up the leading
-        // phoneme of the next sentence (or the tail of the previous
-        // one), and SpeechAnalyzer happily transcribes whatever's
-        // there. The caller only wanted *this* utterance refreshed,
-        // not its neighbours.
+        // Keep every full sentence the offline ASR produced; drop any
+        // trailing fragment that didn't terminate. The 1 s pad on
+        // each side of the original utterance often picks up the
+        // leading phoneme of the next sentence (or the tail of the
+        // previous one), and SpeechAnalyzer happily transcribes
+        // whatever's there — but those fragments rarely punctuate
+        // cleanly. Trimming at the LAST terminator gets us every
+        // committed sentence while pruning the unfinished tail.
         //
         // When the offline ASR emitted per-token timing we trim the
-        // audio chunk in lockstep so acoustic SER sees only the first
-        // sentence's prosody — the front pad's leading phoneme of a
-        // neighbour or the back pad's trailing one no longer colour
-        // the V/A/D. When tokens are missing (e.g. a fallback path
-        // that didn't capture them), text trims but audio passes
-        // through unchanged.
+        // audio chunk in lockstep so acoustic SER sees only the
+        // committed sentences' prosody — the unfinished tail no
+        // longer colours the V/A/D. When tokens are missing (e.g. a
+        // fallback path that didn't capture them), text trims but
+        // audio passes through unchanged.
         let allTokens = segments.flatMap(\.tokens)
         let trimmedText: String
         let trimmedAudio: AudioChunk
-        if let endTokenIdx = Self.firstSentenceEndTokenIndex(in: allTokens) {
+        if let endTokenIdx = Self.lastSentenceEndTokenIndex(in: allTokens) {
             let chosen = Array(allTokens[0...endTokenIdx])
             trimmedText = chosen.map(\.text).joined()
             trimmedAudio = Self.sliceAudioFromStart(
                 audio,
                 upToBufferLocalEnd: chosen.last?.end ?? 0
             )
-        } else if let terminatorPrefix = Self.firstFullSentence(in: combinedText),
-                  terminatorPrefix.count < combinedText.count {
-            // No tokens, but text-level terminator found. Trim text,
-            // keep audio.
-            trimmedText = terminatorPrefix
+        } else if let terminatedPrefix = Self.allFullSentences(in: combinedText),
+                  terminatedPrefix.count < combinedText.count {
+            // No tokens, but text-level terminator(s) found. Trim
+            // text at the last terminator, keep audio.
+            trimmedText = terminatedPrefix
             trimmedAudio = audio
         } else {
             // No terminator at all (single-clause utterance or
@@ -332,27 +333,32 @@ final class AnalysisPipeline: Sendable {
         )
     }
 
-    /// Index of the first token whose text ends with a sentence-end
-    /// character. Returns nil when no token has one (so the caller
-    /// can fall back to a text-only or no-op trim).
-    private static func firstSentenceEndTokenIndex(in tokens: [ASRSegment.Token]) -> Int? {
-        for (i, token) in tokens.enumerated() {
-            if let last = token.text.last, sentenceEndChars.contains(last) {
+    /// Index of the LAST token whose text ends with a sentence-end
+    /// character — the cut point for "keep every full sentence,
+    /// drop the trailing fragment". Returns nil when no token has
+    /// one (so the caller can fall back to a text-only or no-op
+    /// trim).
+    private static func lastSentenceEndTokenIndex(in tokens: [ASRSegment.Token]) -> Int? {
+        for i in stride(from: tokens.count - 1, through: 0, by: -1) {
+            if let last = tokens[i].text.last, sentenceEndChars.contains(last) {
                 return i
             }
         }
         return nil
     }
 
-    /// Returns the prefix of `text` up to and including the first
-    /// sentence-ending character (`sentenceEndChars`), or nil when no
-    /// terminator appears — letting the caller distinguish "trimmed"
-    /// from "single-clause keep-everything".
-    private static func firstFullSentence(in text: String) -> String? {
+    /// Returns the prefix of `text` up to and including the LAST
+    /// sentence-ending character — i.e. every completed sentence
+    /// concatenated, with any unterminated trailing fragment cut.
+    /// Returns nil when no terminator appears so the caller can
+    /// distinguish "trimmed" from "single-clause keep-everything".
+    private static func allFullSentences(in text: String) -> String? {
+        var lastTerminatorIndex: String.Index?
         for index in text.indices where sentenceEndChars.contains(text[index]) {
-            return String(text[...index])
+            lastTerminatorIndex = index
         }
-        return nil
+        guard let last = lastTerminatorIndex else { return nil }
+        return String(text[...last])
     }
 
     /// Slice an audio chunk from sample 0 up to `upToBufferLocalEnd`
