@@ -42,6 +42,11 @@ struct ContentView: View {
     /// true) and Esc (sets it false). `@FocusState` is the only
     /// mechanism that programmatically moves focus into a TextField.
     @FocusState private var searchFieldFocused: Bool
+    /// IDs of utterances whose detail panel is expanded. Toggled by
+    /// long-press on the row or by pressing Space while the row is
+    /// the selected list item. Kept here (not on the row) so a
+    /// rebuild of the row doesn't drop the expansion state.
+    @State private var expandedUtteranceIDs: Set<UUID> = []
 
     var body: some View {
         if !recorder.modelsReady {
@@ -713,6 +718,14 @@ struct ContentView: View {
     /// of the recording).
     private var filteredIndexedUtterances: [(idx: Int, u: UtteranceEstimate)] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalize the query once via JapaneseSearchNormalizer so a
+        // search for "しぶや" / "シブヤ" / "shibuya" / "渋谷" all
+        // resolve to the same comparable form. Normalized form is
+        // empty only when the query is empty — in which case the
+        // search filter is skipped entirely.
+        let normalizedQuery = trimmed.isEmpty
+            ? ""
+            : JapaneseSearchNormalizer.normalize(trimmed)
         return recorder.utterances.enumerated().compactMap {
             (idx, u) -> (idx: Int, u: UtteranceEstimate)? in
             if let filterLabel = selectedLabelFilter,
@@ -723,11 +736,23 @@ struct ContentView: View {
                u.speakerID != filterSpeaker {
                 return nil
             }
-            if !trimmed.isEmpty,
-               !u.transcript.localizedCaseInsensitiveContains(trimmed) {
-                return nil
+            if !normalizedQuery.isEmpty {
+                let normalizedText = JapaneseSearchNormalizer.normalize(u.transcript)
+                if !normalizedText.contains(normalizedQuery) {
+                    return nil
+                }
             }
             return (idx, u)
+        }
+    }
+
+    /// Flip the per-utterance expansion state. Invoked by long-press
+    /// on a row and by Space-key while a row is the list selection.
+    private func toggleExpansion(_ id: UUID) {
+        if expandedUtteranceIDs.contains(id) {
+            expandedUtteranceIDs.remove(id)
+        } else {
+            expandedUtteranceIDs.insert(id)
         }
     }
 
@@ -755,7 +780,9 @@ struct ContentView: View {
                 UtteranceRow(
                     number: item.idx + 1,
                     utterance: item.u,
-                    isMultiSpeaker: distinctSpeakerCount > 1
+                    isMultiSpeaker: distinctSpeakerCount > 1,
+                    isExpanded: expandedUtteranceIDs.contains(item.u.id),
+                    onToggleExpanded: { toggleExpansion(item.u.id) }
                 )
                 .id(item.u.id)
                 .onAppear { visibleUtteranceIDs.insert(item.u.id) }
@@ -764,6 +791,14 @@ struct ContentView: View {
                 // `selectedUtteranceID` binding when it changes selection
                 // (via tap, ↑/↓ arrow, or Home/End).
                 .tag(item.u.id)
+                // Replace the default pale-tint selection highlight with
+                // a darker accent-tinted background. `.listRowBackground`
+                // overrides the system selection paint on `.plain` lists.
+                .listRowBackground(
+                    selectedUtteranceID == item.u.id
+                        ? Color.accentColor.opacity(0.28)
+                        : Color.clear
+                )
             }
             .listStyle(.plain)
             // Keep the selected row scrolled into view when the user
@@ -791,6 +826,15 @@ struct ContentView: View {
                     return .handled
                 }
                 return .ignored
+            }
+            // Space toggles the expanded detail panel on the currently
+            // selected row. Long-press on a row does the same thing.
+            // Ignored when nothing is selected so the keystroke can fall
+            // through to other handlers.
+            .onKeyPress(.space) {
+                guard let id = selectedUtteranceID else { return .ignored }
+                toggleExpansion(id)
+                return .handled
             }
             // Observe the FILTERED last so adding an utterance that
             // doesn't match the active filter doesn't auto-scroll, and

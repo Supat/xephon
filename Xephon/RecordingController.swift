@@ -61,8 +61,8 @@ final class RecordingController {
     /// the pipeline visualization so the developer can see the buffer's
     /// peak/steady-state footprint.
     var bufferedSamples: Int { capturedAudio.count }
-    /// Distinct speakers detected in the most recently-diarized
-    /// segment chunk (i.e. the last `splitOnSpeakerChange` call's
+    /// Distinct speakers detected across the most recent segment's
+    /// sentence splits (i.e. the last `splitForProcessing` call's
     /// output). Surfaces in the pipeline visualization's Diarizer row
     /// as a per-chunk indicator, distinct from a session-wide
     /// cumulative — the row's job is to show what the diarizer just
@@ -110,8 +110,8 @@ final class RecordingController {
     /// Sliding-window continuous diarization. Fires every
     /// `continuousDiarizeStrideSec` while recording and feeds the
     /// last `continuousDiarizeWindowSec` of audio to the pipeline's
-    /// speaker timeline. The timeline is what `splitOnSpeakerChange`
-    /// queries per token — running it continuously rather than
+    /// speaker timeline. The timeline is what `dominantSpeaker`
+    /// queries per sentence — running it continuously rather than
     /// per-segment gives sharper speaker boundaries on fast-pace
     /// turn-takes (the per-segment 60 s context blurs them).
     private var continuousDiarizeTask: Task<Void, Never>?
@@ -385,15 +385,15 @@ final class RecordingController {
 
             // Continuous diarization: every stride, snapshot the last
             // window of audio and feed it to the speaker timeline. The
-            // timeline is what splitOnSpeakerChange queries — keeping
-            // it fresh means per-token speaker assignment is based on
-            // a recent ~10 s window rather than a 60 s lump that
-            // averages embeddings across many turns.
+            // timeline is what dominantSpeaker queries per sentence —
+            // keeping it fresh means assignment is based on a recent
+            // ~10 s window rather than a 60 s lump that averages
+            // embeddings across many turns.
             //
-            // First tick waits one stride, so a segment finalizing in
-            // the first ~2 s falls back to per-segment diarize (handled
-            // inside splitOnSpeakerChange). Subsequent ticks get
-            // increasingly accurate timeline coverage.
+            // First tick waits one stride, so a sentence finalizing in
+            // the first ~2 s falls back to the supplied default ID via
+            // dominantSpeaker's empty-timeline path. Subsequent ticks
+            // get increasingly accurate coverage.
             //
             // Awaits `ensurePipeline` first because the diarizer lives
             // inside the pipeline. Skipped when the pipeline failed to
@@ -472,32 +472,21 @@ final class RecordingController {
                         // Now the snapshot is at most ~60 s × 16 kHz × 4 B
                         // = ~3.8 MB regardless of how far ASR is behind.
                         self.trimProcessedAudio(below: segment.end)
-                        let diarContext = self.snapshotForDiarization()
                         self.beginSegmentInflight()
                         group.addTask { [weak self] in
-                            // Diarize once, then split the segment at
-                            // speaker-change token boundaries. Each sub
-                            // gets its own SER+fusion pass with the
-                            // pre-resolved speaker — passing
-                            // `diarizationContext: nil` to processSegment
-                            // skips re-running the diarizer per sub.
-                            // Single-speaker segments come back as a
-                            // one-element array, so the loop is uniform.
-                            // Combined pipeline: sentence-level split
-                            // (pause + punctuation, independent of
-                            // speakers), then speaker-change split per
-                            // resulting sentence. See
-                            // `AnalysisPipeline.splitForProcessing`.
+                            // Sentence-level split (pause + punctuation),
+                            // then per-sentence speaker assignment from the
+                            // cumulative diarizer timeline. Each split gets
+                            // its own SER+fusion pass with the pre-resolved
+                            // speaker. Single-sentence segments come back as
+                            // a one-element array, so the loop is uniform.
+                            // See `AnalysisPipeline.splitForProcessing`.
                             let splits = await pipeline.splitForProcessing(
                                 asr: segment,
-                                segmentAudio: segmentBuffer,
-                                diarizationContext: diarContext
+                                segmentAudio: segmentBuffer
                             )
-                            // Distinct speakers in this chunk's
-                            // diarization output → Diarizer pipeline row.
-                            // Read off the splits' speaker IDs since they
-                            // already reflect VAD-snap + boundary
-                            // re-diarize refinements.
+                            // Distinct speakers across the splits → Diarizer
+                            // pipeline row metric.
                             await self?.recordChunkSpeakerCount(
                                 Set(splits.map(\.speaker)).count
                             )
@@ -507,7 +496,6 @@ final class RecordingController {
                                     let (estimate, metrics) = try await pipeline.processSegment(
                                         asr: split.asr,
                                         segmentAudio: split.audio,
-                                        diarizationContext: nil,
                                         fallbackSpeakerID: split.speaker
                                     )
                                     await self?.applySegmentResult(estimate: estimate, metrics: metrics)
@@ -732,8 +720,8 @@ final class RecordingController {
 
     /// Update the per-chunk speaker count surfaced on the Diarizer
     /// pipeline row. Called from the analysisTask immediately after
-    /// `splitOnSpeakerChange` returns, so the row reflects the
-    /// just-diarized chunk rather than a running session total.
+    /// `splitForProcessing` returns, so the row reflects the
+    /// just-processed chunk rather than a running session total.
     fileprivate func recordChunkSpeakerCount(_ count: Int) {
         lastChunkSpeakerCount = count
     }
@@ -774,10 +762,6 @@ final class RecordingController {
 
     private func trimProcessedAudio(below boundary: TimeInterval) {
         capturedAudio.trimProcessed(below: boundary)
-    }
-
-    private func snapshotForDiarization() -> AudioChunk {
-        capturedAudio.snapshotForDiarization()
     }
 
     // MARK: - Level meter helpers

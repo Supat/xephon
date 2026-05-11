@@ -19,10 +19,10 @@ import XephonLogging
 ///    embedding quality); a majority across the overlapping
 ///    observations is more stable.
 ///
-/// 2. **Cross-call timeline queries.** `splitOnSpeakerChange` reads a
-///    single snapshot to assign every token in an ASR segment, then
-///    reasons about boundaries on the resulting assignments. Doing
-///    that requires a unified timeline rather than per-call results.
+/// 2. **Cross-call timeline queries.** `dominantSpeaker` reads a
+///    single snapshot and votes per-instant across the sentence's
+///    range. Doing that requires a unified timeline rather than
+///    per-call results.
 public actor StreamingSpeakerTracker {
     private var cumulative: [DiarizedSegment] = []
 
