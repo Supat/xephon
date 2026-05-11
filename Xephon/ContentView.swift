@@ -1094,6 +1094,16 @@ struct ContentView: View {
                 )
             }
             .listStyle(.plain)
+            // Any tap on the list — row, dead-space between rows,
+            // header gap, anywhere — should yield keyboard focus
+            // away from the search field. `simultaneousGesture`
+            // runs alongside the List's own tap-to-select so this
+            // doesn't interfere with row selection or row taps.
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    if searchFieldFocused { searchFieldFocused = false }
+                }
+            )
             // Keep the selected row scrolled into view when the user
             // arrow-keys past the visible window. The system handles this
             // for tap-driven selection automatically; for keyboard-driven
@@ -1167,6 +1177,15 @@ struct ContentView: View {
                     hasUnreadUtterance = false
                     selectedUtteranceID = nil
                     normalizedTranscriptCache.removeAll(keepingCapacity: true)
+                    // New session (mic record or file analysis) just
+                    // cleared the utterance list — reset the filter
+                    // controls so the empty list isn't shown through
+                    // a stale filter the user no longer remembers
+                    // setting. Both filter chips and the search field
+                    // return to "All" / blank.
+                    searchText = ""
+                    selectedLabelFilter = nil
+                    selectedSpeakerFilter = nil
                 }
             }
             .onChange(of: recorder.utterances.count, initial: true) { _, _ in
