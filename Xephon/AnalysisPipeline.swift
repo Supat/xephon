@@ -86,11 +86,128 @@ final class AnalysisPipeline: Sendable {
     /// The audio's `timestamp` is the absolute audio-time origin of
     /// the window, so the tracker's history stays in the same time
     /// frame as ASRSegment / token timings.
+    /// Snapshot the diarizer's speaker database for persistence in
+    /// the session bundle. Returns nil when diarization isn't
+    /// configured or there's nothing to save.
+    func exportSpeakerDatabase() async -> Data? {
+        await diarizer?.exportSpeakerDatabase()
+    }
+
+    /// Restore a previously-saved speaker database. No-op when the
+    /// diarizer isn't configured. Throws on malformed blobs;
+    /// callers handle/log.
+    func importSpeakerDatabase(_ data: Data) async throws {
+        try await diarizer?.importSpeakerDatabase(data)
+    }
+
     func ingestDiarizationWindow(_ audio: AudioChunk) async {
         guard diarizer != nil, !audio.samples.isEmpty else { return }
         let diarized = await runDiarization(audio)
         guard !diarized.isEmpty else { return }
         _ = await speakerTracker.ingest(diarized)
+    }
+
+    /// Run the diarizer on `audio` in isolation and resolve a
+    /// speaker for each requested sub-range from **only the fresh
+    /// segments** — i.e. without consulting the cumulative timeline
+    /// and without mutating it. Used by the hand-edit path so the
+    /// re-diarized verdict actually drives the resulting speaker
+    /// assignment instead of being drowned out by the ~5 overlapping
+    /// observations the continuous-diarize task already deposited
+    /// for that window during the original streaming pass.
+    ///
+    /// Sub-ranges are in absolute audio time. Each range's speaker
+    /// is the duration-weighted mode of fresh segments that overlap
+    /// it. When the fresh diarization is empty (e.g. the window is
+    /// shorter than Sortformer's effective minimum, or the model
+    /// found no speech) or no fresh segment overlaps the range, that
+    /// entry falls back to `fallback`.
+    ///
+    /// The cumulative timeline is intentionally untouched here. A
+    /// snapshot-revert via `revertReevaluation` therefore restores
+    /// the row to its pre-hand-edit state without needing to also
+    /// roll back the global speaker timeline.
+    func resolveSpeakersForRanges(
+        audio: AudioChunk,
+        ranges: [(start: TimeInterval, end: TimeInterval)],
+        fallback: String
+    ) async -> [String] {
+        guard !ranges.isEmpty else { return [] }
+        let durationSec = Double(audio.samples.count) / audio.sampleRate
+        AppLog.diarization.info(
+            "resolveSpeakersForRanges: input audio=\(audio.samples.count, privacy: .public) samples (\(durationSec, privacy: .public)s) timestamp=\(audio.timestamp, privacy: .public)s ranges=\(ranges.count, privacy: .public) fallback=\(fallback, privacy: .public)"
+        )
+        let fresh = await runDiarization(audio)
+        AppLog.diarization.info(
+            "resolveSpeakersForRanges: fresh segments count=\(fresh.count, privacy: .public)"
+        )
+        for (i, seg) in fresh.enumerated() {
+            AppLog.diarization.info(
+                "  seg[\(i, privacy: .public)] speaker=\(seg.speakerID, privacy: .public) start=\(seg.start, privacy: .public)s end=\(seg.end, privacy: .public)s"
+            )
+        }
+        guard !fresh.isEmpty else {
+            AppLog.diarization.warning(
+                "resolveSpeakersForRanges: empty fresh diarization → falling back to \(fallback, privacy: .public) for all \(ranges.count, privacy: .public) ranges"
+            )
+            return Array(repeating: fallback, count: ranges.count)
+        }
+        let resolved = ranges.map { range in
+            Self.dominantSpeakerInSegments(
+                fresh,
+                from: range.start,
+                to: range.end,
+                fallback: fallback
+            )
+        }
+        for (i, range) in ranges.enumerated() {
+            AppLog.diarization.info(
+                "  range[\(i, privacy: .public)] [\(range.start, privacy: .public)..\(range.end, privacy: .public)] → speaker=\(resolved[i], privacy: .public)"
+            )
+        }
+        return resolved
+    }
+
+    /// Pure helper: per-instant majority vote over `segments` for the
+    /// `[start, end]` window, with a nearest-midpoint fallback when
+    /// nothing overlaps. Factored out of `dominantSpeaker` so the
+    /// hand-edit path can apply the same voting rule to a *fresh*
+    /// segment list without touching `speakerTracker`.
+    static func dominantSpeakerInSegments(
+        _ segments: [DiarizedSegment],
+        from start: TimeInterval,
+        to end: TimeInterval,
+        fallback: String
+    ) -> String {
+        guard !segments.isEmpty, end > start else { return fallback }
+        let sorted = segments.sorted { $0.start < $1.start }
+
+        let dt: TimeInterval = 0.05
+        let sampleCount = min(256, max(8, Int(((end - start) / dt).rounded(.up))))
+        let step = (end - start) / TimeInterval(sampleCount)
+
+        var votes: [String: Int] = [:]
+        var upperBound = 0
+        for i in 0..<sampleCount {
+            let t = start + (TimeInterval(i) + 0.5) * step
+            while upperBound < sorted.count && sorted[upperBound].start <= t {
+                upperBound += 1
+            }
+            var instant: [String: Int] = [:]
+            for j in 0..<upperBound where t <= sorted[j].end {
+                instant[sorted[j].speakerID, default: 0] += 1
+            }
+            if let winner = instant.max(by: { $0.value < $1.value })?.key {
+                votes[winner, default: 0] += 1
+            }
+        }
+        if let mode = votes.max(by: { $0.value < $1.value })?.key {
+            return mode
+        }
+        let mid = (start + end) / 2
+        return sorted.min(by: {
+            abs(($0.start + $0.end) / 2 - mid) < abs(($1.start + $1.end) / 2 - mid)
+        })?.speakerID ?? fallback
     }
 
     /// Auto-configures from a `ModelStore` that has already resolved each

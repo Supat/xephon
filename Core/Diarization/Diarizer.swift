@@ -45,10 +45,25 @@ public protocol Diarizer: Actor {
     /// session-stable speaker ID in the same format `diarize`
     /// produces; `distance` is cosine distance to that speaker.
     func findSpeaker(byEmbedding embedding: [Float]) async -> SpeakerMatch?
+    /// Serialize the diarizer's session-wide speaker database to an
+    /// opaque blob suitable for stashing in a `.xph` session file.
+    /// Returns nil when the diarizer has nothing to persist (e.g.
+    /// models not yet loaded, no speakers seen, or the encoding
+    /// failed). Specific encoding is the diarizer's choice; the
+    /// blob is treated as opaque by callers.
+    func exportSpeakerDatabase() async -> Data?
+    /// Restore a previously-exported speaker database. Treat `data`
+    /// as authoritative and replace any in-memory state. Throws on
+    /// malformed input; callers should swallow throws and log
+    /// (loading a session shouldn't fail just because the diarizer
+    /// state went stale across an app version).
+    func importSpeakerDatabase(_ data: Data) async throws
 }
 
 public extension Diarizer {
     func resetSpeakers() async {}
     func embedding(for audio: [Float]) async throws -> [Float]? { nil }
     func findSpeaker(byEmbedding embedding: [Float]) async -> SpeakerMatch? { nil }
+    func exportSpeakerDatabase() async -> Data? { nil }
+    func importSpeakerDatabase(_ data: Data) async throws {}
 }

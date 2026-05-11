@@ -195,12 +195,18 @@ struct ContentView: View {
                 guard !recorder.utterances.isEmpty,
                       !recorder.isRecording,
                       !recorder.isAnalyzing else { return }
-                do {
-                    let doc = try recorder.makeSessionDocument()
-                    pendingSaveDocument = SessionFileDocument(session: doc)
-                    showingSaveSession = true
-                } catch {
-                    sessionIOError = String(describing: error)
+                // makeSessionDocument turned async when it grew the
+                // FluidAudio speaker-DB snapshot step — it now awaits
+                // the diarizer actor. Wrap in Task so the SwiftUI
+                // onChange closure stays synchronous.
+                Task {
+                    do {
+                        let doc = try await recorder.makeSessionDocument()
+                        pendingSaveDocument = SessionFileDocument(session: doc)
+                        showingSaveSession = true
+                    } catch {
+                        sessionIOError = String(describing: error)
+                    }
                 }
             }
             // File → Import Session… (⇧⌘O). Reuses the single

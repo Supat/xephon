@@ -116,6 +116,45 @@ public actor FluidAudioDiarizer: Diarizer {
         return raw
     }
 
+    /// JSON-encode the FluidAudio `SpeakerManager`'s current speaker
+    /// database (the per-id `Speaker` records with their averaged
+    /// 256-D embeddings and accumulated raw observations). Returns
+    /// nil when models haven't loaded yet, when the database is
+    /// empty, or when encoding fails. Each `Speaker` is ~few KB, so
+    /// a realistic conversational session (≤4 speakers) costs <20 KB
+    /// — negligible against the embedded audio bytes.
+    public func exportSpeakerDatabase() async -> Data? {
+        guard manager.isAvailable else { return nil }
+        let speakers = await manager.speakerManager.getSpeakerList()
+        guard !speakers.isEmpty else { return nil }
+        do {
+            return try JSONEncoder().encode(speakers)
+        } catch {
+            AppLog.diarization.warning(
+                "speaker DB export failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Decode a previously-exported speaker database blob and load
+    /// it into the FluidAudio `SpeakerManager`, replacing any
+    /// in-memory state. Loads diarizer models on demand because
+    /// callers may want to import a saved DB before any audio has
+    /// flowed through `diarize`. Uses `.reset` initialization mode
+    /// so a partial-overlap conflict doesn't silently keep stale
+    /// embeddings from a prior session.
+    public func importSpeakerDatabase(_ data: Data) async throws {
+        if !manager.isAvailable {
+            try await loadModels()
+        }
+        let speakers = try JSONDecoder().decode([Speaker].self, from: data)
+        await manager.speakerManager.initializeKnownSpeakers(speakers, mode: .reset)
+        AppLog.diarization.info(
+            "FluidAudio speaker DB restored: \(speakers.count, privacy: .public) speakers"
+        )
+    }
+
     private func loadModels() async throws {
         AppLog.diarization.info("Downloading FluidAudio diarizer models (first run)…")
         do {

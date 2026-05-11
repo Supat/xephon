@@ -53,6 +53,19 @@ public struct SessionDocument: Codable, Sendable {
     /// decode error, so no `formatVersion` bump is needed.
     public let speakerNames: [String: String]?
 
+    /// Opaque blob carrying the diarizer's session-wide speaker
+    /// database at save time (e.g. FluidAudio's `[Speaker]` JSON,
+    /// embeddings included). Decoded by the same diarizer type on
+    /// load so re-diarizing a hand-edited slice resolves to the
+    /// same session-stable IDs the original recording assigned —
+    /// instead of clustering from scratch on an empty DB. Optional
+    /// because (a) v1 bundles predate this field and (b) mic-mode
+    /// sessions that never engaged the diarizer have nothing to
+    /// persist. Encoding is the diarizer's choice and intentionally
+    /// not interpreted at this layer; a future diarizer swap is
+    /// free to write a different format here.
+    public let speakerDatabase: Data?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -70,7 +83,8 @@ public struct SessionDocument: Codable, Sendable {
         audioFilename: String?,
         audio: Data?,
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]? = nil
+        speakerNames: [String: String]? = nil,
+        speakerDatabase: Data? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -79,6 +93,7 @@ public struct SessionDocument: Codable, Sendable {
         self.audio = audio
         self.utterances = utterances
         self.speakerNames = speakerNames
+        self.speakerDatabase = speakerDatabase
     }
 }
 
