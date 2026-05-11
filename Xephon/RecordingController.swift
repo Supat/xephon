@@ -1074,10 +1074,25 @@ final class RecordingController {
             volatileText = ""
         }
 
-        let extendedStart = max(0, utterance.start - Self.reevaluationPaddingSec)
+        // Anchor padding to the *truly-original* utterance bounds —
+        // the pre-first-reeval snapshot when one exists, otherwise
+        // the current row's start/end (which on the first pass *is*
+        // the original).
+        //
+        // Why: each re-evaluation produces a corrected start/end
+        // that may differ from the original (the sentence-aware
+        // trim landed on per-token anchors). If a subsequent
+        // re-evaluation anchored its padding to the corrected
+        // values, retrying on the same row would compound the shift
+        // — pad of 500 ms before a slightly-earlier start, plus
+        // 1 s after a slightly-later end, on each retry — and the
+        // utterance's duration would grow without bound. Sourcing
+        // anchors from the snapshot keeps re-evaluation idempotent.
+        let snapshot = preReevaluationSnapshots[utterance.id]
+        let originalStart = snapshot?.start ?? utterance.start
+        let originalEnd = snapshot?.end ?? utterance.end
+        let extendedStart = max(0, originalStart - Self.reevaluationPaddingSec)
         let speakerID = utterance.speakerID
-        let originalStart = utterance.start
-        let originalEnd = utterance.end
         let originalDuration = originalEnd - originalStart
         let utteranceID = utterance.id
 
