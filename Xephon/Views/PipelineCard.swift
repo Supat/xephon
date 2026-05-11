@@ -89,8 +89,19 @@ struct PipelineCard: View {
             : "—")
     }
 
+    /// True while a per-utterance re-evaluate is running. Lights up
+    /// the ASR / Acoustic SER / Text SER / Fusion rows below the same
+    /// way a streaming segment would, so the pipeline panel reflects
+    /// the in-flight work rather than looking idle. Capture, Diarizer
+    /// and Export deliberately don't react — re-evaluate doesn't run
+    /// capture or diarization, and doesn't touch the export latch.
+    private var isReevaluating: Bool {
+        recorder.reevaluatingUtteranceID != nil
+    }
+
     private var asrState: StageRow.State {
         if recorder.isRecording { return .pending }
+        if isReevaluating { return .active(0) }
         if !recorder.utterances.isEmpty { return .ready }
         return .idle
     }
@@ -129,11 +140,13 @@ struct PipelineCard: View {
     /// will flip back to .active when the next segment arrives.
     private func perSegmentState(latency: TimeInterval?) -> StageRow.State {
         if recorder.inflightSegments > 0 { return .active(0) }
+        if isReevaluating { return .active(0) }
         return latency == nil ? .idle : .ready
     }
 
     private var fusionState: StageRow.State {
         if recorder.inflightSegments > 0 { return .active(0) }
+        if isReevaluating { return .active(0) }
         return recorder.utterances.isEmpty ? .idle : .ready
     }
 
