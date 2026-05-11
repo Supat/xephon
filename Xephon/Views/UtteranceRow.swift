@@ -1,5 +1,4 @@
 import SwiftUI
-import AudioToolbox
 import Fusion
 import SERAcoustic
 import SERText
@@ -245,15 +244,14 @@ struct UtteranceRow: View {
         }
     }
 
-    /// Compact summary of how each modality contributed to the
-    /// winning top label. Nil when there's no top label or when the
-    /// winning label wasn't reachable from either modality (which
-    /// shouldn't happen for a well-formed estimate but we guard
-    /// anyway).
+    /// Compact summary of each modality's overall influence on the
+    /// fused-label argmax. Nil when there's no top label or when
+    /// neither modality contributed any score (defensive — a
+    /// well-formed estimate should always have at least one side
+    /// of input).
     private var labelFusionSummary: String? {
-        guard let label = utterance.fusedTopLabel else { return nil }
+        guard utterance.fusedTopLabel != nil else { return nil }
         guard let share = LateFusion.defaultLabelFusionShare(
-            forLabel: label,
             acoustic: utterance.acousticCategorical,
             plutchik: utterance.plutchik,
             asrConfidence: utterance.asrConfidence ?? 0.5
@@ -407,13 +405,13 @@ struct UtteranceRow: View {
                         guard reevaluate == .completed else { return }
                         AppLog.app.info("reevaluate long-press → revert")
                         revertJustFired = true
-                        // System "tock" (the keyboard-tap sound) as
-                        // confirmation. iPads have no Taptic Engine
-                        // so the sensoryFeedback below is a no-op
-                        // there; this audible cue is what actually
-                        // tells the user the revert fired without
-                        // having to wait for the colour flip.
-                        AudioServicesPlaySystemSound(1104)
+                        // Audible confirmation — iPad has no Taptic
+                        // Engine so the sensoryFeedback below is a
+                        // no-op there. The helper guards the
+                        // AVAudioSession state so the sound isn't
+                        // swallowed when a recent recording left
+                        // the session in `.record`.
+                        UISounds.playRevert()
                         onRevert()
                     }
             )
@@ -449,10 +447,18 @@ private struct ProbabilityBar: View {
         let tint = emotionTint(for: label)
         let fraction = Double(max(0, min(1, value)))
         HStack(spacing: 8) {
+            // Fixed-width column with tail truncation so a long
+            // outlier like "Anticipation" (12 chars) gets clipped
+            // to align with neighbours like "Joy" / "Fear" /
+            // "Trust" instead of pushing the bar right and
+            // breaking column alignment with the other category's
+            // bars rendered next to it.
             Text(label.capitalized(with: Locale(identifier: "en_US")))
                 .font(.caption2.monospaced())
                 .foregroundStyle(tint)
-                .frame(minWidth: 80, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 80, alignment: .leading)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(tint.opacity(0.12))

@@ -346,6 +346,12 @@ final class RecordingController {
     /// (post-volatile) ASR segment is processed through SER+fusion and appended
     /// to `utterances` live.
     func start() async {
+        // Audible cue fires first, before any session-category
+        // changes — the chime plays through the speaker while the
+        // transcriber and capture spin up. `capture.start()` will
+        // flip the session to `.record` a few hundred ms later;
+        // by then the begin-record chime has already finished.
+        UISounds.playRecordingStart()
         do {
             let segmentStream = try await streamingTranscriber.start()
             // If `capture.start()` throws here, the transcriber's analyzer +
@@ -621,6 +627,12 @@ final class RecordingController {
         await feedTask?.value
         rawTask = nil
         feedTask = nil
+
+        // End-of-record chime fires after capture has stopped (so
+        // the session is no longer pinned to `.record`) but before
+        // the longer SpeechAnalyzer finalize tail runs. Audible
+        // confirmation lands within ~100 ms of the button press.
+        UISounds.playRecordingStop()
 
         volatilePollTask?.cancel()
         volatilePollTask = nil
