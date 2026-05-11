@@ -81,6 +81,13 @@ final class RecordingController {
     /// list while one runs (offline ASR + SER serialize naturally and
     /// we don't want competing audio reads).
     private(set) var reevaluatingUtteranceID: UUID?
+    /// Pre-first-reeval snapshots keyed by utterance id. Captured in
+    /// `applyReevaluation` only on the FIRST re-evaluation of each
+    /// row (so subsequent re-evals don't overwrite the truly-
+    /// original streaming result). Cleared per row by
+    /// `revertReevaluation`, and wholesale by `start()` / `loadSession`.
+    /// Not persisted — revert history is session-scoped only.
+    private var preReevaluationSnapshots: [UUID: UtteranceEstimate] = [:]
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
@@ -358,6 +365,7 @@ final class RecordingController {
             errorMessage = nil
             samplesCaptured = 0
             utterances = []
+            preReevaluationSnapshots.removeAll()
             conversationSummary.reset()
             capturedAudio.reset()
             sessionStartedAt = Date()
@@ -861,6 +869,7 @@ final class RecordingController {
         guard phase == .idle else { return }
         stopPlayback()
         utterances = document.utterances
+        preReevaluationSnapshots.removeAll()
         // Same-length imports would otherwise hit the filter memo;
         // bump defensively so the cache rebuilds for any load.
         utterancesVersion &+= 1
@@ -1223,6 +1232,14 @@ final class RecordingController {
             return
         }
         let original = utterances[index]
+        // Capture the truly-original (pre-first-reeval) snapshot so a
+        // later long-press can restore it. Only on the FIRST re-eval
+        // per row — subsequent re-evals leave the existing snapshot
+        // alone, so revert always returns to the streaming result,
+        // not the previous re-eval.
+        if preReevaluationSnapshots[utteranceID] == nil {
+            preReevaluationSnapshots[utteranceID] = original
+        }
         let merged = UtteranceEstimate(
             id: original.id,
             speakerID: original.speakerID,
@@ -1254,6 +1271,36 @@ final class RecordingController {
         // an element in place leaves `utterances.count` unchanged,
         // which the memo's dep key would otherwise treat as a cache
         // hit and return the pre-re-eval row.
+        utterancesVersion &+= 1
+        conversationSummary.reset()
+        for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// Restore the utterance to its pre-first-reeval state. Invoked
+    /// by a 5-second long-press on the re-evaluate button. No-op
+    /// when there's no snapshot for this id (the row was never
+    /// re-evaluated) or when a re-evaluation is in flight (would
+    /// race the upcoming write). Re-sorts if the original start
+    /// time moved the row out of order, and bumps
+    /// `utterancesVersion` so the filter memo invalidates.
+    func revertReevaluation(_ utterance: UtteranceEstimate) {
+        guard reevaluatingUtteranceID == nil else { return }
+        guard phase == .idle else { return }
+        guard let snapshot = preReevaluationSnapshots[utterance.id] else {
+            return
+        }
+        guard let index = utterances.firstIndex(where: { $0.id == utterance.id }) else {
+            preReevaluationSnapshots.removeValue(forKey: utterance.id)
+            return
+        }
+        AppLog.app.info(
+            "reevaluate: reverting utterance \(utterance.id, privacy: .public) to original snapshot"
+        )
+        utterances[index] = snapshot
+        preReevaluationSnapshots.removeValue(forKey: utterance.id)
+        if !Self.isChronologicallyOrdered(utterances, around: index) {
+            utterances.sort { $0.start < $1.start }
+        }
         utterancesVersion &+= 1
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }

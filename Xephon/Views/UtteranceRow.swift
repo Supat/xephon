@@ -56,6 +56,13 @@ struct UtteranceRow: View {
     let onPlaybackToggle: () -> Void
     let reevaluate: ReevaluateAvailability
     let onReevaluate: () -> Void
+    let onRevert: () -> Void
+
+    /// Set by a 5-second long-press on the re-evaluate button to
+    /// suppress the upcoming tap action (so a held press doesn't
+    /// also re-trigger a fresh re-evaluation on release). Reset to
+    /// false the next time the button is tapped without a hold.
+    @State private var revertJustFired: Bool = false
 
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
     // so positive vs negative read naturally and 0 maps to "neutral grey".
@@ -369,7 +376,20 @@ struct UtteranceRow: View {
                 // flight.
                 .frame(width: 22, height: 22)
         case .disabled, .idle, .completed:
+            // A 5-second long-press on a `.completed` row reverts to
+            // the pre-first-reeval snapshot. Implemented as a
+            // simultaneous LongPressGesture alongside the Button's
+            // own tap so the gesture system doesn't have to
+            // disambiguate up front — the long press fires at the
+            // 5 s mark, sets `revertJustFired`, and the Button's
+            // release-fired tap action sees the flag and skips
+            // `onReevaluate`. Short taps still trigger re-eval
+            // normally.
             Button(action: {
+                if revertJustFired {
+                    revertJustFired = false
+                    return
+                }
                 AppLog.app.info("reevaluate button tapped (state=\(String(describing: self.reevaluate), privacy: .public))")
                 onReevaluate()
             }) {
@@ -380,6 +400,15 @@ struct UtteranceRow: View {
             }
             .buttonStyle(.borderless)
             .disabled(reevaluate == .disabled)
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 5.0)
+                    .onEnded { _ in
+                        guard reevaluate == .completed else { return }
+                        AppLog.app.info("reevaluate long-press → revert")
+                        revertJustFired = true
+                        onRevert()
+                    }
+            )
         }
     }
 

@@ -1109,7 +1109,8 @@ struct ContentView: View {
                     reevaluate: reevaluateAvailability(for: item.u),
                     onReevaluate: {
                         Task { await recorder.reevaluate(item.u) }
-                    }
+                    },
+                    onRevert: { recorder.revertReevaluation(item.u) }
                 )
                 .id(item.u.id)
                 .onAppear { visibleUtteranceIDs.insert(item.u.id) }
