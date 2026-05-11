@@ -197,15 +197,33 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         onVolatileText: (@Sendable @MainActor (String) -> Void)?
     ) async throws -> [ASRSegment] {
         var segments: [ASRSegment] = []
+        // Hold the last volatile we saw so we can fall back to it if
+        // `finalizeAndFinishThroughEndOfInput()` closes the stream
+        // without promoting any volatile to final. SpeechAnalyzer
+        // appears to do this for short offline clips that don't
+        // contain a stable sentence boundary — its volatile-
+        // stabilization timer doesn't get a chance to fire before
+        // the input ends, and the analyzer treats the pending
+        // hypothesis as "still tentative" rather than committing it
+        // on finalize. Without this fallback the segment list would
+        // come back empty and `pipeline.reevaluate` would return nil
+        // for clips like a single 4-second utterance — exactly the
+        // common case for the per-utterance re-evaluate button.
+        var lastVolatile: (text: String, start: TimeInterval, end: TimeInterval, confidence: Float?)?
         for try await result in transcriber.results {
             let plainText = String(result.text.characters)
             if !result.isFinal {
-                // Volatile preview: hand the rolling hypothesis to the
-                // caller if they registered for it, but never emit it
-                // as a finished segment.
                 if let handler = onVolatileText {
                     await handler(plainText)
                 }
+                let start = result.range.start.seconds
+                let end = start + result.range.duration.seconds
+                lastVolatile = (
+                    text: plainText,
+                    start: start.isFinite ? start : 0,
+                    end: end.isFinite ? end : 0,
+                    confidence: SpeechAttributes.averageConfidence(in: result.text)
+                )
                 continue
             }
             let start = result.range.start.seconds
@@ -218,6 +236,21 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
                 confidence: SpeechAttributes.averageConfidence(in: result.text)
             ))
         }
+        if segments.isEmpty, let v = lastVolatile,
+           !v.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            AppLog.asr.info(
+                "offline ASR: no finals emitted; using last volatile as result (\(v.text.count, privacy: .public) chars)"
+            )
+            segments.append(ASRSegment(
+                text: v.text,
+                start: v.start,
+                end: v.end,
+                confidence: v.confidence
+            ))
+        }
+        AppLog.asr.info(
+            "offline ASR collected: \(segments.count, privacy: .public) segment(s), lastVolatile=\(lastVolatile == nil ? "nil" : "set", privacy: .public)"
+        )
         return segments
     }
 }
