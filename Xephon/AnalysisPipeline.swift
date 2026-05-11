@@ -274,12 +274,52 @@ final class AnalysisPipeline: Sendable {
         guard !combinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
+        // Keep only the first complete sentence. The 1 s pad on each
+        // side of the original utterance often picks up the leading
+        // phoneme of the next sentence (or the tail of the previous
+        // one), and SpeechAnalyzer happily transcribes whatever's
+        // there. The caller only wanted *this* utterance refreshed,
+        // not its neighbours.
+        //
+        // When the offline ASR emitted per-token timing we trim the
+        // audio chunk in lockstep so acoustic SER sees only the first
+        // sentence's prosody — the front pad's leading phoneme of a
+        // neighbour or the back pad's trailing one no longer colour
+        // the V/A/D. When tokens are missing (e.g. a fallback path
+        // that didn't capture them), text trims but audio passes
+        // through unchanged.
+        let allTokens = segments.flatMap(\.tokens)
+        let trimmedText: String
+        let trimmedAudio: AudioChunk
+        if let endTokenIdx = Self.firstSentenceEndTokenIndex(in: allTokens) {
+            let chosen = Array(allTokens[0...endTokenIdx])
+            trimmedText = chosen.map(\.text).joined()
+            trimmedAudio = Self.sliceAudioFromStart(
+                audio,
+                upToBufferLocalEnd: chosen.last?.end ?? 0
+            )
+        } else if let terminatorPrefix = Self.firstFullSentence(in: combinedText),
+                  terminatorPrefix.count < combinedText.count {
+            // No tokens, but text-level terminator found. Trim text,
+            // keep audio.
+            trimmedText = terminatorPrefix
+            trimmedAudio = audio
+        } else {
+            // No terminator at all (single-clause utterance or
+            // transcriber didn't punctuate). Keep everything.
+            trimmedText = combinedText
+            trimmedAudio = audio
+        }
+        guard !trimmedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !trimmedAudio.samples.isEmpty else {
+            return nil
+        }
         let confidences = segments.compactMap(\.confidence)
         let combinedConfidence: Float? = confidences.isEmpty
             ? nil
             : confidences.reduce(0, +) / Float(confidences.count)
         let synthesized = ASRSegment(
-            text: combinedText,
+            text: trimmedText,
             start: originalStart,
             end: originalEnd,
             confidence: combinedConfidence,
@@ -287,8 +327,52 @@ final class AnalysisPipeline: Sendable {
         )
         return try await processSegment(
             asr: synthesized,
-            segmentAudio: audio,
+            segmentAudio: trimmedAudio,
             fallbackSpeakerID: speakerID
+        )
+    }
+
+    /// Index of the first token whose text ends with a sentence-end
+    /// character. Returns nil when no token has one (so the caller
+    /// can fall back to a text-only or no-op trim).
+    private static func firstSentenceEndTokenIndex(in tokens: [ASRSegment.Token]) -> Int? {
+        for (i, token) in tokens.enumerated() {
+            if let last = token.text.last, sentenceEndChars.contains(last) {
+                return i
+            }
+        }
+        return nil
+    }
+
+    /// Returns the prefix of `text` up to and including the first
+    /// sentence-ending character (`sentenceEndChars`), or nil when no
+    /// terminator appears — letting the caller distinguish "trimmed"
+    /// from "single-clause keep-everything".
+    private static func firstFullSentence(in text: String) -> String? {
+        for index in text.indices where sentenceEndChars.contains(text[index]) {
+            return String(text[...index])
+        }
+        return nil
+    }
+
+    /// Slice an audio chunk from sample 0 up to `upToBufferLocalEnd`
+    /// seconds (where the chunk's local timeline begins at sample 0,
+    /// not at its absolute `timestamp`). Clamps to the available
+    /// sample count so a slightly-overshooting token end doesn't
+    /// crash. Preserves `timestamp` so downstream code interpreting
+    /// the chunk as "starts at absolute time X" still works.
+    private static func sliceAudioFromStart(
+        _ audio: AudioChunk,
+        upToBufferLocalEnd end: TimeInterval
+    ) -> AudioChunk {
+        let endSample = min(
+            audio.samples.count,
+            max(0, Int((end * audio.sampleRate).rounded()))
+        )
+        return AudioChunk(
+            samples: Array(audio.samples[0..<endSample]),
+            sampleRate: audio.sampleRate,
+            timestamp: audio.timestamp
         )
     }
 

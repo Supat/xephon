@@ -209,7 +209,13 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         // come back empty and `pipeline.reevaluate` would return nil
         // for clips like a single 4-second utterance — exactly the
         // common case for the per-utterance re-evaluate button.
-        var lastVolatile: (text: String, start: TimeInterval, end: TimeInterval, confidence: Float?)?
+        var lastVolatile: (
+            text: String,
+            start: TimeInterval,
+            end: TimeInterval,
+            confidence: Float?,
+            tokens: [ASRSegment.Token]
+        )?
         for try await result in transcriber.results {
             let plainText = String(result.text.characters)
             if !result.isFinal {
@@ -222,7 +228,8 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
                     text: plainText,
                     start: start.isFinite ? start : 0,
                     end: end.isFinite ? end : 0,
-                    confidence: SpeechAttributes.averageConfidence(in: result.text)
+                    confidence: SpeechAttributes.averageConfidence(in: result.text),
+                    tokens: SpeechAttributes.tokens(in: result.text)
                 )
                 continue
             }
@@ -233,7 +240,8 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
                 text: plainText,
                 start: start.isFinite ? start : 0,
                 end: end.isFinite ? end : 0,
-                confidence: SpeechAttributes.averageConfidence(in: result.text)
+                confidence: SpeechAttributes.averageConfidence(in: result.text),
+                tokens: SpeechAttributes.tokens(in: result.text)
             ))
         }
         if segments.isEmpty, let v = lastVolatile,
@@ -245,7 +253,8 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
                 text: v.text,
                 start: v.start,
                 end: v.end,
-                confidence: v.confidence
+                confidence: v.confidence,
+                tokens: v.tokens
             ))
         }
         AppLog.asr.info(
