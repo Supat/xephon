@@ -66,8 +66,13 @@ struct UtteranceRow: View {
     /// `recorder.renameSpeaker`. Clearing the field + Save reverts
     /// to the default `S01`/`M01` label.
     let onRenameSpeaker: () -> Void
+    /// Fires when the user long-presses the transcript text.
+    /// ContentView raises the Edit Utterance sheet. Confirming the
+    /// sheet's Commit hands the edited values to
+    /// `recorder.commitHandEdit`.
+    let onEditTranscript: () -> Void
 
-    /// Set by a 3-second long-press on the re-evaluate button to
+    /// Set by a 2-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
     /// also re-trigger a fresh re-evaluation on release). Reset to
     /// false the next time the button is tapped without a hold.
@@ -153,9 +158,34 @@ struct UtteranceRow: View {
                         )
                         .foregroundStyle(.orange)
                 }
+                // Hand-edit marker: appears immediately after Boost
+                // when the row's transcript/range was committed via
+                // the Edit Utterance dialog. Re-evaluating the row
+                // clears the flag (the controller's
+                // `applyReevaluation` rebuilds the row without
+                // `wasHandEdited`).
+                if utterance.wasHandEdited == true {
+                    Label("Edited", systemImage: "pencil.tip")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .overlay(
+                            Capsule().strokeBorder(.blue.opacity(0.5), lineWidth: 0.5)
+                        )
+                        .foregroundStyle(.blue)
+                }
             }
+            // Transcript text — long-press (0.5 s) raises the Edit
+            // Utterance dialog. Hit-test stays inside the Text
+            // bounds (same pattern as the speaker chip) so the
+            // re-evaluate button's 3 s revert long-press elsewhere
+            // in the row isn't pre-empted.
             Text(utterance.transcript.isEmpty ? "—" : utterance.transcript)
                 .font(.body)
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    onEditTranscript()
+                }
         }
     }
 
@@ -404,12 +434,12 @@ struct UtteranceRow: View {
                 // flight.
                 .frame(width: 22, height: 22)
         case .disabled, .idle, .completed:
-            // A 3-second long-press on a `.completed` row reverts to
+            // A 2-second long-press on a `.completed` row reverts to
             // the pre-first-reeval snapshot. Implemented as a
             // simultaneous LongPressGesture alongside the Button's
             // own tap so the gesture system doesn't have to
             // disambiguate up front — the long press fires at the
-            // 3 s mark, sets `revertJustFired`, and the Button's
+            // 2 s mark, sets `revertJustFired`, and the Button's
             // release-fired tap action sees the flag and skips
             // `onReevaluate`. Short taps still trigger re-eval
             // normally.
@@ -429,7 +459,7 @@ struct UtteranceRow: View {
             .buttonStyle(.borderless)
             .disabled(reevaluate == .disabled)
             .simultaneousGesture(
-                LongPressGesture(minimumDuration: 3.0)
+                LongPressGesture(minimumDuration: 2.0)
                     .onEnded { _ in
                         guard reevaluate == .completed else { return }
                         AppLog.app.info("reevaluate long-press → revert")

@@ -55,3 +55,10 @@
 "speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";
 "speaker.rename.save" = "保存";
 "speaker.rename.cancel" = "キャンセル";
+"edit.title" = "発話を編集";
+"edit.transcript.header" = "テキスト";
+"edit.range.header" = "音声範囲";
+"edit.range.start" = "開始 (秒)";
+"edit.range.end" = "終了 (秒)";
+"edit.commit" = "確定";
+"edit.cancel" = "キャンセル";

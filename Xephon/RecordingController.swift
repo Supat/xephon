@@ -1317,6 +1317,150 @@ final class RecordingController {
         for u in utterances { conversationSummary.update(with: u) }
     }
 
+    // MARK: - Per-utterance hand-edit
+
+    /// Commit a hand-edited utterance: new transcript text and new
+    /// time range, with SER + fusion re-run on the audio slice
+    /// `[newStart, newEnd]`. Identity is preserved (`id`,
+    /// `speakerID`, `speechBoost`), `wasHandEdited` is stamped
+    /// true, `wasReevaluated` is cleared. Captures the pre-edit
+    /// snapshot first (sharing the same `preReevaluationSnapshots`
+    /// store used by the re-evaluate revert path) so the long-press
+    /// revert restores the truly-original streaming row.
+    ///
+    /// No-op when mic-mode (no source audio), when something else
+    /// is already running, when the range is empty, or when the
+    /// trimmed transcript is empty.
+    func commitHandEdit(
+        utteranceID: UUID,
+        newText: String,
+        newStart: TimeInterval,
+        newEnd: TimeInterval
+    ) async {
+        guard reevaluatingUtteranceID == nil else { return }
+        guard phase == .idle else { return }
+        guard let url = playbackSourceURL else { return }
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
+        guard newEnd > newStart else { return }
+        let trimmedText = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        let original = utterances[index]
+        reevaluatingUtteranceID = utteranceID
+        defer { reevaluatingUtteranceID = nil }
+
+        if preReevaluationSnapshots[utteranceID] == nil {
+            preReevaluationSnapshots[utteranceID] = original
+        }
+
+        let speakerID = original.speakerID
+        let pipeline = await ensurePipeline()
+        do {
+            let chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url,
+                    start: newStart,
+                    end: newEnd
+                )
+            }.value
+            guard !chunk.samples.isEmpty else {
+                AppLog.app.warning("commitHandEdit: empty audio slice")
+                return
+            }
+            let asr = ASRSegment(
+                text: trimmedText,
+                start: newStart,
+                end: newEnd,
+                // User-verified text is presumed correct, so weight
+                // the text side at full confidence in fusion.
+                confidence: 1.0,
+                tokens: []
+            )
+            let (fresh, _) = try await pipeline.processSegment(
+                asr: asr,
+                segmentAudio: chunk,
+                fallbackSpeakerID: speakerID
+            )
+            applyHandEdit(utteranceID: utteranceID, fresh: fresh)
+        } catch {
+            AppLog.app.error("commitHandEdit failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Mirror of `applyReevaluation` for the hand-edit path.
+    /// Stamps `wasHandEdited = true` and clears `wasReevaluated`
+    /// (the row is no longer a model-driven re-eval, it's a user
+    /// correction).
+    private func applyHandEdit(utteranceID: UUID, fresh: UtteranceEstimate) {
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
+        let original = utterances[index]
+        let merged = UtteranceEstimate(
+            id: original.id,
+            speakerID: original.speakerID,
+            start: fresh.start,
+            end: fresh.end,
+            transcript: fresh.transcript,
+            asrConfidence: fresh.asrConfidence,
+            dimensional: fresh.dimensional,
+            acousticCategorical: fresh.acousticCategorical,
+            plutchik: fresh.plutchik,
+            textBackend: fresh.textBackend,
+            speechBoost: original.speechBoost,
+            wasReevaluated: nil,
+            wasHandEdited: true,
+            fusedValence: fresh.fusedValence,
+            fusedArousal: fresh.fusedArousal,
+            fusedDominance: fresh.fusedDominance,
+            fusedTopLabel: fresh.fusedTopLabel
+        )
+        utterances[index] = merged
+        if !Self.isChronologicallyOrdered(utterances, around: index) {
+            utterances.sort { $0.start < $1.start }
+        }
+        utterancesVersion &+= 1
+        conversationSummary.reset()
+        for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// Play `[start, end]` from the source file. Used by the Edit
+    /// Utterance dialog's preview button — the dialog's spinners
+    /// hold arbitrary times that don't correspond to an existing
+    /// utterance row, so `togglePlayback(for:)` doesn't apply.
+    func playRange(start: TimeInterval, end: TimeInterval) {
+        guard let url = playbackSourceURL else { return }
+        guard phase == .idle else { return }
+        guard end > start else { return }
+        stopPlayback()
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            AppLog.app.warning(
+                "playRange: session setup failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+        #endif
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            playbackPlayer = player
+            player.prepareToPlay()
+            player.currentTime = max(0, start)
+            guard player.play() else { return }
+            let duration = max(0, end - start)
+            playbackStopTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.stopPlayback()
+            }
+        } catch {
+            AppLog.app.error(
+                "playRange failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
     /// Set a custom display name for `stored` (e.g. `S01`). Pass an
     /// empty / whitespace-only `name` to clear the override (revert
     /// to the default `S01` / `M01` formatting). Bumps

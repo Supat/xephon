@@ -92,6 +92,13 @@ struct ContentView: View {
     @State private var editingSpeakerStored: String?
     /// Pending text in the Rename TextField, bound to the alert.
     @State private var editingSpeakerName: String = ""
+    /// Snapshot of the utterance whose Edit Utterance sheet is
+    /// currently presented. Non-nil drives the `.sheet(item:)`
+    /// presentation; cleared on dismiss / commit / cancel.
+    /// We hold the full struct (not just the id) so the sheet's
+    /// initial state populates from a stable snapshot even if
+    /// the underlying row gets mutated by an in-flight re-eval.
+    @State private var editingUtterance: UtteranceEstimate?
     /// Memoization layer for `filteredIndexedUtterances` and
     /// `displayedSummary`. SwiftUI re-evaluates the view body on
     /// every observed-state change (playback state, pipeline metrics,
@@ -288,6 +295,32 @@ struct ContentView: View {
                 }
             } message: {
                 Text(String(localized: "pacing.message"))
+            }
+            // Edit Utterance sheet — raised by long-press on the
+            // transcript Text of a row. Carries an
+            // `UtteranceEstimate` snapshot so the sheet's initial
+            // state is stable even if a parallel re-eval mutates
+            // the row's underlying record.
+            .sheet(item: $editingUtterance) { snapshot in
+                EditUtteranceSheet(
+                    utterance: snapshot,
+                    maxDuration: recorder.fileTotalAudioDuration,
+                    onPlayRange: { start, end in
+                        recorder.playRange(start: start, end: end)
+                    },
+                    onCommit: { newText, newStart, newEnd in
+                        editingUtterance = nil
+                        Task {
+                            await recorder.commitHandEdit(
+                                utteranceID: snapshot.id,
+                                newText: newText,
+                                newStart: newStart,
+                                newEnd: newEnd
+                            )
+                        }
+                    },
+                    onCancel: { editingUtterance = nil }
+                )
             }
             // Speaker rename alert — raised by the row's context
             // menu "Rename Speaker…" action. `editingSpeakerStored`
@@ -1157,6 +1190,14 @@ struct ContentView: View {
                         editingSpeakerStored = item.u.speakerID
                         editingSpeakerName = recorder
                             .speakerDisplayName(forStored: item.u.speakerID) ?? ""
+                    },
+                    onEditTranscript: {
+                        // Only meaningful when there's source audio
+                        // to re-slice from — the hand-edit pipeline
+                        // reads `[newStart, newEnd]` from
+                        // `playbackSourceURL`.
+                        guard recorder.playbackSourceURL != nil else { return }
+                        editingUtterance = item.u
                     }
                 )
                 .id(item.u.id)

@@ -38,6 +38,14 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     /// and shows up alongside the affect data in external tooling.
     public let wasReevaluated: Bool?
 
+    /// Whether the user manually edited the transcript / time range
+    /// via the Edit Utterance dialog. `true` after at least one
+    /// successful hand-edit; nil otherwise. A later re-evaluation
+    /// clears this back to nil (the row reverts to a model-driven
+    /// estimate). Persists in `.xph` and JSON so external tooling
+    /// can flag rows whose transcript came from human review.
+    public let wasHandEdited: Bool?
+
     // Fused
     public let fusedValence: Float?
     public let fusedArousal: Float?
@@ -57,6 +65,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         textBackend: String? = nil,
         speechBoost: Bool? = nil,
         wasReevaluated: Bool? = nil,
+        wasHandEdited: Bool? = nil,
         fusedValence: Float?,
         fusedArousal: Float?,
         fusedDominance: Float?,
@@ -74,6 +83,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.textBackend = textBackend
         self.speechBoost = speechBoost
         self.wasReevaluated = wasReevaluated
+        self.wasHandEdited = wasHandEdited
         self.fusedValence = fusedValence
         self.fusedArousal = fusedArousal
         self.fusedDominance = fusedDominance
@@ -94,6 +104,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             textBackend: backend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -115,6 +126,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             textBackend: textBackend,
             speechBoost: enabled,
             wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
