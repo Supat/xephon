@@ -66,6 +66,23 @@ public struct SessionDocument: Codable, Sendable {
     /// free to write a different format here.
     public let speakerDatabase: Data?
 
+    /// Pre-first-reeval / pre-hand-edit snapshots, keyed by the
+    /// utterance id whose row was edited. Restored into the
+    /// controller's in-memory `preReevaluationSnapshots` map on
+    /// load so the long-press-to-revert affordance survives Save.
+    /// Optional + missing-key tolerant; v1 bundles read back as
+    /// nil and the revert path no-ops as it did before.
+    public let originalSnapshots: [UUID: UtteranceEstimate]?
+
+    /// Sibling-row ids created when a multi-sentence hand-edit
+    /// split one utterance into several. Keyed by the parent's id
+    /// (the row that retains the original id post-split). Restored
+    /// into `handEditChildren` on load so reverting the parent
+    /// also removes the siblings — without this, a Save/Load cycle
+    /// would leave the siblings as orphans after a post-load
+    /// revert. Optional for v1 compat.
+    public let handEditChildren: [UUID: [UUID]]?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -84,7 +101,9 @@ public struct SessionDocument: Codable, Sendable {
         audio: Data?,
         utterances: [UtteranceEstimate],
         speakerNames: [String: String]? = nil,
-        speakerDatabase: Data? = nil
+        speakerDatabase: Data? = nil,
+        originalSnapshots: [UUID: UtteranceEstimate]? = nil,
+        handEditChildren: [UUID: [UUID]]? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -94,6 +113,8 @@ public struct SessionDocument: Codable, Sendable {
         self.utterances = utterances
         self.speakerNames = speakerNames
         self.speakerDatabase = speakerDatabase
+        self.originalSnapshots = originalSnapshots
+        self.handEditChildren = handEditChildren
     }
 }
 

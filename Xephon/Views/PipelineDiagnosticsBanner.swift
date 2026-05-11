@@ -27,6 +27,6 @@ struct PipelineDiagnosticsBanner: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.yellow.opacity(0.12))
+        .glassEffect(.regular.tint(.yellow.opacity(0.4)), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

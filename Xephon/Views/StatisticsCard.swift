@@ -51,7 +51,7 @@ struct StatisticsCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

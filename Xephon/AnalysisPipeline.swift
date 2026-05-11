@@ -173,6 +173,18 @@ final class AnalysisPipeline: Sendable {
     /// nothing overlaps. Factored out of `dominantSpeaker` so the
     /// hand-edit path can apply the same voting rule to a *fresh*
     /// segment list without touching `speakerTracker`.
+    /// Vote-density tuning shared between `dominantSpeaker` (queries
+    /// the cumulative timeline) and `dominantSpeakerInSegments`
+    /// (queries an in-isolation fresh diarization). 50 ms sample
+    /// step sits well below the diarizer's ~200–500 ms segment
+    /// granularity, and the (8, 256) clamp keeps the per-call work
+    /// bounded — very long ranges don't grow the inner loop
+    /// unboundedly, very short ones still get a meaningful number
+    /// of votes.
+    static let speakerVoteSampleStepSec: TimeInterval = 0.05
+    static let speakerVoteSampleCountMin: Int = 8
+    static let speakerVoteSampleCountMax: Int = 256
+
     static func dominantSpeakerInSegments(
         _ segments: [DiarizedSegment],
         from start: TimeInterval,
@@ -182,8 +194,11 @@ final class AnalysisPipeline: Sendable {
         guard !segments.isEmpty, end > start else { return fallback }
         let sorted = segments.sorted { $0.start < $1.start }
 
-        let dt: TimeInterval = 0.05
-        let sampleCount = min(256, max(8, Int(((end - start) / dt).rounded(.up))))
+        let dt: TimeInterval = speakerVoteSampleStepSec
+        let sampleCount = min(
+            speakerVoteSampleCountMax,
+            max(speakerVoteSampleCountMin, Int(((end - start) / dt).rounded(.up)))
+        )
         let step = (end - start) / TimeInterval(sampleCount)
 
         var votes: [String: Int] = [:]
@@ -893,8 +908,11 @@ final class AnalysisPipeline: Sendable {
         let timeline = await speakerTracker.cumulativeSnapshot()
         guard !timeline.isEmpty, end > start else { return fallback }
 
-        let dt: TimeInterval = 0.05
-        let sampleCount = min(256, max(8, Int(((end - start) / dt).rounded(.up))))
+        let dt: TimeInterval = Self.speakerVoteSampleStepSec
+        let sampleCount = min(
+            Self.speakerVoteSampleCountMax,
+            max(Self.speakerVoteSampleCountMin, Int(((end - start) / dt).rounded(.up)))
+        )
         let step = (end - start) / TimeInterval(sampleCount)
 
         var votes: [String: Int] = [:]

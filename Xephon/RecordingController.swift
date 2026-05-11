@@ -106,6 +106,14 @@ final class RecordingController {
     private(set) var speakerNameOverrides: [String: String] = [:]
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
+    /// True while a `playRange(start:end:)` preview is in flight.
+    /// Distinct from row-level playback (`playingUtteranceID`) so
+    /// the Edit Utterance sheet's play button can toggle to a stop
+    /// glyph without lighting up unrelated row controls. Flipped on
+    /// inside `playRange` immediately after `player.play()` returns
+    /// true, and back off in `stopPlayback()` (covers both the
+    /// duration-elapsed auto-stop and the user-initiated tap).
+    private(set) var isPreviewPlaying: Bool = false
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
     /// SetupView is shown in place of the main UI.
     private(set) var modelsReady: Bool = false
@@ -872,6 +880,18 @@ final class RecordingController {
         // user. Awaiting the pipeline here is what forced this
         // function to become async; callers run it from a Task.
         let speakerDB = await pipelineForExport()?.exportSpeakerDatabase()
+        // Carry the pre-edit revert state alongside the utterances
+        // so a long-press revert on a row that was hand-edited or
+        // re-evaluated keeps working after Save → Open. Filter
+        // snapshots whose target is no longer in `utterances` —
+        // those would be orphans and the revert path would no-op
+        // for them anyway. Empty maps round-trip as nil so v1-shaped
+        // bundles (no revert state) stay byte-identical on save.
+        let liveIDs = Set(utts.map(\.id))
+        let snapshotsForExport = preReevaluationSnapshots.filter { liveIDs.contains($0.key) }
+        let childrenForExport = handEditChildren.filter { liveIDs.contains($0.key) }
+        let snapshots = snapshotsForExport.isEmpty ? nil : snapshotsForExport
+        let children = childrenForExport.isEmpty ? nil : childrenForExport
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -885,7 +905,9 @@ final class RecordingController {
                     audio: audioData,
                     utterances: utts,
                     speakerNames: names,
-                    speakerDatabase: speakerDB
+                    speakerDatabase: speakerDB,
+                    originalSnapshots: snapshots,
+                    handEditChildren: children
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -899,7 +921,9 @@ final class RecordingController {
             audio: nil,
             utterances: utts,
             speakerNames: names,
-            speakerDatabase: speakerDB
+            speakerDatabase: speakerDB,
+            originalSnapshots: snapshots,
+            handEditChildren: children
         )
     }
 
@@ -920,8 +944,20 @@ final class RecordingController {
         guard phase == .idle else { return }
         stopPlayback()
         utterances = document.utterances
+        // Restore the pre-edit revert state from the bundle so a
+        // long-press on a row's Edited / completed marker after
+        // Open Session still rolls the row back to its original
+        // streaming-pass record. `removeAll` first to drop any
+        // leftover state from a prior session that wasn't cleared
+        // (no recording started yet).
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
+        if let saved = document.originalSnapshots {
+            preReevaluationSnapshots = saved
+        }
+        if let savedChildren = document.handEditChildren {
+            handEditChildren = savedChildren
+        }
         speakerNameOverrides = document.speakerNames ?? [:]
         // Same-length imports would otherwise hit the filter memo;
         // bump defensively so the cache rebuilds for any load.
@@ -1728,6 +1764,7 @@ final class RecordingController {
             player.prepareToPlay()
             player.currentTime = max(0, start)
             guard player.play() else { return }
+            isPreviewPlaying = true
             let duration = max(0, end - start)
             playbackStopTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
@@ -1767,6 +1804,57 @@ final class RecordingController {
     /// nil otherwise. Convenience for the view layer.
     func speakerDisplayName(forStored stored: String) -> String? {
         speakerNameOverrides[stored]
+    }
+
+    /// Manually reassign one utterance's `speakerID`. Used by the
+    /// speaker chip's action sheet to override the diarizer's
+    /// verdict on a row whose voice the user knows belongs to a
+    /// different speaker. The mutation is in-place — `id`, times,
+    /// transcript, SER/fusion outputs all carry over — so list
+    /// position and selection are stable. Bumps
+    /// `utterancesVersion` so the filter memo invalidates and the
+    /// chip re-renders with the new tint/label. No-op when the row
+    /// is already on that speaker, when no row matches `utteranceID`,
+    /// or when `newSpeakerID` is empty / whitespace-only.
+    func reassignSpeaker(utteranceID: UUID, to newSpeakerID: String) {
+        let trimmed = newSpeakerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
+        let original = utterances[index]
+        guard original.speakerID != trimmed else { return }
+        utterances[index] = UtteranceEstimate(
+            id: original.id,
+            speakerID: trimmed,
+            start: original.start,
+            end: original.end,
+            transcript: original.transcript,
+            asrConfidence: original.asrConfidence,
+            dimensional: original.dimensional,
+            acousticCategorical: original.acousticCategorical,
+            plutchik: original.plutchik,
+            textBackend: original.textBackend,
+            speechBoost: original.speechBoost,
+            wasReevaluated: original.wasReevaluated,
+            wasHandEdited: original.wasHandEdited,
+            fusedValence: original.fusedValence,
+            fusedArousal: original.fusedArousal,
+            fusedDominance: original.fusedDominance,
+            fusedTopLabel: original.fusedTopLabel
+        )
+        AppLog.app.info(
+            "speaker reassigned: utt=\(original.id, privacy: .public) \(original.speakerID, privacy: .public) → \(trimmed, privacy: .public)"
+        )
+        utterancesVersion &+= 1
+        conversationSummary.reset()
+        for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// Sorted, deduplicated list of speaker IDs currently appearing
+    /// in the session — surface for the reassignment menu. Includes
+    /// the currently-assigned speaker so the menu reads as a Picker
+    /// (with the active row visually marked, not removed).
+    func knownSpeakerIDs() -> [String] {
+        Array(Set(utterances.map(\.speakerID))).sorted()
     }
 
     /// Restore the utterance to its pre-first-reeval state. Invoked
@@ -1979,6 +2067,7 @@ final class RecordingController {
         playbackPlayer?.stop()
         playbackPlayer = nil
         playingUtteranceID = nil
+        isPreviewPlaying = false
     }
 
     /// Called from a TaskGroup child once a segment finishes processing.

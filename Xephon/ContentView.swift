@@ -314,7 +314,10 @@ struct ContentView: View {
                     onPlayRange: { start, end in
                         recorder.playRange(start: start, end: end)
                     },
+                    onStopRange: { recorder.stopPlayback() },
+                    isPreviewPlaying: recorder.isPreviewPlaying,
                     onCommit: { newText, newStart, newEnd in
+                        recorder.stopPlayback()
                         editingUtterance = nil
                         Task {
                             await recorder.commitHandEdit(
@@ -325,7 +328,10 @@ struct ContentView: View {
                             )
                         }
                     },
-                    onCancel: { editingUtterance = nil }
+                    onCancel: {
+                        recorder.stopPlayback()
+                        editingUtterance = nil
+                    }
                 )
             }
             // Speaker rename alert — raised by the row's context
@@ -557,27 +563,33 @@ struct ContentView: View {
         if speakers.count >= 2 {
             HStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        speakerChip(
-                            text: String(localized: "filter.speaker.all"),
-                            tint: .secondary,
-                            isSelected: selectedSpeakerFilter == nil
-                        ) {
-                            selectedSpeakerFilter = nil
-                        }
-                        ForEach(speakers, id: \.self) { id in
-                            let label = formatSpeakerLabel(
-                                id,
-                                multiSpeaker: true,
-                                customName: recorder.speakerDisplayName(forStored: id)
-                            )
-                            let tint = speakerTint(for: id)
+                    // Wrap the chip strip in a `GlassEffectContainer`
+                    // so adjacent glass capsules merge their blurs
+                    // and the morph feels fluid when a speaker is
+                    // added/removed.
+                    GlassEffectContainer(spacing: 8) {
+                        HStack(spacing: 8) {
                             speakerChip(
-                                text: label,
-                                tint: tint,
-                                isSelected: selectedSpeakerFilter == id
+                                text: String(localized: "filter.speaker.all"),
+                                tint: .secondary,
+                                isSelected: selectedSpeakerFilter == nil
                             ) {
-                                selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                                selectedSpeakerFilter = nil
+                            }
+                            ForEach(speakers, id: \.self) { id in
+                                let label = formatSpeakerLabel(
+                                    id,
+                                    multiSpeaker: true,
+                                    customName: recorder.speakerDisplayName(forStored: id)
+                                )
+                                let tint = speakerTint(for: id)
+                                speakerChip(
+                                    text: label,
+                                    tint: tint,
+                                    isSelected: selectedSpeakerFilter == id
+                                ) {
+                                    selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                                }
                             }
                         }
                     }
@@ -608,17 +620,13 @@ struct ContentView: View {
                 .font(.caption.bold())
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(
-                    tint.opacity(isSelected ? 0.25 : 0.08),
+                .foregroundStyle(tint)
+                .glassEffect(
+                    .regular
+                        .tint(tint.opacity(isSelected ? 0.55 : 0.2))
+                        .interactive(),
                     in: Capsule()
                 )
-                .overlay(
-                    Capsule().strokeBorder(
-                        tint.opacity(isSelected ? 0.6 : 0.2),
-                        lineWidth: isSelected ? 1.0 : 0.5
-                    )
-                )
-                .foregroundStyle(tint)
         }
         .buttonStyle(.plain)
     }
@@ -1192,6 +1200,14 @@ struct ContentView: View {
                     },
                     onRevert: { recorder.revertReevaluation(item.u) },
                     speakerCustomName: recorder.speakerDisplayName(forStored: item.u.speakerID),
+                    knownSpeakerIDs: recorder.knownSpeakerIDs(),
+                    speakerDisplayName: { recorder.speakerDisplayName(forStored: $0) },
+                    onReassignSpeaker: { newSpeakerID in
+                        recorder.reassignSpeaker(
+                            utteranceID: item.u.id,
+                            to: newSpeakerID
+                        )
+                    },
                     onRenameSpeaker: {
                         editingSpeakerStored = item.u.speakerID
                         editingSpeakerName = recorder

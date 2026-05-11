@@ -12,6 +12,14 @@ import Fusion
 /// content includes multi-line text input + two Stepper-backed
 /// time controls that don't fit in an alert.
 struct EditUtteranceSheet: View {
+    /// Minimum gap (s) the Stepper enforces between start and end
+    /// so `commitEnabled` (which requires `editedEnd > editedStart`)
+    /// stays satisfiable when the user nudges either bound right
+    /// up against the other. Also matches the Stepper's `step`
+    /// (0.1) one notch above zero, so a "drag start up against
+    /// end" hits a Stepper boundary, not a Stepper dead-stop.
+    private static let stepperMinGapSec: TimeInterval = 0.05
+
     let utterance: UtteranceEstimate
     /// Total length of the source audio in seconds — used to clamp
     /// the Stepper ranges so the user can't dial past EOF. `nil`
@@ -20,6 +28,11 @@ struct EditUtteranceSheet: View {
     /// upper bound falls back to `start + 60s` for the spinner.
     let maxDuration: TimeInterval?
     let onPlayRange: (TimeInterval, TimeInterval) -> Void
+    let onStopRange: () -> Void
+    /// Live "is a preview playing right now" flag from the
+    /// controller. Drives the play/stop icon swap on the preview
+    /// button so the user knows they can tap to interrupt.
+    let isPreviewPlaying: Bool
     let onCommit: (String, TimeInterval, TimeInterval) -> Void
     let onCancel: () -> Void
 
@@ -31,12 +44,16 @@ struct EditUtteranceSheet: View {
         utterance: UtteranceEstimate,
         maxDuration: TimeInterval?,
         onPlayRange: @escaping (TimeInterval, TimeInterval) -> Void,
+        onStopRange: @escaping () -> Void,
+        isPreviewPlaying: Bool,
         onCommit: @escaping (String, TimeInterval, TimeInterval) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.utterance = utterance
         self.maxDuration = maxDuration
         self.onPlayRange = onPlayRange
+        self.onStopRange = onStopRange
+        self.isPreviewPlaying = isPreviewPlaying
         self.onCommit = onCommit
         self.onCancel = onCancel
         _editedText = State(initialValue: utterance.transcript)
@@ -75,17 +92,21 @@ struct EditUtteranceSheet: View {
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 120)
                     .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(uiColor: .secondarySystemBackground))
-                    )
+                    .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 sectionHeader(String(localized: "edit.range.header"))
                 HStack(alignment: .center, spacing: 16) {
                     Button {
-                        onPlayRange(editedStart, editedEnd)
+                        if isPreviewPlaying {
+                            onStopRange()
+                        } else {
+                            onPlayRange(editedStart, editedEnd)
+                        }
                     } label: {
-                        Image(systemName: "play.circle.fill")
+                        Image(systemName: isPreviewPlaying
+                            ? "stop.circle.fill"
+                            : "play.circle.fill"
+                        )
                             .font(.largeTitle)
                             .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(Color.accentColor)
@@ -97,23 +118,27 @@ struct EditUtteranceSheet: View {
                         timeControl(
                             label: String(localized: "edit.range.start"),
                             value: $editedStart,
-                            in: 0...max(0, editedEnd - 0.05)
+                            in: 0...max(0, editedEnd - Self.stepperMinGapSec)
                         )
                         timeControl(
                             label: String(localized: "edit.range.end"),
                             value: $editedEnd,
-                            in: min(editedStart + 0.05, upperBound)...upperBound
+                            in: min(editedStart + Self.stepperMinGapSec, upperBound)...upperBound
                         )
                     }
                 }
                 .padding(12)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                )
+                .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Opaque sheet backdrop. Without this, the inner
+            // `.glassEffect` cards sample whatever's underneath the
+            // sheet (the transcript list) and refract its colors
+            // through — a list full of completed-state green
+            // re-evaluate markers tints the whole sheet green.
+            // Glass is meant to layer over a neutral surface, not
+            // over arbitrary app content.
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "edit.title"))
             .navigationBarTitleDisplayMode(.inline)
@@ -184,13 +209,6 @@ struct EditUtteranceSheet: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(uiColor: .tertiarySystemFill))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color(uiColor: .separator).opacity(0.4), lineWidth: 0.5)
-        )
+        .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

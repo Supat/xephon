@@ -55,6 +55,10 @@
 "speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";
 "speaker.rename.save" = "保存";
 "speaker.rename.cancel" = "キャンセル";
+"speaker.action.title" = "話者";
+"speaker.action.reassign.header" = "変更先";
+"speaker.action.newSpeaker" = "新しい話者";
+"speaker.action.rename" = "話者の名前を変更…";
 "edit.title" = "発話を編集";
 "edit.transcript.header" = "テキスト";
 "edit.range.header" = "音声範囲";
@@ -62,3 +66,4 @@
 "edit.range.end" = "終了 (秒)";
 "edit.commit" = "確定";
 "edit.cancel" = "キャンセル";
+"edit.badge" = "編集済み";

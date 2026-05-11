@@ -50,7 +50,7 @@ struct SummaryCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     /// Top three labels sorted by confidence-weighted score

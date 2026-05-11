@@ -18,9 +18,7 @@ struct NewUtteranceCapsule: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.tertiary, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+            .glassEffect(.regular.interactive(), in: Capsule())
         }
         .buttonStyle(.plain)
     }

@@ -55,6 +55,10 @@
 "speaker.rename.message" = "Pick a custom name for speaker %@. Leave blank to revert to the default.";
 "speaker.rename.save" = "Save";
 "speaker.rename.cancel" = "Cancel";
+"speaker.action.title" = "Speaker";
+"speaker.action.reassign.header" = "Reassign to";
+"speaker.action.newSpeaker" = "New Speaker";
+"speaker.action.rename" = "Rename Speaker…";
 "edit.title" = "Edit Utterance";
 "edit.transcript.header" = "Transcript";
 "edit.range.header" = "Audio Range";
@@ -62,3 +66,4 @@
 "edit.range.end" = "End (s)";
 "edit.commit" = "Commit";
 "edit.cancel" = "Cancel";
+"edit.badge" = "Edited";

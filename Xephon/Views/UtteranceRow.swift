@@ -60,11 +60,22 @@ struct UtteranceRow: View {
     /// Custom name for this row's speaker if the user renamed it,
     /// nil otherwise. Drives the chip display.
     let speakerCustomName: String?
-    /// Fires when the user long-presses the speaker chip.
-    /// ContentView's binding raises a TextField alert pre-filled
-    /// with the current name; confirming there calls
-    /// `recorder.renameSpeaker`. Clearing the field + Save reverts
-    /// to the default `S01`/`M01` label.
+    /// Speaker ids currently appearing in the session, sorted.
+    /// Drives the chip's reassign menu (we filter out this row's
+    /// current speaker at render time so it reads as a "switch to"
+    /// list rather than a picker with one disabled entry).
+    let knownSpeakerIDs: [String]
+    /// Resolves a stored speaker id (e.g. `S01`) to its custom
+    /// display name when the user has renamed it. Returns nil for
+    /// default-named speakers. Used by the chip menu so a
+    /// reassignment target reads `S02 Alice` instead of just `S02`.
+    let speakerDisplayName: (String) -> String?
+    /// Fires when the user picks a different speaker from the chip
+    /// menu. ContentView calls `recorder.reassignSpeaker`.
+    let onReassignSpeaker: (String) -> Void
+    /// Fires when the user picks "Rename Speaker…" from the chip
+    /// menu. ContentView raises the existing rename alert
+    /// pre-filled with the current override.
     let onRenameSpeaker: () -> Void
     /// Fires when the user long-presses the transcript text.
     /// ContentView raises the Edit Utterance sheet. Confirming the
@@ -78,9 +89,34 @@ struct UtteranceRow: View {
     /// false the next time the button is tapped without a hold.
     @State private var revertJustFired: Bool = false
 
+    /// Drives the per-row speaker chip action sheet. Bound to a
+    /// `.confirmationDialog` attached to the chip Text so iPad
+    /// anchors the popover to the chip's frame instead of falling
+    /// back to a screen-default position.
+    @State private var showingSpeakerMenu: Bool = false
+
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
     // so positive vs negative read naturally and 0 maps to "neutral grey".
     private static let neutralEpsilon: Float = 0.05
+
+    /// Threshold for "open an editor or pop a menu" long-presses
+    /// (speaker chip, transcript text). 0.5 s is short enough to
+    /// feel responsive but long enough to not fight List
+    /// tap-to-select.
+    private static let editLongPressSec: Double = 0.5
+    /// Threshold for "revert this row" long-presses (re-evaluate
+    /// button, Edited badge). 2 s is deliberately past the
+    /// edit-press threshold so a momentary hold doesn't blow away
+    /// state — the user has to commit to the gesture.
+    private static let revertLongPressSec: Double = 2.0
+
+    /// Tint strength (0…1) applied to the Liquid Glass capsule
+    /// when the speaker color is laid over it. 0.4 gives a clearly
+    /// readable speaker identity while letting the underlying
+    /// glass blur the popover backdrop through.
+    private static let menuCapsuleTintOpacity: Double = 0.4
+    private static let menuCapsuleHPadding: CGFloat = 10
+    private static let menuCapsuleVPadding: CGFloat = 5
 
     var body: some View {
         HStack(alignment: .utteranceRowMainContent, spacing: 8) {
@@ -144,8 +180,24 @@ struct UtteranceRow: View {
                 ))
                     .font(.caption.bold())
                     .foregroundStyle(speakerTint(for: utterance.speakerID))
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                        onRenameSpeaker()
+                    .onLongPressGesture(minimumDuration: Self.editLongPressSec) {
+                        showingSpeakerMenu = true
+                    }
+                    // Custom popover (not `confirmationDialog`) so we
+                    // can render reassignment targets as the same
+                    // colored capsules the filter bar uses, instead
+                    // of the system action-sheet's plain text rows.
+                    // Anchored to the chip's frame; on compact
+                    // widths SwiftUI would normally adapt to a
+                    // sheet, but `.presentationCompactAdaptation(.popover)`
+                    // forces the popover form so anchoring stays
+                    // consistent across iPad and iPhone.
+                    .popover(
+                        isPresented: $showingSpeakerMenu,
+                        arrowEdge: .top
+                    ) {
+                        speakerMenuPopover
+                            .presentationCompactAdaptation(.popover)
                     }
                 if utterance.speechBoost == true {
                     Label("Boost", systemImage: "waveform.badge.plus")
@@ -153,27 +205,32 @@ struct UtteranceRow: View {
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .overlay(
-                            Capsule().strokeBorder(.orange.opacity(0.5), lineWidth: 0.5)
-                        )
                         .foregroundStyle(.orange)
+                        .glassEffect(.regular.tint(.orange.opacity(0.35)), in: Capsule())
                 }
                 // Hand-edit marker: appears immediately after Boost
                 // when the row's transcript/range was committed via
                 // the Edit Utterance dialog. Re-evaluating the row
                 // clears the flag (the controller's
                 // `applyReevaluation` rebuilds the row without
-                // `wasHandEdited`).
+                // `wasHandEdited`). A 2-second long-press reverts
+                // the row to its pre-hand-edit snapshot via the
+                // same `onRevert` path the re-evaluate button uses
+                // — both store into `preReevaluationSnapshots`, so
+                // a single revert handler covers both.
                 if utterance.wasHandEdited == true {
-                    Label("Edited", systemImage: "pencil.tip")
+                    Label(String(localized: "edit.badge"), systemImage: "pencil.tip")
                         .labelStyle(.titleAndIcon)
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .overlay(
-                            Capsule().strokeBorder(.blue.opacity(0.5), lineWidth: 0.5)
-                        )
                         .foregroundStyle(.blue)
+                        .glassEffect(.regular.tint(.blue.opacity(0.35)), in: Capsule())
+                        .onLongPressGesture(minimumDuration: Self.revertLongPressSec) {
+                            AppLog.app.info("edit badge long-press → revert")
+                            UISounds.playRevert()
+                            onRevert()
+                        }
                 }
             }
             // Transcript text — long-press (0.5 s) raises the Edit
@@ -183,10 +240,174 @@ struct UtteranceRow: View {
             // in the row isn't pre-empted.
             Text(utterance.transcript.isEmpty ? "—" : utterance.transcript)
                 .font(.body)
-                .onLongPressGesture(minimumDuration: 0.5) {
+                .onLongPressGesture(minimumDuration: Self.editLongPressSec) {
                     onEditTranscript()
                 }
         }
+    }
+
+    /// Content of the chip's reassignment popover. Renders every
+    /// other known speaker as a tappable capsule using the same
+    /// tint / shape / typography the filter bar uses, plus a final
+    /// "Rename Speaker…" row that hands off to the existing rename
+    /// alert via `onRenameSpeaker`. We don't show the current
+    /// speaker as a tappable target (would be a no-op); it's
+    /// surfaced in the header for orientation instead.
+    @ViewBuilder
+    private var speakerMenuPopover: some View {
+        let currentLabel = formatSpeakerLabel(
+            utterance.speakerID,
+            multiSpeaker: true,
+            customName: speakerCustomName
+        )
+        let others = knownSpeakerIDs.filter { $0 != utterance.speakerID }
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(localized: "speaker.action.title"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(currentLabel)
+                    .font(.caption.bold())
+                    .foregroundStyle(speakerTint(for: utterance.speakerID))
+            }
+            Text(String(localized: "speaker.action.reassign.header"))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            // Lay the capsules out horizontally, wrapping after
+            // every 5 entries so a session with many speakers
+            // doesn't blow the popover into a single very wide
+            // strip. Chunked HStacks read row-by-row left-to-
+            // right exactly like the filter bar.
+            VStack(alignment: .leading, spacing: 6) {
+                let rows = Self.chunked(others, size: Self.speakerMenuRowSize)
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 6) {
+                        ForEach(row, id: \.self) { spk in
+                            Button {
+                                onReassignSpeaker(spk)
+                                showingSpeakerMenu = false
+                            } label: {
+                                speakerMenuCapsule(spk)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Button {
+                    onReassignSpeaker(nextNewSpeakerID())
+                    showingSpeakerMenu = false
+                } label: {
+                    newSpeakerCapsule
+                }
+                .buttonStyle(.plain)
+            }
+            Divider()
+            Button {
+                onRenameSpeaker()
+                showingSpeakerMenu = false
+            } label: {
+                Label(
+                    String(localized: "speaker.action.rename"),
+                    systemImage: "pencil"
+                )
+                .font(.callout)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .frame(minWidth: 220, alignment: .leading)
+    }
+
+    /// Max reassignment capsules per row in the speaker popover.
+    /// Five keeps the popover narrow enough to anchor cleanly to a
+    /// chip in iPad split view, while still showing a typical
+    /// 3–6-speaker session without much wrapping.
+    private static let speakerMenuRowSize: Int = 5
+
+    /// Split `array` into consecutive chunks of `size`. The final
+    /// chunk may be shorter. Returns an empty array when the input
+    /// is empty so `ForEach` over the result is a no-op.
+    private static func chunked<T>(_ array: [T], size: Int) -> [[T]] {
+        guard size > 0, !array.isEmpty else { return [] }
+        var result: [[T]] = []
+        var index = 0
+        while index < array.count {
+            let end = min(index + size, array.count)
+            result.append(Array(array[index..<end]))
+            index = end
+        }
+        return result
+    }
+
+    /// Styling applied to every capsule inside the speaker
+    /// popover: tinted Liquid Glass capsule with the speaker's
+    /// color as the glass tint. Interactive variant so the system
+    /// renders the press-and-bounce affordance.
+    @ViewBuilder
+    private func popoverCapsule<Content: View>(
+        tint: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .font(.caption.bold())
+            .padding(.horizontal, Self.menuCapsuleHPadding)
+            .padding(.vertical, Self.menuCapsuleVPadding)
+            .foregroundStyle(tint)
+            .glassEffect(
+                .regular.tint(tint.opacity(Self.menuCapsuleTintOpacity)).interactive(),
+                in: Capsule()
+            )
+    }
+
+    /// One reassignment-target capsule, tinted by the destination
+    /// speaker's color so the menu reads as the same vocabulary as
+    /// the filter bar (though slightly bolder — popover entries are
+    /// actions, filter chips are indicators).
+    @ViewBuilder
+    private func speakerMenuCapsule(_ spk: String) -> some View {
+        popoverCapsule(tint: speakerTint(for: spk)) {
+            Text(formatSpeakerLabel(
+                spk,
+                multiSpeaker: true,
+                customName: speakerDisplayName(spk)
+            ))
+        }
+    }
+
+    /// "New Speaker" capsule rendered in neutral secondary tint
+    /// with a leading `plus` glyph. Tapping it reassigns the row to
+    /// a freshly minted `S0N` id (computed by `nextNewSpeakerID`),
+    /// covering the case where the diarizer merged two real
+    /// speakers into one or just missed a quiet turn entirely.
+    @ViewBuilder
+    private var newSpeakerCapsule: some View {
+        popoverCapsule(tint: .secondary) {
+            Label {
+                Text(String(localized: "speaker.action.newSpeaker"))
+            } icon: {
+                Image(systemName: "plus.circle.fill")
+            }
+        }
+    }
+
+    /// Compute the next free `S0N` speaker id by scanning the
+    /// numeric suffix of every known speaker and returning the
+    /// smallest positive integer not in use. Falls back to
+    /// `S\(N+1)` when no existing id parses (rare; would mean the
+    /// diarizer produced a non-`S\d+` label, e.g. a user-typed
+    /// override). Pure of any controller state — the row already
+    /// receives `knownSpeakerIDs` and that's the only input
+    /// needed.
+    private func nextNewSpeakerID() -> String {
+        var used: Set<Int> = []
+        for id in knownSpeakerIDs {
+            guard id.hasPrefix("S") else { continue }
+            if let n = Int(id.dropFirst()) { used.insert(n) }
+        }
+        var candidate = 1
+        while used.contains(candidate) { candidate += 1 }
+        return String(format: "S%02d", candidate)
     }
 
     @ViewBuilder
@@ -459,7 +680,7 @@ struct UtteranceRow: View {
             .buttonStyle(.borderless)
             .disabled(reevaluate == .disabled)
             .simultaneousGesture(
-                LongPressGesture(minimumDuration: 2.0)
+                LongPressGesture(minimumDuration: Self.revertLongPressSec)
                     .onEnded { _ in
                         guard reevaluate == .completed else { return }
                         AppLog.app.info("reevaluate long-press → revert")
