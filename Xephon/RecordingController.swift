@@ -736,6 +736,106 @@ final class RecordingController {
         await refreshInputs()
     }
 
+    // MARK: - Session save / load
+
+    /// Build a `SessionDocument` snapshot for the current state. For
+    /// file-mode sessions, embeds the source audio bytes inline so
+    /// playback round-trips after import; mic-mode sessions skip
+    /// the audio block per the schema's no-playback-for-mic contract.
+    ///
+    /// Throws when the audio file can't be read (e.g. the picker's
+    /// scope expired). Callers should ensure `playbackSourceURL` is
+    /// fresh before calling — `togglePlayback`-tested URLs are good.
+    func makeSessionDocument() throws -> SessionDocument {
+        let utts = utterances
+        if let url = playbackSourceURL {
+            let stillScoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if stillScoped { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let audioData = try Data(contentsOf: url)
+                return SessionDocument(
+                    sourceKind: .file,
+                    audioFilename: url.lastPathComponent,
+                    audio: audioData,
+                    utterances: utts
+                )
+            } catch {
+                throw SessionBundle.BundleError.ioFailure(
+                    "audio read failed: \(error.localizedDescription)"
+                )
+            }
+        }
+        return SessionDocument(
+            sourceKind: .microphone,
+            audioFilename: nil,
+            audio: nil,
+            utterances: utts
+        )
+    }
+
+    /// Replace the current session state with the contents of a
+    /// previously-saved bundle. No-op when not idle so we never
+    /// clobber an in-flight recording. Extracts the bundle's audio
+    /// (if any) to a sandboxed temp file and wires it as the new
+    /// playback source.
+    func loadSession(_ document: SessionDocument) async throws {
+        guard phase == .idle else { return }
+        stopPlayback()
+        utterances = document.utterances
+        conversationSummary.reset()
+        for u in utterances { conversationSummary.update(with: u) }
+        lastChunkSpeakerCount = 0
+        lastChunkSentenceCount = 0
+        lastAcousticDuration = nil
+        lastTextDuration = nil
+        lastSegmentTotal = nil
+        lastASRFinalizeLatency = nil
+        // Imported sessions act like a finished file analysis: in
+        // the .microphone source mode (so Record starts fresh) with
+        // a playback URL pointing at the extracted audio (so the
+        // per-row play button works).
+        sourceMode = .microphone
+        capture = micCapture
+        if let audioData = document.audio, !audioData.isEmpty {
+            let filename = document.audioFilename ?? "audio"
+            let tempDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "xephon-session-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            do {
+                try FileManager.default.createDirectory(
+                    at: tempDir,
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                throw SessionBundle.BundleError.ioFailure(
+                    "temp dir create failed: \(error.localizedDescription)"
+                )
+            }
+            let destination = tempDir.appendingPathComponent(filename)
+            do {
+                try audioData.write(to: destination, options: .atomic)
+            } catch {
+                throw SessionBundle.BundleError.ioFailure(
+                    "audio extract failed: \(error.localizedDescription)"
+                )
+            }
+            setPlaybackSourceURL(destination)
+            fileTotalAudioDuration = {
+                guard let f = try? AVAudioFile(forReading: destination) else { return nil }
+                let rate = f.processingFormat.sampleRate
+                guard rate > 0, f.length > 0 else { return nil }
+                return TimeInterval(Double(f.length) / rate)
+            }()
+        } else {
+            setPlaybackSourceURL(nil)
+            fileTotalAudioDuration = nil
+        }
+    }
+
     // MARK: - Per-utterance playback
 
     /// Assign `playbackSourceURL` while keeping the security-scoped

@@ -34,6 +34,8 @@
 "file.open" = "ファイルを開く";
 "menu.openAudioFile" = "開く…";
 "menu.exportJSON" = "JSONを書き出す";
+"menu.saveSession" = "セッションを保存…";
+"menu.importSession" = "セッションを読み込む…";
 "menu.findInUtterances" = "発話を検索…";
 "file.analyzing" = "%@ を解析中";
 "pacing.title" = "解析速度を選択";
