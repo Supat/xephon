@@ -34,6 +34,8 @@
 "file.open" = "Open File";
 "menu.openAudioFile" = "Open…";
 "menu.exportJSON" = "Export to JSON";
+"menu.saveSession" = "Save Session…";
+"menu.importSession" = "Import Session…";
 "menu.findInUtterances" = "Find in Utterances…";
 "file.analyzing" = "Analyzing %@";
 "pacing.title" = "Choose analysis pace";

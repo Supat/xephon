@@ -71,6 +71,36 @@ targets:
         # Required entitlement for ActivityKit Live Activities. Without
         # this key the system silently rejects `Activity.request`.
         NSSupportsLiveActivities: true
+        # Declaring CFBundleDocumentTypes implies the app can open
+        # files. The OS warns at link time without an explicit
+        # answer to "in place, or copy?". We open by reading the
+        # file's bytes once and decoding into in-memory state plus a
+        # sandboxed temp copy of the embedded audio — never editing
+        # the original — so in-place semantics are fine here.
+        LSSupportsOpeningDocumentsInPlace: true
+        # Register the `.xph` Xephon session bundle as an owned
+        # document type. Doing this in Info.plist (rather than only
+        # in code via `UTType(filenameExtension:)`) makes the system
+        # file picker grey out non-`.xph` files when the Import
+        # Session importer is opened — the picker checks
+        # `allowedContentTypes` against the file's declared UTType,
+        # which only resolves cleanly for registered types.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.supatsaetia.xephon.session
+            UTTypeDescription: Xephon Session
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - xph
+              public.mime-type:
+                - application/x-xephon-session
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Xephon Session
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.supatsaetia.xephon.session
     settings:
       base:
         PRODUCT_NAME: Xephon

@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Audio
+import Export
 import Fusion
 import SERText
 import XephonLogging
@@ -11,6 +12,26 @@ struct ContentView: View {
     @State private var shareURL: URL?
     @State private var showingDiscardConfirm: Bool = false
     @State private var showingFilePicker: Bool = false
+    /// What the next `.fileImporter` presentation should accept and
+    /// what its result-handler should do with the picked URL. Set
+    /// before flipping `showingFilePicker` to true. Two SwiftUI
+    /// `.fileImporter` modifiers attached to the same view chain
+    /// quietly collide on iPadOS 26 — the menu fires, the binding
+    /// flips, the document picker initializes, but nothing presents.
+    /// One fileImporter switching its content type and handler by
+    /// mode is the reliable shape.
+    @State private var filePickerMode: FilePickerMode = .audio
+    enum FilePickerMode { case audio, session }
+    /// True while the session-save panel is up. Driven by the
+    /// File → Save Session… menu command.
+    @State private var showingSaveSession: Bool = false
+    /// Snapshot bundled when the user invokes Save Session. Captured
+    /// at command time (synchronously) so the file-exporter sheet
+    /// writes a stable copy even if the user keeps interacting with
+    /// the app while it's open. Nil = no save in progress.
+    @State private var pendingSaveDocument: SessionFileDocument?
+    /// Last error from a save/load attempt; surfaces as an alert.
+    @State private var sessionIOError: String?
     @State private var pendingFileURL: URL?
     /// True when we successfully called
     /// `startAccessingSecurityScopedResource()` on `pendingFileURL`
@@ -122,6 +143,7 @@ struct ContentView: View {
             // observe `recorder` from app-level commands.
             .onChange(of: menuCommands.openAudioFileToken) { _, _ in
                 guard !recorder.isRecording, !recorder.isAnalyzing else { return }
+                filePickerMode = .audio
                 showingFilePicker = true
             }
             // File → Export to JSON (⌘S) command pipe. Same gating as the
@@ -142,36 +164,49 @@ struct ContentView: View {
                     }
                 }
             }
+            // File → Save Session… (⌘S). Snapshot the recorder's
+            // state into a `SessionDocument` synchronously, stash it
+            // in `pendingSaveDocument`, and present the
+            // `.fileExporter`. The exporter dismisses by clearing the
+            // pending doc so re-triggering works.
+            .onChange(of: menuCommands.saveSessionToken) { _, _ in
+                guard !recorder.utterances.isEmpty,
+                      !recorder.isRecording,
+                      !recorder.isAnalyzing else { return }
+                do {
+                    let doc = try recorder.makeSessionDocument()
+                    pendingSaveDocument = SessionFileDocument(session: doc)
+                    showingSaveSession = true
+                } catch {
+                    sessionIOError = String(describing: error)
+                }
+            }
+            // File → Import Session… (⇧⌘O). Reuses the single
+            // fileImporter by switching its mode to .session before
+            // raising it.
+            .onChange(of: menuCommands.importSessionToken) { _, _ in
+                guard !recorder.isRecording, !recorder.isAnalyzing else { return }
+                filePickerMode = .session
+                showingFilePicker = true
+            }
             // Edit → Find (⌘F): move keyboard focus into the search
             // field. Setting `@FocusState` to true is the only way to
             // programmatically focus a SwiftUI TextField.
             .onChange(of: menuCommands.findToken) { _, _ in
                 searchFieldFocused = true
             }
+            .modifier(SessionIOModifier(
+                showingSaveSession: $showingSaveSession,
+                pendingSaveDocument: $pendingSaveDocument,
+                sessionIOError: $sessionIOError,
+                defaultFilename: defaultSessionFilename()
+            ))
             .fileImporter(
                 isPresented: $showingFilePicker,
-                allowedContentTypes: [.audio, .mp3, .wav, .mpeg4Audio, .aiff],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    // Pin scope on the picker URL right here. On second
-                    // and later picks, the implicit grant doesn't
-                    // always survive the discard + pacing dialog hop —
-                    // grabbing the ref now keeps the URL readable
-                    // until RecordingController takes over.
-                    pendingFileURL = url
-                    pendingFileScopeAcquired = url.startAccessingSecurityScopedResource()
-                    if !recorder.utterances.isEmpty {
-                        showingFileDiscardConfirm = true
-                    } else {
-                        showingPacingDialog = true
-                    }
-                case .failure(let error):
-                    AppLog.app.error("file picker: \(String(describing: error), privacy: .public)")
-                }
-            }
+                allowedContentTypes: filePickerAllowedTypes,
+                allowsMultipleSelection: false,
+                onCompletion: handleFilePickerResult
+            )
             .alert(
                 String(localized: "record.discardConfirm.title"),
                 isPresented: $showingDiscardConfirm
@@ -435,29 +470,39 @@ struct ContentView: View {
     private var speakerChipBar: some View {
         let speakers = availableSpeakers
         if speakers.count >= 2 {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    speakerChip(
-                        text: String(localized: "filter.speaker.all"),
-                        tint: .secondary,
-                        isSelected: selectedSpeakerFilter == nil
-                    ) {
-                        selectedSpeakerFilter = nil
-                    }
-                    ForEach(speakers, id: \.self) { id in
-                        let label = formatSpeakerLabel(id, multiSpeaker: true)
-                        let tint = speakerTint(for: id)
+            HStack(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
                         speakerChip(
-                            text: label,
-                            tint: tint,
-                            isSelected: selectedSpeakerFilter == id
+                            text: String(localized: "filter.speaker.all"),
+                            tint: .secondary,
+                            isSelected: selectedSpeakerFilter == nil
                         ) {
-                            selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                            selectedSpeakerFilter = nil
+                        }
+                        ForEach(speakers, id: \.self) { id in
+                            let label = formatSpeakerLabel(id, multiSpeaker: true)
+                            let tint = speakerTint(for: id)
+                            speakerChip(
+                                text: label,
+                                tint: tint,
+                                isSelected: selectedSpeakerFilter == id
+                            ) {
+                                selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                            }
                         }
                     }
+                    .padding(.leading, 12)
+                    .padding(.vertical, 6)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                // Distinct speaker count, pinned to the trailing edge
+                // so the chip strip can scroll horizontally beneath it
+                // without pushing the count out of view.
+                Label("\(speakers.count)", systemImage: "person.2.fill")
+                    .font(.caption.monospacedDigit())
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 12)
             }
         }
     }
@@ -643,6 +688,11 @@ struct ContentView: View {
 
     private var openFileButton: some View {
         Button {
+            // Strict audio entry point: pin the picker mode to
+            // `.audio` so a stale mode left over from an earlier
+            // Import Session… invocation can't leak through and
+            // make this button accept `.xph` files.
+            filePickerMode = .audio
             showingFilePicker = true
         } label: {
             Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
@@ -825,6 +875,71 @@ struct ContentView: View {
             formatClock(recorder.elapsedSeconds),
             formatCount(recorder.samplesCaptured)
         )
+    }
+
+    /// Content types the single shared fileImporter advertises, based
+    /// on which menu command opened it. `xephonSession` is registered
+    /// via project.yml's `UTExportedTypeDeclarations`, so the picker
+    /// greys out non-`.xph` files when in session mode.
+    private var filePickerAllowedTypes: [UTType] {
+        switch filePickerMode {
+        case .audio:
+            return [.audio, .mp3, .wav, .mpeg4Audio, .aiff]
+        case .session:
+            return [.xephonSession]
+        }
+    }
+
+    /// Single dispatcher for the shared fileImporter. The audio path
+    /// pins security scope and hands off to the pacing dialog; the
+    /// session path reads + decodes synchronously off MainActor.
+    private func handleFilePickerResult(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            switch filePickerMode {
+            case .audio:
+                pendingFileURL = url
+                pendingFileScopeAcquired = url.startAccessingSecurityScopedResource()
+                if !recorder.utterances.isEmpty {
+                    showingFileDiscardConfirm = true
+                } else {
+                    showingPacingDialog = true
+                }
+            case .session:
+                Task { await loadSessionFromPickedFile(url) }
+            }
+        case .failure(let error):
+            AppLog.app.error("file picker: \(String(describing: error), privacy: .public)")
+            if filePickerMode == .session {
+                sessionIOError = String(describing: error)
+            }
+        }
+    }
+
+    /// Filename suggestion for the Save Session… panel. Uses an
+    /// ISO-8601-ish stamp so successive saves don't collide and so
+    /// the user can scan the file list chronologically.
+    private func defaultSessionFilename() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HHmm"
+        return "xephon-\(fmt.string(from: Date())).xph"
+    }
+
+    /// Read a picked `.xph` URL into the recorder. Security-scoped:
+    /// the picker hands us a scoped URL; we hold it just long enough
+    /// to read the bytes and let `loadSession` extract any audio
+    /// into the app's sandbox.
+    private func loadSessionFromPickedFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let document = try SessionBundle.decode(data)
+            try await recorder.loadSession(document)
+        } catch {
+            sessionIOError = String(describing: error)
+        }
     }
 
     /// Release the picker's scope ref we grabbed in the fileImporter
