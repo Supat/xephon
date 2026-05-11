@@ -19,6 +19,13 @@ final class RecordingController {
     }
 
     private(set) var phase: Phase = .idle
+    /// Bumped on every utterance mutation that doesn't change
+    /// `utterances.count` (re-evaluate replaces in place, session
+    /// import can in theory load a same-length list). The ContentView
+    /// filter memo uses this as part of its dependency key so an
+    /// in-place mutation forces the cache to rebuild — without it the
+    /// re-evaluated row's old content would stay on screen.
+    private(set) var utterancesVersion: Int = 0
     private(set) var samplesCaptured: Int = 0
     /// Total audio duration (in source seconds) of the file currently
     /// being analyzed, or nil when not in file mode / before the file
@@ -854,6 +861,9 @@ final class RecordingController {
         guard phase == .idle else { return }
         stopPlayback()
         utterances = document.utterances
+        // Same-length imports would otherwise hit the filter memo;
+        // bump defensively so the cache rebuilds for any load.
+        utterancesVersion &+= 1
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
         lastChunkSpeakerCount = 0
@@ -1116,6 +1126,11 @@ final class RecordingController {
             fusedTopLabel: fresh.fusedTopLabel
         )
         utterances[index] = merged
+        // Bump so the ContentView filter memo invalidates — replacing
+        // an element in place leaves `utterances.count` unchanged,
+        // which the memo's dep key would otherwise treat as a cache
+        // hit and return the pre-re-eval row.
+        utterancesVersion &+= 1
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
     }

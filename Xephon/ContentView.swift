@@ -832,7 +832,8 @@ struct ContentView: View {
                 : JapaneseSearchNormalizer.normalize(trimmed),
             labelFilter: selectedLabelFilter,
             speakerFilter: selectedSpeakerFilter,
-            utteranceCount: recorder.utterances.count
+            utteranceCount: recorder.utterances.count,
+            utterancesVersion: recorder.utterancesVersion
         )
         if filterMemo.lastKey == key { return }
 
@@ -1262,10 +1263,12 @@ private struct FilterDepsKey: Equatable {
     let normalizedQuery: String
     let labelFilter: String?
     let speakerFilter: String?
-    /// Utterance count is sufficient identity for this app — the
-    /// list is append-only within a session, and full replacements
-    /// (session import, recorder reset) always change the count.
+    /// Utterance count handles appends (live streaming) and most
+    /// resets. Paired with `utterancesVersion` for in-place mutations
+    /// (re-evaluate) where the count doesn't change but the content
+    /// did. Both are O(1) reads off the controller.
     let utteranceCount: Int
+    let utterancesVersion: Int
 }
 
 /// Reference-typed memo for the filter + summary derivation in
