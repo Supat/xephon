@@ -323,24 +323,40 @@ final class AnalysisPipeline: Sendable {
         let allTokens = segments.flatMap(\.tokens)
         let trimmedText: String
         let trimmedAudio: AudioChunk
+        // Corrected absolute time range for the result. When token
+        // timing is available, the first / last chosen token's audio
+        // times tell us where the kept sentences actually begin and
+        // end in the source file — the row's timestamp updates to
+        // match. When token timing is missing, we fall back to the
+        // caller's originalStart/originalEnd anchors.
+        let correctedStart: TimeInterval
+        let correctedEnd: TimeInterval
         if let endTokenIdx = Self.lastSentenceEndTokenIndex(in: allTokens) {
             let chosen = Array(allTokens[0...endTokenIdx])
             trimmedText = chosen.map(\.text).joined()
+            let firstBufferLocal = chosen.first?.start ?? 0
+            let lastBufferLocal = chosen.last?.end ?? firstBufferLocal
             trimmedAudio = Self.sliceAudioFromStart(
                 audio,
-                upToBufferLocalEnd: chosen.last?.end ?? 0
+                upToBufferLocalEnd: lastBufferLocal
             )
+            correctedStart = audio.timestamp + firstBufferLocal
+            correctedEnd = audio.timestamp + lastBufferLocal
         } else if let terminatedPrefix = Self.allFullSentences(in: combinedText),
                   terminatedPrefix.count < combinedText.count {
             // No tokens, but text-level terminator(s) found. Trim
             // text at the last terminator, keep audio.
             trimmedText = terminatedPrefix
             trimmedAudio = audio
+            correctedStart = originalStart
+            correctedEnd = originalEnd
         } else {
             // No terminator at all (single-clause utterance or
             // transcriber didn't punctuate). Keep everything.
             trimmedText = combinedText
             trimmedAudio = audio
+            correctedStart = originalStart
+            correctedEnd = originalEnd
         }
         guard !trimmedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !trimmedAudio.samples.isEmpty else {
@@ -352,8 +368,8 @@ final class AnalysisPipeline: Sendable {
             : confidences.reduce(0, +) / Float(confidences.count)
         let synthesized = ASRSegment(
             text: trimmedText,
-            start: originalStart,
-            end: originalEnd,
+            start: correctedStart,
+            end: correctedEnd,
             confidence: combinedConfidence,
             tokens: []
         )

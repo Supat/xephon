@@ -1200,15 +1200,24 @@ final class RecordingController {
         }
     }
 
-    /// Replace the utterance whose `id == utteranceID` with a merge of
-    /// the original's identity (`id`, `start`, `end`, `speakerID`,
-    /// `speechBoost`) and the freshly-computed content (`transcript`,
-    /// `asrConfidence`, all SER scores, fusion outputs). Stamps
-    /// `wasReevaluated = true` on the merged result so the marker
-    /// rides along with the utterance through Save/Load and JSON
-    /// export. Rebuilds the running conversation summary from scratch
-    /// — ConversationSummary is an incremental fold with no "replace"
-    /// path, and N is small enough that re-folding is cheap.
+    /// Replace the utterance whose `id == utteranceID` with a merge
+    /// of the original's identity (`id`, `speakerID`, `speechBoost`)
+    /// and the freshly-computed content. `start` and `end` now come
+    /// from `fresh` so the row's displayed timestamp updates to the
+    /// re-evaluated audio range — typically a tighter span than the
+    /// streaming pass produced, since the sentence-aware trim
+    /// landed on per-token anchors. Stamps `wasReevaluated = true`
+    /// so the marker rides along with the utterance through
+    /// Save/Load and JSON export. Rebuilds the running conversation
+    /// summary from scratch — ConversationSummary is an incremental
+    /// fold with no "replace" path, and N is small enough that
+    /// re-folding is cheap.
+    ///
+    /// After the replacement, re-sorts `utterances` if the corrected
+    /// `start` moved the row out of chronological order — without
+    /// this, a substantially-shifted re-eval could leave the list
+    /// out of order, and List's identity-stable rendering would
+    /// keep it at its old position visually.
     private func applyReevaluation(utteranceID: UUID, fresh: UtteranceEstimate) {
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else {
             return
@@ -1217,8 +1226,8 @@ final class RecordingController {
         let merged = UtteranceEstimate(
             id: original.id,
             speakerID: original.speakerID,
-            start: original.start,
-            end: original.end,
+            start: fresh.start,
+            end: fresh.end,
             transcript: fresh.transcript,
             asrConfidence: fresh.asrConfidence,
             dimensional: fresh.dimensional,
@@ -1233,6 +1242,14 @@ final class RecordingController {
             fusedTopLabel: fresh.fusedTopLabel
         )
         utterances[index] = merged
+        // If the corrected start moved the row out of chronological
+        // order with its neighbours, re-sort. Cheap (small N, stable
+        // sort) and keeps the list consistent for filtering /
+        // selection /scroll. No-op when the shift was small enough
+        // that the row's still in the right place.
+        if !Self.isChronologicallyOrdered(utterances, around: index) {
+            utterances.sort { $0.start < $1.start }
+        }
         // Bump so the ContentView filter memo invalidates — replacing
         // an element in place leaves `utterances.count` unchanged,
         // which the memo's dep key would otherwise treat as a cache
@@ -1240,6 +1257,23 @@ final class RecordingController {
         utterancesVersion &+= 1
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// True when the element at `index` is in chronological order
+    /// relative to its immediate neighbours. Cheap O(1) check used
+    /// by `applyReevaluation` to skip the sort when the corrected
+    /// timestamp didn't actually move the row past anyone.
+    private static func isChronologicallyOrdered(
+        _ utterances: [UtteranceEstimate],
+        around index: Int
+    ) -> Bool {
+        if index > 0, utterances[index - 1].start > utterances[index].start {
+            return false
+        }
+        if index + 1 < utterances.count, utterances[index].start > utterances[index + 1].start {
+            return false
+        }
+        return true
     }
 
     /// Read a sub-range of `fileURL` and resample to the pipeline's
