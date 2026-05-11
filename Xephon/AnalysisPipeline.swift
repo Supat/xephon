@@ -258,30 +258,61 @@ final class AnalysisPipeline: Sendable {
         speakerID: String,
         onVolatileText: (@Sendable @MainActor (String) -> Void)? = nil
     ) async throws -> (UtteranceEstimate, ProcessingMetrics)? {
-        // Forward the volatile-text callback only when the configured
-        // transcriber is the Apple SpeechAnalyzer variant — it's the
-        // only one we know exposes rolling hypotheses. WhisperKit /
-        // Qwen3 fall back to final-only output. The Transcriber
-        // protocol stays unchanged.
-        let segments: [ASRSegment]
+        let segments = try await transcribeForReevaluation(
+            audio: audio,
+            onVolatileText: onVolatileText
+        )
+        return try await reevaluateFromSegments(
+            segments: segments,
+            audio: audio,
+            originalStart: originalStart,
+            originalEnd: originalEnd,
+            speakerID: speakerID
+        )
+    }
+
+    /// Run the offline transcriber for a re-evaluate pass and return
+    /// its raw segments. Split out from `reevaluate` so callers can
+    /// drive their own retry / back-pad-expansion loops (e.g.
+    /// short-utterance retry) without paying the SER + fusion cost
+    /// on each iteration. Forwards the volatile callback only when
+    /// the configured transcriber is the Apple variant — others
+    /// fall back to final-only.
+    func transcribeForReevaluation(
+        audio: AudioChunk,
+        onVolatileText: (@Sendable @MainActor (String) -> Void)? = nil
+    ) async throws -> [ASRSegment] {
         if let speech = transcriber as? SpeechAnalyzerTranscriber, onVolatileText != nil {
-            segments = try await speech.transcribe(audio, onVolatileText: onVolatileText)
-        } else {
-            segments = try await transcriber.transcribe(audio)
+            return try await speech.transcribe(audio, onVolatileText: onVolatileText)
         }
+        return try await transcriber.transcribe(audio)
+    }
+
+    /// Trim already-collected segments to "every full sentence", slice
+    /// the audio in lockstep, and run SER + fusion. Same flow as
+    /// `reevaluate`; just lets the caller supply the segments. The
+    /// short-utterance retry path uses this to avoid re-running ASR
+    /// after it already has the segments that contain a terminator.
+    func reevaluateFromSegments(
+        segments: [ASRSegment],
+        audio: AudioChunk,
+        originalStart: TimeInterval,
+        originalEnd: TimeInterval,
+        speakerID: String
+    ) async throws -> (UtteranceEstimate, ProcessingMetrics)? {
         guard !segments.isEmpty else { return nil }
         let combinedText = segments.map(\.text).joined()
         guard !combinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
         // Keep every full sentence the offline ASR produced; drop any
-        // trailing fragment that didn't terminate. The 1 s pad on
-        // each side of the original utterance often picks up the
-        // leading phoneme of the next sentence (or the tail of the
-        // previous one), and SpeechAnalyzer happily transcribes
-        // whatever's there — but those fragments rarely punctuate
-        // cleanly. Trimming at the LAST terminator gets us every
-        // committed sentence while pruning the unfinished tail.
+        // trailing fragment that didn't terminate. The pad on each
+        // side of the original utterance often picks up the leading
+        // phoneme of the next sentence (or the tail of the previous
+        // one), and SpeechAnalyzer happily transcribes whatever's
+        // there — but those fragments rarely punctuate cleanly.
+        // Trimming at the LAST terminator gets us every committed
+        // sentence while pruning the unfinished tail.
         //
         // When the offline ASR emitted per-token timing we trim the
         // audio chunk in lockstep so acoustic SER sees only the
@@ -331,6 +362,20 @@ final class AnalysisPipeline: Sendable {
             segmentAudio: trimmedAudio,
             fallbackSpeakerID: speakerID
         )
+    }
+
+    /// True when `segments` contain at least one sentence-ending
+    /// character anywhere in their concatenated text. Used by the
+    /// short-utterance retry path to decide whether the current
+    /// back-pad is enough to capture a full sentence boundary, or
+    /// whether to grow the pad and try offline ASR again.
+    static func segmentsContainFullSentence(_ segments: [ASRSegment]) -> Bool {
+        for segment in segments {
+            if segment.text.contains(where: { sentenceEndChars.contains($0) }) {
+                return true
+            }
+        }
+        return false
     }
 
     /// Index of the LAST token whose text ends with a sentence-end

@@ -1018,11 +1018,26 @@ final class RecordingController {
     /// pass's finalizer cuts segments at the volatile-stabilization
     /// boundary, which often clips the first phoneme of an utterance;
     /// 500 ms of lead-in gives offline ASR a chance to recover it.
-    /// No back padding is applied — the segment's tail is already
-    /// preserved by streaming, and the sentence-aware trim in
-    /// `AnalysisPipeline.reevaluate` drops anything past the last
-    /// terminator anyway.
+    /// No back padding is applied in the long-utterance path — the
+    /// segment's tail is already preserved by streaming, and the
+    /// sentence-aware trim in `AnalysisPipeline.reevaluate` drops
+    /// anything past the last terminator anyway.
     private static let reevaluationPaddingSec: TimeInterval = 0.5
+
+    /// Below this duration, the original streaming utterance is
+    /// probably an incomplete fragment (the volatile-stabilization
+    /// boundary cut mid-sentence). Re-evaluate then enters a retry
+    /// loop, growing the back pad in steps until offline ASR
+    /// produces a transcript containing a sentence terminator.
+    private static let shortUtteranceThresholdSec: TimeInterval = 1.0
+    /// Initial and per-iteration step for back padding when retrying
+    /// the short-utterance case.
+    private static let reevaluationBackPadStepSec: TimeInterval = 1.0
+    /// Hard cap on back padding so a recording with no clean sentence
+    /// boundary anywhere ahead doesn't keep growing the read forever.
+    /// 10 s is comfortably longer than any realistic Japanese
+    /// conversational sentence.
+    private static let reevaluationMaxBackPadSec: TimeInterval = 10.0
 
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
     /// on each side) to offline ASR, then run SER + fusion on the new
@@ -1051,47 +1066,120 @@ final class RecordingController {
         }
 
         let extendedStart = max(0, utterance.start - Self.reevaluationPaddingSec)
-        // No back padding: the streaming pass already keeps audio up
-        // to the segment's tail, and the sentence-aware trim in
-        // `AnalysisPipeline.reevaluate` drops anything past the last
-        // terminator anyway. Front padding is the only side that
-        // meaningfully helps offline ASR recover a clipped leading
-        // phoneme.
-        let extendedEnd = utterance.end
         let speakerID = utterance.speakerID
         let originalStart = utterance.start
         let originalEnd = utterance.end
+        let originalDuration = originalEnd - originalStart
         let utteranceID = utterance.id
 
         let pipeline = await ensurePipeline()
+        let volatileHandler: @Sendable @MainActor (String) -> Void = { [weak self] text in
+            // Stream the offline ASR's rolling hypothesis into the
+            // same `volatileText` slot the live ASR uses, so the
+            // pipeline panel's preview animates during a
+            // re-evaluation the same way it does during recording.
+            // Awaited inside the transcriber, so no callbacks race
+            // the defer's final clear.
+            self?.volatileText = text
+        }
+
         do {
-            let chunk = try await Task.detached(priority: .userInitiated) {
-                try Self.readAudioChunkForReevaluation(
-                    fileURL: url,
-                    start: extendedStart,
-                    end: extendedEnd
-                )
-            }.value
-            guard !chunk.samples.isEmpty else {
-                AppLog.app.warning("reevaluate: extended audio range was empty")
+            // Long-utterance path: single read, single ASR call, done.
+            if originalDuration >= Self.shortUtteranceThresholdSec {
+                let chunk = try await Task.detached(priority: .userInitiated) {
+                    try Self.readAudioChunkForReevaluation(
+                        fileURL: url,
+                        start: extendedStart,
+                        end: originalEnd
+                    )
+                }.value
+                guard !chunk.samples.isEmpty else {
+                    AppLog.app.warning("reevaluate: extended audio range was empty")
+                    return
+                }
+                guard let (fresh, _) = try await pipeline.reevaluate(
+                    audio: chunk,
+                    originalStart: originalStart,
+                    originalEnd: originalEnd,
+                    speakerID: speakerID,
+                    onVolatileText: volatileHandler
+                ) else {
+                    AppLog.app.warning("reevaluate: offline ASR returned no transcript")
+                    return
+                }
+                applyReevaluation(utteranceID: utteranceID, fresh: fresh)
                 return
             }
-            guard let (fresh, _) = try await pipeline.reevaluate(
+
+            // Short-utterance path: streaming likely cut mid-sentence.
+            // Grow back-padding in steps and rerun offline ASR until
+            // the transcript contains a sentence terminator (or the
+            // pad cap is reached, or the file is exhausted).
+            AppLog.app.info(
+                "reevaluate: short utterance (\(originalDuration, privacy: .public)s) — entering back-pad retry loop"
+            )
+            var backPad: TimeInterval = Self.reevaluationBackPadStepSec
+            var previousSampleCount = -1
+            var matchedSegments: [ASRSegment]?
+            var matchedAudio: AudioChunk?
+
+            while backPad <= Self.reevaluationMaxBackPadSec {
+                let currentEnd = originalEnd + backPad
+                let chunk = try await Task.detached(priority: .userInitiated) {
+                    try Self.readAudioChunkForReevaluation(
+                        fileURL: url,
+                        start: extendedStart,
+                        end: currentEnd
+                    )
+                }.value
+                if chunk.samples.isEmpty {
+                    AppLog.app.warning("reevaluate: empty read at backPad=\(backPad, privacy: .public)s")
+                    break
+                }
+                if chunk.samples.count == previousSampleCount {
+                    // File-end clamping returned the same audio as
+                    // the previous iteration. No point in growing
+                    // the pad further; offline ASR will produce the
+                    // same output again.
+                    AppLog.app.info(
+                        "reevaluate: file exhausted at backPad=\(backPad, privacy: .public)s; stopping retry"
+                    )
+                    break
+                }
+                previousSampleCount = chunk.samples.count
+
+                let segments = try await pipeline.transcribeForReevaluation(
+                    audio: chunk,
+                    onVolatileText: volatileHandler
+                )
+                if AnalysisPipeline.segmentsContainFullSentence(segments) {
+                    AppLog.app.info(
+                        "reevaluate: found full sentence at backPad=\(backPad, privacy: .public)s"
+                    )
+                    matchedSegments = segments
+                    matchedAudio = chunk
+                    break
+                }
+                AppLog.app.info(
+                    "reevaluate: no terminator at backPad=\(backPad, privacy: .public)s; growing"
+                )
+                backPad += Self.reevaluationBackPadStepSec
+            }
+
+            guard let segments = matchedSegments, let chunk = matchedAudio else {
+                AppLog.app.warning(
+                    "reevaluate: no full sentence found within \(Self.reevaluationMaxBackPadSec, privacy: .public)s of back pad; preserving original"
+                )
+                return
+            }
+            guard let (fresh, _) = try await pipeline.reevaluateFromSegments(
+                segments: segments,
                 audio: chunk,
                 originalStart: originalStart,
                 originalEnd: originalEnd,
-                speakerID: speakerID,
-                onVolatileText: { [weak self] text in
-                    // Stream the offline ASR's rolling hypothesis into
-                    // the same `volatileText` slot the live ASR uses,
-                    // so the pipeline panel's preview animates during
-                    // a re-evaluation the same way it does during
-                    // recording. Awaited inside the transcriber, so
-                    // no callbacks race the defer's final clear.
-                    self?.volatileText = text
-                }
+                speakerID: speakerID
             ) else {
-                AppLog.app.warning("reevaluate: offline ASR returned no transcript")
+                AppLog.app.warning("reevaluate: pipeline rejected segments after retry")
                 return
             }
             applyReevaluation(utteranceID: utteranceID, fresh: fresh)
