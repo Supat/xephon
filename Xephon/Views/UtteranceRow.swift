@@ -36,12 +36,15 @@ struct UtteranceRow: View {
 
     /// Re-evaluate availability mirrors `PlaybackAvailability` but
     /// without a toggle state — re-evaluate is one-shot. `.running`
-    /// renders a spinner for the row whose re-evaluation is in flight.
+    /// renders a spinner for the row whose re-evaluation is in flight;
+    /// `.completed` keeps the button tappable but tints it green so
+    /// the user can see which entries have been refreshed.
     enum ReevaluateAvailability: Equatable {
         case unavailable
         case disabled
         case idle
         case running
+        case completed
     }
 
     let number: Int
@@ -365,18 +368,30 @@ struct UtteranceRow: View {
                 // doesn't shift width while a re-evaluation is in
                 // flight.
                 .frame(width: 22, height: 22)
-        case .disabled, .idle:
+        case .disabled, .idle, .completed:
             Button(action: {
                 AppLog.app.info("reevaluate button tapped (state=\(String(describing: self.reevaluate), privacy: .public))")
                 onReevaluate()
             }) {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .font(.title3)
-                    .foregroundStyle(reevaluate == .disabled ? Color.secondary : Color.accentColor)
+                    .foregroundStyle(reevaluateTint)
                     .symbolRenderingMode(.hierarchical)
             }
             .buttonStyle(.borderless)
             .disabled(reevaluate == .disabled)
+        }
+    }
+
+    /// Foreground tint for the re-evaluate button. `.completed` rows
+    /// stay green even when re-disabled (e.g. another row is mid-
+    /// re-evaluation) so the completion marker doesn't flicker away
+    /// the moment a new pass starts elsewhere in the list.
+    private var reevaluateTint: Color {
+        switch reevaluate {
+        case .completed: return .green
+        case .disabled: return .secondary
+        default: return .accentColor
         }
     }
 }

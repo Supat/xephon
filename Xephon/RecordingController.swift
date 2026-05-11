@@ -74,6 +74,13 @@ final class RecordingController {
     /// list while one runs (offline ASR + SER serialize naturally and
     /// we don't want competing audio reads).
     private(set) var reevaluatingUtteranceID: UUID?
+    /// IDs of utterances that have been successfully re-evaluated at
+    /// least once during the current session. The row tints its
+    /// re-evaluate button green for these so the user can see at a
+    /// glance which entries have been refreshed. Cleared at session
+    /// start and on Save/Load so a fresh session begins with no
+    /// completion markers.
+    private(set) var reevaluatedUtteranceIDs: Set<UUID> = []
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
@@ -351,6 +358,7 @@ final class RecordingController {
             errorMessage = nil
             samplesCaptured = 0
             utterances = []
+            reevaluatedUtteranceIDs.removeAll()
             conversationSummary.reset()
             capturedAudio.reset()
             sessionStartedAt = Date()
@@ -854,6 +862,7 @@ final class RecordingController {
         guard phase == .idle else { return }
         stopPlayback()
         utterances = document.utterances
+        reevaluatedUtteranceIDs.removeAll()
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
         lastChunkSpeakerCount = 0
@@ -1097,6 +1106,7 @@ final class RecordingController {
             fusedTopLabel: fresh.fusedTopLabel
         )
         utterances[index] = merged
+        reevaluatedUtteranceIDs.insert(utteranceID)
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
     }

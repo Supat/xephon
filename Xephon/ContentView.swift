@@ -1045,13 +1045,16 @@ struct ContentView: View {
     /// Re-evaluate availability matches playback's gating (no source
     /// audio → unavailable, recording/analyzing → disabled), plus a
     /// dedicated `.running` for the one row whose re-evaluation is in
-    /// flight. Other rows get `.disabled` during a re-evaluation so
-    /// the user can't queue overlapping passes.
+    /// flight and `.completed` for rows that have been successfully
+    /// re-evaluated at least once in this session. Other rows get
+    /// `.disabled` during a re-evaluation so the user can't queue
+    /// overlapping passes.
     private func reevaluateAvailability(for u: UtteranceEstimate) -> UtteranceRow.ReevaluateAvailability {
         guard recorder.playbackSourceURL != nil else { return .unavailable }
         if recorder.reevaluatingUtteranceID == u.id { return .running }
         if recorder.isRecording || recorder.isAnalyzing { return .disabled }
         if recorder.reevaluatingUtteranceID != nil { return .disabled }
+        if recorder.reevaluatedUtteranceIDs.contains(u.id) { return .completed }
         return .idle
     }
 
