@@ -34,6 +34,16 @@ struct UtteranceRow: View {
         case playing
     }
 
+    /// Re-evaluate availability mirrors `PlaybackAvailability` but
+    /// without a toggle state — re-evaluate is one-shot. `.running`
+    /// renders a spinner for the row whose re-evaluation is in flight.
+    enum ReevaluateAvailability: Equatable {
+        case unavailable
+        case disabled
+        case idle
+        case running
+    }
+
     let number: Int
     let utterance: UtteranceEstimate
     let isMultiSpeaker: Bool
@@ -41,6 +51,8 @@ struct UtteranceRow: View {
     let onToggleExpanded: () -> Void
     let playback: PlaybackAvailability
     let onPlaybackToggle: () -> Void
+    let reevaluate: ReevaluateAvailability
+    let onReevaluate: () -> Void
 
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
     // so positive vs negative read naturally and 0 maps to "neutral grey".
@@ -48,7 +60,7 @@ struct UtteranceRow: View {
 
     var body: some View {
         HStack(alignment: .utteranceRowMainContent, spacing: 8) {
-            playbackButton
+            leadingButtonColumn
             // Tap-to-expand surface excludes the playback button so
             // tapping the button (or the small dead zone immediately
             // around it) doesn't also toggle the expansion.
@@ -304,6 +316,21 @@ struct UtteranceRow: View {
         return .gray
     }
 
+    /// Playback + re-evaluate stacked vertically at the row's leading
+    /// edge. Hidden entirely when both buttons are unavailable (mic
+    /// mode), so the row's text content reflows to the left rather
+    /// than carrying the HStack's spacer when there's no audio.
+    @ViewBuilder
+    private var leadingButtonColumn: some View {
+        let hidden = playback == .unavailable && reevaluate == .unavailable
+        if !hidden {
+            VStack(spacing: 4) {
+                playbackButton
+                reevaluateButton
+            }
+        }
+    }
+
     @ViewBuilder
     private var playbackButton: some View {
         switch playback {
@@ -323,6 +350,33 @@ struct UtteranceRow: View {
             // List selection — `.plain` doesn't on every platform.
             .buttonStyle(.borderless)
             .disabled(playback == .disabled)
+        }
+    }
+
+    @ViewBuilder
+    private var reevaluateButton: some View {
+        switch reevaluate {
+        case .unavailable:
+            EmptyView()
+        case .running:
+            ProgressView()
+                .controlSize(.small)
+                // Match the playback icon's footprint so the column
+                // doesn't shift width while a re-evaluation is in
+                // flight.
+                .frame(width: 22, height: 22)
+        case .disabled, .idle:
+            Button(action: {
+                AppLog.app.info("reevaluate button tapped (state=\(String(describing: self.reevaluate), privacy: .public))")
+                onReevaluate()
+            }) {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(reevaluate == .disabled ? Color.secondary : Color.accentColor)
+                    .symbolRenderingMode(.hierarchical)
+            }
+            .buttonStyle(.borderless)
+            .disabled(reevaluate == .disabled)
         }
     }
 }

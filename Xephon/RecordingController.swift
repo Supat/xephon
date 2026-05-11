@@ -68,6 +68,12 @@ final class RecordingController {
     /// is playing. The row uses this to flip its play icon to stop
     /// and to disable other rows' buttons while one is mid-playback.
     private(set) var playingUtteranceID: UUID?
+    /// ID of the utterance currently being re-evaluated, nil when no
+    /// re-evaluation is in flight. Used to drive the per-row spinner
+    /// and to disable all playback / re-evaluate buttons across the
+    /// list while one runs (offline ASR + SER serialize naturally and
+    /// we don't want competing audio reads).
+    private(set) var reevaluatingUtteranceID: UUID?
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
@@ -993,6 +999,249 @@ final class RecordingController {
         } catch {
             AppLog.app.error("playback open failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    // MARK: - Per-utterance re-evaluate
+
+    /// Padding applied to the original utterance boundary on each side
+    /// before re-feeding the audio to offline ASR. The streaming pass's
+    /// finalizer cuts segments at the volatile-stabilization boundary,
+    /// which often clips the first phoneme of an utterance or the
+    /// trailing tail of sentence-final particles. 500 ms is wide
+    /// enough to recover those without dragging in neighbour-speaker
+    /// audio in typical conversational pacing.
+    private static let reevaluationPaddingSec: TimeInterval = 0.5
+
+    /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
+    /// on each side) to offline ASR, then run SER + fusion on the new
+    /// result and replace the utterance in `utterances` in place. The
+    /// utterance's `id`, `start`, `end`, `speakerID`, and `speechBoost`
+    /// are preserved so list position, selection, and Save/Load
+    /// identity all hold across the re-evaluation.
+    ///
+    /// No-op when there's no source audio (mic mode), when the
+    /// session is mid-recording / mid-analysis, or when another
+    /// re-evaluation is already in flight. The button gates these
+    /// in the UI; the guards here are defense-in-depth.
+    func reevaluate(_ utterance: UtteranceEstimate) async {
+        guard reevaluatingUtteranceID == nil else { return }
+        guard phase == .idle else { return }
+        guard let url = playbackSourceURL else { return }
+
+        reevaluatingUtteranceID = utterance.id
+        defer { reevaluatingUtteranceID = nil }
+
+        let extendedStart = max(0, utterance.start - Self.reevaluationPaddingSec)
+        let extendedEnd = utterance.end + Self.reevaluationPaddingSec
+        let speakerID = utterance.speakerID
+        let originalStart = utterance.start
+        let originalEnd = utterance.end
+        let utteranceID = utterance.id
+
+        let pipeline = await ensurePipeline()
+        do {
+            let chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url,
+                    start: extendedStart,
+                    end: extendedEnd
+                )
+            }.value
+            guard !chunk.samples.isEmpty else {
+                AppLog.app.warning("reevaluate: extended audio range was empty")
+                return
+            }
+            guard let (fresh, _) = try await pipeline.reevaluate(
+                audio: chunk,
+                originalStart: originalStart,
+                originalEnd: originalEnd,
+                speakerID: speakerID
+            ) else {
+                AppLog.app.warning("reevaluate: offline ASR returned no transcript")
+                return
+            }
+            applyReevaluation(utteranceID: utteranceID, fresh: fresh)
+        } catch {
+            AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Replace the utterance whose `id == utteranceID` with a merge of
+    /// the original's identity (`id`, `start`, `end`, `speakerID`,
+    /// `speechBoost`) and the freshly-computed content (`transcript`,
+    /// `asrConfidence`, all SER scores, fusion outputs). Rebuilds the
+    /// running conversation summary from scratch — ConversationSummary
+    /// is an incremental fold with no "replace" path, and N is small
+    /// enough that re-folding is cheap.
+    private func applyReevaluation(utteranceID: UUID, fresh: UtteranceEstimate) {
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else {
+            return
+        }
+        let original = utterances[index]
+        let merged = UtteranceEstimate(
+            id: original.id,
+            speakerID: original.speakerID,
+            start: original.start,
+            end: original.end,
+            transcript: fresh.transcript,
+            asrConfidence: fresh.asrConfidence,
+            dimensional: fresh.dimensional,
+            acousticCategorical: fresh.acousticCategorical,
+            plutchik: fresh.plutchik,
+            textBackend: fresh.textBackend,
+            speechBoost: original.speechBoost,
+            fusedValence: fresh.fusedValence,
+            fusedArousal: fresh.fusedArousal,
+            fusedDominance: fresh.fusedDominance,
+            fusedTopLabel: fresh.fusedTopLabel
+        )
+        utterances[index] = merged
+        conversationSummary.reset()
+        for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// Read a sub-range of `fileURL` and resample to the pipeline's
+    /// 16 kHz mono Float32 format. Used by `reevaluate` — runs on a
+    /// detached task so the file I/O and AVAudioConverter pass don't
+    /// hitch the MainActor. `start` and `end` are absolute seconds in
+    /// the file's native timeline; both are clamped to `[0, duration]`
+    /// here so a padded-past-EOF range comes back as a partial chunk
+    /// rather than failing.
+    nonisolated private static func readAudioChunkForReevaluation(
+        fileURL: URL,
+        start: TimeInterval,
+        end: TimeInterval
+    ) throws -> AudioChunk {
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: fileURL)
+        } catch {
+            throw AudioError.underlying(error)
+        }
+        let inputFormat = file.processingFormat
+        let inputRate = inputFormat.sampleRate
+        guard inputRate > 0 else {
+            throw AudioError.unsupportedFormat(
+                expected: ">0 Hz",
+                got: "\(inputRate) Hz"
+            )
+        }
+        let totalDuration = TimeInterval(Double(file.length) / inputRate)
+        let clampedStart = max(0, min(start, totalDuration))
+        let clampedEnd = max(clampedStart, min(end, totalDuration))
+        let startFrame = AVAudioFramePosition(clampedStart * inputRate)
+        let endFrame = AVAudioFramePosition(clampedEnd * inputRate)
+        let inputFrames = AVAudioFrameCount(max(0, endFrame - startFrame))
+        guard inputFrames > 0 else {
+            return AudioChunk(
+                samples: [],
+                sampleRate: PipelineAudio.sampleRate,
+                timestamp: clampedStart
+            )
+        }
+
+        file.framePosition = startFrame
+        guard let inputBuffer = AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
+            frameCapacity: inputFrames
+        ) else {
+            throw AudioError.unsupportedFormat(
+                expected: "input PCM buffer",
+                got: "alloc failed"
+            )
+        }
+        do {
+            try file.read(into: inputBuffer, frameCount: inputFrames)
+        } catch {
+            throw AudioError.underlying(error)
+        }
+
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: PipelineAudio.sampleRate,
+            channels: AVAudioChannelCount(PipelineAudio.channelCount),
+            interleaved: false
+        ) else {
+            throw AudioError.unsupportedFormat(
+                expected: "16 kHz mono Float32",
+                got: "alloc failed"
+            )
+        }
+
+        let sameFormat = inputFormat.sampleRate == outputFormat.sampleRate
+            && inputFormat.channelCount == outputFormat.channelCount
+            && inputFormat.commonFormat == outputFormat.commonFormat
+            && inputFormat.isInterleaved == outputFormat.isInterleaved
+        if sameFormat {
+            guard let channelData = inputBuffer.floatChannelData else {
+                throw AudioError.unsupportedFormat(
+                    expected: "Float32 channel data",
+                    got: "nil"
+                )
+            }
+            let count = Int(inputBuffer.frameLength)
+            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: count))
+            return AudioChunk(
+                samples: samples,
+                sampleRate: PipelineAudio.sampleRate,
+                timestamp: clampedStart
+            )
+        }
+
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            throw AudioError.unsupportedFormat(
+                expected: String(describing: outputFormat),
+                got: String(describing: inputFormat)
+            )
+        }
+        converter.primeMethod = .none
+
+        let ratio = outputFormat.sampleRate / inputFormat.sampleRate
+        let outCapacity = AVAudioFrameCount(
+            (Double(inputBuffer.frameLength) * ratio).rounded(.up)
+        ) + 1024
+        guard let outBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: outCapacity
+        ) else {
+            throw AudioError.unsupportedFormat(
+                expected: "output PCM buffer",
+                got: "alloc failed"
+            )
+        }
+
+        var convError: NSError?
+        final class Once: @unchecked Sendable { var fired = false }
+        let once = Once()
+        let block: AVAudioConverterInputBlock = { _, status in
+            if once.fired {
+                status.pointee = .endOfStream
+                return nil
+            }
+            once.fired = true
+            status.pointee = .haveData
+            return inputBuffer
+        }
+        let result = converter.convert(to: outBuffer, error: &convError, withInputFrom: block)
+        if result == .error {
+            throw AudioError.underlying(
+                convError ?? NSError(domain: "Reevaluate", code: -1)
+            )
+        }
+
+        guard let channelData = outBuffer.floatChannelData else {
+            throw AudioError.unsupportedFormat(
+                expected: "Float32 channel data",
+                got: "nil"
+            )
+        }
+        let count = Int(outBuffer.frameLength)
+        let samples = Array(UnsafeBufferPointer(start: channelData[0], count: count))
+        return AudioChunk(
+            samples: samples,
+            sampleRate: PipelineAudio.sampleRate,
+            timestamp: clampedStart
+        )
     }
 
     /// Stop any in-flight playback. Safe to call when nothing is

@@ -1033,7 +1033,25 @@ struct ContentView: View {
     private func playbackAvailability(for u: UtteranceEstimate) -> UtteranceRow.PlaybackAvailability {
         guard recorder.playbackSourceURL != nil else { return .unavailable }
         if recorder.isRecording || recorder.isAnalyzing { return .disabled }
+        // Disable playback across the list while a re-evaluation is
+        // in flight — offline ASR + SER serialize naturally and the
+        // user shouldn't be racing audio reads against the
+        // re-analysis pass.
+        if recorder.reevaluatingUtteranceID != nil { return .disabled }
         if recorder.playingUtteranceID == u.id { return .playing }
+        return .idle
+    }
+
+    /// Re-evaluate availability matches playback's gating (no source
+    /// audio → unavailable, recording/analyzing → disabled), plus a
+    /// dedicated `.running` for the one row whose re-evaluation is in
+    /// flight. Other rows get `.disabled` during a re-evaluation so
+    /// the user can't queue overlapping passes.
+    private func reevaluateAvailability(for u: UtteranceEstimate) -> UtteranceRow.ReevaluateAvailability {
+        guard recorder.playbackSourceURL != nil else { return .unavailable }
+        if recorder.reevaluatingUtteranceID == u.id { return .running }
+        if recorder.isRecording || recorder.isAnalyzing { return .disabled }
+        if recorder.reevaluatingUtteranceID != nil { return .disabled }
         return .idle
     }
 
@@ -1075,7 +1093,11 @@ struct ContentView: View {
                     isExpanded: expandedUtteranceIDs.contains(item.u.id),
                     onToggleExpanded: { toggleExpansion(item.u.id) },
                     playback: playbackAvailability(for: item.u),
-                    onPlaybackToggle: { recorder.togglePlayback(for: item.u) }
+                    onPlaybackToggle: { recorder.togglePlayback(for: item.u) },
+                    reevaluate: reevaluateAvailability(for: item.u),
+                    onReevaluate: {
+                        Task { await recorder.reevaluate(item.u) }
+                    }
                 )
                 .id(item.u.id)
                 .onAppear { visibleUtteranceIDs.insert(item.u.id) }

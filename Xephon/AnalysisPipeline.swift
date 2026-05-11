@@ -236,6 +236,51 @@ final class AnalysisPipeline: Sendable {
         await (textSER as? SwitchingTextSER)?.setBackend(backend)
     }
 
+    /// Re-run offline ASR on `audio` and fuse the result with fresh SER
+    /// estimates. Used by per-utterance "re-evaluate" — the caller has
+    /// already pulled the relevant slice from the source file (padded
+    /// front and back so ASR has prosodic context the streaming pass
+    /// didn't see at the segment boundary). The original utterance's
+    /// time range and speaker are preserved on the result; only
+    /// transcript / SER / fusion outputs come from the new run.
+    ///
+    /// Returns nil when offline ASR finds no usable transcript in the
+    /// padded audio (silent gap, drowned by noise) — callers should
+    /// leave the original utterance in place rather than collapsing it
+    /// to empty text. Multiple sub-segments from offline ASR are
+    /// concatenated into one synthesized ASRSegment whose start/end
+    /// match the caller's preserved range; per-token timing is dropped
+    /// because we don't have a consistent timeline to slot it into.
+    func reevaluate(
+        audio: AudioChunk,
+        originalStart: TimeInterval,
+        originalEnd: TimeInterval,
+        speakerID: String
+    ) async throws -> (UtteranceEstimate, ProcessingMetrics)? {
+        let segments = try await transcriber.transcribe(audio)
+        guard !segments.isEmpty else { return nil }
+        let combinedText = segments.map(\.text).joined()
+        guard !combinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let confidences = segments.compactMap(\.confidence)
+        let combinedConfidence: Float? = confidences.isEmpty
+            ? nil
+            : confidences.reduce(0, +) / Float(confidences.count)
+        let synthesized = ASRSegment(
+            text: combinedText,
+            start: originalStart,
+            end: originalEnd,
+            confidence: combinedConfidence,
+            tokens: []
+        )
+        return try await processSegment(
+            asr: synthesized,
+            segmentAudio: audio,
+            fallbackSpeakerID: speakerID
+        )
+    }
+
     /// Per-segment SER + fusion. Caller is responsible for slicing the
     /// audio segment out of the source buffer and for resolving the
     /// speaker ID upstream — this method just stamps `fallbackSpeakerID`
