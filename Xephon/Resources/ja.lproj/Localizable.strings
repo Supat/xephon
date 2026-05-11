@@ -33,7 +33,7 @@
 "export.json" = "JSON書き出し";
 "file.open" = "ファイルを開く";
 "menu.openAudioFile" = "開く…";
-"menu.exportJSON" = "JSONを書き出す";
+"menu.exportJSON" = "JSONを書き出す…";
 "menu.saveSession" = "セッションを保存…";
 "menu.importSession" = "セッションを読み込む…";
 "menu.findInUtterances" = "発話を検索…";

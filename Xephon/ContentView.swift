@@ -1050,12 +1050,19 @@ struct ContentView: View {
     /// the user can't queue overlapping passes. Reading the flag off
     /// the utterance itself means the green marker survives Save/Load
     /// and shows up in the JSON export alongside the affect data.
+    ///
+    /// `.completed` is checked **before** the session-busy `.disabled`
+    /// branches so the green marker stays put while another row's
+    /// re-evaluation runs. The controller's own guards
+    /// (`reevaluatingUtteranceID == nil`, `phase == .idle`) keep the
+    /// no-op safety net intact for any tap that arrives during the
+    /// busy window.
     private func reevaluateAvailability(for u: UtteranceEstimate) -> UtteranceRow.ReevaluateAvailability {
         guard recorder.playbackSourceURL != nil else { return .unavailable }
         if recorder.reevaluatingUtteranceID == u.id { return .running }
+        if u.wasReevaluated == true { return .completed }
         if recorder.isRecording || recorder.isAnalyzing { return .disabled }
         if recorder.reevaluatingUtteranceID != nil { return .disabled }
-        if u.wasReevaluated == true { return .completed }
         return .idle
     }
 

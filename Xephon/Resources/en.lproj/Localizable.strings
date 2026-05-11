@@ -33,7 +33,7 @@
 "export.json" = "Export JSON";
 "file.open" = "Open File";
 "menu.openAudioFile" = "Open…";
-"menu.exportJSON" = "Export to JSON";
+"menu.exportJSON" = "Export to JSON…";
 "menu.saveSession" = "Save Session…";
 "menu.importSession" = "Import Session…";
 "menu.findInUtterances" = "Find in Utterances…";
