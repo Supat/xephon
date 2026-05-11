@@ -20,6 +20,11 @@ final class RecordingController {
 
     private(set) var phase: Phase = .idle
     private(set) var samplesCaptured: Int = 0
+    /// Total audio duration (in source seconds) of the file currently
+    /// being analyzed, or nil when not in file mode / before the file
+    /// has been probed. Used by the status line to render a completion
+    /// percentage alongside wall-time and sample count.
+    private(set) var fileTotalAudioDuration: TimeInterval?
     private(set) var errorMessage: String?
     private(set) var utterances: [UtteranceEstimate] = []
     private(set) var inputLevel: Float = 0
@@ -44,6 +49,27 @@ final class RecordingController {
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
     private(set) var conversationSummary: ConversationSummary = ConversationSummary()
+    /// File URL whose utterances are currently loaded for playback.
+    /// Non-nil iff the most recent (or in-progress) session was a
+    /// file analysis. Cleared when a microphone session starts so
+    /// the playback button doesn't linger on mic-recorded rows.
+    /// Mutated through `setPlaybackSourceURL` so the matching
+    /// security-scoped access ref is balanced.
+    private(set) var playbackSourceURL: URL?
+    /// URL we currently hold a `startAccessingSecurityScopedResource`
+    /// ref on. Distinct from `playbackSourceURL` because the start
+    /// call can fail (e.g. for a non-scoped URL); we only stash here
+    /// after a successful start so the matching stop is balanced.
+    /// `AudioFileCapture` takes its own ref during analysis — refs
+    /// are independent, so dropping its ref at the end of analysis
+    /// doesn't invalidate ours.
+    private var scopedPlaybackURL: URL?
+    /// ID of the utterance currently playing back, nil when nothing
+    /// is playing. The row uses this to flip its play icon to stop
+    /// and to disable other rows' buttons while one is mid-playback.
+    private(set) var playingUtteranceID: UUID?
+    private var playbackPlayer: AVAudioPlayer?
+    private var playbackStopTask: Task<Void, Never>?
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
     /// SetupView is shown in place of the main UI.
     private(set) var modelsReady: Bool = false
@@ -53,6 +79,17 @@ final class RecordingController {
     var isWarmingUp: Bool { phase == .warmingUp }
     var elapsedSeconds: Double {
         Double(samplesCaptured) / PipelineAudio.sampleRate
+    }
+    /// Fraction of the file's audio that has been captured so far, in
+    /// `[0, 1]`. Nil when not in file mode or the duration probe at
+    /// `startFromFile` couldn't read the file. Compares the pipeline's
+    /// captured-sample audio time against the file's total duration —
+    /// independent of pacing (fast-pace pumps samples through faster
+    /// in wall-clock, but each sample still represents 1/16 ms of
+    /// audio either way).
+    var fileCompletionFraction: Double? {
+        guard let total = fileTotalAudioDuration, total > 0 else { return nil }
+        return min(1.0, max(0.0, elapsedSeconds / total))
     }
     /// Live size of the rolling capture buffer (the chunk SER + diarization
     /// slice from). Differs from `samplesCaptured`, which is monotonic for
@@ -314,6 +351,16 @@ final class RecordingController {
             lastASRFinalizeLatency = nil
             lastChunkSpeakerCount = 0
             lastChunkSentenceCount = 0
+            // Stop any prior playback. For mic-mode this also clears
+            // any prior file's playback ref via setPlaybackSourceURL.
+            // File-mode acquires its scope earlier in `startFromFile`
+            // — before any async hop — so the security-scoped URL is
+            // pinned while it's still fresh from the picker.
+            stopPlayback()
+            if case .microphone = sourceMode {
+                setPlaybackSourceURL(nil)
+                fileTotalAudioDuration = nil
+            }
             // Reset per-segment latencies so the pipeline visualization's
             // SER rows return to .idle when a new session starts.
             // Without this, lastAcousticDuration / lastTextDuration
@@ -572,14 +619,23 @@ final class RecordingController {
         await liveActivity.end(finalState: currentLiveActivityState)
         sessionStartedAt = nil
 
-        // File-backed sessions are one-shot: drop back to the live mic so
-        // the next Record tap behaves normally. The file analysis output
-        // remains in `utterances` for inspection/export.
+        // File-backed sessions are one-shot: drop back to the live mic
+        // so the next Record tap behaves normally. The file analysis
+        // output remains in `utterances` for inspection/export.
+        //
+        // We deliberately DO NOT call `refreshInputs()` here. Doing so
+        // routes through `AudioCapture.availableInputs()`, which
+        // forces the AVAudioSession into `.record / .measurement /
+        // [.allowBluetoothHFP]`. That config persists in the route
+        // graph even when we later set `.playback` on top of it, and
+        // `AVAudioPlayer.play()` returns true while the actual output
+        // is silent. The inputs list will refresh the next time the
+        // user presses Record (mic `start()` configures the session
+        // explicitly anyway).
         if case .file = sourceMode {
             sourceMode = .microphone
             asrLatencyMeaningful = true
             capture = micCapture
-            await refreshInputs()
         }
     }
 
@@ -635,6 +691,25 @@ final class RecordingController {
         audioOutputEnabled: Bool = false
     ) async {
         guard phase == .idle else { return }
+        // Acquire the playback scope synchronously, before any await
+        // hop. The picker's implicit grant for the URL is freshest
+        // right after the dialog dismisses; by the time the analysis
+        // task and AudioFileCapture's own scope ref have run, opening
+        // a new ref later (e.g. when the user taps Playback) can fail
+        // with permErr (-54). Holding our own ref here keeps the URL
+        // readable for the lifetime of `playbackSourceURL`.
+        setPlaybackSourceURL(url)
+        // Probe the file's length so the status line can render a
+        // completion percentage. AVAudioFile open is cheap and is
+        // immediately discarded — the capture pump opens its own.
+        // Falls back to nil when the file can't be parsed; the UI
+        // hides the percentage in that case.
+        fileTotalAudioDuration = {
+            guard let f = try? AVAudioFile(forReading: url) else { return nil }
+            let rate = f.processingFormat.sampleRate
+            guard rate > 0, f.length > 0 else { return nil }
+            return TimeInterval(Double(f.length) / rate)
+        }()
         sourceMode = .file(url)
         // ASR finalize latency only makes sense when audio time tracks
         // wall-clock time. Fast-pace pumps audio multi-x faster than
@@ -659,6 +734,114 @@ final class RecordingController {
         sourceMode = .microphone
         capture = micCapture
         await refreshInputs()
+    }
+
+    // MARK: - Per-utterance playback
+
+    /// Assign `playbackSourceURL` while keeping the security-scoped
+    /// access ref balanced. File-picker URLs only stay readable while
+    /// some part of the app holds a ref via
+    /// `startAccessingSecurityScopedResource()`; AudioFileCapture's
+    /// ref drops at the end of analysis, so we hold our own ref here
+    /// for the duration that the URL is exposed for playback. The
+    /// `start` can fail for already-accessible URLs (e.g. in tests),
+    /// which is fine — we just don't stash a stop counterpart.
+    private func setPlaybackSourceURL(_ newURL: URL?) {
+        if let scoped = scopedPlaybackURL {
+            scoped.stopAccessingSecurityScopedResource()
+            scopedPlaybackURL = nil
+        }
+        playbackSourceURL = newURL
+        if let url = newURL {
+            let ok = url.startAccessingSecurityScopedResource()
+            AppLog.app.info(
+                "playback scope start: \(ok ? "ok" : "skipped", privacy: .public) for \(url.lastPathComponent, privacy: .public)"
+            )
+            if ok { scopedPlaybackURL = url }
+        }
+    }
+
+    /// Toggle playback of the audio range `[utterance.start, utterance.end]`
+    /// from `playbackSourceURL`. No-op when there's no source URL (mic
+    /// session) or when analysis is still running — the row gates the
+    /// button so this is defense-in-depth. Tapping the row that's
+    /// currently playing stops it; tapping a different row stops the
+    /// previous playback and starts the new one.
+    func togglePlayback(for utterance: UtteranceEstimate) {
+        AppLog.app.info(
+            "togglePlayback called: utt=\(utterance.id, privacy: .public) src=\(self.playbackSourceURL?.lastPathComponent ?? "nil", privacy: .public) phase=\(String(describing: self.phase), privacy: .public) scoped=\(self.scopedPlaybackURL?.lastPathComponent ?? "nil", privacy: .public)"
+        )
+        guard let url = playbackSourceURL else {
+            AppLog.app.warning("togglePlayback: no playbackSourceURL")
+            return
+        }
+        guard phase == .idle else {
+            AppLog.app.warning("togglePlayback: phase not idle: \(String(describing: self.phase), privacy: .public)")
+            return
+        }
+        if playingUtteranceID == utterance.id {
+            stopPlayback()
+            return
+        }
+        stopPlayback()
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        do {
+            let session = AVAudioSession.sharedInstance()
+            AppLog.app.info(
+                "playback session BEFORE: category=\(session.category.rawValue, privacy: .public) mode=\(session.mode.rawValue, privacy: .public) outputs=\(session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ","), privacy: .public)"
+            )
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+            AppLog.app.info(
+                "playback session AFTER:  category=\(session.category.rawValue, privacy: .public) mode=\(session.mode.rawValue, privacy: .public) outputs=\(session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ","), privacy: .public)"
+            )
+        } catch {
+            AppLog.app.warning("playback session setup failed: \(String(describing: error), privacy: .public)")
+        }
+        #endif
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            // Retain the player BEFORE calling play(). If the local
+            // reference is the only retain at the moment of play(),
+            // the optimizer is free to release it on the next line —
+            // not normally an issue, but we've seen the case where
+            // state doesn't progress past idle on the second session.
+            playbackPlayer = player
+            player.prepareToPlay()
+            player.currentTime = max(0, utterance.start)
+            let didStart = player.play()
+            AppLog.app.info(
+                "togglePlayback: play() returned \(didStart ? "true" : "false", privacy: .public), duration=\(player.duration, privacy: .public)s, seek=\(player.currentTime, privacy: .public)s"
+            )
+            guard didStart else {
+                AppLog.app.warning("playback failed to start for \(utterance.id, privacy: .public)")
+                playbackPlayer = nil
+                return
+            }
+            playingUtteranceID = utterance.id
+            AppLog.app.info("togglePlayback: playingUtteranceID set to \(utterance.id, privacy: .public)")
+            let duration = max(0, utterance.end - utterance.start)
+            playbackStopTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.stopPlayback()
+            }
+        } catch {
+            AppLog.app.error("playback open failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Stop any in-flight playback. Safe to call when nothing is
+    /// playing — it just clears the latch.
+    func stopPlayback(caller: String = #function) {
+        if playingUtteranceID != nil || playbackPlayer != nil {
+            AppLog.app.info("stopPlayback called by \(caller, privacy: .public), playingID=\(self.playingUtteranceID?.uuidString ?? "nil", privacy: .public)")
+        }
+        playbackStopTask?.cancel()
+        playbackStopTask = nil
+        playbackPlayer?.stop()
+        playbackPlayer = nil
+        playingUtteranceID = nil
     }
 
     /// Called from a TaskGroup child once a segment finishes processing.

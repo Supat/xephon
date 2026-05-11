@@ -12,6 +12,13 @@ struct ContentView: View {
     @State private var showingDiscardConfirm: Bool = false
     @State private var showingFilePicker: Bool = false
     @State private var pendingFileURL: URL?
+    /// True when we successfully called
+    /// `startAccessingSecurityScopedResource()` on `pendingFileURL`
+    /// inside the picker callback. The picker's implicit grant can
+    /// expire over the multi-dialog hop to `startFromFile`, so we
+    /// pin scope as soon as the URL arrives and release it once the
+    /// recorder has taken its own ref (or the user has cancelled).
+    @State private var pendingFileScopeAcquired: Bool = false
     @State private var showingFileDiscardConfirm: Bool = false
     @State private var showingPacingDialog: Bool = false
     /// Currently-visible utterance row IDs. Maintained via per-row
@@ -138,7 +145,13 @@ struct ContentView: View {
                 switch result {
                 case .success(let urls):
                     guard let url = urls.first else { return }
+                    // Pin scope on the picker URL right here. On second
+                    // and later picks, the implicit grant doesn't
+                    // always survive the discard + pacing dialog hop —
+                    // grabbing the ref now keeps the URL readable
+                    // until RecordingController takes over.
                     pendingFileURL = url
+                    pendingFileScopeAcquired = url.startAccessingSecurityScopedResource()
                     if !recorder.utterances.isEmpty {
                         showingFileDiscardConfirm = true
                     } else {
@@ -170,11 +183,12 @@ struct ContentView: View {
             ) {
                 Button(String(localized: "record.discardConfirm.confirm"), role: .destructive) {
                     // Discard accepted — proceed to pacing choice. The
-                    // pendingFileURL is preserved across alerts.
+                    // pendingFileURL + scope ref are preserved across
+                    // alerts so they survive the second hop.
                     showingPacingDialog = true
                 }
                 Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
-                    pendingFileURL = nil
+                    releasePendingFileScope()
                 }
             } message: {
                 Text(
@@ -190,30 +204,26 @@ struct ContentView: View {
             ) {
                 Button(String(localized: "pacing.realtime")) {
                     if let url = pendingFileURL {
-                        Task { await recorder.startFromFile(url, realTimePacing: true) }
+                        startFromFileAndReleaseScope(url, realTimePacing: true)
                     }
-                    pendingFileURL = nil
                 }
                 Button(String(localized: "pacing.realtime.audio")) {
                     if let url = pendingFileURL {
-                        Task { await recorder.startFromFile(url, realTimePacing: true, audioOutputEnabled: true) }
+                        startFromFileAndReleaseScope(url, realTimePacing: true, audioOutputEnabled: true)
                     }
-                    pendingFileURL = nil
                 }
                 Button(String(localized: "pacing.fast8x")) {
                     if let url = pendingFileURL {
-                        Task { await recorder.startFromFile(url, realTimePacing: false, fastPaceMultiplier: 8) }
+                        startFromFileAndReleaseScope(url, realTimePacing: false, fastPaceMultiplier: 8)
                     }
-                    pendingFileURL = nil
                 }
                 Button(String(localized: "pacing.fast4x")) {
                     if let url = pendingFileURL {
-                        Task { await recorder.startFromFile(url, realTimePacing: false, fastPaceMultiplier: 4) }
+                        startFromFileAndReleaseScope(url, realTimePacing: false, fastPaceMultiplier: 4)
                     }
-                    pendingFileURL = nil
                 }
                 Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
-                    pendingFileURL = nil
+                    releasePendingFileScope()
                 }
             } message: {
                 Text(String(localized: "pacing.message"))
@@ -643,13 +653,15 @@ struct ContentView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Text(String(
-                    format: String(localized: "record.status.format"),
-                    formatClock(recorder.elapsedSeconds),
-                    formatCount(recorder.samplesCaptured)
-                ))
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
+                if case .file = recorder.sourceMode,
+                   let frac = recorder.fileCompletionFraction {
+                    ProgressView(value: frac)
+                        .progressViewStyle(.linear)
+                        .tint(.accentColor)
+                }
+                Text(statusLineText)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
         } else if recorder.isAnalyzing {
             HStack(spacing: 8) {
@@ -746,6 +758,65 @@ struct ContentView: View {
         }
     }
 
+    /// Wall-time + sample-count line for the active session.
+    /// File-mode shows the completion bar separately above this line,
+    /// so the text content is identical for both modes.
+    private var statusLineText: String {
+        String(
+            format: String(localized: "record.status.format"),
+            formatClock(recorder.elapsedSeconds),
+            formatCount(recorder.samplesCaptured)
+        )
+    }
+
+    /// Release the picker's scope ref we grabbed in the fileImporter
+    /// callback and clear the pending URL. Used by all cancel paths
+    /// in the discard / pacing dialogs.
+    private func releasePendingFileScope() {
+        if pendingFileScopeAcquired, let url = pendingFileURL {
+            url.stopAccessingSecurityScopedResource()
+        }
+        pendingFileScopeAcquired = false
+        pendingFileURL = nil
+    }
+
+    /// Hand the URL to the recorder (which acquires its own scope ref
+    /// synchronously in `startFromFile`), then release the picker's
+    /// ref we've been holding through the dialog hop.
+    private func startFromFileAndReleaseScope(
+        _ url: URL,
+        realTimePacing: Bool = false,
+        fastPaceMultiplier: Int = 8,
+        audioOutputEnabled: Bool = false
+    ) {
+        let acquired = pendingFileScopeAcquired
+        pendingFileScopeAcquired = false
+        pendingFileURL = nil
+        Task {
+            await recorder.startFromFile(
+                url,
+                realTimePacing: realTimePacing,
+                fastPaceMultiplier: fastPaceMultiplier,
+                audioOutputEnabled: audioOutputEnabled
+            )
+            if acquired {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+    }
+
+    /// Map the recorder's source/phase state onto the per-row playback
+    /// availability. Hidden for mic sessions, disabled while a file
+    /// analysis is still running (so the user knows playback is on
+    /// the way), idle when ready, and playing for the one row that's
+    /// currently mid-playback.
+    private func playbackAvailability(for u: UtteranceEstimate) -> UtteranceRow.PlaybackAvailability {
+        guard recorder.playbackSourceURL != nil else { return .unavailable }
+        if recorder.isRecording || recorder.isAnalyzing { return .disabled }
+        if recorder.playingUtteranceID == u.id { return .playing }
+        return .idle
+    }
+
     /// Flip the per-utterance expansion state. Invoked by long-press
     /// on a row and by Space-key while a row is the list selection.
     private func toggleExpansion(_ id: UUID) {
@@ -782,7 +853,9 @@ struct ContentView: View {
                     utterance: item.u,
                     isMultiSpeaker: distinctSpeakerCount > 1,
                     isExpanded: expandedUtteranceIDs.contains(item.u.id),
-                    onToggleExpanded: { toggleExpansion(item.u.id) }
+                    onToggleExpanded: { toggleExpansion(item.u.id) },
+                    playback: playbackAvailability(for: item.u),
+                    onPlaybackToggle: { recorder.togglePlayback(for: item.u) }
                 )
                 .id(item.u.id)
                 .onAppear { visibleUtteranceIDs.insert(item.u.id) }
