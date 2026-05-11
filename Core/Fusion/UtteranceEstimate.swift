@@ -29,6 +29,15 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     /// captured. Nil when unknown (e.g. batch processing of imported audio).
     public let speechBoost: Bool?
 
+    /// Whether this utterance was produced (or refreshed) by a manual
+    /// re-evaluate pass — offline ASR re-run with padded boundaries,
+    /// then SER + fusion redone. `true` after at least one successful
+    /// re-evaluation; nil for utterances that came straight from the
+    /// streaming pipeline. Persisted in both the `.xph` bundle and
+    /// the JSON export, so the marker survives a Save/Load round-trip
+    /// and shows up alongside the affect data in external tooling.
+    public let wasReevaluated: Bool?
+
     // Fused
     public let fusedValence: Float?
     public let fusedArousal: Float?
@@ -47,6 +56,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         plutchik: PlutchikScore?,
         textBackend: String? = nil,
         speechBoost: Bool? = nil,
+        wasReevaluated: Bool? = nil,
         fusedValence: Float?,
         fusedArousal: Float?,
         fusedDominance: Float?,
@@ -63,6 +73,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.plutchik = plutchik
         self.textBackend = textBackend
         self.speechBoost = speechBoost
+        self.wasReevaluated = wasReevaluated
         self.fusedValence = fusedValence
         self.fusedArousal = fusedArousal
         self.fusedDominance = fusedDominance
@@ -82,6 +93,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             plutchik: plutchik,
             textBackend: backend,
             speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -102,6 +114,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             plutchik: plutchik,
             textBackend: textBackend,
             speechBoost: enabled,
+            wasReevaluated: wasReevaluated,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,

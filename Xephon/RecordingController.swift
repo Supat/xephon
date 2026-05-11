@@ -74,13 +74,6 @@ final class RecordingController {
     /// list while one runs (offline ASR + SER serialize naturally and
     /// we don't want competing audio reads).
     private(set) var reevaluatingUtteranceID: UUID?
-    /// IDs of utterances that have been successfully re-evaluated at
-    /// least once during the current session. The row tints its
-    /// re-evaluate button green for these so the user can see at a
-    /// glance which entries have been refreshed. Cleared at session
-    /// start and on Save/Load so a fresh session begins with no
-    /// completion markers.
-    private(set) var reevaluatedUtteranceIDs: Set<UUID> = []
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
@@ -358,7 +351,6 @@ final class RecordingController {
             errorMessage = nil
             samplesCaptured = 0
             utterances = []
-            reevaluatedUtteranceIDs.removeAll()
             conversationSummary.reset()
             capturedAudio.reset()
             sessionStartedAt = Date()
@@ -862,7 +854,6 @@ final class RecordingController {
         guard phase == .idle else { return }
         stopPlayback()
         utterances = document.utterances
-        reevaluatedUtteranceIDs.removeAll()
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
         lastChunkSpeakerCount = 0
@@ -1016,11 +1007,12 @@ final class RecordingController {
     /// before re-feeding the audio to offline ASR. The streaming pass's
     /// finalizer cuts segments at the volatile-stabilization boundary,
     /// which often clips the first phoneme of an utterance or the
-    /// trailing tail of sentence-final particles. 1 s leaves room to
-    /// recover those plus a beat of prosodic context for SER, without
-    /// dragging in neighbour-speaker audio in typical conversational
-    /// pacing.
-    private static let reevaluationPaddingSec: TimeInterval = 1.0
+    /// trailing tail of sentence-final particles. 2 s gives offline
+    /// ASR ample prosodic context to recover those, and matches the
+    /// shortest `capForSER` bin so SER's center-crop won't have to
+    /// throw context away — the trade-off is a small risk of
+    /// neighbour-speaker audio bleeding in on fast turn-takes.
+    private static let reevaluationPaddingSec: TimeInterval = 2.0
 
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
     /// on each side) to offline ASR, then run SER + fusion on the new
@@ -1079,10 +1071,12 @@ final class RecordingController {
     /// Replace the utterance whose `id == utteranceID` with a merge of
     /// the original's identity (`id`, `start`, `end`, `speakerID`,
     /// `speechBoost`) and the freshly-computed content (`transcript`,
-    /// `asrConfidence`, all SER scores, fusion outputs). Rebuilds the
-    /// running conversation summary from scratch — ConversationSummary
-    /// is an incremental fold with no "replace" path, and N is small
-    /// enough that re-folding is cheap.
+    /// `asrConfidence`, all SER scores, fusion outputs). Stamps
+    /// `wasReevaluated = true` on the merged result so the marker
+    /// rides along with the utterance through Save/Load and JSON
+    /// export. Rebuilds the running conversation summary from scratch
+    /// — ConversationSummary is an incremental fold with no "replace"
+    /// path, and N is small enough that re-folding is cheap.
     private func applyReevaluation(utteranceID: UUID, fresh: UtteranceEstimate) {
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else {
             return
@@ -1100,13 +1094,13 @@ final class RecordingController {
             plutchik: fresh.plutchik,
             textBackend: fresh.textBackend,
             speechBoost: original.speechBoost,
+            wasReevaluated: true,
             fusedValence: fresh.fusedValence,
             fusedArousal: fresh.fusedArousal,
             fusedDominance: fresh.fusedDominance,
             fusedTopLabel: fresh.fusedTopLabel
         )
         utterances[index] = merged
-        reevaluatedUtteranceIDs.insert(utteranceID)
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
     }
