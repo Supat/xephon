@@ -1031,7 +1031,14 @@ final class RecordingController {
         guard let url = playbackSourceURL else { return }
 
         reevaluatingUtteranceID = utterance.id
-        defer { reevaluatingUtteranceID = nil }
+        // Reset any leftover preview from a prior recording. The
+        // defer below ensures we also clear on every exit path,
+        // including the early returns inside the do-block.
+        volatileText = ""
+        defer {
+            reevaluatingUtteranceID = nil
+            volatileText = ""
+        }
 
         let extendedStart = max(0, utterance.start - Self.reevaluationPaddingSec)
         let extendedEnd = utterance.end + Self.reevaluationPaddingSec
@@ -1057,7 +1064,16 @@ final class RecordingController {
                 audio: chunk,
                 originalStart: originalStart,
                 originalEnd: originalEnd,
-                speakerID: speakerID
+                speakerID: speakerID,
+                onVolatileText: { [weak self] text in
+                    // Stream the offline ASR's rolling hypothesis into
+                    // the same `volatileText` slot the live ASR uses,
+                    // so the pipeline panel's preview animates during
+                    // a re-evaluation the same way it does during
+                    // recording. Awaited inside the transcriber, so
+                    // no callbacks race the defer's final clear.
+                    self?.volatileText = text
+                }
             ) else {
                 AppLog.app.warning("reevaluate: offline ASR returned no transcript")
                 return

@@ -255,9 +255,20 @@ final class AnalysisPipeline: Sendable {
         audio: AudioChunk,
         originalStart: TimeInterval,
         originalEnd: TimeInterval,
-        speakerID: String
+        speakerID: String,
+        onVolatileText: (@Sendable @MainActor (String) -> Void)? = nil
     ) async throws -> (UtteranceEstimate, ProcessingMetrics)? {
-        let segments = try await transcriber.transcribe(audio)
+        // Forward the volatile-text callback only when the configured
+        // transcriber is the Apple SpeechAnalyzer variant — it's the
+        // only one we know exposes rolling hypotheses. WhisperKit /
+        // Qwen3 fall back to final-only output. The Transcriber
+        // protocol stays unchanged.
+        let segments: [ASRSegment]
+        if let speech = transcriber as? SpeechAnalyzerTranscriber, onVolatileText != nil {
+            segments = try await speech.transcribe(audio, onVolatileText: onVolatileText)
+        } else {
+            segments = try await transcriber.transcribe(audio)
+        }
         guard !segments.isEmpty else { return nil }
         let combinedText = segments.map(\.text).joined()
         guard !combinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

@@ -20,6 +20,25 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
     }
 
     public func transcribe(_ buffer: AudioChunk) async throws -> [ASRSegment] {
+        try await transcribe(buffer, onVolatileText: nil)
+    }
+
+    /// Variant that also forwards rolling volatile-result text to the
+    /// caller via `onVolatileText` as SpeechAnalyzer's stabilization
+    /// timers refine its hypothesis. The handler is invoked on the
+    /// MainActor (suitable for direct UI state writes) and is awaited
+    /// inside the actor, so by the time `transcribe` returns no
+    /// further callbacks are in flight — callers can safely clear any
+    /// preview text without racing a stray late firing.
+    ///
+    /// `.volatileResults` is always enabled. The single-arg overload
+    /// gets the same final-only behavior because `collectResults`
+    /// filters on `result.isFinal`; the only cost when no callback is
+    /// supplied is a few extra `isFinal == false` results we drop.
+    public func transcribe(
+        _ buffer: AudioChunk,
+        onVolatileText: (@Sendable @MainActor (String) -> Void)?
+    ) async throws -> [ASRSegment] {
         guard SpeechTranscriber.isAvailable else {
             throw ASRError.neuralEngineUnavailable
         }
@@ -30,7 +49,7 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         let transcriber = SpeechTranscriber(
             locale: resolvedLocale,
             transcriptionOptions: [],
-            reportingOptions: [],
+            reportingOptions: [.volatileResults],
             attributeOptions: [.audioTimeRange, .transcriptionConfidence]
         )
 
@@ -47,7 +66,10 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         // Drain results concurrently with feeding the analyzer. Without an
         // explicit `finalizeAndFinishThroughEndOfInput()`, `transcriber.results`
         // never terminates and the for-await loop hangs forever.
-        async let collected: [ASRSegment] = Self.collectResults(from: transcriber)
+        async let collected: [ASRSegment] = Self.collectResults(
+            from: transcriber,
+            onVolatileText: onVolatileText
+        )
         do {
             _ = try await analyzer.analyzeSequence(inputStream)
             try await analyzer.finalizeAndFinishThroughEndOfInput()
@@ -171,11 +193,21 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
     // MARK: - Result draining
 
     private static func collectResults(
-        from transcriber: SpeechTranscriber
+        from transcriber: SpeechTranscriber,
+        onVolatileText: (@Sendable @MainActor (String) -> Void)?
     ) async throws -> [ASRSegment] {
         var segments: [ASRSegment] = []
         for try await result in transcriber.results {
             let plainText = String(result.text.characters)
+            if !result.isFinal {
+                // Volatile preview: hand the rolling hypothesis to the
+                // caller if they registered for it, but never emit it
+                // as a finished segment.
+                if let handler = onVolatileText {
+                    await handler(plainText)
+                }
+                continue
+            }
             let start = result.range.start.seconds
             let duration = result.range.duration.seconds
             let end = start + duration
