@@ -1,4 +1,5 @@
 import SwiftUI
+import AudioToolbox
 import Fusion
 import SERAcoustic
 import SERText
@@ -406,13 +407,21 @@ struct UtteranceRow: View {
                         guard reevaluate == .completed else { return }
                         AppLog.app.info("reevaluate long-press → revert")
                         revertJustFired = true
+                        // System "tock" (the keyboard-tap sound) as
+                        // confirmation. iPads have no Taptic Engine
+                        // so the sensoryFeedback below is a no-op
+                        // there; this audible cue is what actually
+                        // tells the user the revert fired without
+                        // having to wait for the colour flip.
+                        AudioServicesPlaySystemSound(1104)
                         onRevert()
                     }
             )
-            // Haptic-only confirmation when the 3 s long-press fires.
-            // The closure form prevents the reset-to-false transition
-            // (when the next tap clears the flag) from also producing
-            // a haptic — only the false → true edge counts.
+            // Haptic confirmation when supported (e.g. Mac
+            // Designed-for-iPad with Force Touch). No-op on iPad
+            // proper; left in because it's cheap and the
+            // closure-form trigger ensures only the false → true
+            // edge produces feedback.
             .sensoryFeedback(trigger: revertJustFired) { _, new in
                 new ? .success : nil
             }
