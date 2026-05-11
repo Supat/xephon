@@ -4,7 +4,11 @@ import SERAcoustic
 import SERText
 
 // One row of the canonical per-utterance JSON output (see docs/output_schema.md).
-public struct UtteranceEstimate: Sendable, Hashable, Codable {
+public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
+    /// Stable per-utterance identifier. Default-initialized to a fresh UUID
+    /// so call sites that don't supply one keep working; survives JSON
+    /// export so external tooling can cross-reference rows.
+    public let id: UUID
     public let speakerID: String
     public let start: TimeInterval
     public let end: TimeInterval
@@ -32,6 +36,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable {
     public let fusedTopLabel: String?
 
     public init(
+        id: UUID = UUID(),
         speakerID: String,
         start: TimeInterval,
         end: TimeInterval,
@@ -47,6 +52,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable {
         fusedDominance: Float?,
         fusedTopLabel: String?
     ) {
+        self.id = id
         self.speakerID = speakerID
         self.start = start
         self.end = end
@@ -65,6 +71,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable {
 
     public func withTextBackend(_ backend: String?) -> UtteranceEstimate {
         UtteranceEstimate(
+            id: id,
             speakerID: speakerID,
             start: start,
             end: end,
@@ -84,6 +91,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable {
 
     public func withSpeechBoost(_ enabled: Bool?) -> UtteranceEstimate {
         UtteranceEstimate(
+            id: id,
             speakerID: speakerID,
             start: start,
             end: end,

@@ -2,6 +2,7 @@ import Foundation
 import OnnxRuntimeBindings
 import Tokenizers
 import Hub
+import SERRuntime
 import XephonLogging
 
 // On-device WRIME text-emotion classifier. Despite the type name (kept for
@@ -36,7 +37,9 @@ public actor DeBERTaWRIME: TextSER {
         .anger, .fear, .disgust, .trust
     ]
 
-    private let session: ORTSession
+    private var session: ORTSession
+    private let modelURL: URL
+    private var usingCoreML: Bool
     private let tokenizer: any Tokenizer
     private let maxTokens: Int
     private let intensityScale: Float
@@ -49,19 +52,10 @@ public actor DeBERTaWRIME: TextSER {
         useCoreML: Bool = true
     ) async throws {
         do {
-            let env = try ORTEnv(loggingLevel: .warning)
-            let options = try ORTSessionOptions()
-            try options.setIntraOpNumThreads(2)
-            if useCoreML, ORTIsCoreMLExecutionProviderAvailable() {
-                let coreml = ORTCoreMLExecutionProviderOptions()
-                coreml.enableOnSubgraphs = true
-                try? options.appendCoreMLExecutionProvider(with: coreml)
-            }
-            self.session = try ORTSession(
-                env: env,
-                modelPath: modelURL.path,
-                sessionOptions: options
-            )
+            self.modelURL = modelURL
+            self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
+            let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
+            self.usingCoreML = coreMLActive
 
             let tokenizerConfigURL = tokenizerDirectory.appendingPathComponent("tokenizer_config.json")
             let tokenizerDataURL   = tokenizerDirectory.appendingPathComponent("tokenizer.json")
@@ -85,10 +79,29 @@ public actor DeBERTaWRIME: TextSER {
             )
             self.maxTokens = maxTokens
             self.intensityScale = intensityScale
-            AppLog.serText.info("DeBERTaWRIME ONNX loaded: \(modelURL.lastPathComponent, privacy: .public)")
+            AppLog.serText.info(
+                "DeBERTaWRIME ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
+            )
         } catch {
             throw TextSERError.modelUnavailable(reason: String(describing: error))
         }
+    }
+
+    private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
+        // Process-wide ORTEnv. See `SERRuntime.ORTRuntime` for why.
+        let env = ORTRuntime.sharedEnv
+        let options = try ORTSessionOptions()
+        try options.setIntraOpNumThreads(2)
+        // See W2V2DimensionalSER for rationale: the default `All` tier
+        // contains a layer-norm fusion that conflicts with FP16-conversion
+        // Cast nodes. Cap at `Extended` for safety across all SER models.
+        try options.setGraphOptimizationLevel(.extended)
+        if useCoreML, ORTIsCoreMLExecutionProviderAvailable() {
+            let coreml = ORTCoreMLExecutionProviderOptions()
+            coreml.enableOnSubgraphs = true
+            try? options.appendCoreMLExecutionProvider(with: coreml)
+        }
+        return try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
     }
 
     /// Convenience: load from the app bundle. Looks for a `wrime-roberta` subdir.
@@ -142,18 +155,28 @@ public actor DeBERTaWRIME: TextSER {
         let inputIdsValue = try ORTValue(tensorData: inputData, elementType: .int64, shape: shape)
         let maskValue     = try ORTValue(tensorData: maskData,  elementType: .int64, shape: shape)
 
+        let inputs = ["input_ids": inputIdsValue, "attention_mask": maskValue]
         let outputs: [String: ORTValue]
         do {
-            outputs = try session.run(
-                withInputs: [
-                    "input_ids": inputIdsValue,
-                    "attention_mask": maskValue,
-                ],
-                outputNames: ["logits"],
-                runOptions: nil
-            )
+            outputs = try session.run(withInputs: inputs, outputNames: ["logits"], runOptions: nil)
         } catch {
-            throw TextSERError.underlying(error)
+            // CoreML EP fails as soon as the app loses foreground privileges
+            // (Metal/Espresso refuses GPU work from background). Once it
+            // fails, it stays failing — rebuild without the EP and retry on
+            // CPU. Stays on CPU for the rest of the session.
+            guard usingCoreML else {
+                throw TextSERError.underlying(error)
+            }
+            AppLog.serText.warning(
+                "DeBERTa CoreML EP failed (\(String(describing: error), privacy: .public)); rebuilding session on CPU"
+            )
+            do {
+                session = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+                usingCoreML = false
+                outputs = try session.run(withInputs: inputs, outputNames: ["logits"], runOptions: nil)
+            } catch {
+                throw TextSERError.underlying(error)
+            }
         }
         guard let logits = outputs["logits"] else {
             throw TextSERError.modelUnavailable(reason: "no logits in WRIME output")

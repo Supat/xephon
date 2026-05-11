@@ -26,12 +26,77 @@ public protocol Fuser: Actor {
 //     after a coarse mapping onto a shared label space.
 //   - Missing modalities are skipped, not zero-imputed.
 public actor LateFusion: Fuser {
+    /// Floor applied to the text weight when ASR confidence is low,
+    /// so a noisy transcript still contributes something instead of
+    /// being silently dropped. Also re-exposed as
+    /// `defaultTextWeightFloor` for view-layer reads.
+    public static let defaultTextWeightFloor: Float = 0.2
+    /// Constant weight applied to the acoustic modality. Not scaled
+    /// by ASR confidence — the acoustic side doesn't depend on the
+    /// transcript being correct.
+    public static let defaultAcousticWeight: Float = 1.0
+
     private let textWeightFloor: Float
     private let acousticWeight: Float
 
-    public init(textWeightFloor: Float = 0.2, acousticWeight: Float = 1.0) {
+    public init(
+        textWeightFloor: Float = LateFusion.defaultTextWeightFloor,
+        acousticWeight: Float = LateFusion.defaultAcousticWeight
+    ) {
         self.textWeightFloor = textWeightFloor
         self.acousticWeight = acousticWeight
+    }
+
+    /// Normalized (acoustic, text) fraction the V/A weighted average
+    /// would apply for an utterance with the given ASR confidence,
+    /// using the default weights. Fractions sum to 1.0.
+    public static func defaultVAFusionShare(
+        asrConfidence: Float
+    ) -> (acoustic: Float, text: Float) {
+        let text = max(defaultTextWeightFloor, asrConfidence)
+        let total = defaultAcousticWeight + text
+        return (acoustic: defaultAcousticWeight / total, text: text / total)
+    }
+
+    /// Coarse mapping from Plutchik labels to the overlapping
+    /// acoustic-categorical names used by `topLabel`. Public so the
+    /// view layer can attribute per-label contributions back to each
+    /// modality without re-stating the mapping.
+    public static let plutchikToAcousticLabelMapping: [PlutchikScore.Label: String] = [
+        .joy: "happy", .sadness: "sad", .anger: "angry",
+        .fear: "fearful", .disgust: "disgusted", .surprise: "surprised",
+        .trust: "happy", .anticipation: "happy",
+    ]
+
+    /// Normalized (acoustic, text) fraction of the merged score that
+    /// went to `label` during `topLabel` argmax. Returns nil when
+    /// neither side contributed (e.g. a label that no modality
+    /// produced, or both inputs missing). Acoustic side contributes
+    /// `prob`; text side contributes `prob × asrConfidence`, summed
+    /// across all Plutchik labels that map to `label`.
+    public static func defaultLabelFusionShare(
+        forLabel label: String,
+        acoustic: CategoricalEmotion?,
+        plutchik: PlutchikScore?,
+        asrConfidence: Float
+    ) -> (acoustic: Float, text: Float)? {
+        var acousticContrib: Float = 0
+        if let a = acoustic,
+           let key = CategoricalEmotion.Label(rawValue: label),
+           key != .unknown, key != .other {
+            acousticContrib = a.probabilities[key] ?? 0
+        }
+        var textContrib: Float = 0
+        if let p = plutchik {
+            for (k, v) in p.probabilities
+                where plutchikToAcousticLabelMapping[k] == label {
+                textContrib += v
+            }
+            textContrib *= asrConfidence
+        }
+        let total = acousticContrib + textContrib
+        guard total > 0 else { return nil }
+        return (acoustic: acousticContrib / total, text: textContrib / total)
     }
 
     public func fuse(
@@ -138,14 +203,8 @@ public actor LateFusion: Fuser {
             }
         }
         if let p = plutchik {
-            // Lift Plutchik 8 to overlapping rough labels with the acoustic 9.
-            let mapping: [PlutchikScore.Label: String] = [
-                .joy: "happy", .sadness: "sad", .anger: "angry",
-                .fear: "fearful", .disgust: "disgusted", .surprise: "surprised",
-                .trust: "happy", .anticipation: "happy"
-            ]
             for (k, v) in p.probabilities {
-                guard let mapped = mapping[k] else { continue }
+                guard let mapped = plutchikToAcousticLabelMapping[k] else { continue }
                 scores[mapped, default: 0] += v * asrConfidence
             }
         }

@@ -32,20 +32,15 @@ targets:
       - path: Xephon
         excludes:
           - "Info.plist"
-      # audeering W2V2 ONNX (~631 MB). Lands at Xephon.app/model.onnx.
-      # Hydrate via scripts/fetch_models.sh.
-      - path: Models/w2v2-msp-dim/model.onnx
+      # Xcode 16 Icon Composer document. Compiled by the asset-catalog
+      # compiler into the runtime app icon family. ASSETCATALOG_COMPILER_-
+      # APPICON_NAME below tells the compiler which `.icon` to use.
+      - path: Xephon.icon
         type: file
-        buildPhase: resources
-        optional: true
-      # WRIME-fine-tuned RoBERTa (~425 MB ONNX + tokenizer). Folder reference
-      # so the subdirectory `wrime-roberta/` is preserved in the app bundle —
-      # avoids `model.onnx` name collision with the W2V2 file above. Hydrate
-      # via scripts/export_wrime_onnx.py.
-      - path: Models/wrime-roberta
-        type: folder
-        buildPhase: resources
-        optional: true
+      # ML model weights (W2V2, emotion2vec, WRIME RoBERTa) are NOT
+      # bundled — they ship via a GitHub Release attached to the
+      # `models-v1` tag and download on first launch. See
+      # `Xephon/ModelStore.swift` and `scripts/upload_models_to_github_release.sh`.
     info:
       path: Xephon/Info.plist
       properties:
@@ -65,6 +60,47 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIRequiredDeviceCapabilities:
           - arm64
+        # Audio background mode keeps the AVAudioSession alive and the app
+        # in a privileged execution state when the user briefly tabs away
+        # (e.g. to Xcode or another app) during a recording or file
+        # analysis. Without this, iOS revokes GPU/Metal/CoreML privileges
+        # and ORT's CoreML EP errors out with "Insufficient Permission
+        # (to submit GPU work from background)".
+        UIBackgroundModes:
+          - audio
+        # Required entitlement for ActivityKit Live Activities. Without
+        # this key the system silently rejects `Activity.request`.
+        NSSupportsLiveActivities: true
+        # Declaring CFBundleDocumentTypes implies the app can open
+        # files. The OS warns at link time without an explicit
+        # answer to "in place, or copy?". We open by reading the
+        # file's bytes once and decoding into in-memory state plus a
+        # sandboxed temp copy of the embedded audio — never editing
+        # the original — so in-place semantics are fine here.
+        LSSupportsOpeningDocumentsInPlace: true
+        # Register the `.xph` Xephon session bundle as an owned
+        # document type. Doing this in Info.plist (rather than only
+        # in code via `UTType(filenameExtension:)`) makes the system
+        # file picker grey out non-`.xph` files when the Import
+        # Session importer is opened — the picker checks
+        # `allowedContentTypes` against the file's declared UTType,
+        # which only resolves cleanly for registered types.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.supatsaetia.xephon.session
+            UTTypeDescription: Xephon Session
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - xph
+              public.mime-type:
+                - application/x-xephon-session
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Xephon Session
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.supatsaetia.xephon.session
     settings:
       base:
         PRODUCT_NAME: Xephon
@@ -76,9 +112,55 @@ targets:
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
         SWIFT_EMIT_LOC_STRINGS: YES
+        # Use the Xephon.icon Icon Composer document for the runtime app icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: Xephon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
     dependencies:
       - package: Xephon
         product: XephonCore
+      - target: XephonWidget
+        embed: true
+        codeSign: true
+
+  XephonWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: XephonWidget
+        excludes:
+          - "Info.plist"
+      # Compiled into both the main app target (via the `Xephon` source
+      # path above) and this extension. ActivityKit identifies the
+      # attributes type by name + Codable shape, so two compiled copies
+      # interoperate fine.
+      - path: Xephon/XephonActivityAttributes.swift
+        type: file
+    info:
+      path: XephonWidget/Info.plist
+      properties:
+        # `NSExtension` is mandatory for any app extension. Real-device
+        # installd rejects appex bundles missing this dict with
+        # MIInstallerErrorDomain code 39 (`AppexBundleMissingNSExtensionDict`);
+        # simulator installd is lenient. WidgetKit extensions driven
+        # by `@main WidgetBundle` only need the point identifier — the
+        # principal class is resolved from the Swift `@main` entry.
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        # Both fields must match the parent app or the embedded
+        # validation step warns: "CFBundleShortVersionString of an app
+        # extension ('1.0') must match that of its containing parent
+        # app ('0.1.0')." Reference the same build settings the main
+        # target uses so they bump in lockstep.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+    settings:
+      base:
+        PRODUCT_NAME: XephonWidget
+        PRODUCT_BUNDLE_IDENTIFIER: com.supatsaetia.xephon.widget
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: NO
+        SWIFT_EMIT_LOC_STRINGS: YES
 
   XephonTests:
     type: bundle.unit-test
@@ -118,7 +200,13 @@ schemes:
         XephonTests: [test]
         XephonEvalTests: [test]
     run:
-      config: Debug
+      # Release rather than Debug for the Run action so on-device installs
+      # (especially over Wi-Fi) ship the stripped, optimized binary —
+      # ~100 MB smaller than the Debug dylib. Tests still build Debug
+      # (separate `test.config` below), so unit-test debugging is
+      # unaffected. Use the Profile action (Cmd+I) for instrumentation
+      # builds; use Archive for distribution.
+      config: Release
     test:
       config: Debug
       gatherCoverageData: true

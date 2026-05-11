@@ -61,7 +61,22 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
             interleaved: false
         )
 
-        let (inputStream, inputCont) = AsyncStream<AnalyzerInput>.makeStream()
+        // Bounded input queue with retry-on-drop in `feed()` below. The
+        // default `.unbounded` policy lets PCM buffers accumulate
+        // forever when the analyzer drains slower than the producer
+        // yields — particularly under fast-pace file analysis, where
+        // the file pump runs 8x faster than SpeechAnalyzer can possibly
+        // process. Each `AnalyzerInput` wraps a heap-allocated
+        // AVAudioPCMBuffer (~20–50 KB), so a few minutes of backlog is
+        // hundreds of MB. `.bufferingOldest` returns `.dropped(_)`
+        // rather than evicting in place, which `feed()` catches and
+        // retries — that turns the unbounded queue into real
+        // backpressure on the upstream pump. 64 buffers ≈ 16 s of audio
+        // at 4096-frame chunks, ample headroom for normal jitter
+        // without sacrificing the bound.
+        let (inputStream, inputCont) = AsyncStream<AnalyzerInput>.makeStream(
+            bufferingPolicy: .bufferingOldest(64)
+        )
         let (outputStream, outputCont) = AsyncStream<ASRSegment>.makeStream()
         self.inputCont = inputCont
         self.outputCont = outputCont
@@ -101,7 +116,22 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         guard let inputCont, let targetFormat else { return }
         guard let pcm = makePCMBuffer(samples: buffer.samples, target: targetFormat) else { return }
         // bufferStartTime is left nil; the analyzer infers timeline from sample-rate sequencing.
-        inputCont.yield(AnalyzerInput(buffer: pcm))
+        let input = AnalyzerInput(buffer: pcm)
+        // Retry-on-drop loop: with `.bufferingOldest(64)`, a yield into
+        // a full queue returns `.dropped(_)` rather than overwriting an
+        // existing entry. We wait briefly for the analyzer to drain a
+        // slot and retry, never silently losing audio. Mirrors the
+        // backpressure pattern in `AudioFileCapture.yieldWithBackpressure`.
+        while !Task.isCancelled {
+            switch inputCont.yield(input) {
+            case .enqueued, .terminated:
+                return
+            case .dropped:
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            @unknown default:
+                return
+            }
+        }
     }
 
     public func finish() async {
@@ -138,7 +168,8 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
                 text: text,
                 start: result.range.start.seconds,
                 end: result.range.end.seconds,
-                confidence: nil
+                confidence: SpeechAttributes.averageConfidence(in: result.text),
+                tokens: SpeechAttributes.tokens(in: result.text)
             )
             outputCont?.yield(segment)
         } else {

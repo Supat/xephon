@@ -180,6 +180,19 @@ public actor AVAudioEngineCapture: AudioCapture {
         processedCont = nil
         rawConverter = nil
         processedConverter = nil
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        // Deactivate the session so the `.record / .measurement /
+        // [.allowBluetoothHFP]` config we set in `start()` doesn't
+        // linger as the system-wide active session. If we leave it
+        // active, subsequent code that switches to a playback-only
+        // category (e.g. per-utterance audio review) inherits the
+        // recording route and `play()` reports success while the
+        // actual output stays silent.
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+        #endif
         AppLog.audio.info("Capture stopped")
     }
 

@@ -1,40 +1,212 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import Audio
+import Export
 import Fusion
 import SERText
-
-private extension SwitchingTextSER.Backend {
-    /// Short tag rendered on each utterance row's text-backend badge.
-    var badgeLabel: String {
-        switch self {
-        case .deberta:          return "DeBERTa"
-        case .foundationModels: return "Apple FM"
-        }
-    }
-}
+import XephonLogging
 
 struct ContentView: View {
+    @Environment(MenuCommands.self) private var menuCommands
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
     @State private var showingDiscardConfirm: Bool = false
+    @State private var showingFilePicker: Bool = false
+    /// What the next `.fileImporter` presentation should accept and
+    /// what its result-handler should do with the picked URL. Set
+    /// before flipping `showingFilePicker` to true. Two SwiftUI
+    /// `.fileImporter` modifiers attached to the same view chain
+    /// quietly collide on iPadOS 26 — the menu fires, the binding
+    /// flips, the document picker initializes, but nothing presents.
+    /// One fileImporter switching its content type and handler by
+    /// mode is the reliable shape.
+    @State private var filePickerMode: FilePickerMode = .audio
+    enum FilePickerMode { case audio, session }
+    /// True while the session-save panel is up. Driven by the
+    /// File → Save Session… menu command.
+    @State private var showingSaveSession: Bool = false
+    /// Snapshot bundled when the user invokes Save Session. Captured
+    /// at command time (synchronously) so the file-exporter sheet
+    /// writes a stable copy even if the user keeps interacting with
+    /// the app while it's open. Nil = no save in progress.
+    @State private var pendingSaveDocument: SessionFileDocument?
+    /// Last error from a save/load attempt; surfaces as an alert.
+    @State private var sessionIOError: String?
+    @State private var pendingFileURL: URL?
+    /// True when we successfully called
+    /// `startAccessingSecurityScopedResource()` on `pendingFileURL`
+    /// inside the picker callback. The picker's implicit grant can
+    /// expire over the multi-dialog hop to `startFromFile`, so we
+    /// pin scope as soon as the URL arrives and release it once the
+    /// recorder has taken its own ref (or the user has cancelled).
+    @State private var pendingFileScopeAcquired: Bool = false
+    @State private var showingFileDiscardConfirm: Bool = false
+    @State private var showingPacingDialog: Bool = false
+    /// Currently-visible utterance row IDs. Maintained via per-row
+    /// `.onAppear`/`.onDisappear` so we can tell whether the most recent
+    /// utterance is in frame and decide between auto-scroll vs. surfacing
+    /// the "New utterance" capsule.
+    @State private var visibleUtteranceIDs: Set<UUID> = []
+    /// True when a new utterance has arrived while the user has scrolled
+    /// the most recent off-screen. Cleared when the most recent comes
+    /// back into view (either by user scroll or capsule tap).
+    @State private var hasUnreadUtterance: Bool = false
+    /// Currently selected utterance for hardware-keyboard navigation.
+    /// SwiftUI's `List(selection:)` natively responds to ↑/↓ arrow keys
+    /// once the user has tapped into the list (or focus has otherwise
+    /// landed on it). Bound nil = no selection.
+    @State private var selectedUtteranceID: UUID?
+    /// Free-text filter applied to each utterance's `text`. Empty
+    /// string disables filtering.
+    @State private var searchText: String = ""
+    /// Label filter. Nil = "All labels"; non-nil only shows utterances
+    /// whose fused top label matches.
+    @State private var selectedLabelFilter: String?
+    /// Speaker filter. Nil = all speakers; non-nil only shows
+    /// utterances stamped with the matching `speakerID`. Toggled by
+    /// tapping the chip row directly under the filter bar.
+    @State private var selectedSpeakerFilter: String?
+    /// Keyboard focus for the search field. Driven by ⌘F (sets it
+    /// true) and Esc (sets it false). `@FocusState` is the only
+    /// mechanism that programmatically moves focus into a TextField.
+    @FocusState private var searchFieldFocused: Bool
+    /// IDs of utterances whose detail panel is expanded. Toggled by
+    /// long-press on the row or by pressing Space while the row is
+    /// the selected list item. Kept here (not on the row) so a
+    /// rebuild of the row doesn't drop the expansion state.
+    @State private var expandedUtteranceIDs: Set<UUID> = []
+    /// Normalized (Hepburn romaji, lowercased) form of each utterance's
+    /// transcript, keyed by utterance ID. Populated off-MainActor in
+    /// `refreshSearchCache()` so the filter loop is a dictionary
+    /// lookup per row instead of an N-per-keystroke CFStringTokenizer
+    /// pass. Survives utterance additions because we only normalize
+    /// the new arrivals on each utterance-count change.
+    @State private var normalizedTranscriptCache: [UUID: String] = [:]
+    /// Background task that's currently rebuilding `normalizedTranscriptCache`.
+    /// Cancelled and replaced on every utterance-count change so a
+    /// fast-arriving stream of utterances doesn't spawn unbounded work.
+    @State private var searchCacheTask: Task<Void, Never>?
 
     var body: some View {
+        if !recorder.modelsReady {
+            SetupView(controller: recorder)
+        } else {
+            mainBody
+        }
+    }
+
+    private var mainBody: some View {
         NavigationStack {
-            GeometryReader { geo in
-                HStack(spacing: 0) {
-                    controlPane
-                        .frame(width: geo.size.width / 3)
-                    Divider()
-                    transcriptPane
-                        .frame(maxWidth: .infinity)
+            VStack(spacing: 0) {
+                if !recorder.pipelineDiagnostics.isEmpty {
+                    PipelineDiagnosticsBanner(messages: recorder.pipelineDiagnostics)
+                }
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        controlPane
+                            .frame(width: geo.size.width / 3)
+                        Divider()
+                        transcriptPane
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
             .navigationTitle("Xephon")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task {
+                            if let url = await recorder.exportJSON() {
+                                shareURL = url
+                            }
+                        }
+                    } label: {
+                        Label(String(localized: "export.json"), systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(
+                        recorder.utterances.isEmpty
+                            || recorder.isRecording
+                            || recorder.isAnalyzing
+                    )
+                }
+            }
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
             }
+            // File → Open… (⌘O) command pipe. The menu writes a fresh
+            // UUID into `menuCommands.openAudioFileToken`; we observe
+            // the change and raise the same `.fileImporter` the
+            // on-screen button does. We gate on busy state here rather
+            // than at the menu level because the menu can't easily
+            // observe `recorder` from app-level commands.
+            .onChange(of: menuCommands.openAudioFileToken) { _, _ in
+                guard !recorder.isRecording, !recorder.isAnalyzing else { return }
+                filePickerMode = .audio
+                showingFilePicker = true
+            }
+            // File → Export to JSON (⌘S) command pipe. Same gating as the
+            // toolbar button so cmd-S during recording / analyzing /
+            // empty-utterances no-ops cleanly. Additionally guards
+            // `shareURL == nil` so repeated ⌘S while the share sheet is
+            // already up doesn't write a fresh file + reassign shareURL —
+            // `.sheet(item:)` interprets a new URL as "dismiss + represent",
+            // which under rapid presses appears as a stacking sheet.
+            .onChange(of: menuCommands.exportJSONToken) { _, _ in
+                guard !recorder.utterances.isEmpty,
+                      !recorder.isRecording,
+                      !recorder.isAnalyzing,
+                      shareURL == nil else { return }
+                Task {
+                    if let url = await recorder.exportJSON() {
+                        shareURL = url
+                    }
+                }
+            }
+            // File → Save Session… (⌘S). Snapshot the recorder's
+            // state into a `SessionDocument` synchronously, stash it
+            // in `pendingSaveDocument`, and present the
+            // `.fileExporter`. The exporter dismisses by clearing the
+            // pending doc so re-triggering works.
+            .onChange(of: menuCommands.saveSessionToken) { _, _ in
+                guard !recorder.utterances.isEmpty,
+                      !recorder.isRecording,
+                      !recorder.isAnalyzing else { return }
+                do {
+                    let doc = try recorder.makeSessionDocument()
+                    pendingSaveDocument = SessionFileDocument(session: doc)
+                    showingSaveSession = true
+                } catch {
+                    sessionIOError = String(describing: error)
+                }
+            }
+            // File → Import Session… (⇧⌘O). Reuses the single
+            // fileImporter by switching its mode to .session before
+            // raising it.
+            .onChange(of: menuCommands.importSessionToken) { _, _ in
+                guard !recorder.isRecording, !recorder.isAnalyzing else { return }
+                filePickerMode = .session
+                showingFilePicker = true
+            }
+            // Edit → Find (⌘F): move keyboard focus into the search
+            // field. Setting `@FocusState` to true is the only way to
+            // programmatically focus a SwiftUI TextField.
+            .onChange(of: menuCommands.findToken) { _, _ in
+                searchFieldFocused = true
+            }
+            .modifier(SessionIOModifier(
+                showingSaveSession: $showingSaveSession,
+                pendingSaveDocument: $pendingSaveDocument,
+                sessionIOError: $sessionIOError,
+                defaultFilename: defaultSessionFilename()
+            ))
+            .fileImporter(
+                isPresented: $showingFilePicker,
+                allowedContentTypes: filePickerAllowedTypes,
+                allowsMultipleSelection: false,
+                onCompletion: handleFilePickerResult
+            )
             .alert(
                 String(localized: "record.discardConfirm.title"),
                 isPresented: $showingDiscardConfirm
@@ -51,20 +223,76 @@ struct ContentView: View {
                     )
                 )
             }
+            .alert(
+                String(localized: "record.discardConfirm.title"),
+                isPresented: $showingFileDiscardConfirm
+            ) {
+                Button(String(localized: "record.discardConfirm.confirm"), role: .destructive) {
+                    // Discard accepted — proceed to pacing choice. The
+                    // pendingFileURL + scope ref are preserved across
+                    // alerts so they survive the second hop.
+                    showingPacingDialog = true
+                }
+                Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
+                    releasePendingFileScope()
+                }
+            } message: {
+                Text(
+                    String(
+                        format: String(localized: "record.discardConfirm.message"),
+                        recorder.utterances.count
+                    )
+                )
+            }
+            .alert(
+                String(localized: "pacing.title"),
+                isPresented: $showingPacingDialog
+            ) {
+                Button(String(localized: "pacing.realtime")) {
+                    if let url = pendingFileURL {
+                        startFromFileAndReleaseScope(url, realTimePacing: true)
+                    }
+                }
+                Button(String(localized: "pacing.realtime.audio")) {
+                    if let url = pendingFileURL {
+                        startFromFileAndReleaseScope(url, realTimePacing: true, audioOutputEnabled: true)
+                    }
+                }
+                Button(String(localized: "pacing.fast8x")) {
+                    if let url = pendingFileURL {
+                        startFromFileAndReleaseScope(url, realTimePacing: false, fastPaceMultiplier: 8)
+                    }
+                }
+                Button(String(localized: "pacing.fast4x")) {
+                    if let url = pendingFileURL {
+                        startFromFileAndReleaseScope(url, realTimePacing: false, fastPaceMultiplier: 4)
+                    }
+                }
+                Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
+                    releasePendingFileScope()
+                }
+            } message: {
+                Text(String(localized: "pacing.message"))
+            }
         }
     }
 
     // MARK: - Left pane (1/3): controls
 
     private var controlPane: some View {
+        // Two-region layout: a fixed header that pins the controls at
+        // the top (input picker, record/open, level meter, status,
+        // error) plus a scrollable region below that holds the cards
+        // (Settings + Pipeline + Summary + Statistics). The header
+        // never scrolls off — the user can always reach Start/Stop
+        // even with every card expanded.
         VStack(spacing: 16) {
-            speechBoostToggle
-
-            textSERPicker
-
             inputPicker
 
-            recordButton
+            HStack(spacing: 12) {
+                recordButton
+                openFileButton
+            }
 
             if recorder.isRecording {
                 LevelMeterView(level: recorder.inputLevel)
@@ -81,17 +309,27 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
             }
 
-            PipelineCard(recorder: recorder)
-                .padding(.top, 4)
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: 16) {
+                    SettingsCard(
+                        speechBoostToggle: { speechBoostToggle },
+                        textSERPicker: { textSERPicker }
+                    )
 
-            Spacer(minLength: 0)
+                    PipelineCard(recorder: recorder)
 
-            if !recorder.utterances.isEmpty {
-                exportButton
+                    SummaryCard(
+                        summary: displayedSummary,
+                        totalDuration: displayedSummary.totalDuration
+                    )
+
+                    StatisticsCard(summary: displayedSummary)
+                }
+                .frame(maxWidth: .infinity)
             }
         }
         .padding()
-        .frame(maxHeight: .infinity)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: - Right pane (2/3): transcript
@@ -106,9 +344,213 @@ struct ContentView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            transcriptList
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                filterBar
+                speakerChipBar
+                if filteredIndexedUtterances.isEmpty {
+                    noMatchesView
+                } else {
+                    transcriptList
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Inline filter row: a free-text search field plus a label
+    /// dropdown. Both filters AND together so the user can scope by
+    /// "happy utterances containing 楽しい" etc. The bar always shows
+    /// when the full list is non-empty so the controls don't appear
+    /// then disappear as utterances arrive.
+    @ViewBuilder
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(
+                    String(localized: "filter.search.placeholder"),
+                    text: $searchText
+                )
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .submitLabel(.search)
+                .focused($searchFieldFocused)
+                // Esc inside the search field returns focus to the
+                // surrounding view so subsequent ⌘ shortcuts and
+                // arrow-key list navigation work without an extra tap.
+                // Returning `.handled` keeps the keystroke from
+                // bubbling to the List's own Esc handler (which would
+                // otherwise also clear the row selection).
+                .onKeyPress(.escape) {
+                    if searchFieldFocused {
+                        searchFieldFocused = false
+                        return .handled
+                    }
+                    return .ignored
+                }
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            // Label picker. Pulled into a Menu so the chevron looks
+            // native and tinted-by-label rows read at a glance. Tap
+            // expands to a list of labels with their per-label counts;
+            // "All labels" clears the filter.
+            Menu {
+                Button {
+                    selectedLabelFilter = nil
+                } label: {
+                    if selectedLabelFilter == nil {
+                        Label(String(localized: "filter.label.all"), systemImage: "checkmark")
+                    } else {
+                        Text(String(localized: "filter.label.all"))
+                    }
+                }
+                if !availableLabels.isEmpty {
+                    Divider()
+                }
+                ForEach(availableLabels, id: \.self) { label in
+                    Button {
+                        selectedLabelFilter = label
+                    } label: {
+                        let displayed = label.capitalized(with: Locale(identifier: "en_US"))
+                        let count = recorder.conversationSummary.labelCounts[label] ?? 0
+                        if selectedLabelFilter == label {
+                            Label("\(displayed) (\(count))", systemImage: "checkmark")
+                        } else {
+                            Text("\(displayed) (\(count))")
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text(filterLabelDisplay)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
+                .font(.callout)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .foregroundStyle(selectedLabelFilter.map(emotionTint(for:)) ?? Color.primary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var filterLabelDisplay: String {
+        if let label = selectedLabelFilter {
+            return label.capitalized(with: Locale(identifier: "en_US"))
+        }
+        return String(localized: "filter.label.all")
+    }
+
+    /// Horizontal chip row of every speaker seen this session, plus
+    /// an "All" chip on the left that clears the speaker filter.
+    /// Tapping a speaker chip toggles it as the active speaker
+    /// filter — tapping the same chip again returns to "All". Hidden
+    /// when only one speaker has been detected (no point filtering
+    /// when there's nothing to choose between).
+    @ViewBuilder
+    private var speakerChipBar: some View {
+        let speakers = availableSpeakers
+        if speakers.count >= 2 {
+            HStack(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        speakerChip(
+                            text: String(localized: "filter.speaker.all"),
+                            tint: .secondary,
+                            isSelected: selectedSpeakerFilter == nil
+                        ) {
+                            selectedSpeakerFilter = nil
+                        }
+                        ForEach(speakers, id: \.self) { id in
+                            let label = formatSpeakerLabel(id, multiSpeaker: true)
+                            let tint = speakerTint(for: id)
+                            speakerChip(
+                                text: label,
+                                tint: tint,
+                                isSelected: selectedSpeakerFilter == id
+                            ) {
+                                selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                            }
+                        }
+                    }
+                    .padding(.leading, 12)
+                    .padding(.vertical, 6)
+                }
+                // Distinct speaker count, pinned to the trailing edge
+                // so the chip strip can scroll horizontally beneath it
+                // without pushing the count out of view.
+                Label("\(speakers.count)", systemImage: "person.2.fill")
+                    .font(.caption.monospacedDigit())
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 12)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func speakerChip(
+        text: String,
+        tint: Color,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.caption.bold())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    tint.opacity(isSelected ? 0.25 : 0.08),
+                    in: Capsule()
+                )
+                .overlay(
+                    Capsule().strokeBorder(
+                        tint.opacity(isSelected ? 0.6 : 0.2),
+                        lineWidth: isSelected ? 1.0 : 0.5
+                    )
+                )
+                .foregroundStyle(tint)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var noMatchesView: some View {
+        ContentUnavailableView {
+            Label(
+                String(localized: "filter.noMatches.title"),
+                systemImage: "line.3.horizontal.decrease.circle"
+            )
+        } description: {
+            Text(String(localized: "filter.noMatches.subtitle"))
+        } actions: {
+            Button(String(localized: "filter.noMatches.clear")) {
+                searchText = ""
+                selectedLabelFilter = nil
+                selectedSpeakerFilter = nil
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -145,7 +587,16 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var speechBoostToggle: some View {
+        // Hide the speech-boost EQ control while the active source is a
+        // file — the toggle wouldn't affect file content.
+        if case .microphone = recorder.sourceMode {
+            speechBoostToggleBody
+        }
+    }
+
+    private var speechBoostToggleBody: some View {
         Toggle(
             String(localized: "settings.speechBoost"),
             isOn: Binding(
@@ -215,9 +666,7 @@ struct ContentView: View {
             }
         } label: {
             Label(
-                recorder.isRecording
-                    ? String(localized: "record.stop")
-                    : String(localized: "record.start"),
+                recordButtonTitle,
                 systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill"
             )
             .font(.title3)
@@ -227,16 +676,54 @@ struct ContentView: View {
         .disabled(recorder.isAnalyzing)
     }
 
+    private var recordButtonTitle: String {
+        guard recorder.isRecording else {
+            return String(localized: "record.start")
+        }
+        if case .file = recorder.sourceMode {
+            return String(localized: "record.stop.file")
+        }
+        return String(localized: "record.stop")
+    }
+
+    private var openFileButton: some View {
+        Button {
+            // Strict audio entry point: pin the picker mode to
+            // `.audio` so a stale mode left over from an earlier
+            // Import Session… invocation can't leak through and
+            // make this button accept `.xph` files.
+            filePickerMode = .audio
+            showingFilePicker = true
+        } label: {
+            Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
+                .font(.title3)
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .disabled(recorder.isRecording || recorder.isAnalyzing)
+    }
+
     @ViewBuilder
     private var statusLine: some View {
         if recorder.isRecording {
-            Text(String(
-                format: String(localized: "record.status.format"),
-                recorder.elapsedSeconds,
-                recorder.samplesCaptured
-            ))
-            .font(.system(.body, design: .monospaced))
-            .foregroundStyle(.secondary)
+            VStack(spacing: 4) {
+                if case .file(let url) = recorder.sourceMode {
+                    Text(String(format: String(localized: "file.analyzing"), url.lastPathComponent))
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if case .file = recorder.sourceMode,
+                   let frac = recorder.fileCompletionFraction {
+                    ProgressView(value: frac)
+                        .progressViewStyle(.linear)
+                        .tint(.accentColor)
+                }
+                Text(statusLineText)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
         } else if recorder.isAnalyzing {
             HStack(spacing: 8) {
                 ProgressView()
@@ -252,353 +739,416 @@ struct ContentView: View {
         }
     }
 
+    private var distinctSpeakerCount: Int {
+        Set(recorder.utterances.map { $0.speakerID }).count
+    }
+
+    /// Summary derived from whatever's currently displayed in the
+    /// transcript list. When all filters are off this matches the
+    /// recorder's running `conversationSummary` exactly (same input
+    /// utterances, same fold). When any filter is active — search
+    /// text, label, speaker — this re-folds only the visible
+    /// utterances, so the Summary and Statistics panels read the
+    /// filtered slice instead of the lifetime totals.
+    ///
+    /// O(n) per render. Negligible for typical session sizes (a few
+    /// hundred utterances); SwiftUI's view-diffing means it only
+    /// runs when the filter or utterance state actually changes.
+    private var displayedSummary: ConversationSummary {
+        var summary = ConversationSummary()
+        for (_, u) in filteredIndexedUtterances {
+            summary.update(with: u)
+        }
+        return summary
+    }
+
+    /// Distinct top labels seen so far this session, used to populate
+    /// the label-filter menu. Sorted alphabetically for stable order.
+    private var availableLabels: [String] {
+        Set(recorder.utterances.compactMap { $0.fusedTopLabel }).sorted()
+    }
+
+    /// Distinct speaker IDs in the order they first appear in the
+    /// session. First-appearance order (rather than alphabetical)
+    /// keeps the chip row stable as new utterances arrive — a new
+    /// speaker is appended at the end instead of reshuffling
+    /// existing chips, and the row reads in the same order as the
+    /// utterance list.
+    private var availableSpeakers: [String] {
+        var seen: Set<String> = []
+        var ordered: [String] = []
+        for u in recorder.utterances where !seen.contains(u.speakerID) {
+            seen.insert(u.speakerID)
+            ordered.append(u.speakerID)
+        }
+        return ordered
+    }
+
+    /// `(originalIndex, utterance)` pairs surviving both filters. The
+    /// original index is preserved so each row's "#N" badge keeps the
+    /// utterance's stable session number even when the list is
+    /// filtered (a row labeled #15 always points at the 15th utterance
+    /// of the recording).
+    private var filteredIndexedUtterances: [(idx: Int, u: UtteranceEstimate)] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalize the query once via JapaneseSearchNormalizer so a
+        // search for "しぶや" / "シブヤ" / "shibuya" / "渋谷" all
+        // resolve to the same comparable form. Normalized form is
+        // empty only when the query is empty — in which case the
+        // search filter is skipped entirely.
+        let normalizedQuery = trimmed.isEmpty
+            ? ""
+            : JapaneseSearchNormalizer.normalize(trimmed)
+        return recorder.utterances.enumerated().compactMap {
+            (idx, u) -> (idx: Int, u: UtteranceEstimate)? in
+            if let filterLabel = selectedLabelFilter,
+               u.fusedTopLabel != filterLabel {
+                return nil
+            }
+            if let filterSpeaker = selectedSpeakerFilter,
+               u.speakerID != filterSpeaker {
+                return nil
+            }
+            if !normalizedQuery.isEmpty {
+                // Fall back to inline normalization when the cache
+                // hasn't caught up yet (a brand-new utterance arrived
+                // mid-search). The async refresher will populate it
+                // momentarily; the per-row inline call is rare.
+                let normalizedText = normalizedTranscriptCache[u.id]
+                    ?? JapaneseSearchNormalizer.normalize(u.transcript)
+                if !normalizedText.contains(normalizedQuery) {
+                    return nil
+                }
+            }
+            return (idx, u)
+        }
+    }
+
+    /// Bring `normalizedTranscriptCache` up to date with the recorder's
+    /// current utterance list. Only normalizes utterances that aren't
+    /// already in the cache, so steady-state utterance arrivals each
+    /// pay one normalize call (not N). Normalization runs concurrently
+    /// across the missing entries via `TaskGroup`, off the MainActor;
+    /// completed results are merged back into `@State` in one hop so
+    /// the view body doesn't re-evaluate per row.
+    private func refreshSearchCache() {
+        let utterances = recorder.utterances
+        let cached = normalizedTranscriptCache
+        let missing = utterances.filter { cached[$0.id] == nil }
+        guard !missing.isEmpty else { return }
+
+        searchCacheTask?.cancel()
+        searchCacheTask = Task.detached(priority: .userInitiated) {
+            // Hand each utterance to its own child task; the work is
+            // CPU-bound CFStringTokenizer calls, so the cooperative
+            // pool will parallelize across the device's cores.
+            let normalized = await withTaskGroup(
+                of: (UUID, String).self
+            ) { group -> [(UUID, String)] in
+                for u in missing {
+                    if Task.isCancelled { break }
+                    group.addTask {
+                        (u.id, JapaneseSearchNormalizer.normalize(u.transcript))
+                    }
+                }
+                var out: [(UUID, String)] = []
+                for await pair in group {
+                    out.append(pair)
+                }
+                return out
+            }
+            if Task.isCancelled { return }
+            await MainActor.run {
+                for (id, text) in normalized {
+                    normalizedTranscriptCache[id] = text
+                }
+            }
+        }
+    }
+
+    /// Wall-time + sample-count line for the active session.
+    /// File-mode shows the completion bar separately above this line,
+    /// so the text content is identical for both modes.
+    private var statusLineText: String {
+        String(
+            format: String(localized: "record.status.format"),
+            formatClock(recorder.elapsedSeconds),
+            formatCount(recorder.samplesCaptured)
+        )
+    }
+
+    /// Content types the single shared fileImporter advertises, based
+    /// on which menu command opened it. `xephonSession` is registered
+    /// via project.yml's `UTExportedTypeDeclarations`, so the picker
+    /// greys out non-`.xph` files when in session mode.
+    private var filePickerAllowedTypes: [UTType] {
+        switch filePickerMode {
+        case .audio:
+            return [.audio, .mp3, .wav, .mpeg4Audio, .aiff]
+        case .session:
+            return [.xephonSession]
+        }
+    }
+
+    /// Single dispatcher for the shared fileImporter. The audio path
+    /// pins security scope and hands off to the pacing dialog; the
+    /// session path reads + decodes synchronously off MainActor.
+    private func handleFilePickerResult(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            switch filePickerMode {
+            case .audio:
+                pendingFileURL = url
+                pendingFileScopeAcquired = url.startAccessingSecurityScopedResource()
+                if !recorder.utterances.isEmpty {
+                    showingFileDiscardConfirm = true
+                } else {
+                    showingPacingDialog = true
+                }
+            case .session:
+                Task { await loadSessionFromPickedFile(url) }
+            }
+        case .failure(let error):
+            AppLog.app.error("file picker: \(String(describing: error), privacy: .public)")
+            if filePickerMode == .session {
+                sessionIOError = String(describing: error)
+            }
+        }
+    }
+
+    /// Filename suggestion for the Save Session… panel. Uses an
+    /// ISO-8601-ish stamp so successive saves don't collide and so
+    /// the user can scan the file list chronologically.
+    private func defaultSessionFilename() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HHmm"
+        return "xephon-\(fmt.string(from: Date())).xph"
+    }
+
+    /// Read a picked `.xph` URL into the recorder. Security-scoped:
+    /// the picker hands us a scoped URL; we hold it just long enough
+    /// to read the bytes and let `loadSession` extract any audio
+    /// into the app's sandbox.
+    private func loadSessionFromPickedFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let document = try SessionBundle.decode(data)
+            try await recorder.loadSession(document)
+        } catch {
+            sessionIOError = String(describing: error)
+        }
+    }
+
+    /// Release the picker's scope ref we grabbed in the fileImporter
+    /// callback and clear the pending URL. Used by all cancel paths
+    /// in the discard / pacing dialogs.
+    private func releasePendingFileScope() {
+        if pendingFileScopeAcquired, let url = pendingFileURL {
+            url.stopAccessingSecurityScopedResource()
+        }
+        pendingFileScopeAcquired = false
+        pendingFileURL = nil
+    }
+
+    /// Hand the URL to the recorder (which acquires its own scope ref
+    /// synchronously in `startFromFile`), then release the picker's
+    /// ref we've been holding through the dialog hop.
+    private func startFromFileAndReleaseScope(
+        _ url: URL,
+        realTimePacing: Bool = false,
+        fastPaceMultiplier: Int = 8,
+        audioOutputEnabled: Bool = false
+    ) {
+        let acquired = pendingFileScopeAcquired
+        pendingFileScopeAcquired = false
+        pendingFileURL = nil
+        Task {
+            await recorder.startFromFile(
+                url,
+                realTimePacing: realTimePacing,
+                fastPaceMultiplier: fastPaceMultiplier,
+                audioOutputEnabled: audioOutputEnabled
+            )
+            if acquired {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+    }
+
+    /// Map the recorder's source/phase state onto the per-row playback
+    /// availability. Hidden for mic sessions, disabled while a file
+    /// analysis is still running (so the user knows playback is on
+    /// the way), idle when ready, and playing for the one row that's
+    /// currently mid-playback.
+    private func playbackAvailability(for u: UtteranceEstimate) -> UtteranceRow.PlaybackAvailability {
+        guard recorder.playbackSourceURL != nil else { return .unavailable }
+        if recorder.isRecording || recorder.isAnalyzing { return .disabled }
+        if recorder.playingUtteranceID == u.id { return .playing }
+        return .idle
+    }
+
+    /// Flip the per-utterance expansion state. Invoked by long-press
+    /// on a row and by Space-key while a row is the list selection.
+    private func toggleExpansion(_ id: UUID) {
+        if expandedUtteranceIDs.contains(id) {
+            expandedUtteranceIDs.remove(id)
+        } else {
+            expandedUtteranceIDs.insert(id)
+        }
+    }
+
+    /// True iff the chronologically last utterance *in the filtered
+    /// view* has been laid out and is currently on-screen. Empty list
+    /// counts as "visible" (no last to track) so the capsule never
+    /// appears in the empty state. Tracking the filtered last (not the
+    /// full-list last) keeps the auto-scroll behavior correct under
+    /// active filters: a new utterance that doesn't match the filter
+    /// shouldn't scroll the list, and one that does shouldn't be
+    /// labeled "unread" if the user is already at the filtered bottom.
+    private var isLastUtteranceVisible: Bool {
+        guard let lastID = filteredIndexedUtterances.last?.u.id else { return true }
+        return visibleUtteranceIDs.contains(lastID)
+    }
+
     @ViewBuilder
     private var transcriptList: some View {
         ScrollViewReader { proxy in
-            List(Array(recorder.utterances.enumerated()), id: \.offset) { idx, u in
-                UtteranceRow(utterance: u)
-                    .id(idx)
+            List(
+                filteredIndexedUtterances,
+                id: \.u.id,
+                selection: $selectedUtteranceID
+            ) { item in
+                UtteranceRow(
+                    number: item.idx + 1,
+                    utterance: item.u,
+                    isMultiSpeaker: distinctSpeakerCount > 1,
+                    isExpanded: expandedUtteranceIDs.contains(item.u.id),
+                    onToggleExpanded: { toggleExpansion(item.u.id) },
+                    playback: playbackAvailability(for: item.u),
+                    onPlaybackToggle: { recorder.togglePlayback(for: item.u) }
+                )
+                .id(item.u.id)
+                .onAppear { visibleUtteranceIDs.insert(item.u.id) }
+                .onDisappear { visibleUtteranceIDs.remove(item.u.id) }
+                // Tag each row so List knows what UUID to write into the
+                // `selectedUtteranceID` binding when it changes selection
+                // (via tap, ↑/↓ arrow, or Home/End).
+                .tag(item.u.id)
+                // Replace the default pale-tint selection highlight with
+                // a darker accent-tinted background. `.listRowBackground`
+                // overrides the system selection paint on `.plain` lists.
+                .listRowBackground(
+                    selectedUtteranceID == item.u.id
+                        ? Color.accentColor.opacity(0.28)
+                        : Color.clear
+                )
             }
             .listStyle(.plain)
-            .onChange(of: recorder.utterances.count) { _, count in
-                guard count > 0 else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(count - 1, anchor: .bottom)
-                }
-            }
-        }
-    }
-
-    private var exportButton: some View {
-        Button {
-            Task {
-                if let url = await recorder.exportJSON() {
-                    shareURL = url
-                }
-            }
-        } label: {
-            Label(String(localized: "export.json"), systemImage: "square.and.arrow.up")
-        }
-        .buttonStyle(.bordered)
-    }
-}
-
-private struct UtteranceRow: View {
-    let utterance: UtteranceEstimate
-
-    // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
-    // so positive vs negative read naturally and 0 maps to "neutral grey".
-    private static let neutralEpsilon: Float = 0.05
-
-    var body: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(utterance.speakerID)
-                        .font(.caption.bold())
-                        .foregroundStyle(.tint)
-                    if utterance.speechBoost == true {
-                        Label("Boost", systemImage: "waveform.badge.plus")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .overlay(
-                                Capsule().strokeBorder(.orange.opacity(0.5), lineWidth: 0.5)
-                            )
-                            .foregroundStyle(.orange)
-                    }
-                }
-                Text(utterance.transcript.isEmpty ? "—" : utterance.transcript)
-                    .font(.body)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 6) {
-                    if let backendBadge {
-                        Text(backendBadge)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .overlay(
-                                Capsule().strokeBorder(.secondary.opacity(0.4), lineWidth: 0.5)
-                            )
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(String(format: "%.1f–%.1f s", utterance.start, utterance.end))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                HStack(spacing: 8) {
-                    if let label = utterance.fusedTopLabel {
-                        let tint = Self.color(forLabel: label)
-                        Text(label.capitalized(with: Locale(identifier: "en_US")))
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(tint.opacity(0.18), in: Capsule())
-                            .foregroundStyle(tint)
-                    }
-                    if let v = utterance.fusedValence {
-                        vaLabel("V", value: v)
-                    }
-                    if let a = utterance.fusedArousal {
-                        vaLabel("A", value: a)
+            // Keep the selected row scrolled into view when the user
+            // arrow-keys past the visible window. The system handles this
+            // for tap-driven selection automatically; for keyboard-driven
+            // selection on a plain list it's not always automatic.
+            .onChange(of: selectedUtteranceID) { _, newID in
+                guard let newID else { return }
+                // Scroll only if the row isn't already on screen, so we
+                // don't fight the system's default keep-visible behavior
+                // when the user is paging row-by-row near the edge.
+                if !visibleUtteranceIDs.contains(newID) {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(newID, anchor: .center)
                     }
                 }
             }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var backendBadge: String? {
-        guard let raw = utterance.textBackend,
-              let backend = SwitchingTextSER.Backend(rawValue: raw) else { return nil }
-        return backend.badgeLabel
-    }
-
-    /// Color tint for a fused emotion label. Tracks the conventional Plutchik
-    /// wheel where it overlaps; falls back to grey for unknown/neutral labels.
-    private static func color(forLabel raw: String) -> Color {
-        switch raw.lowercased() {
-        case "happy", "joy", "joyful":               return .yellow
-        case "sad", "sadness":                       return .blue
-        case "angry", "anger":                       return .red
-        case "fear", "fearful", "afraid":            return .purple
-        case "disgust", "disgusted":                 return Color(red: 0.45, green: 0.55, blue: 0.20)
-        case "surprise", "surprised":                return .orange
-        case "trust":                                return .green
-        case "anticipation":                         return Color(red: 0.95, green: 0.55, blue: 0.10)
-        case "neutral", "calm":                      return .gray
-        default:                                     return Color.secondary
-        }
-    }
-
-    @ViewBuilder
-    private func vaLabel(_ axis: String, value: Float) -> some View {
-        let centered = value * 2 - 1
-        Text(String(format: "%@ %+.2f", axis, centered))
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(color(for: centered))
-    }
-
-    private func color(for centered: Float) -> Color {
-        if centered > Self.neutralEpsilon { return .green }
-        if centered < -Self.neutralEpsilon { return .red }
-        return .gray
-    }
-}
-
-extension URL: @retroactive Identifiable {
-    public var id: String { absoluteString }
-}
-
-// MARK: - Pipeline visualization
-
-private struct PipelineCard: View {
-    let recorder: RecordingController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(String(localized: "pipeline.header"))
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-
-            StageRow(
-                icon: "mic.fill",
-                name: String(localized: "pipeline.capture"),
-                state: captureState,
-                metric: captureMetric
-            )
-            VStack(alignment: .leading, spacing: 2) {
-                StageRow(
-                    icon: "waveform.and.mic",
-                    name: String(localized: "pipeline.asr"),
-                    state: asrState,
-                    metric: asrMetric
-                )
-                if !recorder.volatileText.isEmpty {
-                    Text("“\(recorder.volatileText)…”")
-                        .font(.caption2.italic())
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 24)
-                        .lineLimit(2)
-                        .truncationMode(.head)
+            // Esc clears the selection. Returning `.ignored` when nothing
+            // is selected lets the system route Esc to its default
+            // handlers (e.g. dismissing a sheet or popover) instead of
+            // silently swallowing the key.
+            .onKeyPress(.escape) {
+                if selectedUtteranceID != nil {
+                    selectedUtteranceID = nil
+                    return .handled
+                }
+                return .ignored
+            }
+            // Space toggles the expanded detail panel on the currently
+            // selected row. Long-press on a row does the same thing.
+            // Ignored when nothing is selected so the keystroke can fall
+            // through to other handlers.
+            .onKeyPress(.space) {
+                guard let id = selectedUtteranceID else { return .ignored }
+                toggleExpansion(id)
+                return .handled
+            }
+            // Observe the FILTERED last so adding an utterance that
+            // doesn't match the active filter doesn't auto-scroll, and
+            // adding one that does match scrolls the (possibly shorter)
+            // filtered view to the right place.
+            .onChange(of: filteredIndexedUtterances.last?.u.id) { oldLastID, newLastID in
+                // Session reset cleared the array.
+                guard let newLastID else {
+                    hasUnreadUtterance = false
+                    return
+                }
+                // "Was the user following along?" must be answered from
+                // the PREVIOUS last utterance — by the time this closure
+                // fires, the array's `last` is already the new entry,
+                // whose row hasn't been laid out yet, so its id can't
+                // be in `visibleUtteranceIDs`. Checking the new id was
+                // the bug behind "auto-scroll never fires when the list
+                // is at the bottom"; the old id, on the other hand,
+                // is still in `visibleUtteranceIDs` for as long as that
+                // row remains on screen.
+                let wasFollowing = oldLastID.map { visibleUtteranceIDs.contains($0) } ?? false
+                if oldLastID == nil || wasFollowing {
+                    // First utterance of a session, OR user was at the
+                    // bottom: jump to the new entry.
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(newLastID, anchor: .bottom)
+                    }
+                    hasUnreadUtterance = false
+                } else {
+                    // User has scrolled the most-recent off-screen.
+                    // Don't yank them; surface the capsule instead.
+                    hasUnreadUtterance = true
                 }
             }
-            StageRow(
-                icon: "waveform",
-                name: String(localized: "pipeline.acousticSER"),
-                state: perSegmentState(latency: recorder.lastAcousticDuration),
-                metric: latencyMetric(recorder.lastAcousticDuration)
-            )
-            StageRow(
-                icon: "text.bubble.fill",
-                name: String(localized: "pipeline.textSER"),
-                state: perSegmentState(latency: recorder.lastTextDuration),
-                metric: latencyMetric(recorder.lastTextDuration)
-            )
-            StageRow(
-                icon: "circle.hexagongrid.fill",
-                name: String(localized: "pipeline.fusion"),
-                state: fusionState,
-                metric: recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count) utts"
-            )
-            StageRow(
-                icon: "square.and.arrow.up",
-                name: String(localized: "pipeline.export"),
-                state: recorder.lastExportAt == nil ? .idle : .ready,
-                metric: exportMetric
-            )
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    // MARK: derived state
-
-    private var captureState: StageRow.State {
-        recorder.isRecording ? .active(recorder.inputLevel) : .idle
-    }
-    private var captureMetric: String {
-        recorder.isRecording
-            ? String(format: "%.1f s", recorder.elapsedSeconds)
-            : "—"
-    }
-
-    private var asrState: StageRow.State {
-        if recorder.isRecording { return .pending }
-        if !recorder.utterances.isEmpty { return .ready }
-        return .idle
-    }
-    private var asrMetric: String {
-        recorder.utterances.isEmpty ? "—" : "\(recorder.utterances.count)"
-    }
-
-    /// Per-segment stages (Acoustic SER, Text SER) flip to active while a
-    /// segment is in flight, otherwise idle. Latency value is shown in the
-    /// metric column, but the glyph state itself doesn't latch to .ready —
-    /// otherwise the stage looks "done" forever even though it'll fire again
-    /// on the next segment.
-    private func perSegmentState(latency _: TimeInterval?) -> StageRow.State {
-        recorder.inflightSegments > 0 ? .active(0) : .idle
-    }
-
-    private var fusionState: StageRow.State {
-        if recorder.inflightSegments > 0 { return .active(0) }
-        return recorder.utterances.isEmpty ? .idle : .ready
-    }
-
-    private func latencyMetric(_ value: TimeInterval?) -> String {
-        guard let value else { return "—" }
-        if value >= 1 { return String(format: "%.2f s", value) }
-        return String(format: "%.0f ms", value * 1000)
-    }
-
-    private var exportMetric: String {
-        guard let date = recorder.lastExportAt else { return "—" }
-        let interval = -date.timeIntervalSinceNow
-        if interval < 60 { return String(format: "%.0fs ago", interval) }
-        return String(format: "%.0fm ago", interval / 60)
-    }
-}
-
-private struct StageRow: View {
-    enum State {
-        case idle
-        case pending
-        case active(Float)   // 0...1 intensity
-        case ready
-    }
-
-    let icon: String
-    let name: String
-    let state: State
-    let metric: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.caption)
-                .frame(width: 16)
-                .foregroundStyle(iconColor)
-            Text(name)
-                .font(.caption)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Text(metric)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            stateGlyph
-                .font(.caption2)
-                .frame(width: 14, alignment: .center)
-        }
-    }
-
-    private var iconColor: Color {
-        switch state {
-        case .idle: return .secondary
-        case .pending: return .blue
-        case .active: return .green
-        case .ready: return .accentColor
-        }
-    }
-
-    @ViewBuilder
-    private var stateGlyph: some View {
-        switch state {
-        case .idle:
-            Image(systemName: "circle")
-                .foregroundStyle(.tertiary)
-        case .pending:
-            Text("⋯")
-                .foregroundStyle(.blue)
-        case .active(let intensity):
-            Image(systemName: "circle.fill")
-                .foregroundStyle(.green.opacity(Double(0.4 + intensity * 0.6)))
-        case .ready:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        }
-    }
-}
-
-private struct LevelMeterView: View {
-    let level: Float
-    private let segmentCount = 24
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<segmentCount, id: \.self) { i in
-                let threshold = Float(i) / Float(segmentCount - 1)
-                let isLit = level >= threshold
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(isLit ? color(for: threshold) : color(for: threshold).opacity(0.15))
-                    .frame(height: 14)
+            .onChange(of: recorder.utterances.isEmpty) { _, isEmpty in
+                if isEmpty {
+                    hasUnreadUtterance = false
+                    selectedUtteranceID = nil
+                    normalizedTranscriptCache.removeAll(keepingCapacity: true)
+                }
             }
+            .onChange(of: recorder.utterances.count, initial: true) { _, _ in
+                refreshSearchCache()
+            }
+            .onChange(of: isLastUtteranceVisible) { _, visible in
+                // User scrolled (or list re-laid out) to bring the most
+                // recent utterance into view → no longer "unread".
+                if visible { hasUnreadUtterance = false }
+            }
+            .overlay(alignment: .bottom) {
+                if hasUnreadUtterance {
+                    NewUtteranceCapsule {
+                        guard let lastID = filteredIndexedUtterances.last?.u.id else { return }
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                        hasUnreadUtterance = false
+                    }
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: hasUnreadUtterance)
         }
-        .animation(.linear(duration: 0.05), value: level)
-        .accessibilityElement()
-        .accessibilityLabel("Microphone level")
-        .accessibilityValue("\(Int(level * 100)) percent")
     }
 
-    private func color(for ratio: Float) -> Color {
-        if ratio < 0.65 { return .green }
-        if ratio < 0.88 { return .yellow }
-        return .red
-    }
 }
 
-private struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
 
 #Preview {
     ContentView()
