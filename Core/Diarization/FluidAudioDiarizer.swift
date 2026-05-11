@@ -20,27 +20,30 @@ public actor FluidAudioDiarizer: Diarizer {
     /// Default config tuned for conversational speech. The two
     /// values that differ from `DiarizerConfig.default` are:
     ///
-    /// - `clusteringThreshold = 0.72` (default 0.7). Lower value =
+    /// - `clusteringThreshold = 0.6` (default 0.7). Lower value =
     ///   stricter matching, so similar-but-distinct voices are more
     ///   likely to get separate IDs. FluidAudio derives
     ///   `speakerThreshold = clusteringThreshold × 1.2` from this
-    ///   and `embeddingThreshold = clusteringThreshold × 0.8`. We
-    ///   used to run at 0.78 to suppress over-segmentation, but
-    ///   `dominantSpeaker` now picks each sentence's speaker via
-    ///   mode-vote across sample points, which absorbs the extra
-    ///   observation noise that a more sensitive threshold creates.
+    ///   and `embeddingThreshold = clusteringThreshold × 0.8`.
+    ///   Progression on this codebase has been 0.78 → 0.72 → 0.6,
+    ///   each step trading more separation for more observation
+    ///   noise. The mode-vote in `dominantSpeaker` (per-instant
+    ///   majority across overlapping observations) absorbs the
+    ///   noise; what we get back is real speakers that the looser
+    ///   thresholds were merging into one ID.
     ///
-    /// - `minSpeechDuration = 1.0` s (FluidAudio default). Lets a
-    ///   real new speaker who only says a short turn first still
-    ///   get their own ID; the per-instant majority vote in
+    /// - `minSpeechDuration = 0.5` s (FluidAudio default 1.0). Lets
+    ///   a real new speaker who only says a short turn (a brief
+    ///   backchannel, a one-word interjection) first still get
+    ///   their own ID. The per-instant majority vote in
     ///   `dominantSpeaker` filters out spurious one-window
-    ///   creations from background noise so the cost of a lower
+    ///   creations from background noise, so the cost of a lower
     ///   floor is small.
     ///
     /// Other fields stay at FluidAudio's defaults.
     public static let conversationalConfig = DiarizerConfig(
-        clusteringThreshold: 0.72,
-        minSpeechDuration: 1.0
+        clusteringThreshold: 0.6,
+        minSpeechDuration: 0.5
     )
 
     public init(
