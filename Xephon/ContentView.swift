@@ -559,7 +559,12 @@ struct ContentView: View {
     ///    moves the highlight along with what they're looking at.
     ///
     /// Returns nil when neither case has data (empty list, or
-    /// nothing visible yet on first layout).
+    /// nothing visible yet on first layout). Visibility tracking
+    /// uses `.onScrollVisibilityChange` in `TranscriptList` (not
+    /// `.onAppear` / `.onDisappear`) so the set stays in sync
+    /// even across the layout-flux window of a row expansion;
+    /// `.onDisappear` was firing unreliably in that case and
+    /// leaving phantom entries that stretched the highlighter.
     private var selectedUtteranceRange: (start: TimeInterval, end: TimeInterval)? {
         if let id = selectedUtteranceID,
            let u = recorder.utterances.first(where: { $0.id == id }) {

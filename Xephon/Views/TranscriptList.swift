@@ -257,20 +257,30 @@ struct TranscriptList: View {
             // which is gated upstream in ContentView).
         )
         .id(item.u.id)
-        // Skip the binding write when the value's already in the
-        // expected state. SwiftUI calls the Binding setter on every
-        // `.insert` regardless of whether the element was new — and
-        // each setter call invalidates ContentView's body. Guarding
-        // here turns a fling-scroll's flurry of redundant insertions
-        // into the actual visibility transitions only.
-        .onAppear {
-            if !visibleUtteranceIDs.contains(item.u.id) {
-                visibleUtteranceIDs.insert(item.u.id)
-            }
-        }
-        .onDisappear {
-            if visibleUtteranceIDs.contains(item.u.id) {
-                visibleUtteranceIDs.remove(item.u.id)
+        // Frame-based visibility tracking via the iOS 18+ scroll-
+        // visibility API. Replaces `.onAppear` / `.onDisappear`,
+        // which fire on view lifecycle rather than viewport
+        // intersection and were dropping `.onDisappear` events
+        // across the layout-flux window of a row expansion. The
+        // phantom entries that bug left behind were dragging the
+        // timeline highlighter unboundedly when the user later
+        // scrolled past an expanded row. `threshold: 0.05` keeps
+        // semantics matched to the old `.onAppear` (fires as soon
+        // as any sliver of the row is on screen) instead of the
+        // default 0.5 (half-visible) which would noticeably lag
+        // the highlighter at the viewport's top and bottom edges.
+        // The contains-guards skip redundant binding writes that
+        // would otherwise invalidate ContentView's body on every
+        // fling-scroll frame.
+        .onScrollVisibilityChange(threshold: 0.05) { visible in
+            if visible {
+                if !visibleUtteranceIDs.contains(item.u.id) {
+                    visibleUtteranceIDs.insert(item.u.id)
+                }
+            } else {
+                if visibleUtteranceIDs.contains(item.u.id) {
+                    visibleUtteranceIDs.remove(item.u.id)
+                }
             }
         }
         .tag(item.u.id)
