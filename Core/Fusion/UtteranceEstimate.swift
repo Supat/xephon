@@ -10,6 +10,17 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     /// export so external tooling can cross-reference rows.
     public let id: UUID
     public let speakerID: String
+    /// User-supplied display name for `speakerID` at export time
+    /// (e.g. `"Alice"` for `"S01"`). Stamped by
+    /// `RecordingController.exportJSON` from the active rename map
+    /// so external tooling can read the human name without losing
+    /// the canonical id. Nil for every code path that constructs an
+    /// estimate from the pipeline (LateFusion, re-eval, hand-edit) —
+    /// the rename layer lives one level above the fusion stage.
+    /// Optional + nil by default keeps the JSON / `.xph` schema
+    /// backward-compatible: pre-rename files decode cleanly with a
+    /// nil here.
+    public let speakerName: String?
     public let start: TimeInterval
     public let end: TimeInterval
     public let transcript: String
@@ -55,6 +66,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     public init(
         id: UUID = UUID(),
         speakerID: String,
+        speakerName: String? = nil,
         start: TimeInterval,
         end: TimeInterval,
         transcript: String,
@@ -73,6 +85,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     ) {
         self.id = id
         self.speakerID = speakerID
+        self.speakerName = speakerName
         self.start = start
         self.end = end
         self.transcript = transcript
@@ -94,6 +107,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         UtteranceEstimate(
             id: id,
             speakerID: speakerID,
+            speakerName: speakerName,
             start: start,
             end: end,
             transcript: transcript,
@@ -116,6 +130,35 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         UtteranceEstimate(
             id: self.id,
             speakerID: id,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            plutchik: plutchik,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
+    /// Return a copy with `speakerName` set to `name`. Used by
+    /// `RecordingController.exportJSON` to stamp the active rename
+    /// (`speakerNameOverrides[speakerID]`) onto each row right
+    /// before writing the JSON, so external tooling sees the human
+    /// name alongside the canonical `speakerID`. Pass nil to clear.
+    public func withSpeakerName(_ name: String?) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: name,
             start: start,
             end: end,
             transcript: transcript,
@@ -138,6 +181,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         UtteranceEstimate(
             id: id,
             speakerID: speakerID,
+            speakerName: speakerName,
             start: start,
             end: end,
             transcript: transcript,

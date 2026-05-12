@@ -2845,8 +2845,27 @@ final class RecordingController {
         guard !utterances.isEmpty else { return nil }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("xephon-\(Int(Date().timeIntervalSince1970)).json")
+        // Stamp the active rename (`speakerNameOverrides[id]`) onto
+        // each row before encoding, so the JSON carries the human
+        // name alongside the canonical `speakerID`. We don't keep
+        // the name on `utterances` itself because it lives one
+        // layer above the fusion stage — the override map is the
+        // source of truth, and a row's stored `speakerName` would
+        // go stale the moment the user renamed the speaker without
+        // re-stamping every row. Renames + ID reassignments are
+        // both reflected this way: the id change rides in
+        // `withSpeakerID` (already applied in place) and the
+        // friendly name is filled in here.
+        let stamped: [UtteranceEstimate]
+        if speakerNameOverrides.isEmpty {
+            stamped = utterances
+        } else {
+            stamped = utterances.map { u in
+                u.withSpeakerName(speakerNameOverrides[u.speakerID])
+            }
+        }
         do {
-            try await exporter.write(utterances, to: url)
+            try await exporter.write(stamped, to: url)
             lastExportAt = Date()
             return url
         } catch {
