@@ -451,6 +451,7 @@ struct ContentView: View {
                 filterBar
                 speakerChipBar
                 diarizationTimelineStrip
+                emotionTimelineStrip
                 if filteredIndexedUtterances.isEmpty {
                     noMatchesView
                 } else {
@@ -483,6 +484,35 @@ struct ContentView: View {
             )
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+        }
+    }
+
+    /// Companion emotion-label strip rendered immediately below the
+    /// diarizer timeline. Shares X axis + tap behavior with the
+    /// speaker strip so a glance across both reveals "this speaker,
+    /// this emotion, at this audio time" in one read. Hidden until
+    /// at least one utterance has a fused top label — before the
+    /// first analysis finishes there's nothing to colour.
+    @ViewBuilder
+    private var emotionTimelineStrip: some View {
+        let total = transcriptTotalDuration
+        let hasAnyLabel = recorder.utterances.contains { $0.fusedTopLabel != nil }
+        if hasAnyLabel, total > 0 {
+            EmotionTimelineStrip(
+                utterances: recorder.utterances,
+                totalDuration: total,
+                selectedRange: selectedUtteranceRange,
+                onTapAtTime: { t in
+                    guard let target = nearestUtterance(toTime: t) else { return }
+                    selectedUtteranceID = target.id
+                    scrollRequestUtteranceID = target.id
+                }
+            )
+            .padding(.horizontal, 12)
+            // Tighter vertical pad than the speaker strip so the
+            // two strips read as a stacked pair, not two unrelated
+            // bars with whitespace between them.
+            .padding(.bottom, 6)
         }
     }
 
