@@ -110,6 +110,13 @@ struct UtteranceRow: View {
     /// sheet's Commit hands the edited values to
     /// `recorder.commitHandEdit`.
     let onEditTranscript: () -> Void
+    /// Fires when the user taps anywhere on the row that isn't an
+    /// inner interactive element (buttons, badges with their own
+    /// long-press, etc.). The parent uses this to toggle the row's
+    /// focus: tap an unfocused row to focus it, tap the focused row
+    /// to unfocus. List's built-in tap-to-select is bypassed because
+    /// it can't model the "tap-to-unfocus" half of the toggle.
+    let onTap: () -> Void
 
     /// Set by a 2-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
@@ -146,6 +153,14 @@ struct UtteranceRow: View {
     /// edit-press threshold so a momentary hold doesn't blow away
     /// state — the user has to commit to the gesture.
     private static let revertLongPressSec: Double = 2.0
+    /// Threshold for "expand this row" long-presses (empty space
+    /// inside the row's content area). Matches the revert long-
+    /// press so the gesture vocabulary is consistent: tap is the
+    /// quick action (focus), 2 s hold is the deeper one (expand /
+    /// revert). The inner 0.5 s long-presses on chip + transcript
+    /// text still win their own hit areas, so a hold on those
+    /// opens their dialogs before this 2 s threshold is reached.
+    private static let expandLongPressSec: Double = 2.0
 
     /// Tint strength (0…1) applied to the Liquid Glass capsule
     /// when the speaker color is laid over it. 0.4 gives a clearly
@@ -158,9 +173,12 @@ struct UtteranceRow: View {
     var body: some View {
         HStack(alignment: .utteranceRowMainContent, spacing: 8) {
             leadingButtonColumn
-            // Tap-to-expand surface excludes the playback button so
-            // tapping the button (or the small dead zone immediately
-            // around it) doesn't also toggle the expansion.
+            // Hold-to-expand surface excludes the leading button
+            // column so a tap or hold near the play / re-evaluate
+            // buttons doesn't also toggle the expansion. Inner 0.5 s
+            // long-press gestures on the speaker chip and transcript
+            // text fire first when held on those elements (their
+            // dialogs open at 0.5 s, well before this 2 s threshold).
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     mainContentLeft
@@ -180,13 +198,30 @@ struct UtteranceRow: View {
                 }
             }
             .contentShape(Rectangle())
-            // Tap toggles expansion. `simultaneousGesture` runs
-            // alongside List's own tap-to-select so selection still
-            // updates — replacing it with `.onTapGesture` would
-            // swallow the List's gesture and break keyboard nav.
-            .simultaneousGesture(TapGesture().onEnded(onToggleExpanded))
+            // 2 s hold expands / collapses the detail panel. `simul-
+            // taneousGesture` so it coexists with the outer
+            // `.onTapGesture` (which handles the tap-to-focus toggle)
+            // and with the inner chip + transcript long-presses on
+            // their own hit areas.
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: Self.expandLongPressSec)
+                    .onEnded { _ in onToggleExpanded() }
+            )
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        // Tap anywhere on the row toggles its focus (set as the
+        // selected utterance, or clear when re-tapping the already-
+        // focused row). Overrides List's built-in tap-to-select —
+        // which can't model the second half of the toggle — and
+        // writes directly to the same `selection:` binding so
+        // keyboard arrow-key navigation and the row highlight keep
+        // working off `selectedUtteranceID`. Inner buttons use
+        // `buttonStyle(.borderless)` so their taps don't bubble up
+        // here; inner long-press gestures don't consume quick taps,
+        // so a tap on the chip / transcript text still focuses the
+        // row before its own long-press window opens.
+        .onTapGesture(perform: onTap)
         .animation(.easeInOut(duration: 0.18), value: isExpanded)
     }
 

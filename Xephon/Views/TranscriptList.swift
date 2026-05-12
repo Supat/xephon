@@ -75,19 +75,16 @@ struct TranscriptList: View {
                 row(for: item, hasSpeakerMismatch: mismatched.contains(item.u.id))
             }
             .listStyle(.plain)
-            // Any tap on the list — row, dead-space between rows,
-            // header gap, anywhere — clears the previously selected
-            // utterance's focus highlight and dismisses any
-            // keyboard focus on the search field. When the tap
-            // lands on a row, the List's own tap-to-select handler
-            // runs after this gesture and writes the row's id back
-            // into `selectedUtteranceID`, so legitimate row
-            // selection still works; only "stale" focus that the
-            // user has moved past gets cleared.
+            // Any tap on the list dismisses keyboard focus on the
+            // search field. Selection is now owned by each row's
+            // own `.onTapGesture` (tap-to-focus / re-tap-to-unfocus
+            // toggle), so this handler intentionally does NOT clear
+            // `selectedUtteranceID` — doing so would race with the
+            // row's own focus toggle and intermittently strip the
+            // focus the user just established.
             .simultaneousGesture(
                 TapGesture().onEnded {
                     if searchFieldFocused.wrappedValue { searchFieldFocused.wrappedValue = false }
-                    if selectedUtteranceID != nil { selectedUtteranceID = nil }
                 }
             )
             // Keep the selected row scrolled into view when the user
@@ -232,7 +229,19 @@ struct TranscriptList: View {
             },
             onPromoteNewSpeaker: { onPromoteNewSpeaker(item.u) },
             onRenameSpeaker: { onRenameSpeaker(item.u) },
-            onEditTranscript: { onEditTranscript(item.u) }
+            onEditTranscript: { onEditTranscript(item.u) },
+            // Tap toggles focus: re-tapping the already-focused
+            // row clears the selection, tapping any other row
+            // moves focus there. Writes the same `selectedUtter-
+            // anceID` binding `List(selection:)` reads, so the
+            // visual highlight + keyboard arrow nav follow.
+            onTap: {
+                if selectedUtteranceID == item.u.id {
+                    selectedUtteranceID = nil
+                } else {
+                    selectedUtteranceID = item.u.id
+                }
+            }
             // Note: the gate "only when source audio is present"
             // moved to the dialog itself, which hides the time
             // spinners + play button when the session is mic-mode.
