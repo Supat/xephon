@@ -9,7 +9,9 @@ import PackageDescription
 // External dependency versions below are loose (`from:`) on first scaffold; they
 // will be pinned in `Package.resolved` after the first `swift package resolve`.
 //
-// `mlx-swift` is intentionally omitted until an LLM path is enabled (per CLAUDE.md).
+// `mlx-swift` + `mlx-swift-examples` are now pulled in — the Summarizer target uses
+// them for the Qwen2.5-Instruct on-device session summarizer (Apache 2.0). All
+// inference is local; we never reach a cloud API.
 
 let package = Package(
     name: "Xephon",
@@ -31,6 +33,7 @@ let package = Package(
                 "SERText",
                 "Fusion",
                 "Export",
+                "Summarizer",
             ]
         ),
         .library(name: "Audio",         targets: ["Audio"]),
@@ -41,14 +44,25 @@ let package = Package(
         .library(name: "SERText",       targets: ["SERText"]),
         .library(name: "Fusion",        targets: ["Fusion"]),
         .library(name: "Export",        targets: ["Export"]),
+        .library(name: "Summarizer",    targets: ["Summarizer"]),
         .library(name: "XephonLogging", targets: ["XephonLogging"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit", from: "0.10.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.5.0"),
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
-        // For DeBERTa-WRIME tokenization (already a transitive dep via WhisperKit).
-        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.0.0"),
+        // `swift-transformers` pinned to 1.0.x because mlx-swift-examples
+        // hasn't moved past that line yet — see resolver notes when bumping.
+        // DeBERTaWRIME uses `AutoTokenizer.from(tokenizerConfig:tokenizerData:)`,
+        // which exists in 1.0.x.
+        .package(url: "https://github.com/huggingface/swift-transformers.git", "1.0.0"..<"1.1.0"),
+        // On-device LLM runtime for the session summarizer (Qwen2.5-Instruct
+        // 4-bit MLX). `mlx-swift` is the runtime; `mlx-swift-examples`
+        // publishes the higher-level `MLXLLM` + `MLXLMCommon` products that
+        // bundle loaders, tokenizer glue, and chat-template handling we'd
+        // otherwise have to hand-roll. All inference is on-device; we never
+        // reach a cloud endpoint.
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.22.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-examples", from: "2.25.10"),
     ],
     targets: [
         .target(
@@ -65,7 +79,6 @@ let package = Package(
             dependencies: [
                 "XephonLogging",
                 "Audio",
-                .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Core/ASR"
@@ -120,6 +133,16 @@ let package = Package(
             name: "Export",
             dependencies: ["XephonLogging", "Fusion"],
             path: "Core/Export"
+        ),
+        .target(
+            name: "Summarizer",
+            dependencies: [
+                "XephonLogging",
+                "Fusion",
+                .product(name: "MLXLLM", package: "mlx-swift-examples"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-examples"),
+            ],
+            path: "Core/Summarizer"
         ),
     ],
     swiftLanguageModes: [.v6]
