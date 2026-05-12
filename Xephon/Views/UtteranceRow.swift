@@ -60,6 +60,15 @@ struct UtteranceRow: View {
     /// Custom name for this row's speaker if the user renamed it,
     /// nil otherwise. Drives the chip display.
     let speakerCustomName: String?
+    /// True when the cumulative diarizer timeline's verdict for
+    /// this row's `[start, end]` disagrees with the row's stored
+    /// `speakerID`. Renders a small warning glyph after the chip
+    /// — purely informational, no tap action — so the user can
+    /// spot rows where re-running the diarizer (or a manual
+    /// reassignment) would change the answer. Computed once per
+    /// render by `TranscriptList` against the controller's
+    /// snapshot.
+    let hasSpeakerMismatch: Bool
     /// Speaker ids currently appearing in the session, sorted.
     /// Drives the chip's reassign menu (we filter out this row's
     /// current speaker at render time so it reads as a "switch to"
@@ -204,6 +213,21 @@ struct UtteranceRow: View {
                         speakerMenuPopover
                             .presentationCompactAdaptation(.popover)
                     }
+                if hasSpeakerMismatch {
+                    // The cumulative diarizer timeline disagrees
+                    // with this row's stored speaker. Surfaced as
+                    // a passive caution glyph right after the
+                    // chip — re-evaluating the row, or picking a
+                    // different speaker from the chip menu, will
+                    // reconcile it.
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .symbolRenderingMode(.hierarchical)
+                        .accessibilityLabel(
+                            "Diarizer disagrees with assigned speaker"
+                        )
+                }
                 if utterance.speechBoost == true {
                     Label("Boost", systemImage: "waveform.badge.plus")
                         .labelStyle(.titleAndIcon)

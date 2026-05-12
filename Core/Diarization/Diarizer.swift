@@ -1,7 +1,7 @@
 import Foundation
 import Audio
 
-public struct DiarizedSegment: Sendable, Hashable {
+public struct DiarizedSegment: Sendable, Hashable, Codable {
     public let speakerID: String
     public let start: TimeInterval
     public let end: TimeInterval

@@ -83,6 +83,15 @@ public struct SessionDocument: Codable, Sendable {
     /// revert. Optional for v1 compat.
     public let handEditChildren: [UUID: [UUID]]?
 
+    /// Opaque blob carrying the diarizer's cumulative timeline at
+    /// save time (JSON-encoded `[DiarizedSegment]`). Decoded by the
+    /// controller on load so the per-session diarizer-timeline
+    /// strip in the transcript pane survives Save → Open. Kept as
+    /// `Data?` rather than a typed field so this layer doesn't
+    /// take a direct dependency on the diarizer module's segment
+    /// type. Optional for v1 compat.
+    public let diarizationTimeline: Data?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -103,7 +112,8 @@ public struct SessionDocument: Codable, Sendable {
         speakerNames: [String: String]? = nil,
         speakerDatabase: Data? = nil,
         originalSnapshots: [UUID: UtteranceEstimate]? = nil,
-        handEditChildren: [UUID: [UUID]]? = nil
+        handEditChildren: [UUID: [UUID]]? = nil,
+        diarizationTimeline: Data? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -115,6 +125,7 @@ public struct SessionDocument: Codable, Sendable {
         self.speakerDatabase = speakerDatabase
         self.originalSnapshots = originalSnapshots
         self.handEditChildren = handEditChildren
+        self.diarizationTimeline = diarizationTimeline
     }
 }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import Diarization
 import Fusion
 
 /// The scrollable list of utterances on the right pane, plus the
@@ -37,9 +38,10 @@ struct TranscriptList: View {
     let refreshSearchCache: () -> Void
 
     var body: some View {
+        let mismatched = speakerMismatchedIDs
         ScrollViewReader { proxy in
             List(items, id: \.u.id, selection: $selectedUtteranceID) { item in
-                row(for: item)
+                row(for: item, hasSpeakerMismatch: mismatched.contains(item.u.id))
             }
             .listStyle(.plain)
             // Any tap on the list — row, dead-space between rows,
@@ -155,7 +157,10 @@ struct TranscriptList: View {
     /// parent's actions. Factored out of `body` purely for
     /// readability — the row construction is 30+ lines on its own.
     @ViewBuilder
-    private func row(for item: (idx: Int, u: UtteranceEstimate)) -> some View {
+    private func row(
+        for item: (idx: Int, u: UtteranceEstimate),
+        hasSpeakerMismatch: Bool
+    ) -> some View {
         UtteranceRow(
             number: item.idx + 1,
             utterance: item.u,
@@ -170,6 +175,7 @@ struct TranscriptList: View {
             },
             onRevert: { recorder.revertReevaluation(item.u) },
             speakerCustomName: recorder.speakerDisplayName(forStored: item.u.speakerID),
+            hasSpeakerMismatch: hasSpeakerMismatch,
             knownSpeakerIDs: recorder.knownSpeakerIDs(),
             speakerDisplayName: { recorder.speakerDisplayName(forStored: $0) },
             onReassignSpeaker: { newSpeakerID in
@@ -193,6 +199,38 @@ struct TranscriptList: View {
                 ? Color.accentColor.opacity(0.28)
                 : Color.clear
         )
+    }
+
+    /// Utterance ids whose stored `speakerID` disagrees with the
+    /// cumulative diarizer timeline's majority verdict for that
+    /// row's `[start, end]` window. Drives the warning glyph
+    /// after the speaker chip — purely informational, the user
+    /// can reconcile by re-evaluating the row or reassigning the
+    /// speaker via the chip menu.
+    ///
+    /// Computed once per `body` evaluation. Per-row cost is
+    /// O(samples × active_segments) ≈ a few hundred ops, with
+    /// `samples` capped at 256 by `dominantSpeakerInSegments`'s
+    /// own clamp; total ~N×~256×~5 = ~1280×N ops on a 5-minute
+    /// session. Skipped entirely when the timeline is empty so
+    /// freshly-loaded sessions (where the timeline blob hadn't
+    /// been persisted yet) don't pay for an all-empty pass.
+    private var speakerMismatchedIDs: Set<UUID> {
+        let timeline = recorder.diarizationTimeline
+        guard !timeline.isEmpty else { return [] }
+        var result: Set<UUID> = []
+        for u in recorder.utterances {
+            let dominant = AnalysisPipeline.dominantSpeakerInSegments(
+                timeline,
+                from: u.start,
+                to: u.end,
+                fallback: u.speakerID
+            )
+            if dominant != u.speakerID {
+                result.insert(u.id)
+            }
+        }
+        return result
     }
 
     /// True when the bottom-most filtered row is currently on

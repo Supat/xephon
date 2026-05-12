@@ -3,6 +3,7 @@ import Observation
 @preconcurrency import AVFoundation
 import Audio
 import ASR
+import Diarization
 import Fusion
 import Export
 import SERText
@@ -106,6 +107,14 @@ final class RecordingController {
     private(set) var speakerNameOverrides: [String: String] = [:]
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
+    /// Latest snapshot of the cumulative diarizer timeline.
+    /// Refreshed by the continuous-diarize task after each ingest;
+    /// reset at session start / loadSession. Drives the per-session
+    /// timeline strip in the transcript pane. Not persisted with
+    /// `makeSessionDocument` — after Open Session this stays empty
+    /// until re-recording or hand-edit/reeval flows repopulate it.
+    private(set) var diarizationTimeline: [DiarizedSegment] = []
+
     /// True while a `playRange(start:end:)` preview is in flight.
     /// Distinct from row-level playback (`playingUtteranceID`) so
     /// the Edit Utterance sheet's play button can toggle to a stop
@@ -423,6 +432,7 @@ final class RecordingController {
         speakerNameOverrides.removeAll()
         conversationSummary.reset()
         capturedAudio.reset()
+        diarizationTimeline = []
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
@@ -545,6 +555,7 @@ final class RecordingController {
                 )
                 guard !window.samples.isEmpty else { continue }
                 await pipeline.ingestDiarizationWindow(window)
+                self.diarizationTimeline = await pipeline.diarizationTimelineSnapshot()
             }
         }
     }
@@ -923,6 +934,17 @@ final class RecordingController {
         let childrenForExport = handEditChildren.filter { liveIDs.contains($0.key) }
         let snapshots = snapshotsForExport.isEmpty ? nil : snapshotsForExport
         let children = childrenForExport.isEmpty ? nil : childrenForExport
+        // Serialize the diarizer timeline so the per-session
+        // visualization strip in the transcript pane survives
+        // Save → Open. JSON-encoded so the Export layer doesn't
+        // need to import the Diarization module's segment type.
+        // Nil when no diarization ran (mic-mode pre-roll on a save
+        // with no audio, or an analysis path that never engaged
+        // the diarizer).
+        let timelineBlob: Data? = {
+            guard !diarizationTimeline.isEmpty else { return nil }
+            return try? JSONEncoder().encode(diarizationTimeline)
+        }()
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -938,7 +960,8 @@ final class RecordingController {
                     speakerNames: names,
                     speakerDatabase: speakerDB,
                     originalSnapshots: snapshots,
-                    handEditChildren: children
+                    handEditChildren: children,
+                    diarizationTimeline: timelineBlob
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -954,7 +977,8 @@ final class RecordingController {
             speakerNames: names,
             speakerDatabase: speakerDB,
             originalSnapshots: snapshots,
-            handEditChildren: children
+            handEditChildren: children,
+            diarizationTimeline: timelineBlob
         )
     }
 
@@ -983,11 +1007,16 @@ final class RecordingController {
         // (no recording started yet).
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
+        diarizationTimeline = []
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }
         if let savedChildren = document.handEditChildren {
             handEditChildren = savedChildren
+        }
+        if let timelineBlob = document.diarizationTimeline,
+           let restored = try? JSONDecoder().decode([DiarizedSegment].self, from: timelineBlob) {
+            diarizationTimeline = restored
         }
         speakerNameOverrides = document.speakerNames ?? [:]
         // Same-length imports would otherwise hit the filter memo;

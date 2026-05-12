@@ -86,6 +86,14 @@ final class AnalysisPipeline: Sendable {
     /// The audio's `timestamp` is the absolute audio-time origin of
     /// the window, so the tracker's history stays in the same time
     /// frame as ASRSegment / token timings.
+    /// Snapshot the cumulative diarizer timeline (every observation
+    /// the continuous-diarize task has ingested since the session
+    /// reset) as a value-typed copy, sorted by `start`. Used by the
+    /// timeline-strip visualization in the transcript pane.
+    func diarizationTimelineSnapshot() async -> [DiarizedSegment] {
+        await speakerTracker.cumulativeSnapshot()
+    }
+
     /// Snapshot the diarizer's speaker database for persistence in
     /// the session bundle. Returns nil when diarization isn't
     /// configured or there's nothing to save.

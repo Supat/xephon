@@ -438,6 +438,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 filterBar
                 speakerChipBar
+                diarizationTimelineStrip
                 if filteredIndexedUtterances.isEmpty {
                     noMatchesView
                 } else {
@@ -446,6 +447,67 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Per-session diarizer-timeline visualization. Hidden until
+    /// the cumulative timeline has at least one observation and we
+    /// can derive a positive total duration. Selecting an utterance
+    /// in the list outlines the strip region for that row's audio
+    /// range.
+    @ViewBuilder
+    private var diarizationTimelineStrip: some View {
+        let timeline = recorder.diarizationTimeline
+        let total = transcriptTotalDuration
+        if !timeline.isEmpty, total > 0 {
+            DiarizationTimelineStrip(
+                segments: timeline,
+                totalDuration: total,
+                selectedRange: selectedUtteranceRange
+            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+    }
+
+    /// Conversation duration for the timeline strip's X axis.
+    /// Prefer the source-file's full length when known (so the
+    /// strip stays anchored to the recording's true endpoint, not
+    /// the latest utterance). Falls back to the latest utterance
+    /// end, then to the latest diarized observation's end, so the
+    /// strip still has a scale during mic-mode recording before
+    /// any utterance has finalized.
+    private var transcriptTotalDuration: TimeInterval {
+        if let fileTotal = recorder.fileTotalAudioDuration, fileTotal > 0 {
+            return fileTotal
+        }
+        let utteranceMax = recorder.utterances.map(\.end).max() ?? 0
+        let timelineMax = recorder.diarizationTimeline.map(\.end).max() ?? 0
+        return max(utteranceMax, timelineMax)
+    }
+
+    /// What the timeline strip should outline. Two cases:
+    ///
+    /// 1. A row is explicitly selected → outline that row's
+    ///    `[start, end]` so the user can see where on the
+    ///    timeline they tapped.
+    /// 2. Nothing is selected → outline the range that spans
+    ///    every utterance currently on screen. This keeps the
+    ///    strip's highlight tied to the user's reading focus
+    ///    even without an explicit selection: scrolling the list
+    ///    moves the highlight along with what they're looking at.
+    ///
+    /// Returns nil when neither case has data (empty list, or
+    /// nothing visible yet on first layout).
+    private var selectedUtteranceRange: (start: TimeInterval, end: TimeInterval)? {
+        if let id = selectedUtteranceID,
+           let u = recorder.utterances.first(where: { $0.id == id }) {
+            return (start: u.start, end: u.end)
+        }
+        let visible = recorder.utterances.filter { visibleUtteranceIDs.contains($0.id) }
+        guard let minStart = visible.map(\.start).min(),
+              let maxEnd = visible.map(\.end).max()
+        else { return nil }
+        return (start: minStart, end: maxEnd)
     }
 
     /// Inline filter row: a free-text search field plus a label
