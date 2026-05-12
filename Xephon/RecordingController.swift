@@ -2034,6 +2034,118 @@ final class RecordingController {
         Array(Set(utterances.map(\.speakerID))).sorted()
     }
 
+    /// Extract an embedding from `utteranceID`'s audio, register it
+    /// in the diarizer's SpeakerManager DB under a freshly-minted
+    /// `S0N` id, reassign the row to that id, and re-write the
+    /// cumulative timeline so the new id wins the majority vote
+    /// for the utterance's window. Future re-eval / hand-edit
+    /// passes on similar audio will match this entry.
+    ///
+    /// No-op when: there's no source audio (mic mode without a
+    /// playback URL), no row matches `utteranceID`, the audio
+    /// slice came back empty, the diarizer's embedding extractor
+    /// isn't available, or promotion throws. Returns the new id
+    /// on success, nil on any failure path — caller can surface
+    /// a toast on nil.
+    func promoteUtteranceToNewSpeaker(utteranceID: UUID) async -> String? {
+        guard let url = playbackSourceURL else { return nil }
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return nil }
+        let utt = utterances[index]
+        let chunk: AudioChunk
+        do {
+            chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url,
+                    start: utt.start,
+                    end: utt.end
+                )
+            }.value
+        } catch {
+            AppLog.app.error(
+                "promote: audio read failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+        guard !chunk.samples.isEmpty else {
+            AppLog.app.warning("promote: empty audio slice")
+            return nil
+        }
+        let pipeline = await ensurePipeline()
+        guard let embedding = await pipeline.extractSpeakerEmbedding(audio: chunk.samples) else {
+            AppLog.app.warning("promote: embedding extractor unavailable")
+            return nil
+        }
+        let newID = Self.nextNewSpeakerID(in: knownSpeakerIDs())
+        do {
+            try await pipeline.promoteSpeaker(id: newID, embedding: embedding)
+        } catch {
+            AppLog.app.error(
+                "promote: register failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+        utterances[index] = utt.withSpeakerID(newID)
+        rewriteTimelineRange(speakerID: newID, start: utt.start, end: utt.end)
+        AppLog.app.info(
+            "speaker promoted: utt=\(utt.id, privacy: .public) → \(newID, privacy: .public) [\(utt.start, privacy: .public)..\(utt.end, privacy: .public)]"
+        )
+        commitUtteranceChanges()
+        return newID
+    }
+
+    /// Smallest unused `S0N` id given the supplied existing ids.
+    /// Matches the chip menu's `nextNewSpeakerID` logic so both
+    /// the "New Speaker" and "Promote New Speaker" paths agree
+    /// on which slot to fill.
+    private static func nextNewSpeakerID(in existing: [String]) -> String {
+        var used: Set<Int> = []
+        for id in existing {
+            guard id.hasPrefix("S") else { continue }
+            if let n = Int(id.dropFirst()) { used.insert(n) }
+        }
+        var candidate = 1
+        while used.contains(candidate) { candidate += 1 }
+        return String(format: "S%02d", candidate)
+    }
+
+    /// Replace every cumulative-timeline observation that covers
+    /// any part of `[start, end]` so the result has exactly one
+    /// segment for `speakerID` over that window. Overlapping
+    /// segments get split at the boundary (the portions outside
+    /// `[start, end]` survive intact, the portion inside is
+    /// dropped). Used after `promoteUtteranceToNewSpeaker` so the
+    /// per-instant majority for the promoted range cleanly
+    /// reflects the new speaker — without this, the streaming
+    /// pass's ~5 votes for the old id would still win the
+    /// `dominantSpeakerInSegments` tally and the mismatch
+    /// warning would persist.
+    private func rewriteTimelineRange(
+        speakerID: String,
+        start: TimeInterval,
+        end: TimeInterval
+    ) {
+        guard end > start else { return }
+        var rewritten: [DiarizedSegment] = []
+        rewritten.reserveCapacity(diarizationTimeline.count + 1)
+        for seg in diarizationTimeline {
+            if seg.end <= start || seg.start >= end {
+                rewritten.append(seg)
+            } else if seg.start < start && seg.end > end {
+                // Segment surrounds the promoted range — split.
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: seg.start, end: start))
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: end, end: seg.end))
+            } else if seg.start < start {
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: seg.start, end: start))
+            } else if seg.end > end {
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: end, end: seg.end))
+            }
+            // Fully inside → drop.
+        }
+        rewritten.append(DiarizedSegment(speakerID: speakerID, start: start, end: end))
+        rewritten.sort { $0.start < $1.start }
+        diarizationTimeline = rewritten
+    }
+
     /// Restore the utterance to its pre-first-reeval state. Invoked
     /// by a 5-second long-press on the re-evaluate button. No-op
     /// when there's no snapshot for this id (the row was never

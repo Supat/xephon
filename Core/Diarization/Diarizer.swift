@@ -58,6 +58,17 @@ public protocol Diarizer: Actor {
     /// (loading a session shouldn't fail just because the diarizer
     /// state went stale across an app version).
     func importSpeakerDatabase(_ data: Data) async throws
+    /// Register a speaker with the supplied id and embedding in the
+    /// diarizer's session-wide database, so future `diarize` calls
+    /// can match similar audio to this entry. Used by the
+    /// "Promote New Speaker" action in the speaker chip popover:
+    /// take a user-vetted utterance's audio embedding and teach
+    /// the diarizer to recognize this voice going forward.
+    /// Implementations should mark the entry permanent (so it
+    /// doesn't get pruned by inactivity) and silently no-op when
+    /// the id already exists in the database — the controller is
+    /// responsible for picking a fresh id.
+    func promoteSpeaker(id: String, embedding: [Float]) async throws
 }
 
 public extension Diarizer {
@@ -66,4 +77,5 @@ public extension Diarizer {
     func findSpeaker(byEmbedding embedding: [Float]) async -> SpeakerMatch? { nil }
     func exportSpeakerDatabase() async -> Data? { nil }
     func importSpeakerDatabase(_ data: Data) async throws {}
+    func promoteSpeaker(id: String, embedding: [Float]) async throws {}
 }

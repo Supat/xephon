@@ -108,6 +108,31 @@ final class AnalysisPipeline: Sendable {
         try await diarizer?.importSpeakerDatabase(data)
     }
 
+    /// Extract a session-stable speaker embedding from a clip of
+    /// audio. Used by the "Promote New Speaker" flow: pull a
+    /// 256-D embedding from the user-vetted utterance's audio
+    /// slice, then hand it to `promoteSpeaker(id:embedding:)`.
+    /// Returns nil when no diarizer is configured or when the
+    /// underlying embedding extractor isn't loaded yet.
+    func extractSpeakerEmbedding(audio: [Float]) async -> [Float]? {
+        guard let diarizer else { return nil }
+        do {
+            return try await diarizer.embedding(for: audio)
+        } catch {
+            AppLog.app.warning(
+                "embedding extraction failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Register a user-promoted speaker (id + embedding) into the
+    /// diarizer's session database. Throws on diarizer failure
+    /// (e.g. models not loaded and download fails).
+    func promoteSpeaker(id: String, embedding: [Float]) async throws {
+        try await diarizer?.promoteSpeaker(id: id, embedding: embedding)
+    }
+
     func ingestDiarizationWindow(_ audio: AudioChunk) async {
         guard diarizer != nil, !audio.samples.isEmpty else { return }
         let diarized = await runDiarization(audio)

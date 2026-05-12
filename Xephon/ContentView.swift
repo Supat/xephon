@@ -1257,6 +1257,9 @@ struct ContentView: View {
                 editingSpeakerName = recorder
                     .speakerDisplayName(forStored: u.speakerID) ?? ""
             },
+            onPromoteNewSpeaker: { u in
+                Task { _ = await recorder.promoteUtteranceToNewSpeaker(utteranceID: u.id) }
+            },
             onEditTranscript: { u in
                 // Only meaningful when there's source audio
                 // to re-slice from — the hand-edit pipeline

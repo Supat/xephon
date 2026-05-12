@@ -45,35 +45,67 @@ struct DiarizationTimelineStrip: View {
             sampleStep: Self.sampleStepSec
         )
         GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                // Backdrop for the "no diarized speech" regions of
-                // the timeline. Subtle so the colored runs read as
-                // the foreground.
-                RoundedRectangle(cornerRadius: Self.height / 2, style: .continuous)
-                    .fill(Color.secondary.opacity(0.08))
-                ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
-                    let x = geo.size.width * CGFloat(run.start / totalDuration)
-                    let w = geo.size.width * CGFloat((run.end - run.start) / totalDuration)
-                    Rectangle()
-                        .fill(speakerTint(for: run.speakerID).opacity(0.7))
-                        .frame(width: max(1, w), height: Self.height)
-                        .offset(x: x)
+            // GlassEffectContainer lets the per-run tinted glasses
+            // share refraction and merge their blurs at the
+            // boundaries, so the strip reads as one fluid surface
+            // instead of N adjacent rectangles each carrying their
+            // own glass pass.
+            GlassEffectContainer(spacing: 0) {
+                ZStack(alignment: .leading) {
+                    // Glass base track. Sits beneath the colored
+                    // runs to provide a uniform liquid-glass surface
+                    // for any "no observation" gaps in the timeline.
+                    Capsule()
+                        .glassEffect(
+                            .regular.tint(.secondary.opacity(Self.trackTintOpacity)),
+                            in: Capsule()
+                        )
+                        .frame(height: Self.height)
+                    ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                        let x = geo.size.width * CGFloat(run.start / totalDuration)
+                        let w = geo.size.width * CGFloat((run.end - run.start) / totalDuration)
+                        Rectangle()
+                            .glassEffect(
+                                .regular.tint(speakerTint(for: run.speakerID).opacity(Self.runTintOpacity)),
+                                in: Rectangle()
+                            )
+                            .frame(width: max(1, w), height: Self.height)
+                            .offset(x: x)
+                    }
                 }
+            }
+            // Selection overlay sits OUTSIDE the GlassEffectContainer
+            // so its sharp stroke isn't melted into the run blurs —
+            // we want a crisp marker for the focused range.
+            .overlay(alignment: .leading) {
                 if let sel = selectedRange, totalDuration > 0 {
                     let clampedStart = max(0, min(sel.start, totalDuration))
                     let clampedEnd = max(clampedStart, min(sel.end, totalDuration))
                     let x = geo.size.width * CGFloat(clampedStart / totalDuration)
                     let w = geo.size.width * CGFloat((clampedEnd - clampedStart) / totalDuration)
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.85), lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.9), lineWidth: 1.5)
                         .frame(width: max(2, w), height: Self.height)
                         .offset(x: x)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: Self.height / 2, style: .continuous))
+            // Clip the whole thing to the strip's capsule shape so
+            // run rectangles that overlap the rounded ends inherit
+            // the capsule profile.
+            .clipShape(Capsule())
         }
         .frame(height: Self.height)
     }
+
+    /// Tint strength for the base track's glass effect. Subtle
+    /// enough to let the colored runs dominate visually but strong
+    /// enough that the strip is still visible against any
+    /// background a user might set.
+    private static let trackTintOpacity: Double = 0.08
+    /// Tint strength for each per-run glass effect. Bolder than
+    /// the track so the speaker color reads clearly while still
+    /// letting underlying content blur through.
+    private static let runTintOpacity: Double = 0.55
 
     /// Per-instant majority winner sweep across `[0, totalDuration]`,
     /// compressing consecutive same-speaker samples into runs.

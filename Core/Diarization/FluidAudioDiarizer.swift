@@ -155,6 +155,31 @@ public actor FluidAudioDiarizer: Diarizer {
         )
     }
 
+    /// Register `id` in FluidAudio's session-wide `SpeakerManager`
+    /// with the supplied embedding so subsequent `diarize` passes
+    /// can match similar audio to this entry. Speakers are added
+    /// with `isPermanent: true` so FluidAudio's inactive-pruning
+    /// can't drop a user-promoted voice. Skips silently when the
+    /// id already exists (caller is responsible for fresh ids).
+    public func promoteSpeaker(id: String, embedding: [Float]) async throws {
+        if !manager.isAvailable {
+            try await loadModels()
+        }
+        let speaker = Speaker(
+            id: id,
+            currentEmbedding: embedding,
+            isPermanent: true
+        )
+        await manager.speakerManager.initializeKnownSpeakers(
+            [speaker],
+            mode: .skip,
+            preserveIfPermanent: true
+        )
+        AppLog.diarization.info(
+            "speaker promoted: id=\(id, privacy: .public) (embedding dim=\(embedding.count, privacy: .public))"
+        )
+    }
+
     private func loadModels() async throws {
         AppLog.diarization.info("Downloading FluidAudio diarizer models (first run)…")
         do {

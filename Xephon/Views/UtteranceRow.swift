@@ -82,6 +82,15 @@ struct UtteranceRow: View {
     /// Fires when the user picks a different speaker from the chip
     /// menu. ContentView calls `recorder.reassignSpeaker`.
     let onReassignSpeaker: (String) -> Void
+    /// Fires when the user picks "Promote New Speaker" from the
+    /// chip menu. ContentView calls
+    /// `recorder.promoteUtteranceToNewSpeaker` — the controller
+    /// extracts an embedding from this row's audio, registers it
+    /// in the diarizer's SpeakerManager DB under a fresh id,
+    /// reassigns the row, and rewrites the cumulative timeline.
+    /// Distinct from `onReassignSpeaker(nextNewSpeakerID)` which
+    /// is a pure row-level annotation override.
+    let onPromoteNewSpeaker: () -> Void
     /// Fires when the user picks "Rename Speaker…" from the chip
     /// menu. ContentView raises the existing rename alert
     /// pre-filled with the current override.
@@ -330,6 +339,13 @@ struct UtteranceRow: View {
                     newSpeakerCapsule
                 }
                 .buttonStyle(.plain)
+                Button {
+                    onPromoteNewSpeaker()
+                    showingSpeakerMenu = false
+                } label: {
+                    promoteNewSpeakerCapsule
+                }
+                .buttonStyle(.plain)
             }
             Divider()
             Button {
@@ -416,6 +432,23 @@ struct UtteranceRow: View {
                 Text(String(localized: "speaker.action.newSpeaker"))
             } icon: {
                 Image(systemName: "plus.circle.fill")
+            }
+        }
+    }
+
+    /// "Promote New Speaker" capsule — visually distinct from
+    /// "New Speaker" because the action is deeper: extracts the
+    /// row's audio embedding, registers it under a fresh id in
+    /// the diarizer's SpeakerManager database, and rewrites the
+    /// cumulative timeline. The accent tint flags this as the
+    /// "teach the diarizer about this voice" option.
+    @ViewBuilder
+    private var promoteNewSpeakerCapsule: some View {
+        popoverCapsule(tint: .accentColor) {
+            Label {
+                Text(String(localized: "speaker.action.promoteNewSpeaker"))
+            } icon: {
+                Image(systemName: "person.crop.circle.badge.plus")
             }
         }
     }

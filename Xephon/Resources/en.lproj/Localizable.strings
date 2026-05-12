@@ -58,6 +58,7 @@
 "speaker.action.title" = "Speaker";
 "speaker.action.reassign.header" = "Reassign to";
 "speaker.action.newSpeaker" = "New Speaker";
+"speaker.action.promoteNewSpeaker" = "Promote New Speaker";
 "speaker.action.rename" = "Rename Speaker…";
 "edit.title" = "Edit Utterance";
 "edit.transcript.header" = "Transcript";

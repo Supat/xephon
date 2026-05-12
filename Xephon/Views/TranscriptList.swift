@@ -34,6 +34,7 @@ struct TranscriptList: View {
     let reevaluateAvailability: (UtteranceEstimate) -> UtteranceRow.ReevaluateAvailability
     let onToggleExpansion: (UUID) -> Void
     let onRenameSpeaker: (UtteranceEstimate) -> Void
+    let onPromoteNewSpeaker: (UtteranceEstimate) -> Void
     let onEditTranscript: (UtteranceEstimate) -> Void
     let refreshSearchCache: () -> Void
 
@@ -184,6 +185,7 @@ struct TranscriptList: View {
                     to: newSpeakerID
                 )
             },
+            onPromoteNewSpeaker: { onPromoteNewSpeaker(item.u) },
             onRenameSpeaker: { onRenameSpeaker(item.u) },
             onEditTranscript: { onEditTranscript(item.u) }
         )
