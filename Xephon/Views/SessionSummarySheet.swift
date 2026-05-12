@@ -31,6 +31,12 @@ struct SessionSummarySheet: View {
     /// over the summary sheet. Conforms to Identifiable via a URL
     /// extension elsewhere in the app.
     @State private var markdownExportURL: URL?
+    /// Drives the destructive-action confirmation dialog for the
+    /// Remove-model glyph. Deleting the Qwen weights forces a
+    /// ~4.6 GB re-download, so a tap-confirm gate avoids the
+    /// "oops I meant to tap something else" failure mode that
+    /// borderless icon buttons are especially prone to.
+    @State private var showingRemoveModelConfirm: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -245,13 +251,31 @@ struct SessionSummarySheet: View {
 
     @ViewBuilder
     private func footer(model: String, generatedAt: Date) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(String(format: String(localized: "summary.footer.model"), model))
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: String(localized: "summary.footer.model"), model))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(generatedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 2) {
+                // `sparkles` is Apple's house glyph for AI-generated
+                // content (Apple Intelligence affordances all use
+                // it), so it reads as "this came from a model"
+                // without needing explanatory text.
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles")
+                    Text(String(localized: "summary.footer.aiGenerated"))
+                }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-            Text(generatedAt.formatted(date: .abbreviated, time: .shortened))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                Text(String(localized: "summary.footer.aiCaveat"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.top, 8)
     }
@@ -269,20 +293,26 @@ struct SessionSummarySheet: View {
     @ViewBuilder
     private var summarizerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle(
-                isOn: Binding(
-                    get: { recorder.summarizerEnabled },
-                    set: { newValue in
-                        Task { await recorder.setSummarizerEnabled(newValue) }
-                    }
-                )
-            ) {
+            HStack(spacing: 12) {
                 Text(String(localized: "settings.summarizer.enable"))
                     .font(.callout)
+                Spacer(minLength: 0)
+                if recorder.summarizerEnabled {
+                    summarizerBackendPicker
+                }
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { recorder.summarizerEnabled },
+                        set: { newValue in
+                            Task { await recorder.setSummarizerEnabled(newValue) }
+                        }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
             }
-            .toggleStyle(.switch)
             if recorder.summarizerEnabled {
-                summarizerBackendPicker
                 summarizerStatusLine
             }
         }
@@ -306,7 +336,7 @@ struct SessionSummarySheet: View {
             Text(String(localized: "settings.summarizer.backend.qwen"))
                 .tag(SummarizerBackend.qwen)
         }
-        .pickerStyle(.segmented)
+        .pickerStyle(.menu)
         .labelsHidden()
     }
 
@@ -349,12 +379,35 @@ struct SessionSummarySheet: View {
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 6)
                     Button {
-                        Task { await recorder.removeSummarizerModel() }
+                        showingRemoveModelConfirm = true
                     } label: {
-                        Text(String(localized: "settings.summarizer.remove"))
-                            .font(.caption)
+                        Label(
+                            String(localized: "settings.summarizer.remove"),
+                            systemImage: "trash"
+                        )
+                        .labelStyle(.iconOnly)
+                        .font(.caption)
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel(Text(String(localized: "settings.summarizer.remove")))
+                    .confirmationDialog(
+                        String(localized: "settings.summarizer.removeConfirm.title"),
+                        isPresented: $showingRemoveModelConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button(
+                            String(localized: "settings.summarizer.removeConfirm.confirm"),
+                            role: .destructive
+                        ) {
+                            Task { await recorder.removeSummarizerModel() }
+                        }
+                        Button(
+                            String(localized: "settings.summarizer.removeConfirm.cancel"),
+                            role: .cancel
+                        ) {}
+                    } message: {
+                        Text(String(localized: "settings.summarizer.removeConfirm.message"))
+                    }
                 }
             } else {
                 Text(String(localized: "settings.summarizer.notInstalled"))

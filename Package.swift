@@ -139,6 +139,13 @@ let package = Package(
             dependencies: [
                 "XephonLogging",
                 "Fusion",
+                // `MLX` is the low-level runtime we use directly for
+                // `MLX.GPU.set(cacheLimit:)` (memory tuning around the
+                // 8B weights). Declared explicitly so SPM stops
+                // flagging `mlx-swift` as "not used by any target" —
+                // it would otherwise link only transitively through
+                // mlx-swift-examples and SPM can't see through that.
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-examples"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-examples"),
             ],

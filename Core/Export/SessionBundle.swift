@@ -92,6 +92,16 @@ public struct SessionDocument: Codable, Sendable {
     /// type. Optional for v1 compat.
     public let diarizationTimeline: Data?
 
+    /// Opaque blob carrying the cached LLM session summary at save
+    /// time (JSON-encoded `SessionSummary` from the Summarizer
+    /// module). Decoded by the controller on load so the user
+    /// doesn't have to re-run the multi-second summarize pass just
+    /// to re-read what they already generated. Same `Data?` trick
+    /// used for the diarizer fields — keeps Export free of an
+    /// upward dependency on Summarizer (which would drag MLX into
+    /// the export module). Optional for v1 compat.
+    public let sessionSummary: Data?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -113,7 +123,8 @@ public struct SessionDocument: Codable, Sendable {
         speakerDatabase: Data? = nil,
         originalSnapshots: [UUID: UtteranceEstimate]? = nil,
         handEditChildren: [UUID: [UUID]]? = nil,
-        diarizationTimeline: Data? = nil
+        diarizationTimeline: Data? = nil,
+        sessionSummary: Data? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -126,6 +137,7 @@ public struct SessionDocument: Codable, Sendable {
         self.originalSnapshots = originalSnapshots
         self.handEditChildren = handEditChildren
         self.diarizationTimeline = diarizationTimeline
+        self.sessionSummary = sessionSummary
     }
 }
 

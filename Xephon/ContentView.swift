@@ -114,6 +114,19 @@ struct ContentView: View {
     /// `recorder.lastSessionSummary` to switch between progress and
     /// result UI without needing a separate "result is ready" flag.
     @State private var showingSummaryView: Bool = false
+    /// Drives the `TranscriptionReviewSheet` presentation. Same
+    /// pattern as `showingSummaryView` — sheet observes the
+    /// controller's `transcriptionReviewRunning` + `transcriptionSuggestions`
+    /// to render its three states.
+    @State private var showingReviewView: Bool = false
+    /// Active in-flight LLM tasks, owned by the view so the dismiss
+    /// path (and the regenerate-while-running path) can `.cancel()`
+    /// them. The MLX inference closures observe `Task.isCancelled`
+    /// and return `.stop`; the Apple FM session call throws
+    /// `CancellationError` from `respond(...)`. Both stop draining
+    /// power / GPU as soon as the user closes the sheet.
+    @State private var inflightSummarizationTask: Task<Void, Never>?
+    @State private var inflightReviewTask: Task<Void, Never>?
     /// Memoization layer for `filteredIndexedUtterances` and
     /// `displayedSummary`. SwiftUI re-evaluates the view body on
     /// every observed-state change (playback state, pipeline metrics,
@@ -153,45 +166,13 @@ struct ContentView: View {
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingSummaryView = true
-                        // Auto-generate on first open only, and only
-                        // when the summarizer is fully configured.
-                        // Otherwise just open the sheet so the user
-                        // can reach the bottom controls and enable /
-                        // pick a backend / download the model.
-                        if recorder.lastSessionSummary == nil
-                            && recorder.summarizerEnabled
-                            && recorder.summarizerReady {
-                            Task {
-                                _ = await recorder.summarizeSession()
-                            }
-                        }
-                    } label: {
-                        Label(String(localized: "summary.summarize"), systemImage: "text.book.closed")
-                    }
-                    .disabled(
-                        recorder.utterances.isEmpty
-                            || recorder.isRecording
-                            || recorder.isAnalyzing
-                            || recorder.summarizerInferenceRunning
-                    )
+                    summarizeToolbarButton
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Task {
-                            if let url = await recorder.exportJSON() {
-                                shareURL = url
-                            }
-                        }
-                    } label: {
-                        Label(String(localized: "export.json"), systemImage: "square.and.arrow.up")
-                    }
-                    .disabled(
-                        recorder.utterances.isEmpty
-                            || recorder.isRecording
-                            || recorder.isAnalyzing
-                    )
+                    reviewToolbarButton
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    exportToolbarButton
                 }
             }
             .sheet(item: $shareURL) { url in
@@ -202,12 +183,28 @@ struct ContentView: View {
                     recorder: recorder,
                     summary: recorder.lastSessionSummary,
                     isGenerating: recorder.summarizerInferenceRunning,
-                    onRegenerate: {
-                        Task {
-                            _ = await recorder.summarizeSession()
-                        }
-                    },
-                    onDismiss: { showingSummaryView = false }
+                    onRegenerate: { startSummarizationTask() },
+                    onDismiss: {
+                        // Cancel in-flight generation when the user
+                        // dismisses — no point spending tokens on a
+                        // result they've already walked away from.
+                        inflightSummarizationTask?.cancel()
+                        inflightSummarizationTask = nil
+                        showingSummaryView = false
+                    }
+                )
+            }
+            .sheet(isPresented: $showingReviewView) {
+                TranscriptionReviewSheet(
+                    recorder: recorder,
+                    suggestions: recorder.transcriptionSuggestions,
+                    isReviewing: recorder.transcriptionReviewRunning,
+                    onReview: { startReviewTask() },
+                    onDismiss: {
+                        inflightReviewTask?.cancel()
+                        inflightReviewTask = nil
+                        showingReviewView = false
+                    }
                 )
             }
             // File → Open… (⌘O) command pipe. The menu writes a fresh
@@ -275,6 +272,28 @@ struct ContentView: View {
             // programmatically focus a SwiftUI TextField.
             .onChange(of: menuCommands.findToken) { _, _ in
                 searchFieldFocused = true
+            }
+            // Recorder rotates `sessionToken` whenever its utterance
+            // list changes identity (new recording, new file
+            // analysis, imported `.xph`). Drop every view-side
+            // `@State` keyed by the prior session's UUIDs so the
+            // next session's renders aren't poisoned by stale row
+            // ids — `selectedUtteranceRange` (and the timeline
+            // strips that read it) mixes `recorder.utterances` with
+            // `visibleUtteranceIDs`, so a leftover ID is benign in
+            // theory but every set tracked here has its own way of
+            // going wrong (a stale `selectedUtteranceID` carrying
+            // a phantom selection; a stale `expandedUtteranceIDs`
+            // member silently expanding the wrong row if a UUID
+            // ever collides on import; etc). Cheap to wipe; keeps
+            // the surface predictable across session boundaries.
+            .onChange(of: recorder.sessionToken) { _, _ in
+                visibleUtteranceIDs.removeAll()
+                expandedUtteranceIDs.removeAll()
+                normalizedTranscriptCache.removeAll()
+                selectedUtteranceID = nil
+                scrollRequestUtteranceID = nil
+                hasUnreadUtterance = false
             }
             .modifier(SessionIOModifier(
                 showingSaveSession: $showingSaveSession,
@@ -424,6 +443,113 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    // MARK: - In-flight LLM task lifecycle
+
+    /// Start (or re-start) the session summarization. Cancels any
+    /// prior in-flight task first so re-tapping Regenerate while a
+    /// pass is still running supersedes it cleanly. The Task is
+    /// retained in `inflightSummarizationTask` so dismissing the
+    /// sheet can cancel it.
+    private func startSummarizationTask() {
+        inflightSummarizationTask?.cancel()
+        inflightSummarizationTask = Task {
+            _ = await recorder.summarizeSession()
+        }
+    }
+
+    /// Mirror of `startSummarizationTask` for the transcription
+    /// reviewer. Same cancel-prior-task discipline.
+    private func startReviewTask() {
+        inflightReviewTask?.cancel()
+        inflightReviewTask = Task {
+            _ = await recorder.reviewSession()
+        }
+    }
+
+    // MARK: - Toolbar buttons
+    //
+    // Split out as separate `@ViewBuilder` properties because three
+    // inline `ToolbarItem` blocks with multi-clause `.disabled(...)`
+    // gates plus auto-fire `Task` bodies tipped the SwiftUI body's
+    // type-checker past its budget ("unable to type-check this
+    // expression in reasonable time"). Each button now type-checks
+    // in isolation.
+
+    @ViewBuilder
+    private var summarizeToolbarButton: some View {
+        Button {
+            showingSummaryView = true
+            // Auto-generate on first open only, and only when the
+            // summarizer is fully configured. Otherwise just open
+            // the sheet so the user can reach the bottom controls
+            // and enable / pick a backend / download the model.
+            if recorder.lastSessionSummary == nil
+                && recorder.summarizerEnabled
+                && recorder.summarizerReady {
+                startSummarizationTask()
+            }
+        } label: {
+            Label(
+                String(localized: "summary.summarize"),
+                systemImage: "text.book.closed"
+            )
+        }
+        .disabled(
+            recorder.utterances.isEmpty
+                || recorder.isRecording
+                || recorder.isAnalyzing
+                || recorder.summarizerInferenceRunning
+        )
+    }
+
+    @ViewBuilder
+    private var reviewToolbarButton: some View {
+        Button {
+            showingReviewView = true
+            // Same auto-fire policy as the summarize button: kick
+            // off only when we have nothing cached AND the backend
+            // is fully configured.
+            if recorder.transcriptionSuggestions.isEmpty
+                && recorder.summarizerEnabled
+                && recorder.summarizerReady {
+                startReviewTask()
+            }
+        } label: {
+            Label(
+                String(localized: "review.toolbar"),
+                systemImage: "text.magnifyingglass"
+            )
+        }
+        .disabled(
+            recorder.utterances.isEmpty
+                || recorder.isRecording
+                || recorder.isAnalyzing
+                || recorder.transcriptionReviewRunning
+                || recorder.summarizerInferenceRunning
+        )
+    }
+
+    @ViewBuilder
+    private var exportToolbarButton: some View {
+        Button {
+            Task {
+                if let url = await recorder.exportJSON() {
+                    shareURL = url
+                }
+            }
+        } label: {
+            Label(
+                String(localized: "export.json"),
+                systemImage: "square.and.arrow.up"
+            )
+        }
+        .disabled(
+            recorder.utterances.isEmpty
+                || recorder.isRecording
+                || recorder.isAnalyzing
+        )
     }
 
     // MARK: - Left pane (1/3): controls

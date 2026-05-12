@@ -366,7 +366,7 @@ actor ModelStore {
         let assetName = file.assetName
         let tracker = DownloadProgressTracker { totalWritten, totalExpected in
             Task { @MainActor in
-                await state.updateFileProgress(
+                state.updateFileProgress(
                     name: assetName,
                     bytesWritten: totalWritten,
                     totalExpected: totalExpected

@@ -176,12 +176,25 @@ public actor MLXQwenSummarizer: SessionSummarizer {
                     input: lmInput,
                     parameters: parameters,
                     context: context,
-                    didGenerate: { (_: [Int]) -> GenerateDisposition in .more }
+                    // Cooperative cancellation: the user dismissing
+                    // the summary sheet cancels the View-owned Task
+                    // that's driving this call, which propagates
+                    // here as `Task.isCancelled`. Returning `.stop`
+                    // makes the generate loop bail at the next token
+                    // boundary instead of running to EOS — without
+                    // this hook a dismiss leaves the LLM grinding
+                    // away in the background on a result no one will
+                    // see.
+                    didGenerate: { (_: [Int]) -> GenerateDisposition in
+                        Task.isCancelled ? .stop : .more
+                    }
                 )
                 return result.output
             }
         } catch let error as SummarizerError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             AppLog.app.error(
                 "MLXQwenSummarizer.generate failed: \(String(describing: error), privacy: .public)"
@@ -190,6 +203,11 @@ public actor MLXQwenSummarizer: SessionSummarizer {
                 reason: String(describing: error)
             )
         }
+        // If generation was cancelled mid-stream the partial output
+        // won't parse as the structured JSON we asked for — bail
+        // before the parser has a chance to surface a misleading
+        // decode error to the user.
+        if Task.isCancelled { throw CancellationError() }
         AppLog.app.info(
             "MLXQwenSummarizer raw output: \(raw.count, privacy: .public) chars"
         )

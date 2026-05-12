@@ -37,6 +37,14 @@ final class RecordingController {
     /// percentage alongside wall-time and sample count.
     private(set) var fileTotalAudioDuration: TimeInterval?
     private(set) var errorMessage: String?
+    /// Rotates every time the session-level utterance list changes
+    /// identity (new recording, new file analysis, imported `.xph`).
+    /// Views observe this to flush transient `@State` keyed by the
+    /// prior session's UUIDs — `visibleUtteranceIDs`,
+    /// `expandedUtteranceIDs`, `selectedUtteranceID`, etc. The
+    /// controller can't reach those bindings directly, so a token
+    /// the view watches is the cleanest seam.
+    private(set) var sessionToken: UUID = UUID()
     private(set) var utterances: [UtteranceEstimate] = []
     private(set) var inputLevel: Float = 0
     private(set) var availableInputs: [AudioInputDescription] = []
@@ -90,6 +98,22 @@ final class RecordingController {
     /// dropped when the user disables the summarizer or starts a
     /// new session, so the ~4 GB working set doesn't linger.
     private var summarizerActor: MLXQwenSummarizer?
+
+    /// True while a `reviewSession()` call is in flight. Disables
+    /// the toolbar button + footer affordance during the LLM pass.
+    private(set) var transcriptionReviewRunning: Bool = false
+    /// Last successful suggestion list, kept around so the review
+    /// sheet survives re-presentation without re-running inference.
+    /// Suggestions are removed from this list as the user accepts /
+    /// rejects them. Cleared on session start.
+    private(set) var transcriptionSuggestions: [TranscriptionSuggestion] = []
+    /// The Qwen reviewer's actor — separate from `summarizerActor`
+    /// because each owns its own `ModelContainer`. The controller
+    /// is responsible for ensuring only one of the two is loaded
+    /// at a time (loading both = ~9 GB resident, well over the
+    /// per-app ceiling); the helpers below unload the sibling
+    /// before invoking.
+    private var reviewerActor: MLXQwenTranscriptionReviewer?
 
     /// Snapshot of the FluidAudio diarizer's speaker database
     /// taken right before the analysis pipeline is released for
@@ -540,6 +564,12 @@ final class RecordingController {
     private func resetSessionState() {
         errorMessage = nil
         samplesCaptured = 0
+        // Bump first so views observing the token can drop their
+        // stale UUID-keyed state before they see the empty
+        // utterance list — `@Observable` change notifications fire
+        // synchronously and ContentView's reset modifier reads
+        // utterances during cleanup.
+        sessionToken = UUID()
         utterances = []
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
@@ -553,6 +583,10 @@ final class RecordingController {
         // New session invalidates the previous summary — the
         // utterance list it was generated against is gone.
         lastSessionSummary = nil
+        // Same goes for any pending transcription suggestions: they
+        // pointed at utterance IDs that no longer exist in this
+        // fresh session.
+        transcriptionSuggestions = []
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
@@ -1138,6 +1172,11 @@ final class RecordingController {
             logAvailableMemory(label: "summarize Apple FM (after respond)")
             lastSessionSummary = summary
             return summary
+        } catch is CancellationError {
+            // User dismissed the sheet mid-generation. Silent —
+            // this isn't an error condition from their POV.
+            AppLog.app.info("summarizeWithAppleFM cancelled by user")
+            return nil
         } catch {
             errorMessage = String(describing: error)
             AppLog.app.error(
@@ -1191,6 +1230,9 @@ final class RecordingController {
             )
             lastSessionSummary = summary
             return summary
+        } catch is CancellationError {
+            AppLog.app.info("summarizeWithQwen cancelled by user")
+            return nil
         } catch {
             errorMessage = String(describing: error)
             AppLog.app.error(
@@ -1241,8 +1283,15 @@ final class RecordingController {
     private func scheduleSummarizerUnloadAndPipelineRewarm() {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Unload BOTH Qwen actors. Only one is loaded at a time
+            // by construction, but the cleanup path is shared between
+            // summarize and review flows, and a stale reference here
+            // would keep ~4.6 GB of weights resident across the
+            // pipeline rewarm.
             await self.summarizerActor?.unload()
             self.summarizerActor = nil
+            await self.reviewerActor?.unload()
+            self.reviewerActor = nil
             AppLog.app.info("Qwen unloaded; re-warming analysis pipeline")
             let pipeline = await self.ensurePipeline()
             if let saved = self.summarizerSavedSpeakerDB {
@@ -1268,6 +1317,11 @@ final class RecordingController {
     func removeSummarizerModel() async {
         await summarizerActor?.unload()
         summarizerActor = nil
+        // The reviewer shares the same weights — drop its handle too
+        // so the freshly-deleted model can't be lazily reloaded by a
+        // stale actor reference.
+        await reviewerActor?.unload()
+        reviewerActor = nil
         do {
             try await modelStore?.removeOptional(id: ModelManifest.summarizerID)
         } catch {
@@ -1276,6 +1330,177 @@ final class RecordingController {
             )
         }
         refreshSummarizerInstallState()
+    }
+
+    // MARK: - Transcription review
+
+    /// Walk the current utterance list through the on-device LLM and
+    /// collect transcription suggestions. Same orchestration as
+    /// `summarizeSession`: release the analysis pipeline, run the
+    /// reviewer, unload + rewarm. Suggestions are cached in
+    /// `transcriptionSuggestions` so the review sheet can re-present
+    /// without re-running inference; the caller is expected to
+    /// guard repeated entries via that field.
+    func reviewSession() async -> [TranscriptionSuggestion]? {
+        guard !transcriptionReviewRunning else { return nil }
+        guard !summarizerInferenceRunning else { return nil }
+        guard !utterances.isEmpty else { return nil }
+
+        logAvailableMemory(label: "review start (before pipeline release)")
+        await releasePipelineForSummarization()
+        logAvailableMemory(label: "review start (after pipeline release)")
+        switch summarizerBackend {
+        case .appleFM:
+            return await reviewWithAppleFM()
+        case .qwen:
+            return await reviewWithQwen()
+        }
+    }
+
+    private func reviewWithAppleFM() async -> [TranscriptionSuggestion]? {
+        guard SystemLanguageModel.default.isAvailable else {
+            errorMessage = String(describing: TranscriptionReviewError.modelNotInstalled)
+            scheduleSummarizerUnloadAndPipelineRewarm()
+            return nil
+        }
+        let backend = AppleFMTranscriptionReviewer()
+        transcriptionReviewRunning = true
+        defer {
+            transcriptionReviewRunning = false
+            scheduleSummarizerUnloadAndPipelineRewarm()
+        }
+        logAvailableMemory(label: "review Apple FM (before respond)")
+        do {
+            let suggestions = try await backend.review(
+                utterances: utterances,
+                speakerNames: speakerNameOverrides,
+                language: reviewLanguage()
+            )
+            logAvailableMemory(label: "review Apple FM (after respond)")
+            transcriptionSuggestions = suggestions
+            return suggestions
+        } catch is CancellationError {
+            AppLog.app.info("reviewWithAppleFM cancelled by user")
+            return nil
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "reviewWithAppleFM failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    private func reviewWithQwen() async -> [TranscriptionSuggestion]? {
+        guard let modelStore else {
+            scheduleSummarizerUnloadAndPipelineRewarm()
+            return nil
+        }
+        guard let directory = await modelStore.optionalDirectory(
+            id: ModelManifest.summarizerID
+        ) else {
+            errorMessage = String(describing: TranscriptionReviewError.modelNotInstalled)
+            scheduleSummarizerUnloadAndPipelineRewarm()
+            return nil
+        }
+
+        // Belt-and-braces: drop the summarizer actor before bringing
+        // up the reviewer. Both share Qwen3-8B's 4.6 GB weights;
+        // holding both = ~9 GB resident and a guaranteed Jetsam.
+        await summarizerActor?.unload()
+        summarizerActor = nil
+
+        let actor: MLXQwenTranscriptionReviewer
+        if let existing = reviewerActor {
+            actor = existing
+        } else {
+            actor = MLXQwenTranscriptionReviewer(
+                modelIdentifier: ModelManifest.summarizerID,
+                modelDirectory: directory
+            )
+            reviewerActor = actor
+        }
+
+        transcriptionReviewRunning = true
+        defer {
+            transcriptionReviewRunning = false
+            scheduleSummarizerUnloadAndPipelineRewarm()
+        }
+        do {
+            let suggestions = try await actor.review(
+                utterances: utterances,
+                speakerNames: speakerNameOverrides,
+                language: reviewLanguage()
+            )
+            transcriptionSuggestions = suggestions
+            return suggestions
+        } catch is CancellationError {
+            AppLog.app.info("reviewWithQwen cancelled by user")
+            return nil
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "reviewWithQwen failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Map the controller's `SessionLanguage` onto the Summarizer
+    /// module's `ReviewLanguage`. Lives here (not on
+    /// `SessionLanguage`) so the latter type doesn't grow a
+    /// dependency on Summarizer just for one bridge.
+    private func reviewLanguage() -> ReviewLanguage {
+        switch sessionLanguage {
+        case .japanese: return .japanese
+        case .english:  return .english
+        }
+    }
+
+    /// Drop a suggestion without applying it. Called from the
+    /// review sheet's per-row reject button.
+    func dismissTranscriptionSuggestion(id: UUID) {
+        transcriptionSuggestions.removeAll { $0.id == id }
+    }
+
+    /// Drop every cached suggestion. Used when the user explicitly
+    /// clears the review state or when they re-run a review (the
+    /// fresh pass replaces the list wholesale, but the regenerate
+    /// path benefits from clearing first so the empty state is
+    /// distinguishable from a no-op result).
+    func clearTranscriptionSuggestions() {
+        transcriptionSuggestions = []
+    }
+
+    /// Accept a suggestion: route through the existing hand-edit
+    /// path so SER + fusion are re-run on the corrected transcript,
+    /// then remove the suggestion from the list. No-op if the
+    /// suggestion's text is empty (no concrete fix was proposed)
+    /// or if the row no longer exists or its transcript has
+    /// drifted from the snapshot the reviewer saw — better to keep
+    /// the row untouched than to blindly overwrite a manual edit
+    /// the user already made.
+    func acceptTranscriptionSuggestion(id: UUID) async {
+        guard let suggestion = transcriptionSuggestions.first(where: { $0.id == id }) else { return }
+        guard !suggestion.suggestedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let utterance = utterances.first(where: { $0.id == suggestion.utteranceID }) else {
+            transcriptionSuggestions.removeAll { $0.id == id }
+            return
+        }
+        guard utterance.transcript == suggestion.originalText else {
+            // Stale: the row was edited between review and accept.
+            // Drop the suggestion so the user re-runs review with
+            // the current state.
+            transcriptionSuggestions.removeAll { $0.id == id }
+            return
+        }
+        await commitHandEdit(
+            utteranceID: utterance.id,
+            newText: suggestion.suggestedText,
+            newStart: utterance.start,
+            newEnd: utterance.end
+        )
+        transcriptionSuggestions.removeAll { $0.id == id }
     }
 
     /// Switch the session language. Re-creates the streaming
@@ -1427,6 +1652,16 @@ final class RecordingController {
             guard !diarizationTimeline.isEmpty else { return nil }
             return try? JSONEncoder().encode(diarizationTimeline)
         }()
+        // Persist the last LLM summary alongside the utterances so
+        // reopening a `.xph` shows the cached result without
+        // re-running the multi-second LLM pass. JSON-encoded so the
+        // Export layer doesn't need to depend on Summarizer (which
+        // would drag MLX into a module that has no business with
+        // it). Nil when no summary has been produced this session.
+        let summaryBlob: Data? = {
+            guard let summary = lastSessionSummary else { return nil }
+            return try? JSONEncoder().encode(summary)
+        }()
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -1443,7 +1678,8 @@ final class RecordingController {
                     speakerDatabase: speakerDB,
                     originalSnapshots: snapshots,
                     handEditChildren: children,
-                    diarizationTimeline: timelineBlob
+                    diarizationTimeline: timelineBlob,
+                    sessionSummary: summaryBlob
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -1460,7 +1696,8 @@ final class RecordingController {
             speakerDatabase: speakerDB,
             originalSnapshots: snapshots,
             handEditChildren: children,
-            diarizationTimeline: timelineBlob
+            diarizationTimeline: timelineBlob,
+            sessionSummary: summaryBlob
         )
     }
 
@@ -1480,6 +1717,15 @@ final class RecordingController {
     func loadSession(_ document: SessionDocument) async throws {
         guard phase == .idle else { return }
         stopPlayback()
+        // Bump the session token so ContentView's `@State` keyed
+        // by UUID (`visibleUtteranceIDs`, `expandedUtteranceIDs`,
+        // `selectedUtteranceID`, `scrollRequestUtteranceID`,
+        // `normalizedTranscriptCache`) is dropped before the new
+        // utterance list takes over. Without this, stale view
+        // state from the previous file leaks into the loaded one
+        // and timeline strips (which mix `recorder.utterances`
+        // with the view-side visibility set) can render wrong.
+        sessionToken = UUID()
         utterances = document.utterances
         // Restore the pre-edit revert state from the bundle so a
         // long-press on a row's Edited / completed marker after
@@ -1492,10 +1738,17 @@ final class RecordingController {
         diarizationTimeline = []
         lastKnownSpeakerIDs = []
         // The cached summary was generated against the previous
-        // session's utterances; clear it so the result sheet
-        // doesn't surface stale content when the user taps
-        // Summarize on the freshly loaded `.xph`.
+        // session's utterances. Default to clearing it; restore
+        // below if the loaded `.xph` carries a persisted one.
         lastSessionSummary = nil
+        if let blob = document.sessionSummary,
+           let restored = try? JSONDecoder().decode(SessionSummary.self, from: blob) {
+            lastSessionSummary = restored
+        }
+        // Pending suggestions don't persist — their utterance IDs
+        // belonged to the previous in-memory session and would
+        // alias onto unrelated rows here. Re-run review if needed.
+        transcriptionSuggestions = []
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }
