@@ -180,6 +180,44 @@ public actor FluidAudioDiarizer: Diarizer {
         )
     }
 
+    /// EMA-blend a new observation into an existing speaker's
+    /// centroid. Uses FluidAudio's mutating `updateMainEmbedding`,
+    /// then writes the updated record back via `upsertSpeaker`.
+    /// Silently no-ops when the id isn't already in the database
+    /// (caller should validate first).
+    public func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws {
+        if !manager.isAvailable {
+            try await loadModels()
+        }
+        guard var speaker = await manager.speakerManager.getSpeaker(for: id) else {
+            AppLog.diarization.warning(
+                "correctSpeaker: id \(id, privacy: .public) not in database — no-op"
+            )
+            return
+        }
+        speaker.updateMainEmbedding(
+            duration: duration,
+            embedding: embedding,
+            segmentId: UUID()
+        )
+        await manager.speakerManager.upsertSpeaker(speaker)
+        AppLog.diarization.info(
+            "speaker corrected: id=\(id, privacy: .public) (duration=\(duration, privacy: .public)s, embedding dim=\(embedding.count, privacy: .public))"
+        )
+    }
+
+    /// Forward to FluidAudio's `SpeakerManager.removeSpeaker(_:,
+    /// keepIfPermanent:)`. Silent no-op when the id isn't in the
+    /// DB or models haven't loaded yet (auto-demote shouldn't
+    /// fail in either case).
+    public func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws {
+        guard manager.isAvailable else { return }
+        await manager.speakerManager.removeSpeaker(id, keepIfPermanent: keepIfPermanent)
+        AppLog.diarization.info(
+            "speaker removed from DB: id=\(id, privacy: .public) (keepIfPermanent=\(keepIfPermanent, privacy: .public))"
+        )
+    }
+
     private func loadModels() async throws {
         AppLog.diarization.info("Downloading FluidAudio diarizer models (first run)…")
         do {

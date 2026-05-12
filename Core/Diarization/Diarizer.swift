@@ -69,6 +69,25 @@ public protocol Diarizer: Actor {
     /// the id already exists in the database — the controller is
     /// responsible for picking a fresh id.
     func promoteSpeaker(id: String, embedding: [Float]) async throws
+    /// Fold a new observation (embedding + speech duration) into
+    /// an *existing* speaker entry's centroid via EMA blending.
+    /// Used by the "Teach diarizer" toggle in the chip popover:
+    /// a user-corrected reassignment to an existing speaker
+    /// updates that speaker's record so future `diarize` calls
+    /// match similar audio to the same id. No-op when `id` isn't
+    /// in the database — the caller is expected to confirm the
+    /// target exists (e.g. by picking it from a list derived from
+    /// `getAllSpeakers`).
+    func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws
+    /// Remove a speaker entry from the diarizer's session-wide
+    /// database. Used by the auto-demote pass that fires whenever
+    /// a reassign / correct / promote / re-eval / hand-edit leaves
+    /// a speaker id with no utterance referencing it. Pass
+    /// `keepIfPermanent: true` (the conservative default) to skip
+    /// user-promoted entries — the explicit promotion was a
+    /// deliberate act and shouldn't be silently undone by an
+    /// unrelated reassignment elsewhere.
+    func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws
 }
 
 public extension Diarizer {
@@ -78,4 +97,6 @@ public extension Diarizer {
     func exportSpeakerDatabase() async -> Data? { nil }
     func importSpeakerDatabase(_ data: Data) async throws {}
     func promoteSpeaker(id: String, embedding: [Float]) async throws {}
+    func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws {}
+    func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws {}
 }

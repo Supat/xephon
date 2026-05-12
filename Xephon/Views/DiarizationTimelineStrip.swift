@@ -27,6 +27,13 @@ struct DiarizationTimelineStrip: View {
     /// Selected utterance's `[start, end]` window if any, used to
     /// outline the strip region corresponding to that row.
     let selectedRange: (start: TimeInterval, end: TimeInterval)?
+    /// Fires when the user taps a point on the strip; the
+    /// `TimeInterval` is the audio-time the tap location maps to,
+    /// clamped to `[0, totalDuration]`. ContentView resolves it
+    /// to the nearest utterance and asks `TranscriptList` to
+    /// scroll there. Optional so the strip is useful even without
+    /// a tap-routing parent.
+    let onTapAtTime: ((TimeInterval) -> Void)?
 
     /// Strip height. Thin enough to fit between the chip bar and
     /// the transcript list without crowding either; tall enough to
@@ -45,38 +52,38 @@ struct DiarizationTimelineStrip: View {
             sampleStep: Self.sampleStepSec
         )
         GeometryReader { geo in
-            // GlassEffectContainer lets the per-run tinted glasses
-            // share refraction and merge their blurs at the
-            // boundaries, so the strip reads as one fluid surface
-            // instead of N adjacent rectangles each carrying their
-            // own glass pass.
-            GlassEffectContainer(spacing: 0) {
-                ZStack(alignment: .leading) {
-                    // Glass base track. Sits beneath the colored
-                    // runs to provide a uniform liquid-glass surface
-                    // for any "no observation" gaps in the timeline.
-                    Capsule()
-                        .glassEffect(
-                            .regular.tint(.secondary.opacity(Self.trackTintOpacity)),
-                            in: Capsule()
-                        )
-                        .frame(height: Self.height)
-                    ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
-                        let x = geo.size.width * CGFloat(run.start / totalDuration)
-                        let w = geo.size.width * CGFloat((run.end - run.start) / totalDuration)
-                        Rectangle()
-                            .glassEffect(
-                                .regular.tint(speakerTint(for: run.speakerID).opacity(Self.runTintOpacity)),
-                                in: Rectangle()
-                            )
-                            .frame(width: max(1, w), height: Self.height)
-                            .offset(x: x)
-                    }
+            ZStack(alignment: .leading) {
+                // Glass base track. Provides the Liquid Glass frame
+                // for the strip (rounded capsule profile + edge
+                // refraction + tinted backdrop) without the heavy
+                // backdrop blur the per-run glasses introduced.
+                Capsule()
+                    .glassEffect(
+                        .regular.tint(.secondary.opacity(Self.trackTintOpacity)),
+                        in: Capsule()
+                    )
+                    .frame(height: Self.height)
+                // Speaker runs are now flat-tinted fills, not
+                // glass — they're contiguous across the timeline
+                // so per-run glass blur was dominating the strip
+                // and softening the speaker colors. Keeping them
+                // as semi-translucent fills retains a hint of
+                // glassiness from the track showing through at
+                // low opacity, while the colors themselves read
+                // crisply.
+                ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                    let x = geo.size.width * CGFloat(run.start / totalDuration)
+                    let w = geo.size.width * CGFloat((run.end - run.start) / totalDuration)
+                    Rectangle()
+                        .fill(speakerTint(for: run.speakerID).opacity(Self.runFillOpacity))
+                        .frame(width: max(1, w), height: Self.height)
+                        .offset(x: x)
                 }
             }
-            // Selection overlay sits OUTSIDE the GlassEffectContainer
-            // so its sharp stroke isn't melted into the run blurs —
-            // we want a crisp marker for the focused range.
+            // Selection overlay — plain primary-color stroke
+            // marking the focused range. Kept outside any glass
+            // material so the edge stays crisp against the
+            // colored speaker runs underneath.
             .overlay(alignment: .leading) {
                 if let sel = selectedRange, totalDuration > 0 {
                     let clampedStart = max(0, min(sel.start, totalDuration))
@@ -93,6 +100,18 @@ struct DiarizationTimelineStrip: View {
             // run rectangles that overlap the rounded ends inherit
             // the capsule profile.
             .clipShape(Capsule())
+            // Whole-strip hit area for taps. `contentShape` is
+            // needed so the gaps between the (mostly contiguous)
+            // run rectangles still register, and so the
+            // GeometryReader's coordinate space is what the gesture
+            // reports against — `location.x / width` directly maps
+            // to the strip's audio-time axis.
+            .contentShape(Rectangle())
+            .onTapGesture(coordinateSpace: .local) { location in
+                guard let onTapAtTime, totalDuration > 0, geo.size.width > 0 else { return }
+                let t = totalDuration * Double(location.x / geo.size.width)
+                onTapAtTime(max(0, min(t, totalDuration)))
+            }
         }
         .frame(height: Self.height)
     }
@@ -102,10 +121,12 @@ struct DiarizationTimelineStrip: View {
     /// enough that the strip is still visible against any
     /// background a user might set.
     private static let trackTintOpacity: Double = 0.08
-    /// Tint strength for each per-run glass effect. Bolder than
-    /// the track so the speaker color reads clearly while still
-    /// letting underlying content blur through.
-    private static let runTintOpacity: Double = 0.55
+    /// Fill opacity for each speaker run. Bolder than the track so
+    /// the speaker color reads clearly; not 1.0 so a hint of the
+    /// underlying glass track shows through and the strip retains
+    /// the Liquid Glass feel without the heavy backdrop blur the
+    /// per-run glass effect introduced.
+    private static let runFillOpacity: Double = 0.75
 
     /// Per-instant majority winner sweep across `[0, totalDuration]`,
     /// compressing consecutive same-speaker samples into runs.

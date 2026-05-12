@@ -57,6 +57,7 @@
 "speaker.rename.cancel" = "Cancel";
 "speaker.action.title" = "Speaker";
 "speaker.action.reassign.header" = "Reassign to";
+"speaker.action.teach" = "Teach diarizer";
 "speaker.action.newSpeaker" = "New Speaker";
 "speaker.action.promoteNewSpeaker" = "Promote New Speaker";
 "speaker.action.rename" = "Rename Speaker…";

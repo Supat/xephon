@@ -80,8 +80,18 @@ struct UtteranceRow: View {
     /// reassignment target reads `S02 Alice` instead of just `S02`.
     let speakerDisplayName: (String) -> String?
     /// Fires when the user picks a different speaker from the chip
-    /// menu. ContentView calls `recorder.reassignSpeaker`.
+    /// menu with **Teach diarizer** *off*. ContentView calls
+    /// `recorder.reassignSpeaker` — pure row-level annotation
+    /// override, no diarizer-state changes.
     let onReassignSpeaker: (String) -> Void
+    /// Fires when the user picks a different speaker from the chip
+    /// menu with **Teach diarizer** *on*. ContentView calls
+    /// `recorder.correctUtteranceSpeaker` — folds the row's audio
+    /// embedding into the target speaker's centroid in the
+    /// diarizer DB and rewrites the cumulative timeline range, so
+    /// future re-eval / hand-edit on similar audio matches the
+    /// target.
+    let onCorrectSpeaker: (String) -> Void
     /// Fires when the user picks "Promote New Speaker" from the
     /// chip menu. ContentView calls
     /// `recorder.promoteUtteranceToNewSpeaker` — the controller
@@ -112,6 +122,15 @@ struct UtteranceRow: View {
     /// anchors the popover to the chip's frame instead of falling
     /// back to a screen-default position.
     @State private var showingSpeakerMenu: Bool = false
+
+    /// "Teach diarizer" toggle inside the speaker popover. When
+    /// on, tapping a reassign capsule promotes the action to
+    /// corrective: the row's audio embedding is folded into the
+    /// target speaker's centroid and the cumulative timeline is
+    /// rewritten. Reset to off whenever the popover dismisses so
+    /// the heavier behavior isn't applied accidentally on the
+    /// next open.
+    @State private var teachingDiarizer: Bool = false
 
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
     // so positive vs negative read naturally and 0 maps to "neutral grey".
@@ -312,6 +331,27 @@ struct UtteranceRow: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
+            // "Teach diarizer" toggle. Off (default) keeps the
+            // capsule taps as pure annotation reassignment — the
+            // historical low-cost behavior. Flipping on promotes
+            // them to corrective: the row's audio embedding is
+            // folded into the target speaker's centroid and the
+            // cumulative timeline gets rewritten, so future
+            // re-eval / hand-edit on similar audio matches the
+            // chosen speaker. Resets to off on dismiss so the
+            // heavier behavior isn't applied accidentally on
+            // the next open.
+            Toggle(isOn: $teachingDiarizer) {
+                Label {
+                    Text(String(localized: "speaker.action.teach"))
+                        .font(.caption)
+                } icon: {
+                    Image(systemName: "graduationcap.fill")
+                        .font(.caption)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
             // Lay the capsules out horizontally, wrapping after
             // every 5 entries so a session with many speakers
             // doesn't blow the popover into a single very wide
@@ -323,8 +363,7 @@ struct UtteranceRow: View {
                     HStack(spacing: 6) {
                         ForEach(row, id: \.self) { spk in
                             Button {
-                                onReassignSpeaker(spk)
-                                showingSpeakerMenu = false
+                                performReassign(to: spk)
                             } label: {
                                 speakerMenuCapsule(spk)
                             }
@@ -333,6 +372,9 @@ struct UtteranceRow: View {
                     }
                 }
                 Button {
+                    // "New Speaker" stays a pure annotation no
+                    // matter what the toggle says — there's no
+                    // existing speaker centroid to teach.
                     onReassignSpeaker(nextNewSpeakerID())
                     showingSpeakerMenu = false
                 } label: {
@@ -362,6 +404,25 @@ struct UtteranceRow: View {
         }
         .padding(16)
         .frame(minWidth: 220, alignment: .leading)
+        // Reset the teach-diarizer toggle when the popover
+        // dismisses so the heavier behavior isn't silently
+        // sticky across opens.
+        .onChange(of: showingSpeakerMenu) { _, isShown in
+            if !isShown { teachingDiarizer = false }
+        }
+    }
+
+    /// Dispatch the user's capsule tap to either the pure-
+    /// annotation reassignment or the corrective version,
+    /// depending on the **Teach diarizer** toggle. Always closes
+    /// the popover so the user sees the row update.
+    private func performReassign(to spk: String) {
+        if teachingDiarizer {
+            onCorrectSpeaker(spk)
+        } else {
+            onReassignSpeaker(spk)
+        }
+        showingSpeakerMenu = false
     }
 
     /// Max reassignment capsules per row in the speaker popover.

@@ -99,6 +99,13 @@ struct ContentView: View {
     /// initial state populates from a stable snapshot even if
     /// the underlying row gets mutated by an in-flight re-eval.
     @State private var editingUtterance: UtteranceEstimate?
+    /// Set when a tap on the diarizer timeline strip should scroll
+    /// the transcript list to a specific row, regardless of whether
+    /// that row is already selected or already on screen. The
+    /// `TranscriptList` consumes this and clears it back to nil
+    /// after one scroll, so a subsequent tap on the same time
+    /// re-fires.
+    @State private var scrollRequestUtteranceID: UUID?
     /// Memoization layer for `filteredIndexedUtterances` and
     /// `displayedSummary`. SwiftUI re-evaluates the view body on
     /// every observed-state change (playback state, pipeline metrics,
@@ -462,10 +469,29 @@ struct ContentView: View {
             DiarizationTimelineStrip(
                 segments: timeline,
                 totalDuration: total,
-                selectedRange: selectedUtteranceRange
+                selectedRange: selectedUtteranceRange,
+                onTapAtTime: { t in
+                    guard let target = nearestUtterance(toTime: t) else { return }
+                    selectedUtteranceID = target.id
+                    scrollRequestUtteranceID = target.id
+                }
             )
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+        }
+    }
+
+    /// Resolve an audio-time to the nearest utterance: prefer the
+    /// row whose `[start, end]` contains the time, fall back to
+    /// the row whose midpoint is closest. Returns nil only when
+    /// `utterances` is empty.
+    private func nearestUtterance(toTime t: TimeInterval) -> UtteranceEstimate? {
+        let utts = recorder.utterances
+        if let containing = utts.first(where: { $0.start <= t && t < $0.end }) {
+            return containing
+        }
+        return utts.min {
+            abs(($0.start + $0.end) / 2 - t) < abs(($1.start + $1.end) / 2 - t)
         }
     }
 
@@ -1241,6 +1267,7 @@ struct ContentView: View {
             items: filteredIndexedUtterances,
             distinctSpeakerCount: distinctSpeakerCount,
             selectedUtteranceID: $selectedUtteranceID,
+            scrollRequestUtteranceID: $scrollRequestUtteranceID,
             expandedUtteranceIDs: $expandedUtteranceIDs,
             visibleUtteranceIDs: $visibleUtteranceIDs,
             hasUnreadUtterance: $hasUnreadUtterance,
@@ -1259,6 +1286,14 @@ struct ContentView: View {
             },
             onPromoteNewSpeaker: { u in
                 Task { _ = await recorder.promoteUtteranceToNewSpeaker(utteranceID: u.id) }
+            },
+            onCorrectSpeaker: { u, target in
+                Task {
+                    _ = await recorder.correctUtteranceSpeaker(
+                        utteranceID: u.id,
+                        to: target
+                    )
+                }
             },
             onEditTranscript: { u in
                 // Only meaningful when there's source audio

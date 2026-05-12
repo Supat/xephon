@@ -133,6 +133,22 @@ final class AnalysisPipeline: Sendable {
         try await diarizer?.promoteSpeaker(id: id, embedding: embedding)
     }
 
+    /// Fold a new audio observation into an existing speaker's
+    /// centroid in the diarizer DB. Used by the "Teach diarizer"
+    /// corrective reassignment flow.
+    func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws {
+        try await diarizer?.correctSpeaker(id: id, embedding: embedding, duration: duration)
+    }
+
+    /// Remove a speaker from the diarizer DB. Used by the auto-
+    /// demote pass when a speaker id falls out of every
+    /// utterance after a reassignment / correction / promotion /
+    /// re-evaluation. `keepIfPermanent: true` skips user-
+    /// promoted entries.
+    func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws {
+        try await diarizer?.removeSpeakerFromDB(id: id, keepIfPermanent: keepIfPermanent)
+    }
+
     func ingestDiarizationWindow(_ audio: AudioChunk) async {
         guard diarizer != nil, !audio.samples.isEmpty else { return }
         let diarized = await runDiarization(audio)

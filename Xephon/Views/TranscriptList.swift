@@ -19,6 +19,13 @@ struct TranscriptList: View {
     let distinctSpeakerCount: Int
 
     @Binding var selectedUtteranceID: UUID?
+    /// Set by the diarizer-timeline-strip tap handler in
+    /// ContentView. Always scrolls to the requested id, even when
+    /// it's already selected or already on screen — so a tap on
+    /// the strip jumps to that row regardless of current state.
+    /// Cleared back to nil after handling so a second tap on the
+    /// same time re-fires.
+    @Binding var scrollRequestUtteranceID: UUID?
     @Binding var expandedUtteranceIDs: Set<UUID>
     @Binding var visibleUtteranceIDs: Set<UUID>
     @Binding var hasUnreadUtterance: Bool
@@ -35,6 +42,7 @@ struct TranscriptList: View {
     let onToggleExpansion: (UUID) -> Void
     let onRenameSpeaker: (UtteranceEstimate) -> Void
     let onPromoteNewSpeaker: (UtteranceEstimate) -> Void
+    let onCorrectSpeaker: (UtteranceEstimate, String) -> Void
     let onEditTranscript: (UtteranceEstimate) -> Void
     let refreshSearchCache: () -> Void
 
@@ -71,6 +79,18 @@ struct TranscriptList: View {
                         proxy.scrollTo(newID, anchor: .center)
                     }
                 }
+            }
+            // Explicit scroll request — e.g. a tap on the
+            // diarizer-timeline strip. Scrolls unconditionally
+            // (visibility-gated path above wouldn't re-scroll an
+            // already-onscreen row) and resets the binding so a
+            // subsequent tap on the same time fires again.
+            .onChange(of: scrollRequestUtteranceID) { _, newID in
+                guard let newID else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(newID, anchor: .center)
+                }
+                scrollRequestUtteranceID = nil
             }
             // Esc clears the selection. Returning `.ignored` when nothing
             // is selected lets the system route Esc to its default
@@ -184,6 +204,9 @@ struct TranscriptList: View {
                     utteranceID: item.u.id,
                     to: newSpeakerID
                 )
+            },
+            onCorrectSpeaker: { targetSpeakerID in
+                onCorrectSpeaker(item.u, targetSpeakerID)
             },
             onPromoteNewSpeaker: { onPromoteNewSpeaker(item.u) },
             onRenameSpeaker: { onRenameSpeaker(item.u) },

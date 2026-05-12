@@ -89,6 +89,14 @@ final class RecordingController {
     /// `revertReevaluation`, and wholesale by `start()` / `loadSession`.
     /// Not persisted — revert history is session-scoped only.
     private var preReevaluationSnapshots: [UUID: UtteranceEstimate] = [:]
+    /// Speaker IDs that appeared in `utterances` at the previous
+    /// `commitUtteranceChanges` boundary. The auto-demote pass
+    /// diffs this against the current state to find ids that
+    /// fell out of the conversation entirely, then asks the
+    /// diarizer to drop them from its DB. Reset alongside other
+    /// per-session state.
+    private var lastKnownSpeakerIDs: Set<String> = []
+
     /// Extra rows produced when a hand-edit commit contained more
     /// than one sentence. Keyed by the *parent* utterance id (the
     /// one that retains the original `id` after the split) and
@@ -433,6 +441,7 @@ final class RecordingController {
         conversationSummary.reset()
         capturedAudio.reset()
         diarizationTimeline = []
+        lastKnownSpeakerIDs = []
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
@@ -1008,6 +1017,7 @@ final class RecordingController {
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
         diarizationTimeline = []
+        lastKnownSpeakerIDs = []
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }
@@ -1490,10 +1500,50 @@ final class RecordingController {
     /// `utterances.count` unchanged) and rebuild the conversation
     /// summary from the current `utterances`. Called after every
     /// path that mutates a row's content or replaces an entry.
+    ///
+    /// Also runs the auto-demote pass: any speaker id that was
+    /// present in `lastKnownSpeakerIDs` but no longer appears in
+    /// any utterance has been fully reassigned away and gets
+    /// cleaned up — drop the speaker name override, scrub
+    /// cumulative-timeline observations with that id, and remove
+    /// the entry from the diarizer DB (keeping permanent
+    /// user-promoted entries). Gated on `phase == .idle` so
+    /// mid-streaming flux doesn't trigger premature deletion of
+    /// a speaker the streaming pass is still about to use.
     private func commitUtteranceChanges() {
         utterancesVersion &+= 1
         conversationSummary.reset()
         for u in utterances { conversationSummary.update(with: u) }
+        let current = Set(utterances.map(\.speakerID))
+        let removed = lastKnownSpeakerIDs.subtracting(current)
+        if !removed.isEmpty, phase == .idle {
+            sweepUnreferencedSpeakers(removed)
+        }
+        lastKnownSpeakerIDs = current
+    }
+
+    /// Drop every trace of speakers that no row references
+    /// anymore. Synchronous parts run inline (overrides, timeline
+    /// observations); the diarizer-DB removal is fired off in a
+    /// detached MainActor task so it doesn't block the commit
+    /// pass. Failure of the async removal is non-fatal — the
+    /// embedding stays in the DB but nothing else in the app
+    /// references the id, so it's only memory waste.
+    private func sweepUnreferencedSpeakers(_ ids: Set<String>) {
+        for id in ids {
+            speakerNameOverrides.removeValue(forKey: id)
+            diarizationTimeline.removeAll { $0.speakerID == id }
+        }
+        AppLog.app.info(
+            "auto-demoting unreferenced speakers: \(Array(ids).sorted().joined(separator: ", "), privacy: .public)"
+        )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let pipeline = await self.ensurePipeline()
+            for id in ids {
+                try? await pipeline.removeSpeakerFromDB(id: id, keepIfPermanent: true)
+            }
+        }
     }
 
     /// Build a merged `UtteranceEstimate` from the fresh SER/fusion
@@ -2032,6 +2082,79 @@ final class RecordingController {
     /// (with the active row visually marked, not removed).
     func knownSpeakerIDs() -> [String] {
         Array(Set(utterances.map(\.speakerID))).sorted()
+    }
+
+    /// Corrective reassignment: extract the row's audio embedding
+    /// and fold it into `targetSpeakerID`'s centroid in the
+    /// diarizer DB via EMA, reassign the row, and rewrite the
+    /// timeline range so the per-instant majority for the window
+    /// reflects the corrected speaker. Future re-eval / hand-edit
+    /// on similar audio will be more likely to match the target,
+    /// not just for this row but anywhere in the session.
+    ///
+    /// Distinct from the pure-annotation `reassignSpeaker(...)`,
+    /// which only swaps the row's label and leaves the diarizer
+    /// state untouched.
+    ///
+    /// No-op when no source audio, the row doesn't exist, the
+    /// audio slice is empty, embedding extraction is unavailable,
+    /// the target id is the same as the current id, or the
+    /// underlying diarizer call throws. Returns true on success.
+    @discardableResult
+    func correctUtteranceSpeaker(
+        utteranceID: UUID,
+        to targetSpeakerID: String
+    ) async -> Bool {
+        let trimmed = targetSpeakerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let url = playbackSourceURL else { return false }
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return false }
+        let utt = utterances[index]
+        guard utt.speakerID != trimmed else { return false }
+        let chunk: AudioChunk
+        do {
+            chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url,
+                    start: utt.start,
+                    end: utt.end
+                )
+            }.value
+        } catch {
+            AppLog.app.error(
+                "correct: audio read failed: \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+        guard !chunk.samples.isEmpty else {
+            AppLog.app.warning("correct: empty audio slice")
+            return false
+        }
+        let pipeline = await ensurePipeline()
+        guard let embedding = await pipeline.extractSpeakerEmbedding(audio: chunk.samples) else {
+            AppLog.app.warning("correct: embedding extractor unavailable")
+            return false
+        }
+        let duration = Float(max(0, utt.end - utt.start))
+        do {
+            try await pipeline.correctSpeaker(
+                id: trimmed,
+                embedding: embedding,
+                duration: duration
+            )
+        } catch {
+            AppLog.app.error(
+                "correct: DB update failed: \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+        utterances[index] = utt.withSpeakerID(trimmed)
+        rewriteTimelineRange(speakerID: trimmed, start: utt.start, end: utt.end)
+        AppLog.app.info(
+            "speaker corrected: utt=\(utt.id, privacy: .public) \(utt.speakerID, privacy: .public) → \(trimmed, privacy: .public) (taught diarizer)"
+        )
+        commitUtteranceChanges()
+        return true
     }
 
     /// Extract an embedding from `utteranceID`'s audio, register it

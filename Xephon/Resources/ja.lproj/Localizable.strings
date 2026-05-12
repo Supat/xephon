@@ -57,6 +57,7 @@
 "speaker.rename.cancel" = "キャンセル";
 "speaker.action.title" = "話者";
 "speaker.action.reassign.header" = "変更先";
+"speaker.action.teach" = "話者識別器に学習";
 "speaker.action.newSpeaker" = "新しい話者";
 "speaker.action.promoteNewSpeaker" = "新しい話者を確定";
 "speaker.action.rename" = "話者の名前を変更…";
