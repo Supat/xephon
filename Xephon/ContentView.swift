@@ -1173,227 +1173,41 @@ struct ContentView: View {
     /// active filters: a new utterance that doesn't match the filter
     /// shouldn't scroll the list, and one that does shouldn't be
     /// labeled "unread" if the user is already at the filtered bottom.
-    private var isLastUtteranceVisible: Bool {
-        guard let lastID = filteredIndexedUtterances.last?.u.id else { return true }
-        return visibleUtteranceIDs.contains(lastID)
-    }
-
-    @ViewBuilder
     private var transcriptList: some View {
-        ScrollViewReader { proxy in
-            List(
-                filteredIndexedUtterances,
-                id: \.u.id,
-                selection: $selectedUtteranceID
-            ) { item in
-                UtteranceRow(
-                    number: item.idx + 1,
-                    utterance: item.u,
-                    isMultiSpeaker: distinctSpeakerCount > 1,
-                    isExpanded: expandedUtteranceIDs.contains(item.u.id),
-                    onToggleExpanded: { toggleExpansion(item.u.id) },
-                    playback: playbackAvailability(for: item.u),
-                    onPlaybackToggle: { recorder.togglePlayback(for: item.u) },
-                    reevaluate: reevaluateAvailability(for: item.u),
-                    onReevaluate: {
-                        Task { await recorder.reevaluate(item.u) }
-                    },
-                    onRevert: { recorder.revertReevaluation(item.u) },
-                    speakerCustomName: recorder.speakerDisplayName(forStored: item.u.speakerID),
-                    knownSpeakerIDs: recorder.knownSpeakerIDs(),
-                    speakerDisplayName: { recorder.speakerDisplayName(forStored: $0) },
-                    onReassignSpeaker: { newSpeakerID in
-                        recorder.reassignSpeaker(
-                            utteranceID: item.u.id,
-                            to: newSpeakerID
-                        )
-                    },
-                    onRenameSpeaker: {
-                        editingSpeakerStored = item.u.speakerID
-                        editingSpeakerName = recorder
-                            .speakerDisplayName(forStored: item.u.speakerID) ?? ""
-                    },
-                    onEditTranscript: {
-                        // Only meaningful when there's source audio
-                        // to re-slice from — the hand-edit pipeline
-                        // reads `[newStart, newEnd]` from
-                        // `playbackSourceURL`.
-                        guard recorder.playbackSourceURL != nil else { return }
-                        editingUtterance = item.u
-                    }
-                )
-                .id(item.u.id)
-                .onAppear { visibleUtteranceIDs.insert(item.u.id) }
-                .onDisappear { visibleUtteranceIDs.remove(item.u.id) }
-                // Tag each row so List knows what UUID to write into the
-                // `selectedUtteranceID` binding when it changes selection
-                // (via tap, ↑/↓ arrow, or Home/End).
-                .tag(item.u.id)
-                // Replace the default pale-tint selection highlight with
-                // a darker accent-tinted background. `.listRowBackground`
-                // overrides the system selection paint on `.plain` lists.
-                .listRowBackground(
-                    selectedUtteranceID == item.u.id
-                        ? Color.accentColor.opacity(0.28)
-                        : Color.clear
-                )
-            }
-            .listStyle(.plain)
-            // Any tap on the list — row, dead-space between rows,
-            // header gap, anywhere — clears the previously selected
-            // utterance's focus highlight and dismisses any
-            // keyboard focus on the search field. When the tap
-            // lands on a row, the List's own tap-to-select handler
-            // runs after this gesture and writes the row's id back
-            // into `selectedUtteranceID`, so legitimate row
-            // selection still works; only "stale" focus that the
-            // user has moved past gets cleared.
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    if searchFieldFocused { searchFieldFocused = false }
-                    if selectedUtteranceID != nil { selectedUtteranceID = nil }
-                }
-            )
-            // Keep the selected row scrolled into view when the user
-            // arrow-keys past the visible window. The system handles this
-            // for tap-driven selection automatically; for keyboard-driven
-            // selection on a plain list it's not always automatic.
-            .onChange(of: selectedUtteranceID) { _, newID in
-                guard let newID else { return }
-                // Scroll only if the row isn't already on screen, so we
-                // don't fight the system's default keep-visible behavior
-                // when the user is paging row-by-row near the edge.
-                if !visibleUtteranceIDs.contains(newID) {
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo(newID, anchor: .center)
-                    }
-                }
-            }
-            // Esc clears the selection. Returning `.ignored` when nothing
-            // is selected lets the system route Esc to its default
-            // handlers (e.g. dismissing a sheet or popover) instead of
-            // silently swallowing the key.
-            .onKeyPress(.escape) {
-                if selectedUtteranceID != nil {
-                    selectedUtteranceID = nil
-                    return .handled
-                }
-                return .ignored
-            }
-            // Space toggles the expanded detail panel on the currently
-            // selected row. Long-press on a row does the same thing.
-            // Ignored when nothing is selected so the keystroke can fall
-            // through to other handlers.
-            .onKeyPress(.space) {
-                guard let id = selectedUtteranceID else { return .ignored }
-                toggleExpansion(id)
-                return .handled
-            }
-            // Observe the FILTERED last so adding an utterance that
-            // doesn't match the active filter doesn't auto-scroll, and
-            // adding one that does match scrolls the (possibly shorter)
-            // filtered view to the right place.
-            .onChange(of: filteredIndexedUtterances.last?.u.id) { oldLastID, newLastID in
-                // Session reset cleared the array.
-                guard let newLastID else {
-                    hasUnreadUtterance = false
-                    return
-                }
-                // "Was the user following along?" must be answered from
-                // the PREVIOUS last utterance — by the time this closure
-                // fires, the array's `last` is already the new entry,
-                // whose row hasn't been laid out yet, so its id can't
-                // be in `visibleUtteranceIDs`. Checking the new id was
-                // the bug behind "auto-scroll never fires when the list
-                // is at the bottom"; the old id, on the other hand,
-                // is still in `visibleUtteranceIDs` for as long as that
-                // row remains on screen.
-                let wasFollowing = oldLastID.map { visibleUtteranceIDs.contains($0) } ?? false
-                if oldLastID == nil || wasFollowing {
-                    // First utterance of a session, OR user was at the
-                    // bottom: jump to the new entry.
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(newLastID, anchor: .bottom)
-                    }
-                    hasUnreadUtterance = false
-                } else {
-                    // User has scrolled the most-recent off-screen.
-                    // Don't yank them; surface the capsule instead.
-                    hasUnreadUtterance = true
-                }
-            }
-            .onChange(of: recorder.utterances.isEmpty) { _, isEmpty in
-                if isEmpty {
-                    hasUnreadUtterance = false
-                    selectedUtteranceID = nil
-                    normalizedTranscriptCache.removeAll(keepingCapacity: true)
-                    // New session (mic record or file analysis) just
-                    // cleared the utterance list — reset the filter
-                    // controls so the empty list isn't shown through
-                    // a stale filter the user no longer remembers
-                    // setting. Both filter chips and the search field
-                    // return to "All" / blank.
-                    searchText = ""
-                    selectedLabelFilter = nil
-                    selectedSpeakerFilter = nil
-                }
-            }
-            .onChange(of: recorder.utterances.count, initial: true) { _, _ in
-                refreshSearchCache()
-            }
-            .onChange(of: isLastUtteranceVisible) { _, visible in
-                // User scrolled (or list re-laid out) to bring the most
-                // recent utterance into view → no longer "unread".
-                if visible { hasUnreadUtterance = false }
-            }
-            .overlay(alignment: .bottom) {
-                if hasUnreadUtterance {
-                    NewUtteranceCapsule {
-                        guard let lastID = filteredIndexedUtterances.last?.u.id else { return }
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            proxy.scrollTo(lastID, anchor: .bottom)
-                        }
-                        hasUnreadUtterance = false
-                    }
-                    .padding(.bottom, 16)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .animation(.easeOut(duration: 0.2), value: hasUnreadUtterance)
-        }
+        TranscriptList(
+            recorder: recorder,
+            items: filteredIndexedUtterances,
+            distinctSpeakerCount: distinctSpeakerCount,
+            selectedUtteranceID: $selectedUtteranceID,
+            expandedUtteranceIDs: $expandedUtteranceIDs,
+            visibleUtteranceIDs: $visibleUtteranceIDs,
+            hasUnreadUtterance: $hasUnreadUtterance,
+            normalizedTranscriptCache: $normalizedTranscriptCache,
+            searchText: $searchText,
+            selectedLabelFilter: $selectedLabelFilter,
+            selectedSpeakerFilter: $selectedSpeakerFilter,
+            searchFieldFocused: $searchFieldFocused,
+            playbackAvailability: playbackAvailability(for:),
+            reevaluateAvailability: reevaluateAvailability(for:),
+            onToggleExpansion: toggleExpansion,
+            onRenameSpeaker: { u in
+                editingSpeakerStored = u.speakerID
+                editingSpeakerName = recorder
+                    .speakerDisplayName(forStored: u.speakerID) ?? ""
+            },
+            onEditTranscript: { u in
+                // Only meaningful when there's source audio
+                // to re-slice from — the hand-edit pipeline
+                // reads `[newStart, newEnd]` from
+                // `playbackSourceURL`.
+                guard recorder.playbackSourceURL != nil else { return }
+                editingUtterance = u
+            },
+            refreshSearchCache: refreshSearchCache
+        )
     }
 
 }
-
-/// Fingerprint of the inputs that affect `filteredIndexedUtterances`
-/// and `displayedSummary`. `Equatable` so the memo can early-exit on
-/// no-change renders.
-private struct FilterDepsKey: Equatable {
-    /// Already-normalized search query, so we don't re-tokenize the
-    /// query string on every change-check.
-    let normalizedQuery: String
-    let labelFilter: String?
-    let speakerFilter: String?
-    /// Utterance count handles appends (live streaming) and most
-    /// resets. Paired with `utterancesVersion` for in-place mutations
-    /// (re-evaluate) where the count doesn't change but the content
-    /// did. Both are O(1) reads off the controller.
-    let utteranceCount: Int
-    let utterancesVersion: Int
-}
-
-/// Reference-typed memo for the filter + summary derivation in
-/// ContentView. Held via `@State` so it survives view-body
-/// re-evaluations; mutating its stored properties does NOT
-/// re-trigger the body (which is what we want — the memo is read
-/// during the current render pass).
-@MainActor
-private final class FilterMemo {
-    var lastKey: FilterDepsKey?
-    var results: [(idx: Int, u: UtteranceEstimate)] = []
-    var summary: ConversationSummary = ConversationSummary()
-}
-
 
 #Preview {
     ContentView()

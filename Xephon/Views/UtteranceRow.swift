@@ -192,10 +192,15 @@ struct UtteranceRow: View {
                     // sheet, but `.presentationCompactAdaptation(.popover)`
                     // forces the popover form so anchoring stays
                     // consistent across iPad and iPhone.
-                    .popover(
-                        isPresented: $showingSpeakerMenu,
-                        arrowEdge: .top
-                    ) {
+                    //
+                    // No explicit `arrowEdge:` so SwiftUI picks the
+                    // edge with the most room — a chip near the
+                    // bottom of the list flips to render above
+                    // instead of getting clipped off-screen, and a
+                    // chip near the right edge of the row leans
+                    // its arrow rightward instead of running the
+                    // popover past the trailing margin.
+                    .popover(isPresented: $showingSpeakerMenu) {
                         speakerMenuPopover
                             .presentationCompactAdaptation(.popover)
                     }

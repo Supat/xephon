@@ -112,6 +112,28 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         )
     }
 
+    public func withSpeakerID(_ id: String) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: self.id,
+            speakerID: id,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            plutchik: plutchik,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
     public func withSpeechBoost(_ enabled: Bool?) -> UtteranceEstimate {
         UtteranceEstimate(
             id: id,

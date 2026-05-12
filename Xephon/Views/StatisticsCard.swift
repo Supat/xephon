@@ -64,10 +64,18 @@ struct StatisticsRow: View {
         let tint = emotionTint(for: label)
         let fraction: Double = total > 0 ? Double(count) / Double(total) : 0
         HStack(spacing: 8) {
+            // Fixed width + tail truncation matches the
+            // `ProbabilityBar` rule in `UtteranceRow`. Without it,
+            // long labels like "Anticipation" (12 chars) push the
+            // inline bar rightward, jittering column widths between
+            // rows. `width: 80` (not `minWidth`) holds the column
+            // steady; the longest label gets an ellipsis.
             Text(label.capitalized(with: Locale(identifier: "en_US")))
                 .font(.caption.monospaced())
                 .foregroundStyle(tint)
-                .frame(minWidth: 80, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 80, alignment: .leading)
             // Inline bar so the relative weight of each label is legible
             // at a glance — the count alone reads as a flat list.
             GeometryReader { geo in

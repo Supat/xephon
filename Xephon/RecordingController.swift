@@ -392,243 +392,274 @@ final class RecordingController {
             }
 
             phase = .recording
-            errorMessage = nil
-            samplesCaptured = 0
-            utterances = []
-            preReevaluationSnapshots.removeAll()
-            handEditChildren.removeAll()
-            speakerNameOverrides.removeAll()
-            conversationSummary.reset()
-            capturedAudio.reset()
-            sessionStartedAt = Date()
-            lastASRFinalizeLatency = nil
-            lastChunkSpeakerCount = 0
-            lastChunkSentenceCount = 0
-            // Stop any prior playback. For mic-mode this also clears
-            // any prior file's playback ref via setPlaybackSourceURL.
-            // File-mode acquires its scope earlier in `startFromFile`
-            // — before any async hop — so the security-scoped URL is
-            // pinned while it's still fresh from the picker.
-            stopPlayback()
-            if case .microphone = sourceMode {
-                setPlaybackSourceURL(nil)
-                fileTotalAudioDuration = nil
-            }
-            // Reset per-segment latencies so the pipeline visualization's
-            // SER rows return to .idle when a new session starts.
-            // Without this, lastAcousticDuration / lastTextDuration
-            // carry over from the previous session, leaving the SER
-            // glyphs latched to .ready before the first segment of the
-            // new session has even processed.
-            lastAcousticDuration = nil
-            lastTextDuration = nil
-            lastSegmentTotal = nil
-            // Reset speaker recognition (cumulative timeline AND
-            // FluidAudio's embedding-based SpeakerManager database)
-            // BEFORE any pump task starts. Doing it here, in the
-            // synchronous prologue of `start()`, guarantees no
-            // observation from the new session can land before the
-            // reset — earlier this lived inside `analysisTask` where
-            // `continuousDiarizeTask` could in principle fire its
-            // first tick before the reset awaited. The reset has to
-            // run after `ensurePipeline` so the diarizer instance is
-            // available to clear, but before the recording-time
-            // tasks are spawned below.
-            await ensurePipeline().resetSpeakerTracking()
-            // Surface the session on the Lock Screen / Dynamic Island.
-            // Has to happen AFTER `sourceMode` is set (handled by
-            // `startFromFile` for file-mode) so the activity captures
-            // the right source label.
-            liveActivity.start(sourceLabel: liveActivitySourceLabel)
-
-            // Pump 1 (raw): drain → SER buffer + level meter. The raw stream
-            // preserves prosody for SER and prosody analyses.
-            //
-            // `samplesCaptured` is a monotonic session counter (drives the
-            // elapsed-time display); it must NOT track `capturedAudio.count`
-            // because the rolling buffer is trimmed each time a segment is
-            // sliced for SER, which would make the timer jump backward.
-            rawTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                for await buffer in streams.raw {
-                    // The trim-before-append cap and origin advance
-                    // both live inside RollingAudioBuffer. See its
-                    // doc comment for why the order matters.
-                    self.capturedAudio.append(buffer.samples)
-                    self.samplesCaptured += buffer.samples.count
-                    self.inputLevel = Self.smoothLevel(
-                        previous: self.inputLevel,
-                        current: Self.perceptualLevel(buffer.samples)
-                    )
-                }
-                self.inputLevel = 0
-            }
-
-            // Pump 2 (processed): drain → ASR analyzer. Speech-band EQ applied
-            // upstream by AVAudioUnitEQ (see SpeechBoost).
-            feedTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                for await buffer in streams.processed {
-                    await self.streamingTranscriber.feed(buffer)
-                }
-            }
-
-            // Volatile-text poll for the live ASR preview in the pipeline card.
-            // 5 Hz keeps it fluid without taxing the actor.
-            volatilePollTask = Task { @MainActor [weak self] in
-                while !Task.isCancelled {
-                    guard let self else { return }
-                    self.volatileText = await self.streamingTranscriber.volatileText
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                }
-            }
-
-            // Continuous diarization: every stride, snapshot the last
-            // window of audio and feed it to the speaker timeline. The
-            // timeline is what dominantSpeaker queries per sentence —
-            // keeping it fresh means assignment is based on a recent
-            // ~10 s window rather than a 60 s lump that averages
-            // embeddings across many turns.
-            //
-            // First tick waits one stride, so a sentence finalizing in
-            // the first ~2 s falls back to the supplied default ID via
-            // dominantSpeaker's empty-timeline path. Subsequent ticks
-            // get increasingly accurate coverage.
-            //
-            // Awaits `ensurePipeline` first because the diarizer lives
-            // inside the pipeline. Skipped when the pipeline failed to
-            // load a diarizer (`ingestDiarizationWindow` is a no-op).
-            continuousDiarizeTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                let pipeline = await self.ensurePipeline()
-                while !Task.isCancelled {
-                    try? await Task.sleep(
-                        nanoseconds: UInt64(Self.continuousDiarizeStrideSec * 1_000_000_000)
-                    )
-                    if Task.isCancelled { return }
-                    guard self.isRecording else { continue }
-                    let window = self.capturedAudio.snapshotTail(
-                        seconds: Self.continuousDiarizeWindowSec
-                    )
-                    guard !window.samples.isEmpty else { continue }
-                    await pipeline.ingestDiarizationWindow(window)
-                }
-            }
-
-            // Pump 2: drain finalized ASR segments → SER+fuse → append.
-            // Each segment is processed concurrently (TaskGroup) so a slow
-            // text-SER LLM call on segment N doesn't block segment N+1.
-            // Results are inserted in start-time order regardless of which
-            // task finishes first.
-            //
-            // Concurrency is capped at `maxConcurrentSegments` to bound peak
-            // memory during fast-pace file analysis. Without the cap, the
-            // file capture pump can deliver tens of segments before any have
-            // finalized, each holding its own audio slice + ONNX I/O tensors
-            // — enough to OOM on long files. The poll-and-yield wait is
-            // coarse but lets the MainActor service updates between checks.
-            analysisTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                let pipeline = await self.ensurePipeline()
-                // Speaker tracking + FluidAudio's SpeakerManager are
-                // already reset in `start()`'s synchronous prologue
-                // before this task is spawned, so no further reset
-                // is needed here.
-                await withTaskGroup(of: Void.self) { group in
-                    for await segment in segmentStream {
-                        // Record finalize latency at the moment of receipt:
-                        // wall-clock now minus the wall-clock when the audio
-                        // for this utterance ended. Only meaningful when
-                        // audio time tracks wall-clock (mic / real-time
-                        // file). Under fast-pace the audio pump runs
-                        // multi-x faster than real, so segment.end is in
-                        // accelerated audio time and the delta would be
-                        // negative — surface nil instead.
-                        if self.asrLatencyMeaningful, let started = self.sessionStartedAt {
-                            let endWallClock = started.addingTimeInterval(segment.end)
-                            let latency = Date().timeIntervalSince(endWallClock)
-                            self.lastASRFinalizeLatency = max(0, latency)
-                        }
-                        while self.inflightSegments >= Self.maxConcurrentSegments {
-                            try? await Task.sleep(nanoseconds: 5_000_000)
-                        }
-                        let segmentBuffer = self.sliceForSegment(segment)
-                        // Order matters here: slice → trim → snapshot.
-                        //
-                        // Slicing first reads the segment's range out of
-                        // the full pre-trim buffer, so the SER task gets
-                        // the right audio.
-                        //
-                        // Trimming next drops everything older than the
-                        // diarization context window (~60 s before
-                        // segment.end), which is exactly the audio the
-                        // diarizer doesn't need anyway.
-                        //
-                        // Snapshotting AFTER the trim is the memory win —
-                        // an earlier version snapshotted first and copied
-                        // the entire pre-trim buffer (potentially 100s of
-                        // MB if rawTask was ahead of analysisTask), making
-                        // peak memory `inflightCap × pre-trim buffer size`.
-                        // Now the snapshot is at most ~60 s × 16 kHz × 4 B
-                        // = ~3.8 MB regardless of how far ASR is behind.
-                        self.trimProcessedAudio(below: segment.end)
-                        self.beginSegmentInflight()
-                        group.addTask { [weak self] in
-                            // Sentence-level split (pause + punctuation),
-                            // then per-sentence speaker assignment from the
-                            // cumulative diarizer timeline. Each split gets
-                            // its own SER+fusion pass with the pre-resolved
-                            // speaker. Single-sentence segments come back as
-                            // a one-element array, so the loop is uniform.
-                            // See `AnalysisPipeline.splitForProcessing`.
-                            let splits = await pipeline.splitForProcessing(
-                                asr: segment,
-                                segmentAudio: segmentBuffer
-                            )
-                            // Distinct speakers across the splits → Diarizer
-                            // pipeline row metric.
-                            await self?.recordChunkSpeakerCount(
-                                Set(splits.map(\.speaker)).count
-                            )
-                            await self?.recordChunkSentenceCount(splits.count)
-                            for split in splits {
-                                do {
-                                    let (estimate, metrics) = try await pipeline.processSegment(
-                                        asr: split.asr,
-                                        segmentAudio: split.audio,
-                                        fallbackSpeakerID: split.speaker
-                                    )
-                                    await self?.applySegmentResult(estimate: estimate, metrics: metrics)
-                                } catch {
-                                    AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
-                                }
-                            }
-                            await self?.endSegmentInflight()
-                        }
-                    }
-                }
-            }
-
-            // File-backed sources have a natural end. Watch for the feed loop
-            // to drain (the AudioFileCapture pump finishes both streams when
-            // the file is exhausted) and auto-stop so the user doesn't have
-            // to tap Stop. Mic captures never drain on their own, so this is
-            // a no-op for live recording. Spawned outside the awaited task
-            // graph so calling stop() from here doesn't deadlock against
-            // stop()'s own `await feedTask?.value`.
-            if case .file = sourceMode {
-                let watchedFeed = feedTask
-                fileEndWatcherTask = Task { @MainActor [weak self] in
-                    await watchedFeed?.value
-                    guard let self, self.isRecording else { return }
-                    AppLog.app.info("file source exhausted; auto-stopping")
-                    await self.stop()
-                }
-            }
+            resetSessionState()
+            await prepareSessionForRecording()
+            spawnRawAudioPump(streams: streams)
+            spawnTranscriberFeedPump(streams: streams)
+            spawnVolatilePollPump()
+            spawnContinuousDiarizeTask()
+            spawnSegmentAnalysisTask(segmentStream: segmentStream)
+            spawnFileEndWatcherIfNeeded()
         } catch {
             errorMessage = String(describing: error)
             phase = .idle
             AppLog.app.error("recording start failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Wipe the per-session state that `start()` should always
+    /// start fresh: utterances, snapshots, override names,
+    /// summary, audio buffer, capture counters, latencies. Pure
+    /// in-memory clear — no async, no capture/pipeline mutation
+    /// (those live in `prepareSessionForRecording`). Splitting the
+    /// two halves means a failure in the async half leaves the
+    /// in-memory state already coherent.
+    private func resetSessionState() {
+        errorMessage = nil
+        samplesCaptured = 0
+        utterances = []
+        preReevaluationSnapshots.removeAll()
+        handEditChildren.removeAll()
+        speakerNameOverrides.removeAll()
+        conversationSummary.reset()
+        capturedAudio.reset()
+        sessionStartedAt = Date()
+        lastASRFinalizeLatency = nil
+        lastChunkSpeakerCount = 0
+        lastChunkSentenceCount = 0
+        // Reset per-segment latencies so the pipeline visualization's
+        // SER rows return to .idle when a new session starts.
+        // Without this, lastAcousticDuration / lastTextDuration
+        // carry over from the previous session, leaving the SER
+        // glyphs latched to .ready before the first segment of the
+        // new session has even processed.
+        lastAcousticDuration = nil
+        lastTextDuration = nil
+        lastSegmentTotal = nil
+    }
+
+    /// External-state half of session startup: stop any prior
+    /// playback, clear mic-mode playback refs, reset the diarizer's
+    /// SpeakerManager + cumulative timeline, and start the Live
+    /// Activity. Has to run after `resetSessionState` (so the new
+    /// session's startedAt is set when LiveActivity captures it)
+    /// and before any pump task spawns (so the SpeakerManager
+    /// reset can't race a continuous-diarize tick).
+    private func prepareSessionForRecording() async {
+        // Stop any prior playback. For mic-mode this also clears
+        // any prior file's playback ref via setPlaybackSourceURL.
+        // File-mode acquires its scope earlier in `startFromFile`
+        // — before any async hop — so the security-scoped URL is
+        // pinned while it's still fresh from the picker.
+        stopPlayback()
+        if case .microphone = sourceMode {
+            setPlaybackSourceURL(nil)
+            fileTotalAudioDuration = nil
+        }
+        // Reset speaker recognition (cumulative timeline AND
+        // FluidAudio's embedding-based SpeakerManager database)
+        // BEFORE any pump task starts.
+        await ensurePipeline().resetSpeakerTracking()
+        // Surface the session on the Lock Screen / Dynamic Island.
+        // Has to happen AFTER `sourceMode` is set (handled by
+        // `startFromFile` for file-mode) so the activity captures
+        // the right source label.
+        liveActivity.start(sourceLabel: liveActivitySourceLabel)
+    }
+
+    /// Pump 1 (raw): drain → SER buffer + level meter. The raw
+    /// stream preserves prosody for SER and prosody analyses.
+    /// `samplesCaptured` is a monotonic session counter (drives
+    /// the elapsed-time display); it must NOT track
+    /// `capturedAudio.count` because the rolling buffer is trimmed
+    /// each time a segment is sliced for SER, which would make
+    /// the timer jump backward.
+    private func spawnRawAudioPump(streams: CaptureStreams) {
+        rawTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await buffer in streams.raw {
+                // The trim-before-append cap and origin advance
+                // both live inside RollingAudioBuffer. See its
+                // doc comment for why the order matters.
+                self.capturedAudio.append(buffer.samples)
+                self.samplesCaptured += buffer.samples.count
+                self.inputLevel = Self.smoothLevel(
+                    previous: self.inputLevel,
+                    current: Self.perceptualLevel(buffer.samples)
+                )
+            }
+            self.inputLevel = 0
+        }
+    }
+
+    /// Pump 2 (processed): drain → ASR analyzer. Speech-band EQ
+    /// is applied upstream by `AVAudioUnitEQ` (see `SpeechBoost`).
+    private func spawnTranscriberFeedPump(streams: CaptureStreams) {
+        feedTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await buffer in streams.processed {
+                await self.streamingTranscriber.feed(buffer)
+            }
+        }
+    }
+
+    /// Volatile-text poll for the live ASR preview in the pipeline
+    /// card. 5 Hz keeps it fluid without taxing the actor.
+    private func spawnVolatilePollPump() {
+        volatilePollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.volatileText = await self.streamingTranscriber.volatileText
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+    }
+
+    /// Continuous diarization: every stride, snapshot the last
+    /// window of audio and feed it to the speaker timeline. The
+    /// timeline is what `dominantSpeaker` queries per sentence —
+    /// keeping it fresh means assignment is based on a recent
+    /// ~10 s window rather than a 60 s lump that averages
+    /// embeddings across many turns.
+    ///
+    /// First tick waits one stride, so a sentence finalizing in
+    /// the first ~2 s falls back to the supplied default ID via
+    /// `dominantSpeaker`'s empty-timeline path. Subsequent ticks
+    /// get increasingly accurate coverage.
+    ///
+    /// Awaits `ensurePipeline` first because the diarizer lives
+    /// inside the pipeline. Skipped when the pipeline failed to
+    /// load a diarizer (`ingestDiarizationWindow` is a no-op).
+    private func spawnContinuousDiarizeTask() {
+        continuousDiarizeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let pipeline = await self.ensurePipeline()
+            while !Task.isCancelled {
+                try? await Task.sleep(
+                    nanoseconds: UInt64(Self.continuousDiarizeStrideSec * 1_000_000_000)
+                )
+                if Task.isCancelled { return }
+                guard self.isRecording else { continue }
+                let window = self.capturedAudio.snapshotTail(
+                    seconds: Self.continuousDiarizeWindowSec
+                )
+                guard !window.samples.isEmpty else { continue }
+                await pipeline.ingestDiarizationWindow(window)
+            }
+        }
+    }
+
+    /// Drain finalized ASR segments → split → SER+fuse → append.
+    /// Each segment processes concurrently (TaskGroup) so a slow
+    /// text-SER LLM call on segment N doesn't block segment N+1.
+    /// Results are inserted in start-time order regardless of which
+    /// task finishes first.
+    ///
+    /// Concurrency is capped at `maxConcurrentSegments` to bound
+    /// peak memory during fast-pace file analysis. Without the cap,
+    /// the file capture pump can deliver tens of segments before
+    /// any have finalized, each holding its own audio slice + ONNX
+    /// I/O tensors — enough to OOM on long files. The poll-and-
+    /// yield wait is coarse but lets the MainActor service updates
+    /// between checks.
+    private func spawnSegmentAnalysisTask(segmentStream: AsyncStream<ASRSegment>) {
+        analysisTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let pipeline = await self.ensurePipeline()
+            // Speaker tracking + FluidAudio's SpeakerManager are
+            // already reset in `prepareSessionForRecording()` before
+            // this task is spawned, so no further reset is needed.
+            await withTaskGroup(of: Void.self) { group in
+                for await segment in segmentStream {
+                    // Record finalize latency at the moment of receipt:
+                    // wall-clock now minus the wall-clock when the audio
+                    // for this utterance ended. Only meaningful when
+                    // audio time tracks wall-clock (mic / real-time
+                    // file). Under fast-pace the audio pump runs
+                    // multi-x faster than real, so segment.end is in
+                    // accelerated audio time and the delta would be
+                    // negative — surface nil instead.
+                    if self.asrLatencyMeaningful, let started = self.sessionStartedAt {
+                        let endWallClock = started.addingTimeInterval(segment.end)
+                        let latency = Date().timeIntervalSince(endWallClock)
+                        self.lastASRFinalizeLatency = max(0, latency)
+                    }
+                    while self.inflightSegments >= Self.maxConcurrentSegments {
+                        try? await Task.sleep(nanoseconds: 5_000_000)
+                    }
+                    let segmentBuffer = self.sliceForSegment(segment)
+                    // Order matters here: slice → trim → snapshot.
+                    //
+                    // Slicing first reads the segment's range out of
+                    // the full pre-trim buffer, so the SER task gets
+                    // the right audio.
+                    //
+                    // Trimming next drops everything older than the
+                    // diarization context window (~60 s before
+                    // segment.end), which is exactly the audio the
+                    // diarizer doesn't need anyway.
+                    //
+                    // Snapshotting AFTER the trim is the memory win —
+                    // an earlier version snapshotted first and copied
+                    // the entire pre-trim buffer (potentially 100s of
+                    // MB if rawTask was ahead of analysisTask), making
+                    // peak memory `inflightCap × pre-trim buffer size`.
+                    // Now the snapshot is at most ~60 s × 16 kHz × 4 B
+                    // = ~3.8 MB regardless of how far ASR is behind.
+                    self.trimProcessedAudio(below: segment.end)
+                    self.beginSegmentInflight()
+                    group.addTask { [weak self] in
+                        // Sentence-level split (pause + punctuation),
+                        // then per-sentence speaker assignment from the
+                        // cumulative diarizer timeline. Each split gets
+                        // its own SER+fusion pass with the pre-resolved
+                        // speaker. Single-sentence segments come back as
+                        // a one-element array, so the loop is uniform.
+                        // See `AnalysisPipeline.splitForProcessing`.
+                        let splits = await pipeline.splitForProcessing(
+                            asr: segment,
+                            segmentAudio: segmentBuffer
+                        )
+                        // Distinct speakers across the splits → Diarizer
+                        // pipeline row metric.
+                        await self?.recordChunkSpeakerCount(
+                            Set(splits.map(\.speaker)).count
+                        )
+                        await self?.recordChunkSentenceCount(splits.count)
+                        for split in splits {
+                            do {
+                                let (estimate, metrics) = try await pipeline.processSegment(
+                                    asr: split.asr,
+                                    segmentAudio: split.audio,
+                                    fallbackSpeakerID: split.speaker
+                                )
+                                await self?.applySegmentResult(estimate: estimate, metrics: metrics)
+                            } catch {
+                                AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
+                            }
+                        }
+                        await self?.endSegmentInflight()
+                    }
+                }
+            }
+        }
+    }
+
+    /// File-backed sources have a natural end. Watch for the feed
+    /// loop to drain (the AudioFileCapture pump finishes both
+    /// streams when the file is exhausted) and auto-stop so the
+    /// user doesn't have to tap Stop. Mic captures never drain on
+    /// their own, so this is a no-op for live recording. Spawned
+    /// outside the awaited task graph so calling stop() from here
+    /// doesn't deadlock against stop()'s own `await feedTask?.value`.
+    private func spawnFileEndWatcherIfNeeded() {
+        guard case .file = sourceMode else { return }
+        let watchedFeed = feedTask
+        fileEndWatcherTask = Task { @MainActor [weak self] in
+            await watchedFeed?.value
+            guard let self, self.isRecording else { return }
+            AppLog.app.info("file source exhausted; auto-stopping")
+            await self.stop()
         }
     }
 
@@ -961,9 +992,7 @@ final class RecordingController {
         speakerNameOverrides = document.speakerNames ?? [:]
         // Same-length imports would otherwise hit the filter memo;
         // bump defensively so the cache rebuilds for any load.
-        utterancesVersion &+= 1
-        conversationSummary.reset()
-        for u in utterances { conversationSummary.update(with: u) }
+        commitUtteranceChanges()
         lastChunkSpeakerCount = 0
         lastChunkSentenceCount = 0
         lastAcousticDuration = nil
@@ -1156,17 +1185,18 @@ final class RecordingController {
     private static let reevaluationMaxBackPadSec: TimeInterval = 10.0
 
     /// Surrounding-context pad (each side) for the audio chunk fed
-    /// to the diarizer during `commitHandEdit`. Sortformer's input
-    /// `chunkDuration` is 10 s; a typical hand-edit slice is 2–5 s,
+    /// to the diarizer when re-resolving a speaker after a hand-
+    /// edit commit or re-evaluation. Sortformer's input
+    /// `chunkDuration` is 10 s; a typical edited slice is 2–5 s,
     /// which gets zero-padded — `createSegmentIfValid` then drops
     /// segments whose duration falls under `minSpeechDuration`,
     /// causing `runDiarization` to return empty. Giving the model
     /// real surrounding audio (the same audio it ran on during
     /// streaming) reliably yields segments. We still vote for
-    /// speakers in `[newStart, newEnd]` only; the wider window just
-    /// gives Sortformer something to chew on. ~4 s on each side
-    /// brings most slices comfortably above the 10 s window.
-    private static let handEditDiarPadSec: TimeInterval = 4.0
+    /// speakers in the user-supplied range only; the wider window
+    /// just gives Sortformer something to chew on. ~4 s on each
+    /// side brings most slices comfortably above the 10 s window.
+    private static let rediarizePadSec: TimeInterval = 4.0
 
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
     /// on each side) to offline ASR, then run SER + fusion on the new
@@ -1251,7 +1281,17 @@ final class RecordingController {
                     AppLog.app.warning("reevaluate: offline ASR returned no transcript")
                     return
                 }
-                applyReevaluation(utteranceID: utteranceID, fresh: fresh)
+                let speaker = await rediarizedSpeaker(
+                    url: url,
+                    pipeline: pipeline,
+                    correctedStart: fresh.start,
+                    correctedEnd: fresh.end,
+                    fallback: speakerID
+                )
+                applyReevaluation(
+                    utteranceID: utteranceID,
+                    fresh: fresh.withSpeakerID(speaker)
+                )
                 return
             }
 
@@ -1338,9 +1378,63 @@ final class RecordingController {
                 AppLog.app.warning("reevaluate: pipeline rejected segments after retry")
                 return
             }
-            applyReevaluation(utteranceID: utteranceID, fresh: fresh)
+            let speaker = await rediarizedSpeaker(
+                url: url,
+                pipeline: pipeline,
+                correctedStart: fresh.start,
+                correctedEnd: fresh.end,
+                fallback: speakerID
+            )
+            applyReevaluation(
+                utteranceID: utteranceID,
+                fresh: fresh.withSpeakerID(speaker)
+            )
         } catch {
             AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Re-resolve the speaker for an utterance's corrected
+    /// `[start, end]` window after re-evaluation. Reads a
+    /// `rediarizePadSec`-wider chunk so Sortformer has enough
+    /// surrounding speech to actually emit segments, then votes
+    /// for the speaker covering the corrected range against the
+    /// fresh segments only (so the cumulative timeline's ~5
+    /// observations from the streaming pass don't outvote a
+    /// genuinely-different verdict). Returns `fallback` on any
+    /// read failure, on empty audio, or when the diarizer
+    /// produces no segments for the slice.
+    private func rediarizedSpeaker(
+        url: URL,
+        pipeline: AnalysisPipeline,
+        correctedStart: TimeInterval,
+        correctedEnd: TimeInterval,
+        fallback: String
+    ) async -> String {
+        let totalDur: TimeInterval = fileTotalAudioDuration
+            ?? max(correctedEnd + Self.rediarizePadSec, correctedEnd)
+        let diarStart = max(0, correctedStart - Self.rediarizePadSec)
+        let diarEnd = min(totalDur, correctedEnd + Self.rediarizePadSec)
+        do {
+            let chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url,
+                    start: diarStart,
+                    end: diarEnd
+                )
+            }.value
+            guard !chunk.samples.isEmpty else { return fallback }
+            let speakers = await pipeline.resolveSpeakersForRanges(
+                audio: chunk,
+                ranges: [(start: correctedStart, end: correctedEnd)],
+                fallback: fallback
+            )
+            return speakers.first ?? fallback
+        } catch {
+            AppLog.app.warning(
+                "reevaluate: speaker re-diarize read failed: \(String(describing: error), privacy: .public)"
+            )
+            return fallback
         }
     }
 
@@ -1362,6 +1456,52 @@ final class RecordingController {
     /// this, a substantially-shifted re-eval could leave the list
     /// out of order, and List's identity-stable rendering would
     /// keep it at its old position visually.
+    /// Bump `utterancesVersion` (so ContentView's filter memo
+    /// invalidates after in-place mutations that leave
+    /// `utterances.count` unchanged) and rebuild the conversation
+    /// summary from the current `utterances`. Called after every
+    /// path that mutates a row's content or replaces an entry.
+    private func commitUtteranceChanges() {
+        utterancesVersion &+= 1
+        conversationSummary.reset()
+        for u in utterances { conversationSummary.update(with: u) }
+    }
+
+    /// Build a merged `UtteranceEstimate` from the fresh SER/fusion
+    /// output combined with stable origin fields (id, speakerID,
+    /// speechBoost) and the per-flow edit flags. Used by the three
+    /// "replace this row with new SER results" paths
+    /// (`applyReevaluation`, `applyHandEdit`, `applyHandEditSplit`)
+    /// to keep their constructor footprints small and consistent.
+    private static func mergedEstimate(
+        id: UUID,
+        speakerID: String,
+        speechBoost: Bool?,
+        fresh: UtteranceEstimate,
+        wasReevaluated: Bool?,
+        wasHandEdited: Bool?
+    ) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            start: fresh.start,
+            end: fresh.end,
+            transcript: fresh.transcript,
+            asrConfidence: fresh.asrConfidence,
+            dimensional: fresh.dimensional,
+            acousticCategorical: fresh.acousticCategorical,
+            plutchik: fresh.plutchik,
+            textBackend: fresh.textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            fusedValence: fresh.fusedValence,
+            fusedArousal: fresh.fusedArousal,
+            fusedDominance: fresh.fusedDominance,
+            fusedTopLabel: fresh.fusedTopLabel
+        )
+    }
+
     private func applyReevaluation(utteranceID: UUID, fresh: UtteranceEstimate) {
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else {
             return
@@ -1375,25 +1515,23 @@ final class RecordingController {
         if preReevaluationSnapshots[utteranceID] == nil {
             preReevaluationSnapshots[utteranceID] = original
         }
-        let merged = UtteranceEstimate(
+        // Carry `fresh.speakerID` — the caller in `reevaluate`
+        // ran the diarizer on a context-padded window covering
+        // the corrected `[fresh.start, fresh.end]` range and
+        // stamped the resolved verdict on `fresh` via
+        // `withSpeakerID`. The original streaming-pass speaker
+        // assignment isn't authoritative for the corrected window,
+        // so trusting `fresh` lets a re-evaluation fix speaker-
+        // boundary errors at the same time it fixes the
+        // transcript.
+        utterances[index] = Self.mergedEstimate(
             id: original.id,
-            speakerID: original.speakerID,
-            start: fresh.start,
-            end: fresh.end,
-            transcript: fresh.transcript,
-            asrConfidence: fresh.asrConfidence,
-            dimensional: fresh.dimensional,
-            acousticCategorical: fresh.acousticCategorical,
-            plutchik: fresh.plutchik,
-            textBackend: fresh.textBackend,
+            speakerID: fresh.speakerID,
             speechBoost: original.speechBoost,
+            fresh: fresh,
             wasReevaluated: true,
-            fusedValence: fresh.fusedValence,
-            fusedArousal: fresh.fusedArousal,
-            fusedDominance: fresh.fusedDominance,
-            fusedTopLabel: fresh.fusedTopLabel
+            wasHandEdited: nil
         )
-        utterances[index] = merged
         // If the corrected start moved the row out of chronological
         // order with its neighbours, re-sort. Cheap (small N, stable
         // sort) and keeps the list consistent for filtering /
@@ -1402,13 +1540,7 @@ final class RecordingController {
         if !Self.isChronologicallyOrdered(utterances, around: index) {
             utterances.sort { $0.start < $1.start }
         }
-        // Bump so the ContentView filter memo invalidates — replacing
-        // an element in place leaves `utterances.count` unchanged,
-        // which the memo's dep key would otherwise treat as a cache
-        // hit and return the pre-re-eval row.
-        utterancesVersion &+= 1
-        conversationSummary.reset()
-        for u in utterances { conversationSummary.update(with: u) }
+        commitUtteranceChanges()
     }
 
     // MARK: - Per-utterance hand-edit
@@ -1445,6 +1577,12 @@ final class RecordingController {
         // character count and run SER+fusion per slice.
         let sentences = Self.splitTranscriptIntoSentences(trimmedText)
         guard !sentences.isEmpty else { return }
+        let plans = Self.planHandEditSentences(
+            sentences,
+            newStart: newStart,
+            newEnd: newEnd
+        )
+        guard !plans.isEmpty else { return }
 
         let original = utterances[index]
         reevaluatingUtteranceID = utteranceID
@@ -1457,24 +1595,53 @@ final class RecordingController {
         let fallbackSpeaker = original.speakerID
         let pipeline = await ensurePipeline()
 
-        // Read two windows: the SER window is the exact range the
-        // user committed; the diarizer window is wider (full
-        // Sortformer `chunkDuration` of audio centred on the slice)
-        // so Sortformer has enough surrounding speech to actually
-        // emit segments. Short slices fed directly to FluidAudio
-        // get zero-padded to 10 s and the per-speaker activity
-        // commonly falls under `minSpeechDuration`, which causes
-        // `createSegmentIfValid` to drop every segment —
-        // `runDiarization` returns empty and we silently fall back
-        // to the original speaker. Padding by ~4 s on each side
-        // brings the speech into Sortformer's effective range
-        // without affecting the SER pass below, since we vote for
-        // speakers in `[newStart, newEnd]` after diarization and
-        // run `processSegment` on the unpadded SER chunk.
+        guard let chunks = await readHandEditAudio(
+            url: url,
+            newStart: newStart,
+            newEnd: newEnd
+        ) else { return }
+        let (diarChunk, serChunk) = chunks
+
+        if plans.count == 1 {
+            await runSingleSentenceHandEdit(
+                utteranceID: utteranceID,
+                plan: plans[0],
+                diarChunk: diarChunk,
+                serChunk: serChunk,
+                fallbackSpeaker: fallbackSpeaker,
+                pipeline: pipeline
+            )
+            return
+        }
+
+        let freshEstimates = await runMultiSentenceHandEdit(
+            plans: plans,
+            diarChunk: diarChunk,
+            url: url,
+            fallbackSpeaker: fallbackSpeaker,
+            pipeline: pipeline
+        )
+        guard !freshEstimates.isEmpty else { return }
+        applyHandEditSplit(utteranceID: utteranceID, sentences: freshEstimates)
+    }
+
+    /// Read the two audio chunks `commitHandEdit` needs: a wide
+    /// diarizer window (slice ± `rediarizePadSec`, clamped to
+    /// file bounds) so Sortformer has real surrounding audio to
+    /// work with, and the unpadded SER window the user committed.
+    /// Both reads happen on the same detached task so the file
+    /// I/O + AVAudioConverter pass don't hitch the MainActor.
+    /// Returns nil on read failure or when the SER chunk came back
+    /// empty (e.g. the user dialed past EOF).
+    private func readHandEditAudio(
+        url: URL,
+        newStart: TimeInterval,
+        newEnd: TimeInterval
+    ) async -> (diar: AudioChunk, ser: AudioChunk)? {
         let totalDur: TimeInterval = fileTotalAudioDuration
-            ?? max(newEnd + Self.handEditDiarPadSec, newEnd)
-        let diarStart = max(0, newStart - Self.handEditDiarPadSec)
-        let diarEnd = min(totalDur, newEnd + Self.handEditDiarPadSec)
+            ?? max(newEnd + Self.rediarizePadSec, newEnd)
+        let diarStart = max(0, newStart - Self.rediarizePadSec)
+        let diarEnd = min(totalDur, newEnd + Self.rediarizePadSec)
         let diarChunk: AudioChunk
         let serChunk: AudioChunk
         do {
@@ -1495,86 +1662,77 @@ final class RecordingController {
             AppLog.app.error(
                 "commitHandEdit: parent slice read failed: \(String(describing: error), privacy: .public)"
             )
-            return
+            return nil
         }
         guard !serChunk.samples.isEmpty else {
             AppLog.app.warning("commitHandEdit: empty audio slice")
-            return
+            return nil
         }
         AppLog.app.info(
-            "commitHandEdit: SER window [\(newStart, privacy: .public)..\(newEnd, privacy: .public)] s, diarizer window [\(diarStart, privacy: .public)..\(diarEnd, privacy: .public)] s (pad=\(Self.handEditDiarPadSec, privacy: .public)s)"
+            "commitHandEdit: SER window [\(newStart, privacy: .public)..\(newEnd, privacy: .public)] s, diarizer window [\(diarStart, privacy: .public)..\(diarEnd, privacy: .public)] s (pad=\(Self.rediarizePadSec, privacy: .public)s)"
         )
+        return (diarChunk, serChunk)
+    }
 
-        if sentences.count == 1 {
-            let speakers = await pipeline.resolveSpeakersForRanges(
-                audio: diarChunk,
-                ranges: [(start: newStart, end: newEnd)],
-                fallback: fallbackSpeaker
+    /// Single-sentence hand-edit: resolve the speaker for the
+    /// whole window from the diarizer, then run SER + fusion on
+    /// the unpadded SER chunk and stamp the result onto the row
+    /// via `applyHandEdit`. No-op on pipeline error.
+    private func runSingleSentenceHandEdit(
+        utteranceID: UUID,
+        plan: HandEditPlan,
+        diarChunk: AudioChunk,
+        serChunk: AudioChunk,
+        fallbackSpeaker: String,
+        pipeline: AnalysisPipeline
+    ) async {
+        let speakers = await pipeline.resolveSpeakersForRanges(
+            audio: diarChunk,
+            ranges: [(start: plan.start, end: plan.end)],
+            fallback: fallbackSpeaker
+        )
+        let speaker = speakers.first ?? fallbackSpeaker
+        do {
+            let asr = ASRSegment(
+                text: plan.text,
+                start: plan.start,
+                end: plan.end,
+                // User-verified text is presumed correct, so weight
+                // the text side at full confidence in fusion.
+                confidence: 1.0,
+                tokens: []
             )
-            let speaker = speakers.first ?? fallbackSpeaker
-            do {
-                let asr = ASRSegment(
-                    text: sentences[0],
-                    start: newStart,
-                    end: newEnd,
-                    // User-verified text is presumed correct, so weight
-                    // the text side at full confidence in fusion.
-                    confidence: 1.0,
-                    tokens: []
-                )
-                let (fresh, _) = try await pipeline.processSegment(
-                    asr: asr,
-                    segmentAudio: serChunk,
-                    fallbackSpeakerID: speaker
-                )
-                applyHandEdit(utteranceID: utteranceID, fresh: fresh)
-            } catch {
-                AppLog.app.error("commitHandEdit failed: \(String(describing: error), privacy: .public)")
-            }
-            return
+            let (fresh, _) = try await pipeline.processSegment(
+                asr: asr,
+                segmentAudio: serChunk,
+                fallbackSpeakerID: speaker
+            )
+            applyHandEdit(utteranceID: utteranceID, fresh: fresh)
+        } catch {
+            AppLog.app.error("commitHandEdit failed: \(String(describing: error), privacy: .public)")
         }
+    }
 
-        // Multi-sentence: allocate slices proportional to per-sentence
-        // character count and run the pipeline once per slice. Char
-        // count is a crude proxy for spoken length, but without
-        // per-token timing on a user-typed transcript it's the best
-        // we have; users can drag the global range to tune the total
-        // window before committing.
-        let totalChars = sentences.reduce(0) { $0 + $1.count }
-        guard totalChars > 0 else { return }
-        let totalDuration = newEnd - newStart
-
-        // Pre-compute every sub-range so the diarizer runs ONCE on
-        // the full parent window (giving Sortformer enough context
-        // to find speaker boundaries) and resolves all sub-ranges
-        // from that single output. Running per-slice would also
-        // work, but each slice could be sub-second — too short for
-        // Sortformer to produce meaningful diarization.
-        struct SentencePlan { let text: String; let start: TimeInterval; let end: TimeInterval }
-        var plans: [SentencePlan] = []
-        plans.reserveCapacity(sentences.count)
-        var charsConsumed = 0
-        for (i, sentence) in sentences.enumerated() {
-            let sliceStart = newStart
-                + Double(charsConsumed) / Double(totalChars) * totalDuration
-            charsConsumed += sentence.count
-            // Last slice runs out to `newEnd` exactly to avoid floating-
-            // point drift leaving a sub-millisecond gap at the end.
-            let sliceEnd = i == sentences.count - 1
-                ? newEnd
-                : newStart
-                    + Double(charsConsumed) / Double(totalChars) * totalDuration
-            guard sliceEnd > sliceStart else { continue }
-            plans.append(SentencePlan(text: sentence, start: sliceStart, end: sliceEnd))
-        }
-        guard !plans.isEmpty else { return }
-
+    /// Multi-sentence hand-edit: diarize ONCE on the full parent
+    /// window (so Sortformer has speaker-boundary context the per-
+    /// slice reads couldn't provide), then loop the SER pipeline
+    /// per sentence-slice with the resolved speaker as fallback.
+    /// Returns the freshly-fused per-sentence estimates in order
+    /// (skipping any slice whose audio came back empty or whose
+    /// pipeline call threw). Caller hands the result to
+    /// `applyHandEditSplit`.
+    private func runMultiSentenceHandEdit(
+        plans: [HandEditPlan],
+        diarChunk: AudioChunk,
+        url: URL,
+        fallbackSpeaker: String,
+        pipeline: AnalysisPipeline
+    ) async -> [UtteranceEstimate] {
         let sliceSpeakers = await pipeline.resolveSpeakersForRanges(
             audio: diarChunk,
             ranges: plans.map { ($0.start, $0.end) },
             fallback: fallbackSpeaker
         )
-
         var freshEstimates: [UtteranceEstimate] = []
         freshEstimates.reserveCapacity(plans.count)
         for (i, plan) in plans.enumerated() {
@@ -1607,8 +1765,47 @@ final class RecordingController {
                 )
             }
         }
-        guard !freshEstimates.isEmpty else { return }
-        applyHandEditSplit(utteranceID: utteranceID, sentences: freshEstimates)
+        return freshEstimates
+    }
+
+    /// One sentence's slot in a multi-sentence hand-edit commit:
+    /// the trimmed sentence text plus the time range carved out of
+    /// the user-supplied `[newStart, newEnd]` window for it.
+    private struct HandEditPlan {
+        let text: String
+        let start: TimeInterval
+        let end: TimeInterval
+    }
+
+    /// Allocate per-sentence time slots inside the user's edit
+    /// window proportionally to character count. The last slot
+    /// pins to `newEnd` exactly so floating-point drift doesn't
+    /// leave a sub-millisecond gap. Returns `[]` when the input
+    /// can't be sliced sensibly (empty sentences, zero total
+    /// chars, or the slot collapsing to zero width).
+    private static func planHandEditSentences(
+        _ sentences: [String],
+        newStart: TimeInterval,
+        newEnd: TimeInterval
+    ) -> [HandEditPlan] {
+        let totalChars = sentences.reduce(0) { $0 + $1.count }
+        guard totalChars > 0, newEnd > newStart else { return [] }
+        let totalDuration = newEnd - newStart
+        var plans: [HandEditPlan] = []
+        plans.reserveCapacity(sentences.count)
+        var charsConsumed = 0
+        for (i, sentence) in sentences.enumerated() {
+            let sliceStart = newStart
+                + Double(charsConsumed) / Double(totalChars) * totalDuration
+            charsConsumed += sentence.count
+            let sliceEnd = i == sentences.count - 1
+                ? newEnd
+                : newStart
+                    + Double(charsConsumed) / Double(totalChars) * totalDuration
+            guard sliceEnd > sliceStart else { continue }
+            plans.append(HandEditPlan(text: sentence, start: sliceStart, end: sliceEnd))
+        }
+        return plans
     }
 
     /// Mirror of `applyReevaluation` for the hand-edit path.
@@ -1622,32 +1819,18 @@ final class RecordingController {
         // diarizer timeline in `commitHandEdit`) rather than the
         // pre-edit `original.speakerID`, so a hand-edit that moved
         // the range across a speaker boundary actually re-labels.
-        let merged = UtteranceEstimate(
+        utterances[index] = Self.mergedEstimate(
             id: original.id,
             speakerID: fresh.speakerID,
-            start: fresh.start,
-            end: fresh.end,
-            transcript: fresh.transcript,
-            asrConfidence: fresh.asrConfidence,
-            dimensional: fresh.dimensional,
-            acousticCategorical: fresh.acousticCategorical,
-            plutchik: fresh.plutchik,
-            textBackend: fresh.textBackend,
             speechBoost: original.speechBoost,
+            fresh: fresh,
             wasReevaluated: nil,
-            wasHandEdited: true,
-            fusedValence: fresh.fusedValence,
-            fusedArousal: fresh.fusedArousal,
-            fusedDominance: fresh.fusedDominance,
-            fusedTopLabel: fresh.fusedTopLabel
+            wasHandEdited: true
         )
-        utterances[index] = merged
         if !Self.isChronologicallyOrdered(utterances, around: index) {
             utterances.sort { $0.start < $1.start }
         }
-        utterancesVersion &+= 1
-        conversationSummary.reset()
-        for u in utterances { conversationSummary.update(with: u) }
+        commitUtteranceChanges()
     }
 
     /// Multi-sentence hand-edit apply path. Replaces the parent row
@@ -1669,34 +1852,21 @@ final class RecordingController {
         newRows.reserveCapacity(sentences.count)
         var siblingIDs: [UUID] = []
         for (i, fresh) in sentences.enumerated() {
+            // First row keeps the original id (so existing
+            // references stay valid); siblings get fresh ids and
+            // are tracked for revert-time cleanup. Speaker is the
+            // per-sentence diarizer verdict — different sentences
+            // in a split can legitimately differ in speaker.
             let rowID = i == 0 ? original.id : UUID()
             if i > 0 { siblingIDs.append(rowID) }
-            newRows.append(
-                UtteranceEstimate(
-                    id: rowID,
-                    // Per-sentence diarizer verdict (resolved in
-                    // `commitHandEdit` via `speakerForRange`). Sibling
-                    // rows from a split can legitimately differ in
-                    // speaker — that's the whole point of re-running
-                    // the diarizer on the slice.
-                    speakerID: fresh.speakerID,
-                    start: fresh.start,
-                    end: fresh.end,
-                    transcript: fresh.transcript,
-                    asrConfidence: fresh.asrConfidence,
-                    dimensional: fresh.dimensional,
-                    acousticCategorical: fresh.acousticCategorical,
-                    plutchik: fresh.plutchik,
-                    textBackend: fresh.textBackend,
-                    speechBoost: original.speechBoost,
-                    wasReevaluated: nil,
-                    wasHandEdited: true,
-                    fusedValence: fresh.fusedValence,
-                    fusedArousal: fresh.fusedArousal,
-                    fusedDominance: fresh.fusedDominance,
-                    fusedTopLabel: fresh.fusedTopLabel
-                )
-            )
+            newRows.append(Self.mergedEstimate(
+                id: rowID,
+                speakerID: fresh.speakerID,
+                speechBoost: original.speechBoost,
+                fresh: fresh,
+                wasReevaluated: nil,
+                wasHandEdited: true
+            ))
         }
 
         utterances.remove(at: index)
@@ -1710,9 +1880,7 @@ final class RecordingController {
         // row overlaps the window (e.g. overlapping speakers).
         utterances.sort { $0.start < $1.start }
 
-        utterancesVersion &+= 1
-        conversationSummary.reset()
-        for u in utterances { conversationSummary.update(with: u) }
+        commitUtteranceChanges()
     }
 
     /// Split a user-typed transcript into sentences. Terminators
@@ -1822,31 +1990,11 @@ final class RecordingController {
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
         let original = utterances[index]
         guard original.speakerID != trimmed else { return }
-        utterances[index] = UtteranceEstimate(
-            id: original.id,
-            speakerID: trimmed,
-            start: original.start,
-            end: original.end,
-            transcript: original.transcript,
-            asrConfidence: original.asrConfidence,
-            dimensional: original.dimensional,
-            acousticCategorical: original.acousticCategorical,
-            plutchik: original.plutchik,
-            textBackend: original.textBackend,
-            speechBoost: original.speechBoost,
-            wasReevaluated: original.wasReevaluated,
-            wasHandEdited: original.wasHandEdited,
-            fusedValence: original.fusedValence,
-            fusedArousal: original.fusedArousal,
-            fusedDominance: original.fusedDominance,
-            fusedTopLabel: original.fusedTopLabel
-        )
+        utterances[index] = original.withSpeakerID(trimmed)
         AppLog.app.info(
             "speaker reassigned: utt=\(original.id, privacy: .public) \(original.speakerID, privacy: .public) → \(trimmed, privacy: .public)"
         )
-        utterancesVersion &+= 1
-        conversationSummary.reset()
-        for u in utterances { conversationSummary.update(with: u) }
+        commitUtteranceChanges()
     }
 
     /// Sorted, deduplicated list of speaker IDs currently appearing
@@ -1890,9 +2038,7 @@ final class RecordingController {
         if !Self.isChronologicallyOrdered(utterances, around: index) {
             utterances.sort { $0.start < $1.start }
         }
-        utterancesVersion &+= 1
-        conversationSummary.reset()
-        for u in utterances { conversationSummary.update(with: u) }
+        commitUtteranceChanges()
     }
 
     /// True when the element at `index` is in chronological order
