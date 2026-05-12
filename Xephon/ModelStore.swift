@@ -149,6 +149,84 @@ actor ModelStore {
         resolved.removeAll()
     }
 
+    /// True iff every file declared by the given optional entry is
+    /// present on disk. Doesn't re-hash — a tampered copy will be
+    /// caught at `ensureOptional` time (or at the inferencer's own
+    /// load step). Cheap enough to call from a UI getter that
+    /// renders the "Summarize session" button state.
+    func isOptionalInstalled(id: String) -> Bool {
+        guard let entry = ModelManifest.optionalEntries.first(where: { $0.id == id }) else {
+            return false
+        }
+        for file in entry.files {
+            let url = installRoot.appendingPathComponent(file.installPath)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Directory the optional entry's files live in. Returns nil
+    /// when the entry isn't installed yet. Used by the summarizer
+    /// actor as the `modelDirectory` it passes to MLXLMCommon's
+    /// `ModelConfiguration(directory:)`.
+    func optionalDirectory(id: String) -> URL? {
+        guard isOptionalInstalled(id: id),
+              let entry = ModelManifest.optionalEntries.first(where: { $0.id == id }),
+              let firstFile = entry.files.first
+        else { return nil }
+        let firstURL = installRoot.appendingPathComponent(firstFile.installPath)
+        return firstURL.deletingLastPathComponent()
+    }
+
+    /// Download (or verify-already-installed) one optional entry on
+    /// demand. Surfaces progress through the same `state` the
+    /// first-launch hydration uses, so the SetupView-style progress
+    /// chrome can render the summarizer download inline in the
+    /// Settings card. No-op when the entry is already installed
+    /// and its hashes verify.
+    func ensureOptional(id: String) async throws {
+        guard let entry = ModelManifest.optionalEntries.first(where: { $0.id == id }) else {
+            throw ModelStoreError.notResolved(id)
+        }
+        await state.begin(totalEntries: 1)
+        defer { Task { @MainActor in state.markIdleIfRunning() } }
+        await state.startEntry(index: 0, displayName: entry.displayName)
+        for file in entry.files {
+            try Task.checkCancellation()
+            let url = try await resolve(file: file, in: entry)
+            resolved[file.installPath] = url
+        }
+        await state.completeEntry(index: 0)
+        await state.markCompleted()
+    }
+
+    /// Remove all files for an optional entry. Surfaces as a
+    /// "Remove summarizer model" action in Settings so the user
+    /// can reclaim ~4 GB without resetting the entire manifest.
+    func removeOptional(id: String) throws {
+        guard let entry = ModelManifest.optionalEntries.first(where: { $0.id == id }) else {
+            return
+        }
+        let fm = FileManager.default
+        for file in entry.files {
+            let url = installRoot.appendingPathComponent(file.installPath)
+            try? fm.removeItem(at: url)
+            resolved.removeValue(forKey: file.installPath)
+        }
+        // Drop the parent directory too if it's now empty (and not
+        // shared with anything else under the install root).
+        if let firstFile = entry.files.first {
+            let parent = installRoot
+                .appendingPathComponent(firstFile.installPath)
+                .deletingLastPathComponent()
+            if let contents = try? fm.contentsOfDirectory(atPath: parent.path), contents.isEmpty {
+                try? fm.removeItem(at: parent)
+            }
+        }
+    }
+
     /// Lookup helpers for the SER constructors. `ensureModels()` must
     /// have completed first; otherwise these throw.
     func resolvedURL(for installPath: String) throws -> URL {
@@ -200,8 +278,14 @@ actor ModelStore {
             invalidateCachedHash(at: bundleURL)
         }
 
-        // Path 3: download from GitHub Release.
-        let remoteURL = ModelManifest.releaseAssetBaseURL.appendingPathComponent(file.assetName)
+        // Path 3: download. Prefer the file's explicit
+        // `directRemoteURL` when set (Qwen MLX files come from
+        // huggingface.co/mlx-community/… because they exceed GitHub
+        // Releases' 2 GB Free-tier asset limit); otherwise compose
+        // the URL from `releaseAssetBaseURL + assetName`. Either
+        // path verifies SHA-256 before atomic install.
+        let remoteURL = file.directRemoteURL
+            ?? ModelManifest.releaseAssetBaseURL.appendingPathComponent(file.assetName)
         try await download(file: file, from: remoteURL, to: installURL)
         return installURL
     }

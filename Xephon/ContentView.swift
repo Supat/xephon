@@ -106,6 +106,13 @@ struct ContentView: View {
     /// after one scroll, so a subsequent tap on the same time
     /// re-fires.
     @State private var scrollRequestUtteranceID: UUID?
+    /// Drives the `SessionSummarySheet` presentation. Set true from
+    /// the toolbar "Summarize" button just before kicking off the
+    /// async inference call; the sheet observes
+    /// `recorder.summarizerInferenceRunning` and
+    /// `recorder.lastSessionSummary` to switch between progress and
+    /// result UI without needing a separate "result is ready" flag.
+    @State private var showingSummaryView: Bool = false
     /// Memoization layer for `filteredIndexedUtterances` and
     /// `displayedSummary`. SwiftUI re-evaluates the view body on
     /// every observed-state change (playback state, pipeline metrics,
@@ -146,6 +153,24 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        showingSummaryView = true
+                        Task {
+                            _ = await recorder.summarizeSession()
+                        }
+                    } label: {
+                        Label(String(localized: "summary.summarize"), systemImage: "text.book.closed")
+                    }
+                    .disabled(
+                        recorder.utterances.isEmpty
+                            || recorder.isRecording
+                            || recorder.isAnalyzing
+                            || !recorder.summarizerEnabled
+                            || !recorder.summarizerModelInstalled
+                            || recorder.summarizerInferenceRunning
+                    )
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         Task {
                             if let url = await recorder.exportJSON() {
                                 shareURL = url
@@ -163,6 +188,13 @@ struct ContentView: View {
             }
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
+            }
+            .sheet(isPresented: $showingSummaryView) {
+                SessionSummarySheet(
+                    summary: recorder.lastSessionSummary,
+                    isGenerating: recorder.summarizerInferenceRunning,
+                    onDismiss: { showingSummaryView = false }
+                )
             }
             // File → Open… (⌘O) command pipe. The menu writes a fresh
             // UUID into `menuCommands.openAudioFileToken`; we observe
@@ -417,7 +449,8 @@ struct ContentView: View {
                     SettingsCard(
                         languagePicker: { languagePicker },
                         speechBoostToggle: { speechBoostToggle },
-                        textSERPicker: { textSERPicker }
+                        textSERPicker: { textSERPicker },
+                        summarizerControls: { summarizerControls }
                     )
 
                     PipelineCard(recorder: recorder)
@@ -843,6 +876,70 @@ struct ContentView: View {
                 .labelsHidden()
             }
             .padding(.horizontal)
+        }
+    }
+
+    /// On-device session summarizer controls. The toggle drives
+    /// `RecordingController.setSummarizerEnabled` which kicks off
+    /// the on-demand model download via `ModelStore.ensureOptional`;
+    /// inline progress / install state renders under it. A "Remove
+    /// model" affordance lets the user reclaim the ~4 GB working
+    /// set without disabling the feature. Strictly on-device — the
+    /// download fetches from the pinned GitHub Release, inference
+    /// runs locally on MLX.
+    @ViewBuilder
+    private var summarizerControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                isOn: Binding(
+                    get: { recorder.summarizerEnabled },
+                    set: { newValue in
+                        Task { await recorder.setSummarizerEnabled(newValue) }
+                    }
+                )
+            ) {
+                Text(String(localized: "settings.summarizer.enable"))
+                    .font(.callout)
+            }
+            .toggleStyle(.switch)
+            if recorder.summarizerEnabled {
+                summarizerStatusLine
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    @ViewBuilder
+    private var summarizerStatusLine: some View {
+        if recorder.summarizerDownloading {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text(String(localized: "settings.summarizer.downloading"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if recorder.summarizerModelInstalled {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                Text(String(localized: "settings.summarizer.ready"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                Button {
+                    Task { await recorder.removeSummarizerModel() }
+                } label: {
+                    Text(String(localized: "settings.summarizer.remove"))
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+            }
+        } else {
+            Text(String(localized: "settings.summarizer.notInstalled"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

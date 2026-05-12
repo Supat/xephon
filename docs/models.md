@@ -35,6 +35,12 @@ Fill rows in as `scripts/fetch_models.sh` is implemented and benchmarks run.
 | `patrickramos/bert-base-japanese-v2-wrime-fine-tune` | HF | TBD | Smaller alternative. |
 | Apple Foundation Models 3B | iPadOS 26+ system | Apple SDK | Optional second opinion via guided generation. |
 
+## Session summarizer (LLM)
+
+| Model | Source | License | Notes |
+|---|---|---|---|
+| Qwen2.5-7B-Instruct (4-bit MLX) | `Qwen/Qwen2.5-7B-Instruct` via `mlx_lm.convert` | Apache 2.0 | On-device, opt-in. Runs through `mlx-swift-examples` (`MLXLLM` + `MLXLMCommon`). ~4.3 GB on disk; loaded into RAM only while the user runs "Summarize Session." Converted via `scripts/fetch_models.sh --with-summarizer`, uploaded via `scripts/upload_models_to_github_release.sh` to the same release tag the core ONNX models use. |
+
 ## License obligations to track
 
 - audEERING dimensional W2V2 weights are **CC-BY-NC**. Compatible with

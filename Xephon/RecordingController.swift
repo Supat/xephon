@@ -7,6 +7,7 @@ import Diarization
 import Fusion
 import Export
 import SERText
+import Summarizer
 import XephonLogging
 
 @MainActor
@@ -49,6 +50,34 @@ final class RecordingController {
     /// card while idle; locked while a session is in flight.
     /// Persists across launches via UserDefaults.
     private(set) var sessionLanguage: SessionLanguage
+
+    /// Whether the on-device session summarizer (Qwen2.5-7B 4-bit
+    /// MLX) is opted-in. Flipping this on triggers the ~4 GB model
+    /// download via `ModelStore.ensureOptional`; flipping it off
+    /// unloads the resident weights but leaves the on-disk files
+    /// alone (the user can free them via "Remove summarizer model").
+    /// Persists in UserDefaults so the choice survives launch.
+    private(set) var summarizerEnabled: Bool
+    /// True iff every file declared by the summarizer's optional
+    /// manifest entry is present on disk. Doesn't re-hash on every
+    /// read — fast enough for the Settings card to bind to.
+    private(set) var summarizerModelInstalled: Bool = false
+    /// True while `ModelStore.ensureOptional` is in flight. Drives
+    /// the inline progress chrome next to the Settings toggle.
+    private(set) var summarizerDownloading: Bool = false
+    /// True while a `summarizeSession()` call is generating tokens.
+    /// Disables the "Summarize session" toolbar button mid-run.
+    private(set) var summarizerInferenceRunning: Bool = false
+    /// Last successful summary, cached so the result sheet survives
+    /// re-presentation without re-running inference. Cleared on
+    /// session start.
+    private(set) var lastSessionSummary: SessionSummary?
+
+    /// The actor that owns the loaded MLX weights once they're in
+    /// memory. Lazy-created on first `summarizeSession()` call and
+    /// dropped when the user disables the summarizer or starts a
+    /// new session, so the ~4 GB working set doesn't linger.
+    private var summarizerActor: MLXQwenSummarizer?
     private(set) var volatileText: String = ""
     private(set) var lastAcousticDuration: TimeInterval?
     private(set) var lastTextDuration: TimeInterval?
@@ -266,6 +295,8 @@ final class RecordingController {
     /// silently replacing it with a real Apple transcriber.
     private let canRecreateStreamingTranscriber: Bool
 
+    private static let summarizerEnabledKey = "xephon.summarizerEnabled"
+
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
         streamingTranscriber: (any StreamingTranscriber)? = nil,
@@ -276,6 +307,7 @@ final class RecordingController {
         self.micCapture = capture
         let initialLanguage = SessionLanguage.loadFromDefaults()
         self.sessionLanguage = initialLanguage
+        self.summarizerEnabled = UserDefaults.standard.bool(forKey: Self.summarizerEnabledKey)
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
         self.streamingTranscriber = streamingTranscriber
             ?? StreamingSpeechAnalyzerTranscriber(locale: initialLanguage.locale)
@@ -414,6 +446,12 @@ final class RecordingController {
         )
         availableTextSERBackends = await pipeline.availableTextSERBackends()
         currentTextSERBackend = await pipeline.currentTextSERBackend()
+        // Also opportunistically refresh the summarizer install
+        // state — `modelStore` is guaranteed live by the time this
+        // runs, and we don't want the Settings card to render
+        // "Not installed" on first launch when the files are
+        // actually present from a previous session.
+        refreshSummarizerInstallState()
     }
 
     func toggle() async {
@@ -488,6 +526,9 @@ final class RecordingController {
         lastKnownSpeakerIDs = []
         cachedKnownSpeakerIDs = []
         distinctSpeakerCountCache = 0
+        // New session invalidates the previous summary — the
+        // utterance list it was generated against is gone.
+        lastSessionSummary = nil
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
@@ -877,6 +918,136 @@ final class RecordingController {
         let pipeline = await ensurePipeline()
         await pipeline.setTextSERBackend(backend)
         await refreshTextSERState(from: pipeline)
+    }
+
+    // MARK: - Session summarizer
+
+    /// Flip the summarizer's enabled flag. When turning on:
+    /// persist the choice, refresh install state, and kick off
+    /// the on-demand model download if the weights aren't on disk
+    /// yet. When turning off: persist the choice and unload the
+    /// resident weights (files stay on disk; user removes them
+    /// explicitly via `removeSummarizerModel()`). All paths are
+    /// idle-safe — flipping the toggle during recording / analysis
+    /// is permitted because the download / unload doesn't touch
+    /// the active capture pipeline.
+    func setSummarizerEnabled(_ enabled: Bool) async {
+        guard summarizerEnabled != enabled else { return }
+        summarizerEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.summarizerEnabledKey)
+        AppLog.app.info(
+            "summarizer enabled → \(enabled, privacy: .public)"
+        )
+        if !enabled {
+            await summarizerActor?.unload()
+            summarizerActor = nil
+            return
+        }
+        refreshSummarizerInstallState()
+        if !summarizerModelInstalled, !summarizerDownloading {
+            await triggerSummarizerDownload()
+        }
+    }
+
+    /// Drive the on-demand download via `ModelStore.ensureOptional`.
+    /// Wraps the call in `summarizerDownloading` so the Settings
+    /// card can render an inline progress indicator. Errors surface
+    /// on `errorMessage` and the toggle stays on (so the user can
+    /// see they tried) — re-enabling retries.
+    private func triggerSummarizerDownload() async {
+        guard let modelStore else { return }
+        summarizerDownloading = true
+        defer { summarizerDownloading = false }
+        do {
+            try await modelStore.ensureOptional(id: ModelManifest.summarizerID)
+            refreshSummarizerInstallState()
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "Summarizer download failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Refresh `summarizerModelInstalled` from the filesystem.
+    /// Cheap — just an existence check per declared file. Called
+    /// after enable / download / remove and on session reset, so
+    /// the UI reflects whatever's actually on disk.
+    private func refreshSummarizerInstallState() {
+        guard let modelStore else {
+            summarizerModelInstalled = false
+            return
+        }
+        Task {
+            let installed = await modelStore.isOptionalInstalled(
+                id: ModelManifest.summarizerID
+            )
+            await MainActor.run {
+                self.summarizerModelInstalled = installed
+            }
+        }
+    }
+
+    /// Run the summarizer over the current session. Returns nil
+    /// when the model isn't installed, the session is empty, or
+    /// inference is already in flight. Side-effect: stamps
+    /// `lastSessionSummary` so the result sheet can re-present
+    /// without re-running.
+    func summarizeSession() async -> SessionSummary? {
+        guard !summarizerInferenceRunning else { return nil }
+        guard !utterances.isEmpty else { return nil }
+        guard let modelStore else { return nil }
+        guard let directory = await modelStore.optionalDirectory(
+            id: ModelManifest.summarizerID
+        ) else {
+            errorMessage = String(describing: SummarizerError.modelNotInstalled)
+            return nil
+        }
+
+        let actor: MLXQwenSummarizer
+        if let existing = summarizerActor {
+            actor = existing
+        } else {
+            actor = MLXQwenSummarizer(
+                modelIdentifier: ModelManifest.summarizerID,
+                modelDirectory: directory
+            )
+            summarizerActor = actor
+        }
+
+        summarizerInferenceRunning = true
+        defer { summarizerInferenceRunning = false }
+        do {
+            let summary = try await actor.summarize(
+                utterances: utterances,
+                speakerNames: speakerNameOverrides
+            )
+            lastSessionSummary = summary
+            return summary
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "summarizeSession failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Remove the summarizer model from disk. Called by the
+    /// "Remove model" action in Settings — the toggle stays on or
+    /// off according to the user's preference, but the ~4 GB
+    /// weights blob goes away.
+    func removeSummarizerModel() async {
+        await summarizerActor?.unload()
+        summarizerActor = nil
+        do {
+            try await modelStore?.removeOptional(id: ModelManifest.summarizerID)
+        } catch {
+            AppLog.app.warning(
+                "removeOptional failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+        refreshSummarizerInstallState()
     }
 
     /// Switch the session language. Re-creates the streaming
