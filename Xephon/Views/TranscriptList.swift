@@ -257,21 +257,44 @@ struct TranscriptList: View {
             // which is gated upstream in ContentView).
         )
         .id(item.u.id)
-        // Frame-based visibility tracking via the iOS 18+ scroll-
-        // visibility API. Replaces `.onAppear` / `.onDisappear`,
-        // which fire on view lifecycle rather than viewport
-        // intersection and were dropping `.onDisappear` events
-        // across the layout-flux window of a row expansion. The
-        // phantom entries that bug left behind were dragging the
-        // timeline highlighter unboundedly when the user later
-        // scrolled past an expanded row. `threshold: 0.05` keeps
-        // semantics matched to the old `.onAppear` (fires as soon
-        // as any sliver of the row is on screen) instead of the
-        // default 0.5 (half-visible) which would noticeably lag
-        // the highlighter at the viewport's top and bottom edges.
+        // Visibility tracking is belt-and-suspenders: neither
+        // signal on its own is reliable in a `.plain` List, so we
+        // combine both and union their verdicts.
+        //
+        // `.onScrollVisibilityChange` (iOS 18+) is frame-based —
+        // catches the visibility transition while the row stays
+        // mounted, including the layout-flux window of a row
+        // expansion where `.onDisappear` was misfiring and
+        // leaving phantom entries that stretched the timeline
+        // highlighter unboundedly.
+        //
+        // `.onDisappear` catches the lazy-unmount case: the List
+        // detaches rows that scroll past its prefetch window
+        // entirely, and once a view leaves the hierarchy
+        // `.onScrollVisibilityChange` has no frame to compare
+        // and never fires `false`. Without this signal, IDs
+        // accumulate forever and the highlighter grows from the
+        // start.
+        //
+        // `threshold: 0.05` keeps the scroll-visibility semantics
+        // matched to the old `.onAppear` (any sliver counts as
+        // visible) instead of the default 0.5 (half-visible)
+        // which would visibly lag the highlighter at the
+        // viewport's top and bottom edges.
+        //
         // The contains-guards skip redundant binding writes that
         // would otherwise invalidate ContentView's body on every
         // fling-scroll frame.
+        .onAppear {
+            if !visibleUtteranceIDs.contains(item.u.id) {
+                visibleUtteranceIDs.insert(item.u.id)
+            }
+        }
+        .onDisappear {
+            if visibleUtteranceIDs.contains(item.u.id) {
+                visibleUtteranceIDs.remove(item.u.id)
+            }
+        }
         .onScrollVisibilityChange(threshold: 0.05) { visible in
             if visible {
                 if !visibleUtteranceIDs.contains(item.u.id) {
