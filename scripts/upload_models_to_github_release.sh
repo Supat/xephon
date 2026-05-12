@@ -21,6 +21,13 @@ cd "$(dirname "$0")/.."
 # Mapping: local path → GitHub Release asset name.
 # Order matters only for human readability of the printed Swift
 # constants (matches ModelManifest.swift's entry order).
+#
+# Note: the Qwen2.5 summarizer files are deliberately *not* listed
+# here. The 4-bit safetensors blob is 4.28 GB, well past GitHub
+# Releases' 2 GB Free-tier asset limit, so the manifest sources
+# every Qwen file from `huggingface.co/mlx-community/Qwen2.5-7B-
+# Instruct-4bit` directly via `ModelFile.directRemoteURL`. No
+# GitHub upload needed.
 declare -a UPLOADS=(
   "Models/w2v2-msp-dim/model.onnx|w2v2-model.onnx|W2V2_MODEL"
   "Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx|emotion2vec-model.onnx|EMOTION2VEC_MODEL"

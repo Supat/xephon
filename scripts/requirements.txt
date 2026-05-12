@@ -24,5 +24,10 @@ onnxruntime>=1.20
 # ~1 GB but reuses the torch + numpy already pinned above.
 funasr>=1.1
 
+# 4-bit MLX conversion of Qwen2.5-7B-Instruct for the on-device session
+# summarizer (scripts/fetch_models.sh --with-summarizer). Mac-only;
+# pulls mlx + mlx-core. Heavy (~500 MB install), so install on demand.
+mlx-lm>=0.21
+
 # Optional, future Core ML conversion path:
 # coremltools>=8.0

@@ -2,9 +2,14 @@
 # Hydrate Core ML / ONNX / SafeTensors models into Models/.
 #
 # Usage:
-#   scripts/fetch_models.sh            # fetch the full default set
-#   scripts/fetch_models.sh --list     # show what would be fetched
-#   scripts/fetch_models.sh --only NAME [NAME...]  # subset by short name
+#   scripts/fetch_models.sh                       # fetch the default set (no LLM)
+#   scripts/fetch_models.sh --list                # show what would be fetched
+#   scripts/fetch_models.sh --only NAME [NAME...] # subset by short name
+#   scripts/fetch_models.sh --with-summarizer     # also convert Qwen2.5-7B-Instruct
+#                                                 #   to 4-bit MLX format (~5 GB DL,
+#                                                 #   ~4.3 GB output). Opt-in because
+#                                                 #   it's heavy and not everyone needs
+#                                                 #   the on-device session summarizer.
 #
 # Models are NOT committed to git. The .gitattributes filter is defense-in-depth.
 set -euo pipefail
@@ -29,6 +34,14 @@ if ! python -c "import huggingface_hub" 2>/dev/null; then
   echo "[bootstrap] installing scripts/requirements.txt"
   pip install --quiet --upgrade pip
   pip install --quiet -r scripts/requirements.txt
+fi
+# Secondary canary: mlx-lm was added later than the other deps, so
+# a venv bootstrapped before that addition won't have it. Catch the
+# specific case rather than re-installing the whole requirements
+# file on every run (heavy).
+if ! python -c "import mlx_lm" 2>/dev/null; then
+  echo "[bootstrap] installing mlx-lm (added in requirements.txt after initial bootstrap)"
+  pip install --quiet 'mlx-lm>=0.21'
 fi
 
 # -----------------------------------------------------------------------------
@@ -57,12 +70,14 @@ MODELS=(
 # -----------------------------------------------------------------------------
 ACTION=fetch
 FILTER=()
+WITH_SUMMARIZER=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --list)  ACTION=list; shift ;;
     --only)  shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILTER+=("$1"); shift; done ;;
+    --with-summarizer) WITH_SUMMARIZER=1; shift ;;
     -h|--help)
-      sed -n '2,9p' "$0" | sed 's/^# *//'
+      sed -n '2,13p' "$0" | sed 's/^# *//'
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -103,7 +118,14 @@ fetch_hf() {
     IFS=';' read -ra patterns <<< "$include"
     for p in "${patterns[@]}"; do args+=(--include "$p"); done
   fi
-  huggingface-cli "${args[@]}"
+  # The legacy `huggingface-cli` was deprecated upstream; `hf` is the
+  # replacement and ships in the same package. Prefer it; fall back to
+  # the old name for venvs bootstrapped against an older huggingface_hub.
+  if command -v hf >/dev/null 2>&1; then
+    hf "${args[@]}"
+  else
+    huggingface-cli "${args[@]}"
+  fi
 }
 
 fetch_zenodo() {
@@ -170,6 +192,24 @@ quantize_fp16() {
 quantize_fp16 Models/w2v2-msp-dim/model.onnx
 quantize_fp16 Models/wrime-roberta/model.onnx
 quantize_fp16 Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx
+
+echo
+if [ "$WITH_SUMMARIZER" -eq 1 ]; then
+  echo "[step] Fetching Qwen2.5-7B-Instruct 4-bit MLX for the session summarizer…"
+  QWEN_OUT=Models/qwen2_5-7b-instruct-4bit
+  # Idempotent: skip when the directory already has the tokenizer +
+  # a safetensors blob. Otherwise pull from the mlx-community
+  # pre-quantized repo — same artefact mlx_lm.convert would
+  # produce, but without the GPU pressure that's been hitting
+  # METAL command-buffer timeouts on local 7B quantization runs.
+  # Strictly on-device at app runtime; this is a developer-side
+  # pull, identical in trust posture to the other model downloads.
+  if [ -f "$QWEN_OUT/tokenizer.json" ] && ls "$QWEN_OUT"/*.safetensors >/dev/null 2>&1; then
+    echo "[skip] $QWEN_OUT (already present)"
+  else
+    fetch_hf "mlx-community/Qwen2.5-7B-Instruct-4bit" "$QWEN_OUT" ""
+  fi
+fi
 
 echo
 echo "Models/ tree:"
