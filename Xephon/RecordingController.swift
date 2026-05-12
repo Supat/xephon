@@ -97,6 +97,20 @@ final class RecordingController {
     /// per-session state.
     private var lastKnownSpeakerIDs: Set<String> = []
 
+    /// Cached sorted list of distinct speaker ids in `utterances`,
+    /// surfaced to the view layer via `knownSpeakerIDs()`. Without
+    /// this, the speaker-chip reassign menu's input was rebuilt
+    /// per visible row per body re-eval — `Array(Set(map)).sorted()`
+    /// is O(N) per call, called ~30× per render in a 500-row
+    /// session. Maintained in lockstep with `lastKnownSpeakerIDs`
+    /// at every utterance-mutation boundary.
+    private(set) var cachedKnownSpeakerIDs: [String] = []
+    /// Cached count of distinct speaker ids in `utterances`, used
+    /// to gate the per-row speaker chip rendering. Same motivation
+    /// as `cachedKnownSpeakerIDs` — recomputing `Set` membership
+    /// per body re-eval scaled with list length.
+    private(set) var distinctSpeakerCountCache: Int = 0
+
     /// Extra rows produced when a hand-edit commit contained more
     /// than one sentence. Keyed by the *parent* utterance id (the
     /// one that retains the original `id` after the split) and
@@ -442,6 +456,8 @@ final class RecordingController {
         capturedAudio.reset()
         diarizationTimeline = []
         lastKnownSpeakerIDs = []
+        cachedKnownSpeakerIDs = []
+        distinctSpeakerCountCache = 0
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
@@ -1520,6 +1536,8 @@ final class RecordingController {
             sweepUnreferencedSpeakers(removed)
         }
         lastKnownSpeakerIDs = current
+        cachedKnownSpeakerIDs = current.sorted()
+        distinctSpeakerCountCache = current.count
     }
 
     /// Drop every trace of speakers that no row references
@@ -2228,9 +2246,12 @@ final class RecordingController {
     /// Sorted, deduplicated list of speaker IDs currently appearing
     /// in the session — surface for the reassignment menu. Includes
     /// the currently-assigned speaker so the menu reads as a Picker
-    /// (with the active row visually marked, not removed).
+    /// (with the active row visually marked, not removed). Backed
+    /// by a cache maintained at every utterance-mutation boundary
+    /// so this is O(1) per call — it's invoked from
+    /// `TranscriptList.row(for:)` per visible row per render.
     func knownSpeakerIDs() -> [String] {
-        Array(Set(utterances.map(\.speakerID))).sorted()
+        cachedKnownSpeakerIDs
     }
 
     /// Corrective reassignment: extract the row's audio embedding
@@ -2640,6 +2661,15 @@ final class RecordingController {
         let index = utterances.firstIndex { $0.start > stamped.start } ?? utterances.endIndex
         utterances.insert(stamped, at: index)
         conversationSummary.update(with: stamped)
+        // Keep the speaker-id cache current for the streaming path
+        // too (only `commitUtteranceChanges` is reached on edits;
+        // streaming inserts bypass it). Cheap: insertion into a
+        // small set + sort only when a new speaker appears.
+        if !lastKnownSpeakerIDs.contains(stamped.speakerID) {
+            lastKnownSpeakerIDs.insert(stamped.speakerID)
+            cachedKnownSpeakerIDs = lastKnownSpeakerIDs.sorted()
+            distinctSpeakerCountCache = lastKnownSpeakerIDs.count
+        }
         lastAcousticDuration = metrics.acousticDuration
         lastTextDuration = metrics.textDuration
         lastSegmentTotal = metrics.totalDuration

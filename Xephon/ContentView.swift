@@ -534,10 +534,18 @@ struct ContentView: View {
            let u = recorder.utterances.first(where: { $0.id == id }) {
             return (start: u.start, end: u.end)
         }
-        let visible = recorder.utterances.filter { visibleUtteranceIDs.contains($0.id) }
-        guard let minStart = visible.map(\.start).min(),
-              let maxEnd = visible.map(\.end).max()
-        else { return nil }
+        // Single-pass min/max instead of filter + map + min/map +
+        // max — three allocations and three iterations collapse to
+        // one. Body re-fires per scroll because the per-row
+        // visibility tracker writes to `visibleUtteranceIDs`, so
+        // this getter runs on every flick.
+        var minStart: TimeInterval = .infinity
+        var maxEnd: TimeInterval = -.infinity
+        for u in recorder.utterances where visibleUtteranceIDs.contains(u.id) {
+            if u.start < minStart { minStart = u.start }
+            if u.end > maxEnd { maxEnd = u.end }
+        }
+        guard minStart.isFinite else { return nil }
         return (start: minStart, end: maxEnd)
     }
 
@@ -948,7 +956,12 @@ struct ContentView: View {
     }
 
     private var distinctSpeakerCount: Int {
-        Set(recorder.utterances.map { $0.speakerID }).count
+        // Backed by a cache the controller maintains at every
+        // utterance-mutation boundary. Used to be a per-render
+        // O(N) Set build, which on a 500-row session was running
+        // on every scroll (ContentView body re-evaluates when
+        // visibleUtteranceIDs changes).
+        recorder.distinctSpeakerCountCache
     }
 
     /// Summary derived from whatever's currently displayed in the

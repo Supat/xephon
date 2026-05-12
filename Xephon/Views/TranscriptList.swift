@@ -13,6 +13,26 @@ import Fusion
 /// `items` as input and the action surfaces (renaming, editing) as
 /// closures. The List's selection and the per-row mutations on the
 /// parent's @State come back through @Binding.
+/// Memo cache for `speakerMismatchedIDs`. Held as a `final class`
+/// via `@State` so internal mutation from inside the body computed
+/// property doesn't trip SwiftUI invalidation — the reference is
+/// stable across renders, only the inner fields change. Without
+/// this, scrolling a 500-row list fired O(N × 256) vote loops on
+/// every body re-eval (visibility changes invalidate body too), so
+/// every flick stutters. Key includes `utterancesVersion` (any row
+/// edit) and `timelineCount` (cumulative timeline growth) so a
+/// re-vote happens iff one of the inputs to the mismatch verdict
+/// could have changed.
+private final class MismatchMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let timelineCount: Int
+        let utteranceCount: Int
+    }
+    var key: Key?
+    var set: Set<UUID> = []
+}
+
 struct TranscriptList: View {
     let recorder: RecordingController
     let items: [(idx: Int, u: UtteranceEstimate)]
@@ -45,6 +65,8 @@ struct TranscriptList: View {
     let onCorrectSpeaker: (UtteranceEstimate, String) -> Void
     let onEditTranscript: (UtteranceEstimate) -> Void
     let refreshSearchCache: () -> Void
+
+    @State private var mismatchMemo = MismatchMemo()
 
     var body: some View {
         let mismatched = speakerMismatchedIDs
@@ -219,8 +241,22 @@ struct TranscriptList: View {
             // which is gated upstream in ContentView).
         )
         .id(item.u.id)
-        .onAppear { visibleUtteranceIDs.insert(item.u.id) }
-        .onDisappear { visibleUtteranceIDs.remove(item.u.id) }
+        // Skip the binding write when the value's already in the
+        // expected state. SwiftUI calls the Binding setter on every
+        // `.insert` regardless of whether the element was new — and
+        // each setter call invalidates ContentView's body. Guarding
+        // here turns a fling-scroll's flurry of redundant insertions
+        // into the actual visibility transitions only.
+        .onAppear {
+            if !visibleUtteranceIDs.contains(item.u.id) {
+                visibleUtteranceIDs.insert(item.u.id)
+            }
+        }
+        .onDisappear {
+            if visibleUtteranceIDs.contains(item.u.id) {
+                visibleUtteranceIDs.remove(item.u.id)
+            }
+        }
         .tag(item.u.id)
         // Replace the default pale-tint selection highlight with
         // a darker accent-tinted background. `.listRowBackground`
@@ -239,28 +275,40 @@ struct TranscriptList: View {
     /// can reconcile by re-evaluating the row or reassigning the
     /// speaker via the chip menu.
     ///
-    /// Computed once per `body` evaluation. Per-row cost is
-    /// O(samples × active_segments) ≈ a few hundred ops, with
-    /// `samples` capped at 256 by `dominantSpeakerInSegments`'s
-    /// own clamp; total ~N×~256×~5 = ~1280×N ops on a 5-minute
-    /// session. Skipped entirely when the timeline is empty so
-    /// freshly-loaded sessions (where the timeline blob hadn't
-    /// been persisted yet) don't pay for an all-empty pass.
+    /// Memoized on `(utterancesVersion, timelineCount,
+    /// utteranceCount)` because body re-eval fires on every
+    /// scroll (visibility tracker writes to a binding), and the
+    /// underlying vote is O(samples × segments) per row —
+    /// recomputing on every scroll tick on a 500-row session
+    /// noticeably stuttered fling-scrolling. Re-runs only when
+    /// one of the verdict inputs actually changed. Skipped
+    /// entirely when the timeline is empty so freshly-loaded
+    /// sessions (where the timeline blob hadn't been persisted
+    /// yet) don't pay for an all-empty pass.
     private var speakerMismatchedIDs: Set<UUID> {
+        let key = MismatchMemo.Key(
+            utterancesVersion: recorder.utterancesVersion,
+            timelineCount: recorder.diarizationTimeline.count,
+            utteranceCount: recorder.utterances.count
+        )
+        if mismatchMemo.key == key { return mismatchMemo.set }
         let timeline = recorder.diarizationTimeline
-        guard !timeline.isEmpty else { return [] }
         var result: Set<UUID> = []
-        for u in recorder.utterances {
-            let dominant = AnalysisPipeline.dominantSpeakerInSegments(
-                timeline,
-                from: u.start,
-                to: u.end,
-                fallback: u.speakerID
-            )
-            if dominant != u.speakerID {
-                result.insert(u.id)
+        if !timeline.isEmpty {
+            for u in recorder.utterances {
+                let dominant = AnalysisPipeline.dominantSpeakerInSegments(
+                    timeline,
+                    from: u.start,
+                    to: u.end,
+                    fallback: u.speakerID
+                )
+                if dominant != u.speakerID {
+                    result.insert(u.id)
+                }
             }
         }
+        mismatchMemo.key = key
+        mismatchMemo.set = result
         return result
     }
 
