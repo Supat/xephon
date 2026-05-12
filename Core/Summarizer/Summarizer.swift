@@ -69,3 +69,20 @@ public protocol SessionSummarizer: Sendable {
         speakerNames: [String: String]
     ) async throws -> SessionSummary
 }
+
+/// Which on-device backend powers the session summarizer. The
+/// user picks one from Settings when the summarizer is enabled.
+/// Persisted via UserDefaults under `xephon.summarizerBackend`.
+public enum SummarizerBackend: String, Sendable, Hashable, Codable, CaseIterable {
+    /// Apple Foundation Models (~3B, iPadOS 26+). Lightweight and
+    /// system-managed — already in-memory courtesy of the text
+    /// SER's FoundationModelsSER. 4096-token context window, so
+    /// long sessions need aggressive truncation. Default backend
+    /// because it Just Works once the feature is enabled.
+    case appleFM
+    /// Qwen2.5-7B-Instruct (4-bit MLX, ~4.3 GB on disk). Higher-
+    /// quality multi-speaker reasoning, 32k context. Opt-in
+    /// download; release the analysis pipeline before invoking
+    /// to fit under iOS's per-app memory ceiling.
+    case qwen
+}

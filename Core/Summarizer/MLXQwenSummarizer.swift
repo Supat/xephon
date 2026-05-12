@@ -1,6 +1,7 @@
 import Foundation
 import Fusion
 import XephonLogging
+import MLX
 import MLXLLM
 import MLXLMCommon
 
@@ -23,6 +24,27 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     private let modelDirectory: URL
     private var container: ModelContainer?
 
+    /// Hard cap on tokens the LLM may emit per summary. Tuned to
+    /// the realistic size of the structured JSON we ask for (topic
+    /// + overall mood + ~5–8 per-speaker paragraphs) plus generous
+    /// headroom. Critical not to leave this nil — Qwen will run to
+    /// EOS otherwise, and the unbounded run can push the app past
+    /// its memory budget alongside the 4.3 GB resident weights.
+    private static let maxOutputTokens = 2048
+
+    /// Cap on the number of utterances we feed into a single
+    /// summary pass. Prefill cost scales linearly in sequence
+    /// length and the KV cache is the dominant marginal memory
+    /// during inference — a 285-utterance / ~10k-token prompt
+    /// reliably trips iOS Jetsam on a 16 GB iPad once the 4.3 GB
+    /// weights are resident alongside the existing ONNX SER
+    /// actors. 80 utterances ≈ 3k tokens, ~10× headroom over the
+    /// case that crashed. Long sessions take the most recent
+    /// window — emotion arcs concentrate at the trailing edge of
+    /// a conversation, so the tail is what summary readers care
+    /// about most.
+    private static let maxPromptUtterances = 80
+
     public init(modelIdentifier: String, modelDirectory: URL) {
         self.modelIdentifier = modelIdentifier
         self.modelDirectory = modelDirectory
@@ -40,6 +62,13 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         AppLog.app.info(
             "MLXQwenSummarizer loading from \(self.modelDirectory.path, privacy: .public)"
         )
+        // Cap MLX's buffer cache to keep the working set tight.
+        // The default is bounded by Metal's recommendedMaxWorking-
+        // SetSize, which on a 16 GB iPad sits high enough to push
+        // the process over the Jetsam ceiling once Qwen weights
+        // and the SER pipeline coexist. 32 MB is the value the
+        // mlx-swift docs recommend for LLM evaluation on iOS.
+        MLX.GPU.set(cacheLimit: 32 * 1024 * 1024)
         do {
             // MLXLMCommon resolves a directory containing
             // `config.json`, `tokenizer.json`, and the safetensors
@@ -82,42 +111,88 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             )
         }
 
+        // Truncate to the most recent window when the session
+        // exceeds `maxPromptUtterances` — see the constant's doc
+        // comment for the memory rationale.
+        let promptUtterances: [UtteranceEstimate]
+        let truncatedFrom: Int?
+        if utterances.count > Self.maxPromptUtterances {
+            promptUtterances = Array(utterances.suffix(Self.maxPromptUtterances))
+            truncatedFrom = utterances.count
+        } else {
+            promptUtterances = utterances
+            truncatedFrom = nil
+        }
         let prompt = Self.buildPrompt(
-            utterances: utterances,
-            speakerNames: speakerNames
+            utterances: promptUtterances,
+            speakerNames: speakerNames,
+            truncatedFromTotal: truncatedFrom
+        )
+        if let truncatedFrom {
+            AppLog.app.info(
+                "MLXQwenSummarizer truncating \(truncatedFrom, privacy: .public) → \(promptUtterances.count, privacy: .public) utterances"
+            )
+        }
+        AppLog.app.info(
+            "MLXQwenSummarizer summarizing \(promptUtterances.count, privacy: .public) utterances (prompt \(prompt.count, privacy: .public) chars)"
         )
         let raw: String
         do {
-            raw = try await container.perform { context in
-                let input = UserInput(prompt: prompt)
-                let prepared = try await context.processor.prepare(
-                    input: input
+            raw = try await container.perform { context -> String in
+                let userInput = UserInput(prompt: prompt)
+                let lmInput = try await context.processor.prepare(input: userInput)
+                // `generate(...)` runs synchronously to completion
+                // inside the actor and returns a `GenerateResult`.
+                // We cap `maxTokens` because the default is nil
+                // (unbounded), and Qwen will happily keep producing
+                // tokens until EOS — combined with the 4.3 GB
+                // resident weights, an unbounded run can push the
+                // app over its memory budget and trip a SIGKILL.
+                // 2048 tokens (~1500 words) is comfortable headroom
+                // for a topic + overall mood + several per-speaker
+                // paragraphs without risking OOM.
+                // Two `generate(input:parameters:context:didGenerate:)`
+                // overloads exist with different didGenerate arities
+                // (`(Int) -> .` and `([Int]) -> .`). Pin the closure
+                // parameter type so the compiler picks the `[Int]`
+                // variant — the one whose return is `GenerateResult`
+                // with `.output` already decoded for us.
+                var parameters = GenerateParameters(
+                    maxTokens: Self.maxOutputTokens,
+                    // Deterministic for reproducibility — the
+                    // summary is a derived artifact of the
+                    // session, not creative writing.
+                    temperature: 0.2
                 )
-                var collected = ""
-                _ = try MLXLMCommon.generate(
-                    input: prepared,
-                    parameters: GenerateParameters(
-                        // Deterministic for reproducibility — the
-                        // summary is a derived artifact of the
-                        // session, not creative writing. We can
-                        // raise temperature later if user feedback
-                        // says outputs feel mechanical.
-                        temperature: 0.2
-                    ),
-                    context: context
-                ) { tokens in
-                    collected = context.tokenizer.decode(tokens: tokens)
-                    return .more
-                }
-                return collected
+                // Default prefill step is 512 tokens — packing
+                // hundreds of tokens into a single Metal command
+                // buffer was tripping the GPU watchdog
+                // (`kIOGPUCommandBufferCallbackErrorTimeout` →
+                // mlx::core::gpu::check_error SIGABRT) on real
+                // iPad hardware. 64 splits prefill into many
+                // smaller kernels well inside the timeout window.
+                parameters.prefillStepSize = 64
+                let result = try MLXLMCommon.generate(
+                    input: lmInput,
+                    parameters: parameters,
+                    context: context,
+                    didGenerate: { (_: [Int]) -> GenerateDisposition in .more }
+                )
+                return result.output
             }
         } catch let error as SummarizerError {
             throw error
         } catch {
+            AppLog.app.error(
+                "MLXQwenSummarizer.generate failed: \(String(describing: error), privacy: .public)"
+            )
             throw SummarizerError.inferenceFailed(
                 reason: String(describing: error)
             )
         }
+        AppLog.app.info(
+            "MLXQwenSummarizer raw output: \(raw.count, privacy: .public) chars"
+        )
 
         return try Self.parse(
             raw: raw,
@@ -149,13 +224,19 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     /// numerical score is preserved (the whole point of going
     /// beyond Apple FM was to keep these) but we elide the V/A/D
     /// detail when it's nil and round floats to 2 decimals.
+    /// `truncatedFromTotal` is the original session size when the
+    /// caller has narrowed `utterances` to a tail window for
+    /// memory reasons — we inform the model so it knows the
+    /// passage isn't the whole conversation and can frame its
+    /// "overall mood" accordingly.
     private static func buildPrompt(
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        truncatedFromTotal: Int?
     ) -> String {
         let speakers = orderedSpeakerIDs(from: utterances)
         var lines: [String] = []
-        lines.reserveCapacity(utterances.count + 10)
+        lines.reserveCapacity(utterances.count + 12)
         lines.append("You are an analyst summarizing a multi-speaker conversation.")
         lines.append("Read every utterance below and produce a JSON object with three fields:")
         lines.append("  \"topic\" — one or two sentences on what the conversation is about.")
@@ -164,6 +245,20 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         lines.append("Each perSpeaker entry has: { \"speakerID\": <id>, \"summary\": <one paragraph>, \"dominantMood\": <one short phrase> }.")
         lines.append("Use the numerical V/A/D and label probabilities to judge confidence and weight your reasoning.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
+        // Qwen3 ships with a "thinking" mode that emits a
+        // `<think>...</think>` chain-of-thought block before the
+        // actual response. That blows our 2048-token output cap and
+        // confuses any "find the first '{'" parser since the
+        // thinking text often contains braces. The `/no_think`
+        // directive is Qwen3's documented switch to disable
+        // reasoning for a single turn — it must appear in the user
+        // prompt (system instructions are routed through Jinja
+        // template logic that doesn't honor it the same way).
+        lines.append("/no_think")
+        if let total = truncatedFromTotal {
+            lines.append("")
+            lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Frame the overall mood as the trailing portion of the session, not the whole arc.")
+        }
         lines.append("")
         lines.append("Utterances:")
         for u in utterances {
@@ -205,7 +300,13 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         speakerNames: [String: String],
         modelIdentifier: String
     ) throws -> SessionSummary {
-        let stripped = stripCodeFence(raw)
+        // Belt-and-braces: even with `/no_think` in the prompt some
+        // Qwen3 builds still emit an (often empty) `<think></think>`
+        // pair, and any chain-of-thought inside can carry braces
+        // that mislead "first '{'" scanning. Strip the block before
+        // any other processing.
+        let dethought = stripThinkBlocks(raw)
+        let stripped = stripCodeFence(dethought)
         guard let braceStart = stripped.firstIndex(of: "{"),
               let braceEnd = stripped.lastIndex(of: "}") else {
             throw SummarizerError.decodeFailed(reason: "no JSON object found")
@@ -247,6 +348,33 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             model: modelIdentifier,
             generatedAt: Date()
         )
+    }
+
+    /// Remove any `<think>...</think>` reasoning blocks Qwen3 emits
+    /// when its thinking mode is engaged. Greedy across newlines.
+    /// Also drops a stray closing `</think>` if the model elided
+    /// the opening tag (occasionally seen with `/no_think`).
+    private static func stripThinkBlocks(_ raw: String) -> String {
+        var s = raw
+        while let openRange = s.range(of: "<think>") {
+            if let closeRange = s.range(
+                of: "</think>",
+                range: openRange.upperBound..<s.endIndex
+            ) {
+                s.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
+            } else {
+                // Unterminated block — drop everything from the
+                // opener forward; the JSON, if any, was supposed
+                // to come after a `</think>` we never saw.
+                s.removeSubrange(openRange.lowerBound..<s.endIndex)
+                break
+            }
+        }
+        // Tolerate a stray closing tag without an opener.
+        if let strayClose = s.range(of: "</think>") {
+            s.removeSubrange(s.startIndex..<strayClose.upperBound)
+        }
+        return s
     }
 
     /// Strip ```json ... ``` fences a chat-tuned model might emit

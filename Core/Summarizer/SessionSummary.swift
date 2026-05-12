@@ -70,4 +70,47 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         self.model = model
         self.generatedAt = generatedAt
     }
+
+    /// Render the summary as a portable Markdown document. The
+    /// section headers mirror the in-app sheet so a user reading
+    /// the export later can map paragraphs back to the UI without
+    /// guesswork. Speaker headings prefer the human rename when
+    /// present and fall back to the raw `speakerID` otherwise.
+    public func toMarkdown() -> String {
+        var lines: [String] = []
+        lines.append("# Session Summary")
+        lines.append("")
+        lines.append("## Topic")
+        lines.append(topic.isEmpty ? "—" : topic)
+        lines.append("")
+        lines.append("## Overall Mood")
+        lines.append(overallMood.isEmpty ? "—" : overallMood)
+        if !perSpeaker.isEmpty {
+            lines.append("")
+            lines.append("## Per Speaker")
+            for entry in perSpeaker {
+                let heading: String
+                if let name = entry.speakerName?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !name.isEmpty {
+                    heading = "\(name) (\(entry.speakerID))"
+                } else {
+                    heading = entry.speakerID
+                }
+                lines.append("")
+                lines.append("### \(heading)")
+                if !entry.dominantMood.isEmpty {
+                    lines.append("**Dominant mood:** \(entry.dominantMood)")
+                }
+                lines.append("")
+                lines.append(entry.summary.isEmpty ? "—" : entry.summary)
+            }
+        }
+        lines.append("")
+        lines.append("---")
+        lines.append("Model: \(model)")
+        let stamp = generatedAt.formatted(date: .abbreviated, time: .shortened)
+        lines.append("Generated: \(stamp)")
+        return lines.joined(separator: "\n") + "\n"
+    }
 }

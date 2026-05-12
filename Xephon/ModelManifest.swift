@@ -46,19 +46,26 @@ enum ModelManifest {
 
     /// Identifier for the on-device session-summary LLM. Stable across
     /// `releaseTag` bumps so RecordingController / ModelStore can keep
-    /// referencing it without hard-coding the display name.
-    static let summarizerID = "qwen2.5-7b-instruct-4bit"
+    /// referencing it without hard-coding the display name. Bumped
+    /// 3B → Qwen3-8B once the increased-memory-limit entitlement
+    /// lifted the per-app Jetsam ceiling on the 16 GB iPad —
+    /// previous 7B attempts crashed at ~5 GB; with the entitlement
+    /// the budget is ~10–11 GB, so an 8B at ~5 GB resident fits
+    /// with sane headroom and meaningfully better instruction-
+    /// following than the 3B.
+    static let summarizerID = "qwen3-8b-4bit"
 
     /// Base URL for the pre-quantized Qwen MLX repo on Hugging Face.
-    /// We can't host the 4.28 GB safetensors on GitHub Releases
-    /// (Free tier caps assets at 2 GB), so the Qwen files are
-    /// sourced directly from `mlx-community/Qwen2.5-7B-Instruct-4bit`
-    /// instead. Public anonymous read, no auth required, same
-    /// trust posture as the original HF mirrors of the acoustic
-    /// SER weights. Inference is still strictly on-device — only
-    /// the one-time install fetch reaches the network.
+    /// We can't host the safetensors on GitHub Releases (Free tier
+    /// caps assets at 2 GB; the 8B weights are 4.6 GB), so the
+    /// Qwen files are sourced directly from
+    /// `mlx-community/Qwen3-8B-4bit` instead. Public anonymous
+    /// read, no auth required, same trust posture as the original
+    /// HF mirrors of the acoustic SER weights. Inference is still
+    /// strictly on-device — only the one-time install fetch
+    /// reaches the network.
     private static let qwenHFBaseURL = URL(
-        string: "https://huggingface.co/mlx-community/Qwen2.5-7B-Instruct-4bit/resolve/main/"
+        string: "https://huggingface.co/mlx-community/Qwen3-8B-4bit/resolve/main/"
     )!
 
     private static func qwenRemote(_ filename: String) -> URL {
@@ -79,78 +86,78 @@ enum ModelManifest {
     static let optionalEntries: [ModelEntry] = [
         ModelEntry(
             id: summarizerID,
-            displayName: "Qwen2.5-7B-Instruct (4-bit MLX)",
+            displayName: "Qwen3-8B (4-bit MLX)",
             files: [
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-config.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/config.json",
-                    bundleResource: BundleLookup(name: "config", ext: "json", subdirectory: "qwen2_5-7b-instruct-4bit"),
-                    approximateBytes: 787,
-                    sha256: "1661a349986919d13820d3981623776138d50783d13e247cdc5b075a22b62698",
+                    assetName: "qwen3-8b-4bit-config.json",
+                    installPath: "qwen3-8b-4bit/config.json",
+                    bundleResource: BundleLookup(name: "config", ext: "json", subdirectory: "qwen3-8b-4bit"),
+                    approximateBytes: 939,
+                    sha256: "e5485285fd7e289e76e9cffa112f6dc2e3426519082f7db9b69041589f81a218",
                     directRemoteURL: qwenRemote("config.json")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-tokenizer.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/tokenizer.json",
-                    bundleResource: BundleLookup(name: "tokenizer", ext: "json", subdirectory: "qwen2_5-7b-instruct-4bit"),
-                    approximateBytes: 7_031_673,
-                    sha256: "a8506e7111b80c6d8635951a02eab0f4e1a8e4e5772da83846579e97b16f61bf",
+                    assetName: "qwen3-8b-4bit-tokenizer.json",
+                    installPath: "qwen3-8b-4bit/tokenizer.json",
+                    bundleResource: BundleLookup(name: "tokenizer", ext: "json", subdirectory: "qwen3-8b-4bit"),
+                    approximateBytes: 11_422_654,
+                    sha256: "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
                     directRemoteURL: qwenRemote("tokenizer.json")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-tokenizer_config.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/tokenizer_config.json",
-                    bundleResource: BundleLookup(name: "tokenizer_config", ext: "json", subdirectory: "qwen2_5-7b-instruct-4bit"),
-                    approximateBytes: 7_280,
-                    sha256: "4921d4cbae33349a9cb3b2ad3a7622efdea10a5d208c9f333c77b154aa714888",
+                    assetName: "qwen3-8b-4bit-tokenizer_config.json",
+                    installPath: "qwen3-8b-4bit/tokenizer_config.json",
+                    bundleResource: BundleLookup(name: "tokenizer_config", ext: "json", subdirectory: "qwen3-8b-4bit"),
+                    approximateBytes: 9_706,
+                    sha256: "253153d0738ceb4c668d2eff957714dd2bea0b56de772a9fdccd96cbf517e6a0",
                     directRemoteURL: qwenRemote("tokenizer_config.json")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-special_tokens_map.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/special_tokens_map.json",
-                    bundleResource: BundleLookup(name: "special_tokens_map", ext: "json", subdirectory: "qwen2_5-7b-instruct-4bit"),
+                    assetName: "qwen3-8b-4bit-special_tokens_map.json",
+                    installPath: "qwen3-8b-4bit/special_tokens_map.json",
+                    bundleResource: BundleLookup(name: "special_tokens_map", ext: "json", subdirectory: "qwen3-8b-4bit"),
                     approximateBytes: 613,
                     sha256: "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
                     directRemoteURL: qwenRemote("special_tokens_map.json")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-added_tokens.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/added_tokens.json",
-                    bundleResource: BundleLookup(name: "added_tokens", ext: "json", subdirectory: "qwen2_5-7b-instruct-4bit"),
-                    approximateBytes: 605,
-                    sha256: "58b54bbe36fc752f79a24a271ef66a0a0830054b4dfad94bde757d851968060b",
+                    assetName: "qwen3-8b-4bit-added_tokens.json",
+                    installPath: "qwen3-8b-4bit/added_tokens.json",
+                    bundleResource: BundleLookup(name: "added_tokens", ext: "json", subdirectory: "qwen3-8b-4bit"),
+                    approximateBytes: 707,
+                    sha256: "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680",
                     directRemoteURL: qwenRemote("added_tokens.json")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-merges.txt",
-                    installPath: "qwen2_5-7b-instruct-4bit/merges.txt",
-                    bundleResource: BundleLookup(name: "merges", ext: "txt", subdirectory: "qwen2_5-7b-instruct-4bit"),
+                    assetName: "qwen3-8b-4bit-merges.txt",
+                    installPath: "qwen3-8b-4bit/merges.txt",
+                    bundleResource: BundleLookup(name: "merges", ext: "txt", subdirectory: "qwen3-8b-4bit"),
                     approximateBytes: 1_671_853,
                     sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
                     directRemoteURL: qwenRemote("merges.txt")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-vocab.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/vocab.json",
-                    bundleResource: BundleLookup(name: "vocab", ext: "json", subdirectory: "qwen2_5-7b-instruct-4bit"),
+                    assetName: "qwen3-8b-4bit-vocab.json",
+                    installPath: "qwen3-8b-4bit/vocab.json",
+                    bundleResource: BundleLookup(name: "vocab", ext: "json", subdirectory: "qwen3-8b-4bit"),
                     approximateBytes: 2_776_833,
                     sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
                     directRemoteURL: qwenRemote("vocab.json")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-model.safetensors",
-                    installPath: "qwen2_5-7b-instruct-4bit/model.safetensors",
-                    bundleResource: BundleLookup(name: "model", ext: "safetensors", subdirectory: "qwen2_5-7b-instruct-4bit"),
-                    approximateBytes: 4_284_346_255,
-                    sha256: "86110f368236b53cf4c2336f991a85703b17bcc60bb75f292b4002ec0219f071",
+                    assetName: "qwen3-8b-4bit-model.safetensors",
+                    installPath: "qwen3-8b-4bit/model.safetensors",
+                    bundleResource: BundleLookup(name: "model", ext: "safetensors", subdirectory: "qwen3-8b-4bit"),
+                    approximateBytes: 4_607_835_174,
+                    sha256: "f2d29621aab300336ad645567ff38c42aac755513006ef4e8a579cf7ef5256d8",
                     directRemoteURL: qwenRemote("model.safetensors")
                 ),
                 ModelFile(
-                    assetName: "qwen2_5-7b-instruct-4bit-model.safetensors.index.json",
-                    installPath: "qwen2_5-7b-instruct-4bit/model.safetensors.index.json",
-                    bundleResource: BundleLookup(name: "model.safetensors", ext: "index.json", subdirectory: "qwen2_5-7b-instruct-4bit"),
-                    approximateBytes: 51_711,
-                    sha256: "23cd562592dd96686d2e799eb02e4b578a4038b6045eaefe860d270cc060e24f",
+                    assetName: "qwen3-8b-4bit-model.safetensors.index.json",
+                    installPath: "qwen3-8b-4bit/model.safetensors.index.json",
+                    bundleResource: BundleLookup(name: "model.safetensors", ext: "index.json", subdirectory: "qwen3-8b-4bit"),
+                    approximateBytes: 64_065,
+                    sha256: "3fb25463b4078b1fc27159daa605190029c2e965f533bf0b1b594f96cbfceb8a",
                     directRemoteURL: qwenRemote("model.safetensors.index.json")
                 ),
             ]

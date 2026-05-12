@@ -354,7 +354,29 @@ actor ModelStore {
             expectedBytes: file.approximateBytes
         )
 
-        let (tempURL, response) = try await urlSession.download(from: remote)
+        // Per-task delegate that forwards
+        // `urlSession(_:downloadTask:didWriteData:…)` callbacks
+        // into the shared `state` so the Settings card's circular
+        // progress fills smoothly during the big safetensors
+        // download instead of staying at 0% until the file lands.
+        // Captures `state` actor + asset name via the closure;
+        // each task gets its own tracker so concurrent downloads
+        // (none today, but safe by construction) don't interleave.
+        let state = state
+        let assetName = file.assetName
+        let tracker = DownloadProgressTracker { totalWritten, totalExpected in
+            Task { @MainActor in
+                await state.updateFileProgress(
+                    name: assetName,
+                    bytesWritten: totalWritten,
+                    totalExpected: totalExpected
+                )
+            }
+        }
+        let (tempURL, response) = try await urlSession.download(
+            from: remote,
+            delegate: tracker
+        )
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -476,6 +498,20 @@ final class ModelDownloadState {
         fileStatus[name] = .downloading
     }
 
+    /// Called from `ModelStore.download`'s URLSessionDownload-
+    /// Delegate every time the system reports more bytes
+    /// received. Updates the per-file tally so the Settings card's
+    /// circular progress can render a smooth fill across the long
+    /// safetensors download. `totalExpected` from the URL session
+    /// is authoritative once the response lands — overwrites the
+    /// best-effort `approximateBytes` from the manifest.
+    func updateFileProgress(name: String, bytesWritten: Int64, totalExpected: Int64) {
+        fileBytes[name] = bytesWritten
+        if totalExpected > 0 {
+            fileExpected[name] = totalExpected
+        }
+    }
+
     func completeFile(name: String, bytes: Int64) {
         fileBytes[name] = bytes
         fileExpected[name] = bytes
@@ -509,6 +545,42 @@ final class ModelDownloadState {
         fileExpected.removeAll()
         fileStatus.removeAll()
     }
+}
+
+/// Per-download delegate that surfaces `URLSessionDownloadTask`'s
+/// progress callbacks as `(bytesWritten, totalExpected)` pairs.
+/// Passed as the `delegate:` argument to
+/// `URLSession.download(from:delegate:)` so each download gets its
+/// own progress channel without touching the shared session's
+/// delegate. Inherits from `URLSessionDownloadDelegate` to receive
+/// the `didWriteData` callback (URLSessionTaskDelegate alone
+/// doesn't surface byte-level progress for download tasks).
+private final class DownloadProgressTracker: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    let onProgress: @Sendable (Int64, Int64) -> Void
+
+    init(onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    /// Required by `URLSessionDownloadDelegate` but a no-op here —
+    /// `URLSession.download(from:delegate:)` returns the temp file
+    /// URL directly via the async return value, so we don't need
+    /// to relocate it from the delegate callback.
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {}
 }
 
 enum ModelStoreError: Error, CustomStringConvertible {

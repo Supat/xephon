@@ -1,11 +1,13 @@
 import Foundation
 import Observation
+import os
 @preconcurrency import AVFoundation
 import Audio
 import ASR
 import Diarization
 import Fusion
 import Export
+import FoundationModels
 import SERText
 import Summarizer
 import XephonLogging
@@ -58,6 +60,16 @@ final class RecordingController {
     /// alone (the user can free them via "Remove summarizer model").
     /// Persists in UserDefaults so the choice survives launch.
     private(set) var summarizerEnabled: Bool
+    /// User's chosen summarizer backend. Apple FM is the default
+    /// — system-managed, no model download, lighter on memory.
+    /// Qwen is the higher-quality opt-in (requires ~4.3 GB
+    /// install). Persisted via UserDefaults so the choice
+    /// survives launch.
+    private(set) var summarizerBackend: SummarizerBackend
+    /// Whether Apple's `SystemLanguageModel.default` is available
+    /// on this device. Refreshed at init and on backend change.
+    /// Folded into `summarizerReady` for the toolbar button gate.
+    private(set) var summarizerAppleFMAvailable: Bool = false
     /// True iff every file declared by the summarizer's optional
     /// manifest entry is present on disk. Doesn't re-hash on every
     /// read — fast enough for the Settings card to bind to.
@@ -78,6 +90,14 @@ final class RecordingController {
     /// dropped when the user disables the summarizer or starts a
     /// new session, so the ~4 GB working set doesn't linger.
     private var summarizerActor: MLXQwenSummarizer?
+
+    /// Snapshot of the FluidAudio diarizer's speaker database
+    /// taken right before the analysis pipeline is released for
+    /// summarization. The blob rides through the pipeline rebuild
+    /// and gets imported back into the freshly-warmed diarizer
+    /// so embedding-based speaker matching survives a summarize
+    /// pass. Nil outside the summarize window.
+    private var summarizerSavedSpeakerDB: Data?
     private(set) var volatileText: String = ""
     private(set) var lastAcousticDuration: TimeInterval?
     private(set) var lastTextDuration: TimeInterval?
@@ -296,6 +316,7 @@ final class RecordingController {
     private let canRecreateStreamingTranscriber: Bool
 
     private static let summarizerEnabledKey = "xephon.summarizerEnabled"
+    private static let summarizerBackendKey = "xephon.summarizerBackend"
 
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
@@ -308,6 +329,9 @@ final class RecordingController {
         let initialLanguage = SessionLanguage.loadFromDefaults()
         self.sessionLanguage = initialLanguage
         self.summarizerEnabled = UserDefaults.standard.bool(forKey: Self.summarizerEnabledKey)
+        let rawBackend = UserDefaults.standard.string(forKey: Self.summarizerBackendKey) ?? ""
+        self.summarizerBackend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
+        self.summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
         self.streamingTranscriber = streamingTranscriber
             ?? StreamingSpeechAnalyzerTranscriber(locale: initialLanguage.locale)
@@ -922,15 +946,27 @@ final class RecordingController {
 
     // MARK: - Session summarizer
 
+    /// Convenience for the toolbar / UI: true iff the chosen
+    /// backend is ready to summarize. Apple FM is "ready" when
+    /// the system model is available on this device; Qwen is
+    /// "ready" when its 4.3 GB on-disk install is complete.
+    var summarizerReady: Bool {
+        switch summarizerBackend {
+        case .appleFM: return summarizerAppleFMAvailable
+        case .qwen:    return summarizerModelInstalled
+        }
+    }
+
     /// Flip the summarizer's enabled flag. When turning on:
-    /// persist the choice, refresh install state, and kick off
-    /// the on-demand model download if the weights aren't on disk
-    /// yet. When turning off: persist the choice and unload the
-    /// resident weights (files stay on disk; user removes them
-    /// explicitly via `removeSummarizerModel()`). All paths are
-    /// idle-safe — flipping the toggle during recording / analysis
-    /// is permitted because the download / unload doesn't touch
-    /// the active capture pipeline.
+    /// persist the choice, refresh backend-specific readiness,
+    /// and (only for the Qwen backend) kick off the on-demand
+    /// model download if the weights aren't on disk yet. When
+    /// turning off: persist the choice and unload the resident
+    /// Qwen weights (Apple FM is system-managed; nothing to
+    /// unload there). All paths are idle-safe — flipping the
+    /// toggle during recording / analysis is permitted because
+    /// the download / unload doesn't touch the active capture
+    /// pipeline.
     func setSummarizerEnabled(_ enabled: Bool) async {
         guard summarizerEnabled != enabled else { return }
         summarizerEnabled = enabled
@@ -943,10 +979,42 @@ final class RecordingController {
             summarizerActor = nil
             return
         }
+        refreshAppleFMAvailability()
         refreshSummarizerInstallState()
-        if !summarizerModelInstalled, !summarizerDownloading {
+        if summarizerBackend == .qwen,
+           !summarizerModelInstalled,
+           !summarizerDownloading {
             await triggerSummarizerDownload()
         }
+    }
+
+    /// Switch the summarizer backend. Apple FM has no
+    /// install step (the system model is in-process via
+    /// FoundationModelsSER); selecting Qwen kicks off the
+    /// download if the weights aren't on disk yet.
+    func setSummarizerBackend(_ backend: SummarizerBackend) async {
+        guard summarizerBackend != backend else { return }
+        summarizerBackend = backend
+        UserDefaults.standard.set(backend.rawValue, forKey: Self.summarizerBackendKey)
+        AppLog.app.info(
+            "summarizer backend → \(backend.rawValue, privacy: .public)"
+        )
+        if backend == .qwen,
+           summarizerEnabled,
+           !summarizerModelInstalled,
+           !summarizerDownloading {
+            await triggerSummarizerDownload()
+        }
+        if backend == .appleFM {
+            // Reclaim Qwen's RAM if it was loaded.
+            await summarizerActor?.unload()
+            summarizerActor = nil
+        }
+        refreshAppleFMAvailability()
+    }
+
+    private func refreshAppleFMAvailability() {
+        summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
     }
 
     /// Drive the on-demand download via `ModelStore.ensureOptional`.
@@ -993,16 +1061,112 @@ final class RecordingController {
     /// inference is already in flight. Side-effect: stamps
     /// `lastSessionSummary` so the result sheet can re-present
     /// without re-running.
+    ///
+    /// Memory orchestration: the 4.3 GB Qwen weights plus the
+    /// AnalysisPipeline's already-loaded inference actors (W2V2 ~
+    /// 600 MB, emotion2vec ~330 MB, DeBERTa-WRIME ~250 MB, plus
+    /// the FluidAudio diarizer's Core ML models) consistently
+    /// trip iOS Jetsam on a 16 GB iPad once Qwen prefill kicks
+    /// off. We release the analysis pipeline before engaging the
+    /// summarizer, then unload Qwen and re-warm the pipeline in
+    /// the background after the user has their result. The
+    /// in-memory pipeline state we lose this way (speaker tracker
+    /// cumulative history, FluidAudio SpeakerManager DB) is
+    /// per-session-recording state — for the typical "record →
+    /// summarize" flow there's no live recording to lose state
+    /// in, and the speaker DB is persisted into the `.xph`
+    /// anyway. Re-loading on next use takes ~2–5 s.
     func summarizeSession() async -> SessionSummary? {
         guard !summarizerInferenceRunning else { return nil }
         guard !utterances.isEmpty else { return nil }
-        guard let modelStore else { return nil }
+        // Both backends benefit from releasing the analysis
+        // pipeline before invoking — even Apple FM, which is
+        // light on RAM in our process, can trip Jetsam when the
+        // device is already under pressure (2-3 GB of resident
+        // ONNX models + a fat speaker DB + a long utterance list
+        // before we even allocate anything for the summary). The
+        // pipeline lazy-rewarms in the deferred cleanup.
+        logAvailableMemory(label: "summarize start (before pipeline release)")
+        await releasePipelineForSummarization()
+        logAvailableMemory(label: "summarize start (after pipeline release)")
+        switch summarizerBackend {
+        case .appleFM:
+            return await summarizeWithAppleFM()
+        case .qwen:
+            return await summarizeWithQwen()
+        }
+    }
+
+    /// Log how much memory the process can still allocate before
+    /// iOS Jetsam will start culling. `os_proc_available_memory()`
+    /// is the canonical sentinel — when it drops near zero, a
+    /// SIGKILL is imminent. Surfaced around the summarize call so
+    /// we can see exactly how much headroom we have at each stage
+    /// when a crash report goes missing.
+    private func logAvailableMemory(label: String) {
+        let bytes = os_proc_available_memory()
+        let mb = bytes / (1024 * 1024)
+        AppLog.app.info(
+            "memory available [\(label, privacy: .public)]: \(mb, privacy: .public) MB"
+        )
+    }
+
+    /// Apple FM path. The system model itself is system-managed,
+    /// but the path goes through a `LanguageModelSession` which
+    /// allocates per-call buffers in our process; combined with
+    /// the still-resident analysis pipeline this can OOM even
+    /// though FM is "lightweight on paper." We rely on
+    /// `summarizeSession` having already released the pipeline.
+    private func summarizeWithAppleFM() async -> SessionSummary? {
+        guard SystemLanguageModel.default.isAvailable else {
+            errorMessage = String(describing: SummarizerError.modelNotInstalled)
+            scheduleSummarizerUnloadAndPipelineRewarm()
+            return nil
+        }
+        let backend = AppleFMSummarizer()
+        summarizerInferenceRunning = true
+        defer {
+            summarizerInferenceRunning = false
+            scheduleSummarizerUnloadAndPipelineRewarm()
+        }
+        logAvailableMemory(label: "summarize Apple FM (before respond)")
+        do {
+            let summary = try await backend.summarize(
+                utterances: utterances,
+                speakerNames: speakerNameOverrides
+            )
+            logAvailableMemory(label: "summarize Apple FM (after respond)")
+            lastSessionSummary = summary
+            return summary
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "summarizeWithAppleFM failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Qwen path — releases the analysis pipeline before loading
+    /// the 4.3 GB weights to fit under iOS's per-app memory
+    /// ceiling, runs inference, then unloads Qwen and re-warms
+    /// the pipeline (with the speaker DB restored). See the
+    /// helpers below for the orchestration detail.
+    private func summarizeWithQwen() async -> SessionSummary? {
+        guard let modelStore else {
+            scheduleSummarizerUnloadAndPipelineRewarm()
+            return nil
+        }
         guard let directory = await modelStore.optionalDirectory(
             id: ModelManifest.summarizerID
         ) else {
             errorMessage = String(describing: SummarizerError.modelNotInstalled)
+            scheduleSummarizerUnloadAndPipelineRewarm()
             return nil
         }
+
+        // Pipeline release happens up in `summarizeSession`
+        // before this dispatch, so we don't repeat it here.
 
         let actor: MLXQwenSummarizer
         if let existing = summarizerActor {
@@ -1016,7 +1180,10 @@ final class RecordingController {
         }
 
         summarizerInferenceRunning = true
-        defer { summarizerInferenceRunning = false }
+        defer {
+            summarizerInferenceRunning = false
+            scheduleSummarizerUnloadAndPipelineRewarm()
+        }
         do {
             let summary = try await actor.summarize(
                 utterances: utterances,
@@ -1027,9 +1194,70 @@ final class RecordingController {
         } catch {
             errorMessage = String(describing: error)
             AppLog.app.error(
-                "summarizeSession failed: \(String(describing: error), privacy: .public)"
+                "summarizeWithQwen failed: \(String(describing: error), privacy: .public)"
             )
             return nil
+        }
+    }
+
+    /// Drop strong references to the analysis pipeline so ARC can
+    /// reclaim the ~1.5 GB of resident ONNX session memory before
+    /// Qwen claims its 4.3 GB. Yields cooperatively after nilling
+    /// so the runtime gets a tick to release before MLX starts
+    /// allocating prefill memory.
+    ///
+    /// Before nilling, we snapshot the FluidAudio diarizer's
+    /// speaker database so embedding-based matching survives the
+    /// rebuild — without this, a re-evaluation after summarize
+    /// would no longer recognize the existing rows' voices and
+    /// could reassign them to fresh IDs. The blob is restored
+    /// in `scheduleSummarizerUnloadAndPipelineRewarm`.
+    private func releasePipelineForSummarization() async {
+        AppLog.app.info(
+            "releasing analysis pipeline before summarization (free ~1.5 GB)"
+        )
+        if let pipeline {
+            summarizerSavedSpeakerDB = await pipeline.exportSpeakerDatabase()
+            if let blob = summarizerSavedSpeakerDB {
+                AppLog.app.info(
+                    "snapshotted speaker DB before summarize (\(blob.count, privacy: .public) bytes)"
+                )
+            }
+        }
+        pipelineTask?.cancel()
+        pipelineTask = nil
+        pipeline = nil
+        await Task.yield()
+    }
+
+    /// Unload Qwen and re-warm the analysis pipeline in the
+    /// background. Runs in `defer` so it fires whether
+    /// summarization succeeded or failed. The user is now reading
+    /// their summary (or seeing an error), so the few seconds of
+    /// background re-load aren't user-visible. Restores the
+    /// pre-summarize speaker DB snapshot after the fresh diarizer
+    /// is warm, so post-summarize re-evaluations / hand-edits
+    /// still match the established speaker IDs.
+    private func scheduleSummarizerUnloadAndPipelineRewarm() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.summarizerActor?.unload()
+            self.summarizerActor = nil
+            AppLog.app.info("Qwen unloaded; re-warming analysis pipeline")
+            let pipeline = await self.ensurePipeline()
+            if let saved = self.summarizerSavedSpeakerDB {
+                do {
+                    try await pipeline.importSpeakerDatabase(saved)
+                    AppLog.app.info(
+                        "restored speaker DB after pipeline re-warm"
+                    )
+                } catch {
+                    AppLog.app.warning(
+                        "speaker DB restore after summarize failed: \(String(describing: error), privacy: .public)"
+                    )
+                }
+                self.summarizerSavedSpeakerDB = nil
+            }
         }
     }
 
@@ -1263,6 +1491,11 @@ final class RecordingController {
         handEditChildren.removeAll()
         diarizationTimeline = []
         lastKnownSpeakerIDs = []
+        // The cached summary was generated against the previous
+        // session's utterances; clear it so the result sheet
+        // doesn't surface stale content when the user taps
+        // Summarize on the freshly loaded `.xph`.
+        lastSessionSummary = nil
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }

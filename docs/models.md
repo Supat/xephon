@@ -39,7 +39,7 @@ Fill rows in as `scripts/fetch_models.sh` is implemented and benchmarks run.
 
 | Model | Source | License | Notes |
 |---|---|---|---|
-| Qwen2.5-7B-Instruct (4-bit MLX) | `Qwen/Qwen2.5-7B-Instruct` via `mlx_lm.convert` | Apache 2.0 | On-device, opt-in. Runs through `mlx-swift-examples` (`MLXLLM` + `MLXLMCommon`). ~4.3 GB on disk; loaded into RAM only while the user runs "Summarize Session." Converted via `scripts/fetch_models.sh --with-summarizer`, uploaded via `scripts/upload_models_to_github_release.sh` to the same release tag the core ONNX models use. |
+| Qwen3-8B (4-bit MLX) | `mlx-community/Qwen3-8B-4bit` (HF direct) | Apache 2.0 | On-device, opt-in. Runs through `mlx-swift-examples` (`MLXLLM` + `MLXLMCommon`). ~4.6 GB on disk, ~5 GB resident. Requires the `com.apple.developer.kernel.increased-memory-limit` entitlement on the app target so iOS's per-app Jetsam ceiling on a 16 GB iPad lifts from ~5 GB to ~10–11 GB — without that, the Qwen weights + analysis pipeline trip Jetsam during prefill. Sourced from Hugging Face directly (GitHub Releases' 2 GB Free-tier asset cap rules out the safetensors). Developer-side pull via `scripts/fetch_models.sh --with-summarizer`. |
 
 ## License obligations to track
 

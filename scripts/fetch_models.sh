@@ -195,19 +195,20 @@ quantize_fp16 Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx
 
 echo
 if [ "$WITH_SUMMARIZER" -eq 1 ]; then
-  echo "[step] Fetching Qwen2.5-7B-Instruct 4-bit MLX for the session summarizer…"
-  QWEN_OUT=Models/qwen2_5-7b-instruct-4bit
+  echo "[step] Fetching Qwen3-8B 4-bit MLX for the session summarizer…"
+  QWEN_OUT=Models/qwen3-8b-4bit
   # Idempotent: skip when the directory already has the tokenizer +
-  # a safetensors blob. Otherwise pull from the mlx-community
-  # pre-quantized repo — same artefact mlx_lm.convert would
-  # produce, but without the GPU pressure that's been hitting
-  # METAL command-buffer timeouts on local 7B quantization runs.
-  # Strictly on-device at app runtime; this is a developer-side
-  # pull, identical in trust posture to the other model downloads.
+  # a safetensors blob. Pulls from mlx-community/Qwen3-8B-4bit.
+  # Bumped back from 3B to 8B once the increased-memory-limit
+  # entitlement lifted the per-app Jetsam ceiling — at ~5 GB
+  # resident the 8B fits with ~5 GB headroom and meaningfully
+  # better reasoning than the 3B. Strictly on-device at app
+  # runtime; this is a developer-side pull, identical in trust
+  # posture to the other model downloads.
   if [ -f "$QWEN_OUT/tokenizer.json" ] && ls "$QWEN_OUT"/*.safetensors >/dev/null 2>&1; then
     echo "[skip] $QWEN_OUT (already present)"
   else
-    fetch_hf "mlx-community/Qwen2.5-7B-Instruct-4bit" "$QWEN_OUT" ""
+    fetch_hf "mlx-community/Qwen3-8B-4bit" "$QWEN_OUT" ""
   fi
 fi
 

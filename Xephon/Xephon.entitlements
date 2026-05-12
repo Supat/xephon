@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Required for on-device LLM inference. Without this key the
+        per-app Jetsam ceiling on a 16 GB iPad sits around 5 GB,
+        which the analysis pipeline + Qwen2.5 weights + MLX
+        activations regularly trip during prefill. The entitlement
+        bumps the ceiling to the device's recommended max working
+        set size (≈ 10–11 GB on the 16 GB iPad Pro), giving MLX
+        room to allocate its KV cache + scratch buffers without
+        the OS culling the process. Documented at:
+        https://developer.apple.com/documentation/bundleresources/entitlements/com_apple_developer_kernel_increased-memory-limit
+    -->
+    <key>com.apple.developer.kernel.increased-memory-limit</key>
+    <true/>
+</dict>
+</plist>

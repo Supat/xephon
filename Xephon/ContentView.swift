@@ -4,6 +4,7 @@ import Audio
 import Export
 import Fusion
 import SERText
+import Summarizer
 import XephonLogging
 
 struct ContentView: View {
@@ -154,8 +155,17 @@ struct ContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingSummaryView = true
-                        Task {
-                            _ = await recorder.summarizeSession()
+                        // Auto-generate on first open only, and only
+                        // when the summarizer is fully configured.
+                        // Otherwise just open the sheet so the user
+                        // can reach the bottom controls and enable /
+                        // pick a backend / download the model.
+                        if recorder.lastSessionSummary == nil
+                            && recorder.summarizerEnabled
+                            && recorder.summarizerReady {
+                            Task {
+                                _ = await recorder.summarizeSession()
+                            }
                         }
                     } label: {
                         Label(String(localized: "summary.summarize"), systemImage: "text.book.closed")
@@ -164,8 +174,6 @@ struct ContentView: View {
                         recorder.utterances.isEmpty
                             || recorder.isRecording
                             || recorder.isAnalyzing
-                            || !recorder.summarizerEnabled
-                            || !recorder.summarizerModelInstalled
                             || recorder.summarizerInferenceRunning
                     )
                 }
@@ -191,8 +199,14 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingSummaryView) {
                 SessionSummarySheet(
+                    recorder: recorder,
                     summary: recorder.lastSessionSummary,
                     isGenerating: recorder.summarizerInferenceRunning,
+                    onRegenerate: {
+                        Task {
+                            _ = await recorder.summarizeSession()
+                        }
+                    },
                     onDismiss: { showingSummaryView = false }
                 )
             }
@@ -449,8 +463,7 @@ struct ContentView: View {
                     SettingsCard(
                         languagePicker: { languagePicker },
                         speechBoostToggle: { speechBoostToggle },
-                        textSERPicker: { textSERPicker },
-                        summarizerControls: { summarizerControls }
+                        textSERPicker: { textSERPicker }
                     )
 
                     PipelineCard(recorder: recorder)
@@ -842,14 +855,14 @@ struct ContentView: View {
                 )
             ) {
                 ForEach(SessionLanguage.allCases, id: \.self) { lang in
-                    Text(lang.displayName).tag(lang)
+                    Text("\(lang.flag) \(lang.displayName)").tag(lang)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .labelsHidden()
             .disabled(recorder.isRecording || recorder.isAnalyzing)
         }
-        .padding(.horizontal)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -872,74 +885,10 @@ struct ContentView: View {
                         Text(Self.label(for: backend)).tag(backend)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .labelsHidden()
             }
-            .padding(.horizontal)
-        }
-    }
-
-    /// On-device session summarizer controls. The toggle drives
-    /// `RecordingController.setSummarizerEnabled` which kicks off
-    /// the on-demand model download via `ModelStore.ensureOptional`;
-    /// inline progress / install state renders under it. A "Remove
-    /// model" affordance lets the user reclaim the ~4 GB working
-    /// set without disabling the feature. Strictly on-device — the
-    /// download fetches from the pinned GitHub Release, inference
-    /// runs locally on MLX.
-    @ViewBuilder
-    private var summarizerControls: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(
-                isOn: Binding(
-                    get: { recorder.summarizerEnabled },
-                    set: { newValue in
-                        Task { await recorder.setSummarizerEnabled(newValue) }
-                    }
-                )
-            ) {
-                Text(String(localized: "settings.summarizer.enable"))
-                    .font(.callout)
-            }
-            .toggleStyle(.switch)
-            if recorder.summarizerEnabled {
-                summarizerStatusLine
-            }
-        }
-        .padding(.horizontal)
-    }
-
-    @ViewBuilder
-    private var summarizerStatusLine: some View {
-        if recorder.summarizerDownloading {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.mini)
-                Text(String(localized: "settings.summarizer.downloading"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } else if recorder.summarizerModelInstalled {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.green)
-                Text(String(localized: "settings.summarizer.ready"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 6)
-                Button {
-                    Task { await recorder.removeSummarizerModel() }
-                } label: {
-                    Text(String(localized: "settings.summarizer.remove"))
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-            }
-        } else {
-            Text(String(localized: "settings.summarizer.notInstalled"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

@@ -99,6 +99,9 @@ targets:
       base:
         PRODUCT_NAME: Xephon
         PRODUCT_BUNDLE_IDENTIFIER: com.supatsaetia.xephon
+        # Increased-memory-limit entitlement for on-device LLM
+        # inference — see comment in Xephon/Xephon.entitlements.
+        CODE_SIGN_ENTITLEMENTS: Xephon/Xephon.entitlements
         TARGETED_DEVICE_FAMILY: "1,2" # iPhone + iPad
         # Mac Catalyst is intentionally NOT supported: onnxruntime-swift-package-manager
         # ships no maccatalyst slice in its xcframework, which breaks SERAcoustic.
