@@ -1376,6 +1376,26 @@ struct ContentView: View {
                     )
                 }
             },
+            onCorrectMismatch: { u in
+                // Long-press on the orange mismatch glyph accepts
+                // the cumulative timeline's verdict for this row.
+                // Recompute the dominant speaker on demand (it's
+                // ~256 samples × a handful of segments, well under
+                // a millisecond) so we always read the freshest
+                // timeline state instead of caching it alongside
+                // the mismatch flag. Falls back to a no-op when
+                // the timeline has no overlap with the row or the
+                // verdict no longer disagrees (the glyph went
+                // stale between render and tap).
+                let dominant = AnalysisPipeline.dominantSpeakerInSegments(
+                    recorder.diarizationTimeline,
+                    from: u.start,
+                    to: u.end,
+                    fallback: u.speakerID
+                )
+                guard dominant != u.speakerID else { return }
+                recorder.reassignSpeaker(utteranceID: u.id, to: dominant)
+            },
             onEditTranscript: { u in
                 // Editing is allowed in both file mode (full
                 // pipeline re-run) and mic mode (text-only

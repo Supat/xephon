@@ -63,6 +63,12 @@ struct TranscriptList: View {
     let onRenameSpeaker: (UtteranceEstimate) -> Void
     let onPromoteNewSpeaker: (UtteranceEstimate) -> Void
     let onCorrectSpeaker: (UtteranceEstimate, String) -> Void
+    /// Fires when the user long-presses a row's mismatch warning
+    /// glyph. ContentView resolves the timeline's dominant speaker
+    /// for the row's `[start, end]` window and calls
+    /// `recorder.reassignSpeaker` so the row label aligns with what
+    /// the diarizer has been collectively observing.
+    let onCorrectMismatch: (UtteranceEstimate) -> Void
     let onEditTranscript: (UtteranceEstimate) -> Void
     let refreshSearchCache: () -> Void
 
@@ -241,7 +247,8 @@ struct TranscriptList: View {
                 } else {
                     selectedUtteranceID = item.u.id
                 }
-            }
+            },
+            onCorrectMismatch: { onCorrectMismatch(item.u) }
             // Note: the gate "only when source audio is present"
             // moved to the dialog itself, which hides the time
             // spinners + play button when the session is mic-mode.

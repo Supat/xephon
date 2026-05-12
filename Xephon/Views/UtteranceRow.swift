@@ -117,6 +117,12 @@ struct UtteranceRow: View {
     /// to unfocus. List's built-in tap-to-select is bypassed because
     /// it can't model the "tap-to-unfocus" half of the toggle.
     let onTap: () -> Void
+    /// Fires when the user long-presses the mismatch warning glyph.
+    /// The parent recomputes the dominant speaker for this row's
+    /// range from the cumulative timeline and reassigns the row,
+    /// closing the disagreement that drew the glyph in the first
+    /// place. Only attached when `hasSpeakerMismatch == true`.
+    let onCorrectMismatch: () -> Void
 
     /// Set by a 2-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
@@ -279,10 +285,12 @@ struct UtteranceRow: View {
                 if hasSpeakerMismatch {
                     // The cumulative diarizer timeline disagrees
                     // with this row's stored speaker. Surfaced as
-                    // a passive caution glyph right after the
-                    // chip — re-evaluating the row, or picking a
-                    // different speaker from the chip menu, will
-                    // reconcile it.
+                    // a caution glyph right after the chip; a
+                    // 0.5 s long-press accepts the timeline's
+                    // verdict and reassigns the row, closing the
+                    // disagreement in one gesture. Re-evaluating
+                    // the row or picking a different speaker from
+                    // the chip menu still works as before.
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
@@ -290,6 +298,14 @@ struct UtteranceRow: View {
                         .accessibilityLabel(
                             "Diarizer disagrees with assigned speaker"
                         )
+                        .accessibilityHint(
+                            "Long-press to accept the diarizer's verdict and reassign this row"
+                        )
+                        .onLongPressGesture(minimumDuration: Self.editLongPressSec) {
+                            AppLog.app.info("mismatch glyph long-press → correct speaker")
+                            UISounds.playRevert()
+                            onCorrectMismatch()
+                        }
                 }
                 if utterance.speechBoost == true {
                     Label("Boost", systemImage: "waveform.badge.plus")
