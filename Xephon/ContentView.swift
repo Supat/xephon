@@ -415,6 +415,7 @@ struct ContentView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 16) {
                     SettingsCard(
+                        languagePicker: { languagePicker },
                         speechBoostToggle: { speechBoostToggle },
                         textSERPicker: { textSERPicker }
                     )
@@ -779,6 +780,38 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Session-language picker. Drives the ASR locale (Apple
+    /// SpeechTranscriber) and the text-SER gating (DeBERTa-WRIME is
+    /// Japanese-only and hides for non-Japanese sessions). Disabled
+    /// while a session is active because the streaming transcriber
+    /// is locked to its start-time locale — the user can still see
+    /// which language is in effect for the running session.
+    @ViewBuilder
+    private var languagePicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(localized: "settings.language"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(
+                String(localized: "settings.language"),
+                selection: Binding(
+                    get: { recorder.sessionLanguage },
+                    set: { newValue in
+                        Task { await recorder.setSessionLanguage(newValue) }
+                    }
+                )
+            ) {
+                ForEach(SessionLanguage.allCases, id: \.self) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(recorder.isRecording || recorder.isAnalyzing)
+        }
+        .padding(.horizontal)
     }
 
     @ViewBuilder

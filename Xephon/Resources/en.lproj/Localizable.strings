@@ -1,8 +1,11 @@
 "input.default" = "Default Input";
+"settings.language" = "Language";
 "settings.speechBoost" = "Speech Boost (ASR Only)";
 "settings.textSER" = "Text SER";
 "settings.textSER.deberta" = "DeBERTa";
 "settings.textSER.foundationModels" = "Apple FM";
+"language.japanese" = "Japanese";
+"language.english" = "English";
 "transcript.empty.title" = "No Utterances Yet";
 "transcript.empty.subtitle" = "Tap Start Recording to begin.";
 "transcript.newUtterance" = "New Utterance";

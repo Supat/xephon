@@ -41,6 +41,14 @@ final class RecordingController {
     private(set) var isSpeechBoostEnabled: Bool = true
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
+    /// Active session language. Drives the ASR locale (Apple
+    /// SpeechTranscriber + offline transcriber), the FoundationModels
+    /// prompt opener, and the DeBERTa-WRIME availability gate
+    /// (Japanese-only model — hidden from the Text SER picker when
+    /// the session isn't Japanese). User-selectable in the Settings
+    /// card while idle; locked while a session is in flight.
+    /// Persists across launches via UserDefaults.
+    private(set) var sessionLanguage: SessionLanguage
     private(set) var volatileText: String = ""
     private(set) var lastAcousticDuration: TimeInterval?
     private(set) var lastTextDuration: TimeInterval?
@@ -203,7 +211,7 @@ final class RecordingController {
 
     private var capture: any AudioCapture
     private let micCapture: any AudioCapture
-    private let streamingTranscriber: any StreamingTranscriber
+    private var streamingTranscriber: any StreamingTranscriber
     private(set) var sourceMode: SourceMode = .microphone
 
     enum SourceMode: Equatable {
@@ -251,6 +259,13 @@ final class RecordingController {
         contextSeconds: 60
     )
 
+    /// True when the streaming transcriber wasn't externally injected
+    /// and we're free to swap it on a language change. Tests inject a
+    /// stub via the init param; for them this flag stays false so
+    /// `setSessionLanguage` leaves their stub in place rather than
+    /// silently replacing it with a real Apple transcriber.
+    private let canRecreateStreamingTranscriber: Bool
+
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
         streamingTranscriber: (any StreamingTranscriber)? = nil,
@@ -259,7 +274,11 @@ final class RecordingController {
     ) {
         self.capture = capture
         self.micCapture = capture
-        self.streamingTranscriber = streamingTranscriber ?? StreamingSpeechAnalyzerTranscriber()
+        let initialLanguage = SessionLanguage.loadFromDefaults()
+        self.sessionLanguage = initialLanguage
+        self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
+        self.streamingTranscriber = streamingTranscriber
+            ?? StreamingSpeechAnalyzerTranscriber(locale: initialLanguage.locale)
         self.pipeline = pipeline
         // ModelDownloadState is @MainActor — RecordingController is too,
         // so it's built here (synchronously) and shared with the
@@ -382,6 +401,17 @@ final class RecordingController {
     }
 
     private func refreshTextSERState(from pipeline: AnalysisPipeline) async {
+        // Apply the persisted session language to the freshly-warmed
+        // pipeline before reading its text-SER state. `autoConfigured`
+        // builds its offline transcriber against the default Japanese
+        // locale and treats DeBERTa as available; if the user picked
+        // English on a previous launch we need to retarget here so
+        // the offline transcriber matches and `availableBackends`
+        // excludes DeBERTa.
+        await pipeline.setLocale(
+            sessionLanguage.locale,
+            languageLabel: sessionLanguage.label
+        )
         availableTextSERBackends = await pipeline.availableTextSERBackends()
         currentTextSERBackend = await pipeline.currentTextSERBackend()
     }
@@ -847,6 +877,34 @@ final class RecordingController {
         let pipeline = await ensurePipeline()
         await pipeline.setTextSERBackend(backend)
         await refreshTextSERState(from: pipeline)
+    }
+
+    /// Switch the session language. Re-creates the streaming
+    /// transcriber against the new locale (unless the streaming
+    /// transcriber was externally injected by tests), forwards the
+    /// new locale + language label to the pipeline so the offline
+    /// transcriber and FoundationModels prompt opener follow along,
+    /// and refreshes the text-SER state so the picker re-renders
+    /// without DeBERTa for non-Japanese sessions. Persists the
+    /// choice to UserDefaults for the next launch. No-op when not
+    /// idle — language can't change mid-session because the
+    /// already-running transcriber is locked to its initial locale.
+    func setSessionLanguage(_ language: SessionLanguage) async {
+        guard phase == .idle else { return }
+        guard sessionLanguage != language else { return }
+        sessionLanguage = language
+        language.saveToDefaults()
+        if canRecreateStreamingTranscriber {
+            streamingTranscriber = StreamingSpeechAnalyzerTranscriber(
+                locale: language.locale
+            )
+        }
+        let pipeline = await ensurePipeline()
+        await pipeline.setLocale(language.locale, languageLabel: language.label)
+        await refreshTextSERState(from: pipeline)
+        AppLog.app.info(
+            "session language → \(language.rawValue, privacy: .public)"
+        )
     }
 
     func selectInput(uid: String?) async {

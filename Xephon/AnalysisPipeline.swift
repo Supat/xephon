@@ -31,11 +31,27 @@ struct AutoConfiguredPipeline: Sendable {
     let diagnostics: [String]
 }
 
+// `@unchecked Sendable` is a deliberate concession to the
+// `transcriber` swap on `setLocale(_:)`. The class is otherwise
+// composed of `let` actor/value-type references which are Sendable
+// by construction; only `transcriber` is mutable. All mutation
+// happens from `RecordingController`'s @MainActor surface, and
+// readers reach it via `await` on actor methods, so cross-isolation
+// concurrent access doesn't occur in practice. Marked unchecked
+// rather than wrapping in a lock because each call site already
+// goes through `await`/`async` boundaries that serialize naturally.
 // Intentionally NOT @MainActor: heavy SER constructors (e.g. W2V2 ONNX load,
 // ~631 MB) and per-segment inference must not block the UI thread. All stored
 // references are themselves Sendable (actors / value types).
-final class AnalysisPipeline: Sendable {
-    private let transcriber: any Transcriber
+final class AnalysisPipeline: @unchecked Sendable {
+    /// Offline (re-evaluate / file-mode batch) transcriber. `var`
+    /// rather than `let` because the user-facing language picker can
+    /// change between sessions while the pipeline instance lives on
+    /// across them — `setLocale(_:)` swaps in a fresh
+    /// `SpeechAnalyzerTranscriber` rather than recreating the whole
+    /// pipeline. Tests inject a different `Transcriber` and bypass
+    /// `setLocale`, so their injection survives.
+    private var transcriber: any Transcriber
     private let diarizer: (any Diarizer)?
     private let dimensionalSER: (any DimensionalAcousticSER)?
     private let categoricalSER: (any CategoricalAcousticSER)?
@@ -415,6 +431,24 @@ final class AnalysisPipeline: Sendable {
 
     func setTextSERBackend(_ backend: SwitchingTextSER.Backend) async {
         await (textSER as? SwitchingTextSER)?.setBackend(backend)
+    }
+
+    /// Re-target the pipeline at a new session language. Swaps in a
+    /// fresh offline `SpeechAnalyzerTranscriber` for the new locale
+    /// (the streaming transcriber lives on `RecordingController`
+    /// and gets recreated alongside) and tells `SwitchingTextSER`
+    /// about the language so its DeBERTa-WRIME gating and its
+    /// Foundation Models prompt language update in lockstep.
+    /// `languageLabel` is the human-readable string baked into the
+    /// FM prompt opener — pass nil to leave the prompt
+    /// language-agnostic.
+    func setLocale(_ locale: Locale, languageLabel: String?) async {
+        transcriber = SpeechAnalyzerTranscriber(locale: locale)
+        let code = locale.language.languageCode?.identifier
+        await (textSER as? SwitchingTextSER)?.setLanguage(
+            code: code,
+            label: languageLabel
+        )
     }
 
     /// Re-run offline ASR on `audio` and fuse the result with fresh SER
