@@ -673,6 +673,47 @@ final class AnalysisPipeline: Sendable {
         return (estimate, metrics)
     }
 
+    /// Text-only re-analysis path for hand-edits on a session
+    /// that has no source audio (a still-running or just-stopped
+    /// mic-mode session, or an imported mic-mode `.xph`). We
+    /// can't re-slice audio or re-run acoustic SER, so the
+    /// dimensional V/A/D and acoustic categorical scores get
+    /// **inherited** from the parent utterance unchanged; only
+    /// the text-SER + late-fusion step re-runs against the new
+    /// transcript. The resulting estimate carries the new
+    /// transcript + new plutchik + new fused V/A/D + new fused
+    /// top label; everything else is taken from `original`.
+    ///
+    /// Used by `RecordingController.commitHandEdit` when
+    /// `playbackSourceURL == nil`. Skipped on the file-mode path
+    /// which still routes through `processSegment`.
+    func reanalyzeTextOnly(
+        text: String,
+        inheriting original: UtteranceEstimate
+    ) async throws -> UtteranceEstimate {
+        let plutchik = await runText(text)
+        let textBackend: String? = plutchik == nil
+            ? nil
+            : await (textSER as? SwitchingTextSER)?.currentBackend.rawValue
+        let asr = ASRSegment(
+            text: text,
+            start: original.start,
+            end: original.end,
+            // User-verified transcript; trust it at full
+            // confidence for fusion weighting.
+            confidence: 1.0,
+            tokens: []
+        )
+        let baseEstimate = try await fuser.fuse(
+            asr: asr,
+            speakerID: original.speakerID,
+            dimensional: original.dimensional,
+            acousticCategorical: original.acousticCategorical,
+            plutchik: plutchik
+        )
+        return baseEstimate.withTextBackend(textBackend)
+    }
+
     // MARK: - Optional stages (return nil on failure → degraded fusion)
 
     private func runDiarization(_ buffer: AudioChunk) async -> [DiarizedSegment] {

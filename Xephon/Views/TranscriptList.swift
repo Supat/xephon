@@ -211,6 +211,12 @@ struct TranscriptList: View {
             onPromoteNewSpeaker: { onPromoteNewSpeaker(item.u) },
             onRenameSpeaker: { onRenameSpeaker(item.u) },
             onEditTranscript: { onEditTranscript(item.u) }
+            // Note: the gate "only when source audio is present"
+            // moved to the dialog itself, which hides the time
+            // spinners + play button when the session is mic-mode.
+            // The transcript-text long-press now opens the editor
+            // unconditionally (as long as recording isn't running,
+            // which is gated upstream in ContentView).
         )
         .id(item.u.id)
         .onAppear { visibleUtteranceIDs.insert(item.u.id) }

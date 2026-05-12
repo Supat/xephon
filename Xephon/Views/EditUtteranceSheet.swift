@@ -27,6 +27,14 @@ struct EditUtteranceSheet: View {
     /// `AVAudioFile` couldn't probe the file). In that case the
     /// upper bound falls back to `start + 60s` for the spinner.
     let maxDuration: TimeInterval?
+    /// True when the session has source audio backing the row
+    /// (file mode or an imported file-mode `.xph`). False for
+    /// live / imported mic-mode sessions, where there's no audio
+    /// to slice or preview — the dialog then hides the play
+    /// button and time spinners, and the commit re-runs only
+    /// text SER + fusion, inheriting the parent's time range and
+    /// acoustic scores.
+    let audioEditingEnabled: Bool
     let onPlayRange: (TimeInterval, TimeInterval) -> Void
     let onStopRange: () -> Void
     /// Live "is a preview playing right now" flag from the
@@ -43,6 +51,7 @@ struct EditUtteranceSheet: View {
     init(
         utterance: UtteranceEstimate,
         maxDuration: TimeInterval?,
+        audioEditingEnabled: Bool,
         onPlayRange: @escaping (TimeInterval, TimeInterval) -> Void,
         onStopRange: @escaping () -> Void,
         isPreviewPlaying: Bool,
@@ -51,6 +60,7 @@ struct EditUtteranceSheet: View {
     ) {
         self.utterance = utterance
         self.maxDuration = maxDuration
+        self.audioEditingEnabled = audioEditingEnabled
         self.onPlayRange = onPlayRange
         self.onStopRange = onStopRange
         self.isPreviewPlaying = isPreviewPlaying
@@ -68,12 +78,17 @@ struct EditUtteranceSheet: View {
         maxDuration ?? max(utterance.end + 60, 60)
     }
 
-    /// Commit is valid when text isn't whitespace-only and the
-    /// range has positive duration. Reflected on the button's
-    /// `.disabled` state.
+    /// Commit is valid when text isn't whitespace-only. With
+    /// audio editing enabled (file-mode sessions), the time range
+    /// must also have positive duration; in audio-disabled
+    /// (mic-mode) mode the range comes from the parent utterance
+    /// and is always valid.
     private var commitEnabled: Bool {
-        !editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && editedEnd > editedStart
+        let textOK = !editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if audioEditingEnabled {
+            return textOK && editedEnd > editedStart
+        }
+        return textOK
     }
 
     var body: some View {
@@ -94,41 +109,43 @@ struct EditUtteranceSheet: View {
                     .padding(10)
                     .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                sectionHeader(String(localized: "edit.range.header"))
-                HStack(alignment: .center, spacing: 16) {
-                    Button {
-                        if isPreviewPlaying {
-                            onStopRange()
-                        } else {
-                            onPlayRange(editedStart, editedEnd)
+                if audioEditingEnabled {
+                    sectionHeader(String(localized: "edit.range.header"))
+                    HStack(alignment: .center, spacing: 16) {
+                        Button {
+                            if isPreviewPlaying {
+                                onStopRange()
+                            } else {
+                                onPlayRange(editedStart, editedEnd)
+                            }
+                        } label: {
+                            Image(systemName: isPreviewPlaying
+                                ? "stop.circle.fill"
+                                : "play.circle.fill"
+                            )
+                                .font(.largeTitle)
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(Color.accentColor)
                         }
-                    } label: {
-                        Image(systemName: isPreviewPlaying
-                            ? "stop.circle.fill"
-                            : "play.circle.fill"
-                        )
-                            .font(.largeTitle)
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(editedEnd <= editedStart)
+                        .buttonStyle(.borderless)
+                        .disabled(editedEnd <= editedStart)
 
-                    VStack(spacing: 8) {
-                        timeControl(
-                            label: String(localized: "edit.range.start"),
-                            value: $editedStart,
-                            in: 0...max(0, editedEnd - Self.stepperMinGapSec)
-                        )
-                        timeControl(
-                            label: String(localized: "edit.range.end"),
-                            value: $editedEnd,
-                            in: min(editedStart + Self.stepperMinGapSec, upperBound)...upperBound
-                        )
+                        VStack(spacing: 8) {
+                            timeControl(
+                                label: String(localized: "edit.range.start"),
+                                value: $editedStart,
+                                in: 0...max(0, editedEnd - Self.stepperMinGapSec)
+                            )
+                            timeControl(
+                                label: String(localized: "edit.range.end"),
+                                value: $editedEnd,
+                                in: min(editedStart + Self.stepperMinGapSec, upperBound)...upperBound
+                            )
+                        }
                     }
+                    .padding(12)
+                    .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .padding(12)
-                .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

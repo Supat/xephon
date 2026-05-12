@@ -1644,18 +1644,47 @@ final class RecordingController {
     ) async {
         guard reevaluatingUtteranceID == nil else { return }
         guard phase == .idle else { return }
-        guard let url = playbackSourceURL else { return }
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
-        guard newEnd > newStart else { return }
         let trimmedText = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
-
-        // Split on sentence-terminator punctuation (`。！？．.!?`) and
-        // newlines. One sentence → existing single-row rewrite path;
-        // multiple sentences → split the range proportionally by
-        // character count and run SER+fusion per slice.
         let sentences = Self.splitTranscriptIntoSentences(trimmedText)
         guard !sentences.isEmpty else { return }
+
+        let original = utterances[index]
+        // Two flows split on whether the session has source audio.
+        // File-mode (`playbackSourceURL != nil`) follows the full
+        // pipeline: re-read the audio, re-diarize, re-run SER +
+        // fusion. Mic-mode (live or imported) has no audio to
+        // re-slice, so we inherit the parent's speaker, time
+        // range, dimensional + acoustic SER, and only re-run text
+        // SER + fusion. The Edit Utterance dialog hides time
+        // controls + play button on the mic-mode path; the
+        // controller treats `newStart`/`newEnd` as advisory and
+        // overrides them with `original.start`/`original.end`.
+        if playbackSourceURL == nil {
+            reevaluatingUtteranceID = utteranceID
+            defer { reevaluatingUtteranceID = nil }
+            if preReevaluationSnapshots[utteranceID] == nil {
+                preReevaluationSnapshots[utteranceID] = original
+            }
+            let plans = Self.planHandEditSentences(
+                sentences,
+                newStart: original.start,
+                newEnd: original.end
+            )
+            guard !plans.isEmpty else { return }
+            let pipeline = await ensurePipeline()
+            await runTextOnlyHandEdit(
+                utteranceID: utteranceID,
+                plans: plans,
+                original: original,
+                pipeline: pipeline
+            )
+            return
+        }
+
+        guard let url = playbackSourceURL else { return }
+        guard newEnd > newStart else { return }
         let plans = Self.planHandEditSentences(
             sentences,
             newStart: newStart,
@@ -1663,7 +1692,6 @@ final class RecordingController {
         )
         guard !plans.isEmpty else { return }
 
-        let original = utterances[index]
         reevaluatingUtteranceID = utteranceID
         defer { reevaluatingUtteranceID = nil }
 
@@ -1702,6 +1730,127 @@ final class RecordingController {
         )
         guard !freshEstimates.isEmpty else { return }
         applyHandEditSplit(utteranceID: utteranceID, sentences: freshEstimates)
+    }
+
+    /// Mic-mode (no source audio) hand-edit dispatcher. Inherits
+    /// the parent's dimensional / acoustic-categorical / speech-
+    /// boost; the speaker is *re-voted* against the cumulative
+    /// diarizer timeline for each plan's sub-range, so a commit
+    /// can shift the row's speaker assignment when the timeline
+    /// has accumulated more observations since the row was
+    /// originally finalized. Falls back to the parent's
+    /// `speakerID` when the timeline has no overlap with the
+    /// plan's window. Routes to `applyHandEdit` for one sentence
+    /// and `applyHandEditSplit` for many — proportional
+    /// per-character time allocation keeps the overall duration
+    /// `[original.start, original.end]` consistent across the
+    /// resulting rows.
+    private func runTextOnlyHandEdit(
+        utteranceID: UUID,
+        plans: [HandEditPlan],
+        original: UtteranceEstimate,
+        pipeline: AnalysisPipeline
+    ) async {
+        if plans.count == 1 {
+            do {
+                let speaker = revoteSpeakerFromTimeline(
+                    plan: plans[0],
+                    fallback: original.speakerID
+                )
+                let parent = inheritedTimeStub(
+                    from: original,
+                    plan: plans[0],
+                    speakerID: speaker
+                )
+                let fresh = try await pipeline.reanalyzeTextOnly(
+                    text: plans[0].text,
+                    inheriting: parent
+                )
+                applyHandEdit(utteranceID: utteranceID, fresh: fresh)
+            } catch {
+                AppLog.app.error(
+                    "commitHandEdit (text-only) failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+            return
+        }
+        var freshEstimates: [UtteranceEstimate] = []
+        freshEstimates.reserveCapacity(plans.count)
+        for (i, plan) in plans.enumerated() {
+            do {
+                let speaker = revoteSpeakerFromTimeline(
+                    plan: plan,
+                    fallback: original.speakerID
+                )
+                let parent = inheritedTimeStub(
+                    from: original,
+                    plan: plan,
+                    speakerID: speaker
+                )
+                let fresh = try await pipeline.reanalyzeTextOnly(
+                    text: plan.text,
+                    inheriting: parent
+                )
+                freshEstimates.append(fresh)
+            } catch {
+                AppLog.app.error(
+                    "commitHandEdit (text-only) split[\(i, privacy: .public)] failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+        guard !freshEstimates.isEmpty else { return }
+        applyHandEditSplit(utteranceID: utteranceID, sentences: freshEstimates)
+    }
+
+    /// Per-instant majority over the cumulative diarizer timeline
+    /// for `plan.[start, end]`. Used by the mic-mode (no-audio)
+    /// hand-edit path to re-attribute a row's speaker without
+    /// running the diarizer model — the timeline still holds the
+    /// streaming-pass observations (and is persisted across Save),
+    /// so re-tallying with the now-fuller record can move the
+    /// vote even though no fresh audio is processed.
+    private func revoteSpeakerFromTimeline(
+        plan: HandEditPlan,
+        fallback: String
+    ) -> String {
+        AnalysisPipeline.dominantSpeakerInSegments(
+            diarizationTimeline,
+            from: plan.start,
+            to: plan.end,
+            fallback: fallback
+        )
+    }
+
+    /// Build a synthetic "parent" utterance that carries the
+    /// inherited dimensional / acoustic-categorical / speech-
+    /// boost fields, the plan's time range, and the supplied
+    /// `speakerID` (either the inherited parent's or a fresh
+    /// timeline re-vote). Fed to `reanalyzeTextOnly` so the
+    /// fusion step sees the right inputs for this slice.
+    private func inheritedTimeStub(
+        from original: UtteranceEstimate,
+        plan: HandEditPlan,
+        speakerID: String
+    ) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: original.id,
+            speakerID: speakerID,
+            start: plan.start,
+            end: plan.end,
+            transcript: plan.text,
+            asrConfidence: 1.0,
+            dimensional: original.dimensional,
+            acousticCategorical: original.acousticCategorical,
+            plutchik: nil,
+            textBackend: nil,
+            speechBoost: original.speechBoost,
+            wasReevaluated: nil,
+            wasHandEdited: nil,
+            fusedValence: nil,
+            fusedArousal: nil,
+            fusedDominance: nil,
+            fusedTopLabel: nil
+        )
     }
 
     /// Read the two audio chunks `commitHandEdit` needs: a wide

@@ -318,6 +318,11 @@ struct ContentView: View {
                 EditUtteranceSheet(
                     utterance: snapshot,
                     maxDuration: recorder.fileTotalAudioDuration,
+                    // Source-audio-backed sessions (file mode or an
+                    // imported file-mode bundle) keep the play
+                    // button + time spinners; mic-mode sessions hide
+                    // them and only re-run text SER on commit.
+                    audioEditingEnabled: recorder.playbackSourceURL != nil,
                     onPlayRange: { start, end in
                         recorder.playRange(start: start, end: end)
                     },
@@ -1296,11 +1301,12 @@ struct ContentView: View {
                 }
             },
             onEditTranscript: { u in
-                // Only meaningful when there's source audio
-                // to re-slice from — the hand-edit pipeline
-                // reads `[newStart, newEnd]` from
-                // `playbackSourceURL`.
-                guard recorder.playbackSourceURL != nil else { return }
+                // Editing is allowed in both file mode (full
+                // pipeline re-run) and mic mode (text-only
+                // re-run inheriting time + acoustic from the
+                // parent). The only blocker is an active
+                // recording / analysis pass — gated by `phase`.
+                guard !recorder.isRecording, !recorder.isAnalyzing else { return }
                 editingUtterance = u
             },
             refreshSearchCache: refreshSearchCache
