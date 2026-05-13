@@ -342,7 +342,7 @@ struct UtteranceRow: View {
                 // a single revert handler covers both.
                 if utterance.wasHandEdited == true {
                     Label(String(localized: "edit.badge"), systemImage: "pencil.tip")
-                        .labelStyle(.iconOnly)
+                        .labelStyle(.titleAndIcon)
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
