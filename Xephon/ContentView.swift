@@ -584,35 +584,63 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
             }
 
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(spacing: 16) {
-                    SettingsCard(
-                        languagePicker: { languagePicker },
-                        speechBoostToggle: { speechBoostToggle },
-                        textSERPicker: { textSERPicker }
-                    )
-
-                    PipelineCard(recorder: recorder)
-
-                    SummaryCard(
-                        summary: displayedSummary,
-                        totalDuration: displayedSummary.totalDuration
-                    )
-
-                    StatisticsCard(summary: displayedSummary)
-
-                    SpeakerClusterCard(cluster: recorder.speakerCluster)
-
-                    SpeakerHeatmapCard(cluster: recorder.speakerCluster)
+            // Card section split across three swipeable pages so
+            // the left pane doesn't grow into a long single scroll
+            // (the cluster + heatmap especially want vertical room
+            // to render their data legibly). Page 1: session
+            // controls — Settings + Pipeline. Page 2: read-only
+            // affect output — Summary + Statistics. Page 3:
+            // diarizer cluster diagnostics — PCA scatter +
+            // pairwise heatmap. The page-style indicator dots
+            // render at the bottom of the TabView; we force
+            // `backgroundDisplayMode: .always` so they stay
+            // visible against the glass cards on iPadOS 26.
+            TabView {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 16) {
+                        SettingsCard(
+                            languagePicker: { languagePicker },
+                            speechBoostToggle: { speechBoostToggle },
+                            textSERPicker: { textSERPicker }
+                        )
+                        PipelineCard(recorder: recorder)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 32)
                 }
-                .frame(maxWidth: .infinity)
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 16) {
+                        SummaryCard(
+                            summary: displayedSummary,
+                            totalDuration: displayedSummary.totalDuration
+                        )
+                        StatisticsCard(summary: displayedSummary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 32)
+                }
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 16) {
+                        SpeakerClusterCard(cluster: recorder.speakerCluster)
+                        SpeakerHeatmapCard(cluster: recorder.speakerCluster)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 32)
+                }
             }
+            .tabViewStyle(.page(indexDisplayMode: .always))
+            .indexViewStyle(.page(backgroundDisplayMode: .always))
             // While idle (no recording in flight) the controller's
             // continuous-diarize tick isn't refreshing the cluster
             // snapshot — pull at 1 Hz so the heatmap + scatter stay
             // live after a file analysis completes or a session is
             // loaded. Cheap (just hands back resident `[Float]`
-            // arrays), no-op when no pipeline is up.
+            // arrays), no-op when no pipeline is up. Lives on the
+            // TabView (not the cluster page) so swiping to that
+            // page shows the latest snapshot immediately rather
+            // than blinking through a stale state for one second.
             .task {
                 while !Task.isCancelled {
                     if !recorder.isRecording {
