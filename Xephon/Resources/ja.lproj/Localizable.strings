@@ -32,6 +32,7 @@
 "review.commit" = "適用";
 "review.dismiss" = "却下";
 "review.range" = "範囲…";
+"review.reevaluate" = "再評価";
 "review.kind.homophone" = "同音異義";
 "review.kind.contextual" = "文脈";
 "review.kind.grammar" = "文法";
@@ -94,12 +95,21 @@
 "statistics.header" = "統計";
 "statistics.empty" = "まだラベルがありません。";
 "cluster.heatmap.header" = "話者間距離";
+"cluster.heatmap.tip.close" = "近い — 話者識別が両者を混同している可能性。";
+"cluster.heatmap.tip.mid" = "中程度の分離。";
+"cluster.heatmap.tip.far" = "明確に分離。";
 "cluster.scatter.header" = "話者クラスター";
 "cluster.empty" = "話者がまだ検出されていません。";
 "cluster.warmingUp" = "観測を収集中…";
 "summarizer.header" = "要約エンジン";
 "roster.header" = "話者一覧";
 "roster.empty" = "話者がまだ登録されていません。";
+"roster.gender.female" = "女性";
+"roster.gender.male" = "男性";
+"roster.gender.child" = "子供";
+"roster.gender.female.initial" = "女";
+"roster.gender.male.initial" = "男";
+"roster.gender.child.initial" = "子";
 "ser.aggregate.header" = "SER 集計";
 "ser.aggregate.empty" = "発話がまだありません。";
 "ser.aggregate.plutchik" = "テキストSER · Plutchik";
@@ -108,6 +118,7 @@
 "ser.aggregate.acoustic.empty" = "音響SERの結果がありません。";
 "ser.aggregate.va" = "ヴァレンス × アローザル";
 "ser.aggregate.va.empty" = "融合V/Aがありません。";
+"ser.aggregate.shape.footnote" = "テキストと音響で表示形式が異なる理由：Plutchikの8感情は円形に定義され、対角に対義感情（喜び↔悲しみ、怒り↔恐れ、信頼↔嫌悪、驚き↔期待）が並ぶため、放射状の図がモデル構造を保持します。音響の9クラスソフトマックスには「neutral / other / unknown」が含まれ円形の幾何構造がないため、棒グラフの方が読みやすく、特定クラスが優勢な場合（会話音声でemotion2vec+によく見られる）の上位クラスの確認が容易です。";
 "fusion.legend.header" = "融合ストリップの凡例";
 "fusion.legend.acoustic" = "音響SER";
 "fusion.legend.acoustic.detail" = "W2V2のV/A/D + emotion2vecの9クラス出力。";
@@ -126,7 +137,6 @@
 "speaker.action.title" = "話者";
 "speaker.action.reassign.header" = "変更先";
 "speaker.action.teach" = "話者識別器に学習";
-"speaker.action.newSpeaker" = "新しい話者";
 "speaker.action.promoteNewSpeaker" = "新しい話者を確定";
 "speaker.action.rename" = "話者の名前を変更…";
 "edit.title" = "発話を編集";

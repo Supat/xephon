@@ -102,6 +102,26 @@ public struct SessionDocument: Codable, Sendable {
     /// the export module). Optional for v1 compat.
     public let sessionSummary: Data?
 
+    /// Opaque blob carrying the LLM-flagged transcription issues
+    /// at save time (JSON-encoded `[TranscriptionIssue]` from the
+    /// Summarizer module). Restored by the controller on load so
+    /// the review sheet doesn't lose state across Save → Open.
+    /// Same `Data?` trick as `sessionSummary` to keep Export free
+    /// of an upward dependency on Summarizer. Optional for v1 compat.
+    public let transcriptionIssues: Data?
+
+    /// Snapshot of each utterance's transcript text at the moment
+    /// this bundle was saved, keyed by utterance id. Loaded
+    /// alongside `transcriptionIssues` so the controller can drop
+    /// issues whose target utterance has since been edited
+    /// elsewhere — the snapshot tells us what the LLM saw when it
+    /// flagged the row, and if the current transcript no longer
+    /// matches, the flag is stale. Only carries entries for
+    /// utterances that had an active issue at save time; an empty
+    /// or absent map means there's no staleness check to do.
+    /// Optional for v1 compat.
+    public let transcriptionIssueTranscriptSnapshots: [UUID: String]?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -124,7 +144,9 @@ public struct SessionDocument: Codable, Sendable {
         originalSnapshots: [UUID: UtteranceEstimate]? = nil,
         handEditChildren: [UUID: [UUID]]? = nil,
         diarizationTimeline: Data? = nil,
-        sessionSummary: Data? = nil
+        sessionSummary: Data? = nil,
+        transcriptionIssues: Data? = nil,
+        transcriptionIssueTranscriptSnapshots: [UUID: String]? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -138,6 +160,8 @@ public struct SessionDocument: Codable, Sendable {
         self.handEditChildren = handEditChildren
         self.diarizationTimeline = diarizationTimeline
         self.sessionSummary = sessionSummary
+        self.transcriptionIssues = transcriptionIssues
+        self.transcriptionIssueTranscriptSnapshots = transcriptionIssueTranscriptSnapshots
     }
 }
 

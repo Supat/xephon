@@ -176,6 +176,10 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         lines.append("DO NOT propose a corrected transcript — the human user will edit the row themselves. Just identify which rows look wrong and why.")
         lines.append("Omit rows that read correctly.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
+        // Pin the freeform `reason` field's language to the user's
+        // iPadOS app-language pick. Qwen3 will otherwise drift to
+        // Chinese when reviewing Japanese transcripts.
+        lines.append("The \"reason\" text in each issue MUST be written in this language: \(SummarizerLocale.responseLanguageNameInEnglish). No other language is acceptable.")
         lines.append("/no_think")
         if let total = truncatedFromTotal {
             lines.append("")

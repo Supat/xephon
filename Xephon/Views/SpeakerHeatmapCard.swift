@@ -20,10 +20,36 @@ import Diarization
 struct SpeakerHeatmapCard: View {
     let cluster: SpeakerClusterSnapshot
 
-    /// Side length of each grid cell. Tuned to fit 10 speakers + the
-    /// row-label gutter inside the 1/3-width control pane on iPad
-    /// portrait without overflow.
-    private static let cellSize: CGFloat = 22
+    /// Identifies the cell whose popover is currently shown. Carries
+    /// the row/column speaker ids + the cosine distance so the
+    /// popover body is self-contained (the cell view itself doesn't
+    /// own the popover; the card hosts a single anchor-driven
+    /// popover keyed by this state).
+    @State private var selectedCell: HeatCellSelection?
+
+    struct HeatCellSelection: Identifiable, Equatable {
+        let rowSpeaker: String
+        let columnSpeaker: String
+        let distance: Float
+        // Pair the two ids in a stable order so `.popover(item:)`
+        // dismisses + re-presents when a different cell is tapped
+        // (the modifier keys re-presentation off `id` equality).
+        var id: String { "\(rowSpeaker)|\(columnSpeaker)" }
+    }
+
+    /// Preferred side length of each grid cell when there's room.
+    /// The grid auto-shrinks each cell below this when the available
+    /// width can't fit N at full size, with a hard floor so cells
+    /// remain visually distinguishable.
+    private static let maxCellSize: CGFloat = 22
+    /// Floor for the per-cell side length. Below ~10 pt the numeric
+    /// label drops out and the cells become pure color samples; at
+    /// 6 pt they're still readable as a heatmap on iPad.
+    private static let minCellSize: CGFloat = 6
+    /// Threshold below which the numeric "0.85" label is dropped
+    /// because the glyph won't fit. The grid stays informative as
+    /// a pure color matrix.
+    private static let labelDropCellSize: CGFloat = 14
     /// Gap between cells so each one reads as a separate sample;
     /// without this the grid looks like a continuous heat surface
     /// and the per-pair quantization is lost.
@@ -61,19 +87,47 @@ struct SpeakerHeatmapCard: View {
 
     @ViewBuilder
     private var grid: some View {
+        // GeometryReader gives us the card's interior width post-
+        // padding, which is the only signal we have for how big a
+        // square N×N grid can be without overflowing. Wrapping the
+        // grid in a fixed-height frame matched to the computed cell
+        // side keeps the layout deterministic (GeometryReader's own
+        // sizing is greedy by default, which would blow the card
+        // out vertically).
         let speakers = cluster.speakers
+        let n = CGFloat(max(speakers.count, 1))
+        GeometryReader { proxy in
+            let cellSize = Self.cellSide(available: proxy.size.width, n: n)
+            let showLabels = cellSize >= Self.labelDropCellSize
+            grid(speakers: speakers, cellSize: cellSize, showLabels: showLabels)
+        }
+        .frame(height: Self.gridHeight(forSpeakerCount: speakers.count))
+    }
+
+    @ViewBuilder
+    private func grid(
+        speakers: [SpeakerClusterSnapshot.Speaker],
+        cellSize: CGFloat,
+        showLabels: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: Self.cellSpacing) {
             // Top header row: blank corner + speaker ids across.
-            HStack(spacing: Self.cellSpacing) {
-                Color.clear
-                    .frame(width: Self.rowLabelWidth, height: Self.cellSize)
-                ForEach(speakers, id: \.id) { spk in
-                    Text(spk.id)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(speakerTint(for: spk.id))
-                        .frame(width: Self.cellSize, height: Self.cellSize)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+            // Dropped entirely when cells are too small to hold a
+            // legible speaker-id; the row labels on the left edge
+            // still convey column order because the matrix is
+            // symmetric (col k = row k along the diagonal).
+            if showLabels {
+                HStack(spacing: Self.cellSpacing) {
+                    Color.clear
+                        .frame(width: Self.rowLabelWidth, height: cellSize)
+                    ForEach(speakers, id: \.id) { spk in
+                        Text(spk.id)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(speakerTint(for: spk.id))
+                            .frame(width: cellSize, height: cellSize)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                    }
                 }
             }
             ForEach(speakers, id: \.id) { rowSpk in
@@ -81,27 +135,143 @@ struct SpeakerHeatmapCard: View {
                     Text(rowSpk.id)
                         .font(.caption2.monospaced())
                         .foregroundStyle(speakerTint(for: rowSpk.id))
-                        .frame(width: Self.rowLabelWidth, height: Self.cellSize, alignment: .leading)
+                        .frame(width: Self.rowLabelWidth, height: cellSize, alignment: .leading)
                         .lineLimit(1)
                     ForEach(speakers, id: \.id) { colSpk in
                         let d = Self.cosineDistance(rowSpk.centroid, colSpk.centroid)
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(Self.heatColor(distance: d))
-                            // Numeric label inside the cell. Pulled
-                            // out into a Text only when the cell is
-                            // large enough to read it — at 22 pt
-                            // there's just barely room for two
-                            // digits.
-                            Text(String(format: "%.2f", d))
-                                .font(.system(size: 8, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.95))
-                        }
-                        .frame(width: Self.cellSize, height: Self.cellSize)
+                        cell(
+                            rowSpk: rowSpk,
+                            colSpk: colSpk,
+                            distance: d,
+                            cellSize: cellSize,
+                            showLabel: showLabels
+                        )
                     }
                 }
             }
         }
+    }
+
+    /// One heat cell: filled rounded rectangle + (optionally) the
+    /// numeric distance overlaid. Hosts the popover anchor for that
+    /// cell — tapping anywhere on the cell selects it and opens the
+    /// popover with the pair's ids + distance.
+    @ViewBuilder
+    private func cell(
+        rowSpk: SpeakerClusterSnapshot.Speaker,
+        colSpk: SpeakerClusterSnapshot.Speaker,
+        distance d: Float,
+        cellSize: CGFloat,
+        showLabel: Bool
+    ) -> some View {
+        let selection = HeatCellSelection(
+            rowSpeaker: rowSpk.id,
+            columnSpeaker: colSpk.id,
+            distance: d
+        )
+        ZStack {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(Self.heatColor(distance: d))
+            if showLabel {
+                Text(String(format: "%.2f", d))
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.95))
+            }
+        }
+        .frame(width: cellSize, height: cellSize)
+        // `.contentShape` ensures the whole cell area takes the tap
+        // even when the inner Text doesn't fill it (tiny cells).
+        .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        .onTapGesture { selectedCell = selection }
+        .popover(
+            item: Binding(
+                get: { selectedCell?.id == selection.id ? selectedCell : nil },
+                set: { selectedCell = $0 }
+            ),
+            attachmentAnchor: .point(.center),
+            arrowEdge: .top
+        ) { sel in
+            cellPopover(sel)
+        }
+    }
+
+    /// Popover body for a tapped heatmap cell. Shows the two speaker
+    /// ids in their assigned tint colors so the user can read which
+    /// pair this distance refers to without cross-referencing the
+    /// grid axes, plus the cosine distance to three decimals (the
+    /// in-cell label rounds to two; the popover gives the precision
+    /// users came for).
+    @ViewBuilder
+    private func cellPopover(_ sel: HeatCellSelection) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                speakerChip(sel.rowSpeaker)
+                Image(systemName: "arrow.left.and.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                speakerChip(sel.columnSpeaker)
+            }
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Self.heatColor(distance: sel.distance))
+                    .frame(width: 14, height: 14)
+                Text(String(format: "distance: %.3f", sel.distance))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.primary)
+            }
+            Text(distanceInterpretation(sel.distance))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    @ViewBuilder
+    private func speakerChip(_ id: String) -> some View {
+        Text(id)
+            .font(.caption.monospaced().bold())
+            .foregroundStyle(speakerTint(for: id))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(speakerTint(for: id).opacity(0.15), in: Capsule())
+    }
+
+    /// One-liner reading of where the distance falls on the heat
+    /// scale, mirroring the same thresholds used by `heatColor`.
+    /// Helps users back-project the number to "is this concerning?"
+    /// without having to remember the gradient stops.
+    private func distanceInterpretation(_ d: Float) -> String {
+        if d < 0.4 {
+            return String(localized: "cluster.heatmap.tip.close")
+        } else if d < 0.7 {
+            return String(localized: "cluster.heatmap.tip.mid")
+        } else {
+            return String(localized: "cluster.heatmap.tip.far")
+        }
+    }
+
+    /// Per-cell side length that fits N cells + the row-label
+    /// gutter inside `available` width. Clamped to `[minCellSize,
+    /// maxCellSize]` so small sessions don't waste space and huge
+    /// sessions don't disappear into single-pixel cells.
+    private static func cellSide(available: CGFloat, n: CGFloat) -> CGFloat {
+        guard n > 0, available > 0 else { return maxCellSize }
+        let usable = available - rowLabelWidth - cellSpacing * (n + 1)
+        let raw = usable / n
+        return max(minCellSize, min(maxCellSize, raw))
+    }
+
+    /// Total grid height for `count` speakers at the size the grid
+    /// will pick after measuring. Used to give the GeometryReader a
+    /// concrete height so it doesn't expand to fill the parent.
+    /// Computed assuming the worst case (`maxCellSize`) since that's
+    /// always an upper bound — the actual rendered grid will be at
+    /// most this tall.
+    private static func gridHeight(forSpeakerCount count: Int) -> CGFloat {
+        // count + 1 row (header + N data rows), spaced.
+        let rows = CGFloat(count + 1)
+        return rows * maxCellSize + (rows - 1) * cellSpacing
     }
 
     /// Cosine distance for two L2-normalized vectors (the FluidAudio

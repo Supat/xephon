@@ -44,6 +44,7 @@ struct SERAggregateCard: View {
                 plutchikSection
                 acousticSection
                 vaScatterSection
+                shapeRationaleFootnote
             }
         }
         .padding(12)
@@ -100,8 +101,20 @@ struct SERAggregateCard: View {
             let maxR = min(cx, cy) - 28
             let labels = PlutchikScore.Label.allCases
             let step = 2 * .pi / Double(labels.count)
-            // Reference rings at 50% and 100% so the user can read
-            // absolute intensity from the wedge size.
+            // Auto-scale so the dominant class fills the outer ring.
+            // Linear scaling against the absolute [0, 1] softmax range
+            // makes every wedge tiny once the session grows: an
+            // 8-class softmax averaged over many utterances is
+            // bounded near 1/8 = 0.125, and stronger predictions
+            // still rarely push any class mean past ~0.25. The
+            // 0.05 floor prevents division blow-up on near-empty
+            // sessions (peak ≈ 0 → infinite scale).
+            let peak = max(means.values.max() ?? 0, 0.05)
+            let scale = 1.0 / peak
+            // Reference rings at 50% and 100% of the peak so the
+            // user can still read relative intensities between
+            // wedges; the absolute peak fraction is reported in
+            // the corner so the absolute scale isn't lost.
             for fraction in [0.5, 1.0] {
                 let r = maxR * CGFloat(fraction)
                 let rect = CGRect(
@@ -117,7 +130,8 @@ struct SERAggregateCard: View {
             // Wedges + labels.
             for (i, label) in labels.enumerated() {
                 let mean = means[label] ?? 0
-                let r = maxR * CGFloat(max(0, min(1, mean)))
+                let normalized = max(0, min(1, mean * scale))
+                let r = maxR * CGFloat(normalized)
                 // Anchor wedge 0 at the top, going clockwise.
                 let startAngle = Double(i) * step - .pi / 2
                 let endAngle = startAngle + step
@@ -144,6 +158,18 @@ struct SERAggregateCard: View {
                     .foregroundStyle(emotionTint(for: label.rawValue))
                 ctx.draw(text, at: CGPoint(x: lx, y: ly), anchor: .center)
             }
+            // Anchor the absolute peak in the bottom-right so the
+            // auto-scale can be back-projected to true probabilities
+            // by eye.
+            let peakPercent = Int((peak * 100).rounded())
+            let peakText = Text("peak \(peakPercent)%")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ctx.draw(
+                peakText,
+                at: CGPoint(x: size.width - 4, y: size.height - 4),
+                anchor: .bottomTrailing
+            )
         }
     }
 
@@ -319,5 +345,21 @@ struct SERAggregateCard: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.tertiary)
             .textCase(.uppercase)
+    }
+
+    /// One-paragraph note explaining why the text and acoustic SER
+    /// panels are drawn in different shapes (wheel vs bars). Lives
+    /// at the bottom of the card so first-time readers don't wonder
+    /// if the inconsistency is a bug. A divider above sets it off
+    /// from the data visualizations.
+    @ViewBuilder
+    private var shapeRationaleFootnote: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Divider()
+            Text(String(localized: "ser.aggregate.shape.footnote"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

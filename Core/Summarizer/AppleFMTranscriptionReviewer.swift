@@ -68,8 +68,12 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         } else {
             preface = ""
         }
+        // Reason in the conversation's language so meaning + homophone
+        // analysis works, but emit the `reason` field in the user's
+        // app-language pick so it reads naturally in the review sheet.
         let userMessage = """
             The conversation is in \(language.label). Reason about meaning and homophones in \(language.label) only.
+            Write each issue's "reason" field in \(SummarizerLocale.responseLanguageNameInEnglish). Use no other language for the reason text.
 
             \(preface)Utterances (rowIndex speaker t=time text):
             \(lines)

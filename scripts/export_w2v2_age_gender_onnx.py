@@ -12,21 +12,41 @@ outputs.
 Output schema (matches what an `OnnxAgeGenderSER` Swift adapter
 would consume):
   inputs:
-    speech       [batch, time]  Float32  raw 16 kHz mono waveform
-                                         (the Wav2Vec2Processor in
-                                         the README is a no-op for
-                                         this checkpoint — see
-                                         `do_normalize: false` in
-                                         preprocessor_config.json —
-                                         so we feed raw audio
-                                         directly, matching the
-                                         existing V/A/D path)
+    speech       [batch, time]  Float32  16 kHz mono waveform, zero-
+                                         mean / unit-variance normalized
+                                         (the checkpoint's
+                                         preprocessor_config.json sets
+                                         `do_normalize: true`; the
+                                         Swift adapter applies that
+                                         normalization before invoking
+                                         ORT, so the exported graph
+                                         only sees the normalized
+                                         tensor)
   outputs:
     logits_age   [batch, 1]     Float32  regression in [0, 1],
                                          multiply by 100 for years
     logits_gender [batch, 3]    Float32  softmax already applied
-                                         upstream; order = [child,
-                                         female, male]
+                                         upstream; order = [female,
+                                         male, child]. Authoritative
+                                         source: the audeering
+                                         tutorial notebook
+                                         (github.com/audeering/
+                                         w2v2-age-gender-how-to,
+                                         cell 5) which states
+                                         "logits_gender expresses
+                                         the confidence for being
+                                         female, male or child",
+                                         consistent with the shipped
+                                         config.json id2label
+                                         {0: female, 1: male,
+                                         2: child}. The Hugging Face
+                                         model card's body prose and
+                                         example output column
+                                         header ("child, female,
+                                         male") contradict the
+                                         actual training-time label
+                                         encoding and should not be
+                                         trusted.
 
 The exported graph weighs ~330 MB — comfortably under the 2 GB
 protobuf cap, so unlike emotion2vec we don't need the external-data

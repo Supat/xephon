@@ -269,6 +269,11 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         lines.append("  tP = text 8-class Plutchik intensity (joy, sadness, anticipation, surprise, anger, fear, disgust, trust)")
         lines.append("Use these to judge confidence and to flag modality disagreement — e.g. a row where aP says sad but tP says joy is worth calling out per-speaker; the fused label hides that signal.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
+        // Pin the output language to whatever the user picked in
+        // iPadOS Settings → Xephon → Language. Qwen3 has been
+        // observed to drift to Chinese on Japanese-transcript
+        // sessions; the explicit directive overrides that.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         // Qwen3 ships with a "thinking" mode that emits a
         // `<think>...</think>` chain-of-thought block before the
         // actual response. That blows our 2048-token output cap and
@@ -282,6 +287,18 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         if let total = truncatedFromTotal {
             lines.append("")
             lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Frame the overall mood as the trailing portion of the session, not the whole arc.")
+        }
+        // Per-speaker demographic roster, ordered by `speakers` so
+        // the model reads it in the same order as the utterance
+        // list. Empty string when no row carried age-gender output
+        // (model not installed / clips too short to score) — the
+        // join skips it cleanly.
+        let demographics = SpeakerDemographicsDigest
+            .build(from: utterances)
+            .renderForPrompt(speakerIDs: speakers, speakerNames: speakerNames)
+        if !demographics.isEmpty {
+            lines.append("")
+            lines.append(demographics)
         }
         lines.append("")
         lines.append("Utterances:")

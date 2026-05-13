@@ -96,7 +96,13 @@ func emotionTint(for raw: String) -> Color {
     case "angry", "anger":                       return .red
     case "fear", "fearful", "afraid":            return .purple
     case "disgust", "disgusted":                 return Color(red: 0.45, green: 0.55, blue: 0.20)
-    case "surprise", "surprised":                return .orange
+    // Plutchik's wheel pairs surprise (cyan) opposite anticipation
+    // (orange). The previous tint was system .orange, which sat on
+    // top of anticipation's orange and made the two wedges of the
+    // SER aggregate wheel indistinguishable. Cyan/light-blue is
+    // Plutchik canonical and well-separated from both sadness
+    // (.blue, darker / more saturated) and trust (.green).
+    case "surprise", "surprised":                return Color(red: 0.20, green: 0.75, blue: 0.95)
     case "trust":                                return .green
     case "anticipation":                         return Color(red: 0.95, green: 0.55, blue: 0.10)
     case "neutral", "calm":                      return .gray

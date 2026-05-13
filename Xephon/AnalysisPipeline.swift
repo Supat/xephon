@@ -816,7 +816,12 @@ final class AnalysisPipeline: @unchecked Sendable {
             acousticCategorical: original.acousticCategorical,
             plutchik: plutchik
         )
-        return baseEstimate.withTextBackend(textBackend)
+        // Inherit age-gender from the parent: it's audio-derived and
+        // the audio didn't change on the mic-mode hand-edit path,
+        // same reason we inherit dimensional + categorical above.
+        return baseEstimate
+            .withTextBackend(textBackend)
+            .withAgeGender(original.ageGender)
     }
 
     // MARK: - Optional stages (return nil on failure → degraded fusion)

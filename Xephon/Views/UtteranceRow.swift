@@ -78,13 +78,6 @@ struct UtteranceRow: View {
     /// default-named speakers. Used by the chip menu so a
     /// reassignment target reads `S02 Alice` instead of just `S02`.
     let speakerDisplayName: (String) -> String?
-    /// Mint a fresh `S0N` id for the chip menu's "New Speaker"
-    /// action. Routes through the controller so the allocation
-    /// considers *both* the current utterance roster *and* ids
-    /// FluidAudio's DB already holds (which would otherwise show
-    /// up as duplicate display ids on the cluster panels). Pure;
-    /// caller is responsible for actually performing the reassign.
-    let nextNewSpeakerID: () -> String
     /// Live acoustic-modality weight from the controller's fusion
     /// settings. Used by the inspector's V/A and label
     /// contribution-share summaries so they reflect what fusion
@@ -113,8 +106,6 @@ struct UtteranceRow: View {
     /// extracts an embedding from this row's audio, registers it
     /// in the diarizer's SpeakerManager DB under a fresh id,
     /// reassigns the row, and rewrites the cumulative timeline.
-    /// Distinct from `onReassignSpeaker(nextNewSpeakerID)` which
-    /// is a pure row-level annotation override.
     let onPromoteNewSpeaker: () -> Void
     /// Fires when the user picks "Rename Speaker…" from the chip
     /// menu. ContentView raises the existing rename alert
@@ -138,6 +129,11 @@ struct UtteranceRow: View {
     /// closing the disagreement that drew the glyph in the first
     /// place. Only attached when `hasSpeakerMismatch == true`.
     let onCorrectMismatch: () -> Void
+    /// Shared "Teach diarizer" toggle bound to the recorder so
+    /// flipping it in one row's popover propagates to every other
+    /// row's popover. Backed by `RecordingController.teaching-
+    /// Diarizer`, which is session-only (resets to off on launch).
+    @Binding var teachingDiarizer: Bool
 
     /// Set by a 2-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
@@ -150,15 +146,6 @@ struct UtteranceRow: View {
     /// anchors the popover to the chip's frame instead of falling
     /// back to a screen-default position.
     @State private var showingSpeakerMenu: Bool = false
-
-    /// "Teach diarizer" toggle inside the speaker popover. When
-    /// on, tapping a reassign capsule promotes the action to
-    /// corrective: the row's audio embedding is folded into the
-    /// target speaker's centroid and the cumulative timeline is
-    /// rewritten. Reset to off whenever the popover dismisses so
-    /// the heavier behavior isn't applied accidentally on the
-    /// next open.
-    @State private var teachingDiarizer: Bool = false
 
     // V/A from fusion are in [0, 1] with 0.5 = neutral. Re-center to [-1, +1]
     // so positive vs negative read naturally and 0 maps to "neutral grey".
@@ -431,16 +418,6 @@ struct UtteranceRow: View {
                     }
                 }
                 Button {
-                    // "New Speaker" stays a pure annotation no
-                    // matter what the toggle says — there's no
-                    // existing speaker centroid to teach.
-                    onReassignSpeaker(nextNewSpeakerID())
-                    showingSpeakerMenu = false
-                } label: {
-                    newSpeakerCapsule
-                }
-                .buttonStyle(.plain)
-                Button {
                     onPromoteNewSpeaker()
                     showingSpeakerMenu = false
                 } label: {
@@ -463,12 +440,6 @@ struct UtteranceRow: View {
         }
         .padding(16)
         .frame(minWidth: 220, alignment: .leading)
-        // Reset the teach-diarizer toggle when the popover
-        // dismisses so the heavier behavior isn't silently
-        // sticky across opens.
-        .onChange(of: showingSpeakerMenu) { _, isShown in
-            if !isShown { teachingDiarizer = false }
-        }
     }
 
     /// Dispatch the user's capsule tap to either the pure-
@@ -536,22 +507,6 @@ struct UtteranceRow: View {
                 spk,
                 customName: speakerDisplayName(spk)
             ))
-        }
-    }
-
-    /// "New Speaker" capsule rendered in neutral secondary tint
-    /// with a leading `plus` glyph. Tapping it reassigns the row to
-    /// a freshly minted `S0N` id (computed by `nextNewSpeakerID`),
-    /// covering the case where the diarizer merged two real
-    /// speakers into one or just missed a quiet turn entirely.
-    @ViewBuilder
-    private var newSpeakerCapsule: some View {
-        popoverCapsule(tint: .secondary) {
-            Label {
-                Text(String(localized: "speaker.action.newSpeaker"))
-            } icon: {
-                Image(systemName: "plus.circle.fill")
-            }
         }
     }
 

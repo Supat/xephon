@@ -11,10 +11,36 @@ import XephonLogging
 /// HF repo only publishes PyTorch weights with a custom head.
 ///
 /// Model schema:
-///   inputs:  speech         [1, time]  Float32   raw 16 kHz mono
+///   inputs:  speech         [1, time]  Float32   raw 16 kHz mono,
+///                                                zero-mean / unit-var
+///                                                normalized (the
+///                                                checkpoint's
+///                                                preprocessor_config.json
+///                                                sets do_normalize: true)
 ///   outputs: logits_age     [1, 1]     Float32   regression in [0, 1]
 ///            logits_gender  [1, 3]     Float32   softmax in
-///                                                [child, female, male] order
+///                                                [female, male, child]
+///                                                order. Authoritative
+///                                                source: the audeering
+///                                                tutorial notebook at
+///                                                github.com/audeering/
+///                                                w2v2-age-gender-how-to,
+///                                                cell 5, which states
+///                                                "logits_gender …
+///                                                expresses the
+///                                                confidence for being
+///                                                female, male or
+///                                                child", and the
+///                                                shipped config.json
+///                                                id2label
+///                                                {0: female, 1: male,
+///                                                2: child}. The
+///                                                Hugging Face model
+///                                                card's prose ("child,
+///                                                female, or male") and
+///                                                its example output
+///                                                column header are
+///                                                simply wrong.
 public actor W2V2AgeGenderSER: AgeGenderSER {
     private var session: ORTSession
     private let modelURL: URL
@@ -24,7 +50,7 @@ public actor W2V2AgeGenderSER: AgeGenderSER {
     /// order of the export script's `gender` head columns. Used to
     /// turn the flat `[3]` ORT output into a label-keyed dict.
     private static let genderOrder: [AgeGenderEstimate.Gender] = [
-        .child, .female, .male,
+        .female, .male, .child,
     ]
 
     public init(modelURL: URL, useCoreML: Bool = true) throws {
@@ -96,8 +122,9 @@ public actor W2V2AgeGenderSER: AgeGenderSER {
         samples: [Float],
         frameCount n: Int
     ) throws -> (age: Float, gender: [Float]) {
+        let normalized = Wav2Vec2Preprocess.normalize(samples)
         let bytes = n * MemoryLayout<Float>.size
-        let inputData = samples.withUnsafeBufferPointer { src -> NSMutableData in
+        let inputData = normalized.withUnsafeBufferPointer { src -> NSMutableData in
             NSMutableData(bytes: src.baseAddress, length: bytes)
         }
         let inputValue = try ORTValue(

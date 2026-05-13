@@ -13,7 +13,12 @@ the historical FP16 file does (the bug ORT 1.20+ rejects with
 
 Output schema (matches what `W2V2DimensionalSER.invoke` expects):
   inputs:
-    signal   [batch, time]  Float32  raw 16 kHz mono waveform
+    signal   [batch, time]  Float32  16 kHz mono waveform, zero-mean
+                                     / unit-variance normalized (the
+                                     checkpoint's preprocessor_config.json
+                                     sets `do_normalize: true`; the
+                                     Swift adapter applies that
+                                     normalization before invoking ORT)
   outputs:
     logits   [1, 3]         Float32  order = [arousal, dominance, valence]
                                      (see model.yaml's labels list)

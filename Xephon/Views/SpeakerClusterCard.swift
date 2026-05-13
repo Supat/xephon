@@ -22,6 +22,13 @@ import Diarization
 /// extra code for a debug visualization.
 struct SpeakerClusterCard: View {
     let cluster: SpeakerClusterSnapshot
+    /// Speaker id of the currently-focused utterance, or nil if no
+    /// row is focused. Drives the highlight ring drawn around the
+    /// matching centroid dot so the user can trace a transcript row
+    /// to its diarizer-side cluster at a glance. Lives outside the
+    /// PCA recompute trigger (`snapshotKey`) so a focus change
+    /// repaints without re-fitting the basis.
+    var highlightedSpeakerID: String?
 
     /// Cached projection from the most recent PCA fit. Empty until
     /// the first snapshot with ≥ 2 distinct points arrives. Kept on
@@ -39,6 +46,11 @@ struct SpeakerClusterCard: View {
     nonisolated private static let centroidRadius: CGFloat = 5
     nonisolated private static let observationRadius: CGFloat = 2.5
     nonisolated private static let observationOpacity: Double = 0.45
+    /// Outer radius of the focus-highlight halo drawn around the
+    /// centroid that matches the currently-selected utterance's
+    /// speaker. Sized about 2.4× the centroid radius so the ring
+    /// reads as a clear emphasis without crowding adjacent nodes.
+    nonisolated private static let highlightHaloRadius: CGFloat = 12
     /// Padding inside the canvas so the dots don't kiss the edges.
     nonisolated private static let canvasInset: CGFloat = 10
 
@@ -130,6 +142,32 @@ struct SpeakerClusterCard: View {
                         x: center.x - r, y: center.y - r,
                         width: 2 * r, height: 2 * r
                     )
+                    // Highlight ring around the focused-utterance's
+                    // centroid: a wider halo in the speaker's own
+                    // tint behind the filled dot so the matching
+                    // node pops without obscuring its position.
+                    // Drawn before the fill + standard white stroke
+                    // so those overlay it cleanly. Skipped when no
+                    // utterance is focused or when the focused row's
+                    // speaker has no centroid in this snapshot
+                    // (orphan after reassignment / DB-only entry).
+                    if let highlight = highlightedSpeakerID,
+                       p.speakerID == highlight {
+                        let haloR = Self.highlightHaloRadius
+                        let haloRect = CGRect(
+                            x: center.x - haloR, y: center.y - haloR,
+                            width: 2 * haloR, height: 2 * haloR
+                        )
+                        ctx.fill(
+                            Path(ellipseIn: haloRect),
+                            with: .color(p.color.opacity(0.30))
+                        )
+                        ctx.stroke(
+                            Path(ellipseIn: haloRect),
+                            with: .color(p.color),
+                            lineWidth: 2
+                        )
+                    }
                     ctx.fill(Path(ellipseIn: rect), with: .color(p.color))
                     ctx.stroke(
                         Path(ellipseIn: rect),
@@ -173,6 +211,7 @@ struct SpeakerClusterCard: View {
     fileprivate struct Point: Sendable {
         let x: Float
         let y: Float
+        let speakerID: String
         let color: Color
         let isCentroid: Bool
     }
@@ -292,6 +331,7 @@ struct SpeakerClusterCard: View {
             }
             points.append(Point(
                 x: x, y: y,
+                speakerID: rows[i].speakerID,
                 color: speakerTint(for: rows[i].speakerID),
                 isCentroid: rows[i].isCentroid
             ))

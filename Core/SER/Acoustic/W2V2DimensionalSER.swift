@@ -105,8 +105,11 @@ public actor W2V2DimensionalSER: DimensionalAcousticSER {
     }
 
     private func invoke(samples: [Float], frameCount n: Int) throws -> [Float] {
+        // audeering preprocessor_config.json sets `do_normalize: true`;
+        // feeding raw audio shifts the input distribution off training.
+        let normalized = Wav2Vec2Preprocess.normalize(samples)
         let bytes = n * MemoryLayout<Float>.size
-        let inputData = samples.withUnsafeBufferPointer { src -> NSMutableData in
+        let inputData = normalized.withUnsafeBufferPointer { src -> NSMutableData in
             NSMutableData(bytes: src.baseAddress, length: bytes)
         }
         let inputValue = try ORTValue(

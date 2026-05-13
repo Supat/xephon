@@ -32,6 +32,7 @@
 "review.commit" = "Commit";
 "review.dismiss" = "Dismiss";
 "review.range" = "Range…";
+"review.reevaluate" = "Re-evaluate";
 "review.kind.homophone" = "Homophone";
 "review.kind.contextual" = "Context";
 "review.kind.grammar" = "Grammar";
@@ -94,12 +95,21 @@
 "statistics.header" = "Statistics";
 "statistics.empty" = "No labels yet.";
 "cluster.heatmap.header" = "Speaker Distance";
+"cluster.heatmap.tip.close" = "Close — diarizer may be conflating these speakers.";
+"cluster.heatmap.tip.mid" = "Moderate separation.";
+"cluster.heatmap.tip.far" = "Clean separation.";
 "cluster.scatter.header" = "Speaker Cluster";
 "cluster.empty" = "No speakers yet.";
 "cluster.warmingUp" = "Collecting observations…";
 "summarizer.header" = "Summarizer";
 "roster.header" = "Speakers";
 "roster.empty" = "No speakers yet.";
+"roster.gender.female" = "Female";
+"roster.gender.male" = "Male";
+"roster.gender.child" = "Child";
+"roster.gender.female.initial" = "F";
+"roster.gender.male.initial" = "M";
+"roster.gender.child.initial" = "C";
 "ser.aggregate.header" = "SER Aggregate";
 "ser.aggregate.empty" = "No utterances yet.";
 "ser.aggregate.plutchik" = "Text SER · Plutchik";
@@ -108,6 +118,7 @@
 "ser.aggregate.acoustic.empty" = "No acoustic rows.";
 "ser.aggregate.va" = "Valence × Arousal";
 "ser.aggregate.va.empty" = "No fused V/A rows.";
+"ser.aggregate.shape.footnote" = "Why text and acoustic are drawn differently: Plutchik's 8 classes are defined as a wheel with opposites across the circle (joy↔sadness, anger↔fear, trust↔disgust, surprise↔anticipation), so a radial layout preserves the model's structure. The acoustic 9-class softmax includes neutral / other / unknown and has no circular geometry, so bars read better — easier to scan top-N when one class dominates (common with emotion2vec+ on conversational audio).";
 "fusion.legend.header" = "Fusion Strip";
 "fusion.legend.acoustic" = "Acoustic SER";
 "fusion.legend.acoustic.detail" = "W2V2 V/A/D + emotion2vec 9-class score.";
@@ -126,7 +137,6 @@
 "speaker.action.title" = "Speaker";
 "speaker.action.reassign.header" = "Reassign to";
 "speaker.action.teach" = "Teach diarizer";
-"speaker.action.newSpeaker" = "New Speaker";
 "speaker.action.promoteNewSpeaker" = "Promote New Speaker";
 "speaker.action.rename" = "Rename Speaker…";
 "edit.title" = "Edit Utterance";

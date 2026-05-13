@@ -222,7 +222,6 @@ struct TranscriptList: View {
             hasSpeakerMismatch: hasSpeakerMismatch,
             knownSpeakerIDs: recorder.knownSpeakerIDs(),
             speakerDisplayName: { recorder.speakerDisplayName(forStored: $0) },
-            nextNewSpeakerID: { recorder.nextAvailableSpeakerID() },
             fusionAcousticWeight: recorder.fusionAcousticWeight,
             fusionTextWeightFloor: recorder.fusionTextWeightFloor,
             onReassignSpeaker: { newSpeakerID in
@@ -249,7 +248,11 @@ struct TranscriptList: View {
                     selectedUtteranceID = item.u.id
                 }
             },
-            onCorrectMismatch: { onCorrectMismatch(item.u) }
+            onCorrectMismatch: { onCorrectMismatch(item.u) },
+            teachingDiarizer: Binding(
+                get: { recorder.teachingDiarizer },
+                set: { recorder.teachingDiarizer = $0 }
+            )
             // Note: the gate "only when source audio is present"
             // moved to the dialog itself, which hides the time
             // spinners + play button when the session is mic-mode.

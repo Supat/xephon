@@ -659,7 +659,10 @@ struct ContentView: View {
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
-                        SpeakerClusterCard(cluster: recorder.speakerCluster)
+                        SpeakerClusterCard(
+                            cluster: recorder.speakerCluster,
+                            highlightedSpeakerID: focusedUtteranceSpeakerID
+                        )
                         SpeakerHeatmapCard(cluster: recorder.speakerCluster)
                         SpeakerRosterCard(
                             recorder: recorder,
@@ -868,6 +871,15 @@ struct ContentView: View {
     /// even across the layout-flux window of a row expansion;
     /// `.onDisappear` was firing unreliably in that case and
     /// leaving phantom entries that stretched the highlighter.
+    /// Speaker id of the currently-focused utterance, or nil when
+    /// no row is focused or the focused row was just deleted.
+    /// Feeds the cluster-scatter highlight ring so the user can
+    /// see which centroid corresponds to the row they're inspecting.
+    private var focusedUtteranceSpeakerID: String? {
+        guard let id = selectedUtteranceID else { return nil }
+        return recorder.utterances.first(where: { $0.id == id })?.speakerID
+    }
+
     private var selectedUtteranceRange: (start: TimeInterval, end: TimeInterval)? {
         if let id = selectedUtteranceID,
            let u = recorder.utterances.first(where: { $0.id == id }) {

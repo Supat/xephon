@@ -1,5 +1,7 @@
 import SwiftUI
 import Diarization
+import SERAcoustic
+import Fusion
 
 /// Read-only directory of every speaker the session knows about and
 /// the user-supplied display name (if any) attached to each one.
@@ -65,6 +67,7 @@ struct SpeakerRosterCard: View {
 
     @ViewBuilder
     private func row(for id: String) -> some View {
+        let demo = demographics[id]
         HStack(spacing: 8) {
             Text(id)
                 .font(.caption.monospaced())
@@ -82,7 +85,121 @@ struct SpeakerRosterCard: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
+            if let gender = demo?.majorityGender {
+                genderChip(gender)
+            }
+            if let range = demo?.ageRangeYears {
+                Text(Self.formatAgeRange(range))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 4)
         }
     }
+
+    /// Per-row demographics from the W2V2 age-gender model. Built
+    /// once per render by walking `recorder.utterances`. Speakers
+    /// with no age-gender data (model not loaded, or only too-short
+    /// clips) are absent from the map — the row falls back to id +
+    /// name only.
+    private var demographics: [String: SpeakerDemographics] {
+        var votes: [String: [AgeGenderEstimate.Gender: Int]] = [:]
+        var ages: [String: (min: Float, max: Float)] = [:]
+        for utt in recorder.utterances {
+            guard let ag = utt.ageGender else { continue }
+            let speaker = utt.speakerID
+            if let top = ag.topGender {
+                votes[speaker, default: [:]][top, default: 0] += 1
+            }
+            let years = ag.ageYears
+            if let existing = ages[speaker] {
+                ages[speaker] = (
+                    min: min(existing.min, years),
+                    max: max(existing.max, years)
+                )
+            } else {
+                ages[speaker] = (min: years, max: years)
+            }
+        }
+        var out: [String: SpeakerDemographics] = [:]
+        let allSpeakers = Set(votes.keys).union(ages.keys)
+        for speaker in allSpeakers {
+            // Plurality vote, with CaseIterable order as the
+            // deterministic tiebreaker so the chip doesn't flicker
+            // between re-renders when two classes share the lead.
+            let majority = votes[speaker].flatMap { tally in
+                AgeGenderEstimate.Gender.allCases.max { a, b in
+                    (tally[a] ?? 0) < (tally[b] ?? 0)
+                }.flatMap { winner in
+                    (tally[winner] ?? 0) > 0 ? winner : nil
+                }
+            }
+            let range: ClosedRange<Float>? = ages[speaker].map { $0.min ... $0.max }
+            out[speaker] = SpeakerDemographics(
+                majorityGender: majority,
+                ageRangeYears: range
+            )
+        }
+        return out
+    }
+
+    /// "32" if min==max (single observation or zero spread), else
+    /// "32–48" with an en-dash. Years are rounded to the nearest
+    /// integer because the model's regression resolution is much
+    /// coarser than a decimal point would imply.
+    private static func formatAgeRange(_ range: ClosedRange<Float>) -> String {
+        let lo = Int(range.lowerBound.rounded())
+        let hi = Int(range.upperBound.rounded())
+        if lo == hi {
+            return "\(lo)"
+        }
+        return "\(lo)\u{2013}\(hi)"
+    }
+
+    @ViewBuilder
+    private func genderChip(_ gender: AgeGenderEstimate.Gender) -> some View {
+        let tint = Self.genderTint(gender)
+        Text(Self.genderInitial(gender))
+            .font(.caption2.monospaced().bold())
+            .foregroundStyle(tint)
+            .frame(width: 14, height: 14)
+            .background(tint.opacity(0.18), in: Circle())
+            .accessibilityLabel(Text(Self.genderAccessibilityLabel(gender)))
+    }
+
+    /// Single-letter label so the chip stays compact at the right
+    /// edge of a narrow row. Localized initials live in
+    /// `Localizable.strings` so the chip reads ja/en consistently.
+    private static func genderInitial(_ gender: AgeGenderEstimate.Gender) -> String {
+        switch gender {
+        case .female: return String(localized: "roster.gender.female.initial")
+        case .male: return String(localized: "roster.gender.male.initial")
+        case .child: return String(localized: "roster.gender.child.initial")
+        }
+    }
+
+    private static func genderAccessibilityLabel(_ gender: AgeGenderEstimate.Gender) -> String {
+        switch gender {
+        case .female: return String(localized: "roster.gender.female")
+        case .male: return String(localized: "roster.gender.male")
+        case .child: return String(localized: "roster.gender.child")
+        }
+    }
+
+    /// Distinct hues per class. Female / male use the conventional
+    /// pink/blue (legible cross-culturally and accessible-enough
+    /// against the card background); child uses a neutral teal to
+    /// dodge the gender-binary implication.
+    private static func genderTint(_ gender: AgeGenderEstimate.Gender) -> Color {
+        switch gender {
+        case .female: return Color(red: 0.93, green: 0.30, blue: 0.55)
+        case .male: return Color(red: 0.20, green: 0.45, blue: 0.95)
+        case .child: return Color(red: 0.10, green: 0.65, blue: 0.55)
+        }
+    }
+}
+
+private struct SpeakerDemographics {
+    let majorityGender: AgeGenderEstimate.Gender?
+    let ageRangeYears: ClosedRange<Float>?
 }

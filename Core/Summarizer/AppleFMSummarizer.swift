@@ -73,8 +73,26 @@ public actor AppleFMSummarizer: SessionSummarizer {
         } else {
             truncationNote = ""
         }
+        // Per-speaker demographic roster from the W2V2 age-gender
+        // model. Built off the slice we actually feed the LLM so the
+        // demographics reflect the same window as the per-modality
+        // vectors do. Empty when no row carried age-gender output —
+        // the roster line disappears cleanly in that case.
+        let demographicsBlock = SpeakerDemographicsDigest
+            .build(from: promptUtterances)
+            .renderForPrompt(speakerIDs: speakers, speakerNames: speakerNames)
+        let demographicsLine = demographicsBlock.isEmpty
+            ? ""
+            : "\n\n\(demographicsBlock)"
+        // Pin output language to the user's iPadOS app-language
+        // pick. Apple FM is less prone to language drift than Qwen
+        // but the directive costs ~20 tokens and keeps both
+        // backends behaviorally aligned.
+        let languageDirective = SummarizerLocale.responseLanguageInstruction
         let userMessage = """
-            Speakers present: \(speakers.joined(separator: ", ")).
+            \(languageDirective)
+
+            Speakers present: \(speakers.joined(separator: ", ")).\(demographicsLine)
 
             Utterances:
             \(utteranceLines)\(truncationNote)

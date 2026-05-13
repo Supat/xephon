@@ -370,6 +370,15 @@ final class RecordingController {
     /// as `fusionAcousticWeight`.
     private(set) var fusionTextWeightFloor: Float
 
+    /// Shared "Teach diarizer" toggle state across every row's
+    /// speaker popover. Flipping the switch in one row's popover
+    /// propagates to every other row's popover, so a user
+    /// correcting a batch of misattributions doesn't have to flip
+    /// it repeatedly. Session-only (not persisted) — resets to off
+    /// on launch so the heavier centroid-folding behavior never
+    /// silently survives a cold start.
+    var teachingDiarizer: Bool = false
+
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
         streamingTranscriber: (any StreamingTranscriber)? = nil,
@@ -1757,6 +1766,26 @@ final class RecordingController {
             guard let summary = lastSessionSummary else { return nil }
             return try? JSONEncoder().encode(summary)
         }()
+        // Persist the LLM's transcription review issues alongside
+        // the utterances so reopening a `.xph` shows the same
+        // flagged rows without re-running the multi-second review
+        // pass. Pair them with a per-utterance transcript snapshot
+        // so a stale issue (target row was edited since save) can
+        // be filtered out on load. Snapshot only the utterances
+        // that have an active issue — no point recording text for
+        // rows that aren't flagged.
+        let issuesBlob: Data? = {
+            guard !transcriptionIssues.isEmpty else { return nil }
+            return try? JSONEncoder().encode(transcriptionIssues)
+        }()
+        let issueSnapshots: [UUID: String]? = {
+            guard !transcriptionIssues.isEmpty else { return nil }
+            let flagged = Set(transcriptionIssues.map(\.utteranceID))
+            let map = utts.reduce(into: [UUID: String]()) { acc, u in
+                if flagged.contains(u.id) { acc[u.id] = u.transcript }
+            }
+            return map.isEmpty ? nil : map
+        }()
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -1774,7 +1803,9 @@ final class RecordingController {
                     originalSnapshots: snapshots,
                     handEditChildren: children,
                     diarizationTimeline: timelineBlob,
-                    sessionSummary: summaryBlob
+                    sessionSummary: summaryBlob,
+                    transcriptionIssues: issuesBlob,
+                    transcriptionIssueTranscriptSnapshots: issueSnapshots
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -1792,7 +1823,9 @@ final class RecordingController {
             originalSnapshots: snapshots,
             handEditChildren: children,
             diarizationTimeline: timelineBlob,
-            sessionSummary: summaryBlob
+            sessionSummary: summaryBlob,
+            transcriptionIssues: issuesBlob,
+            transcriptionIssueTranscriptSnapshots: issueSnapshots
         )
     }
 
@@ -1841,10 +1874,27 @@ final class RecordingController {
            let restored = try? JSONDecoder().decode(SessionSummary.self, from: blob) {
             lastSessionSummary = restored
         }
-        // Pending issues don't persist — their utterance IDs
-        // belonged to the previous in-memory session and would
-        // alias onto unrelated rows here. Re-run review if needed.
+        // Restore the LLM-flagged transcription issues if the
+        // bundle carries them, filtering against the saved
+        // transcript snapshots so a row that was edited between
+        // save and re-open doesn't surface a flag pointing at
+        // text that no longer exists. Bundles without the issue
+        // blob (v1 / no review run) reset to empty.
         transcriptionIssues = []
+        if let blob = document.transcriptionIssues,
+           let restored = try? JSONDecoder().decode([TranscriptionIssue].self, from: blob) {
+            let snapshots = document.transcriptionIssueTranscriptSnapshots ?? [:]
+            let liveByID = Dictionary(
+                uniqueKeysWithValues: document.utterances.map { ($0.id, $0) }
+            )
+            transcriptionIssues = restored.filter { issue in
+                guard let live = liveByID[issue.utteranceID] else { return false }
+                // No snapshot means we can't prove staleness; keep
+                // the issue rather than silently dropping it.
+                guard let snapshot = snapshots[issue.utteranceID] else { return true }
+                return snapshot == live.transcript
+            }
+        }
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }
@@ -2397,6 +2447,7 @@ final class RecordingController {
             asrConfidence: fresh.asrConfidence,
             dimensional: fresh.dimensional,
             acousticCategorical: fresh.acousticCategorical,
+            ageGender: fresh.ageGender,
             plutchik: fresh.plutchik,
             textBackend: fresh.textBackend,
             speechBoost: speechBoost,

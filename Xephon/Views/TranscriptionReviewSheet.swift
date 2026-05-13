@@ -45,6 +45,15 @@ struct TranscriptionReviewSheet: View {
     /// user has typed into the inline TextEditor; missing means
     /// "no edit yet, fall through to the row's current transcript".
     @State private var edits: [UUID: String] = [:]
+    /// Issues whose Re-evaluate button has already run successfully
+    /// this session. The pipeline updates the row's stored
+    /// transcript in place, so by the time the user sees the
+    /// refreshed text the inline diff (user-typed vs. row's current)
+    /// reads "no change" and Commit would be disabled. Flagging the
+    /// issue id here force-enables Commit so the user can dismiss
+    /// the (now-resolved) flag with a single tap instead of
+    /// retyping or hunting for the dismiss button.
+    @State private var reevaluatedIssueIDs: Set<UUID> = []
 
     var body: some View {
         NavigationStack {
@@ -193,6 +202,49 @@ struct TranscriptionReviewSheet: View {
                     }
                     .buttonStyle(.bordered)
                     if audioEditingEnabled {
+                        // Re-evaluate hands the row's *unchanged*
+                        // audio back to the pipeline: offline ASR,
+                        // SER, fusion, the works. Useful when the
+                        // LLM flagged the row but the user trusts
+                        // a fresh model pass more than their own
+                        // inline correction. The issue stays in
+                        // the list afterward (so the user can see
+                        // what changed); Commit becomes the
+                        // affordance to acknowledge + dismiss.
+                        // Each row's spinner / disabled state is
+                        // independent — the controller still
+                        // serializes overlapping re-eval requests
+                        // via `reevaluatingUtteranceID`, but we
+                        // don't disable the other rows' buttons
+                        // visually so the user sees clearly which
+                        // row is currently running.
+                        let isThisRunning =
+                            recorder.reevaluatingUtteranceID == utterance.id
+                        Button {
+                            recorder.stopPlayback()
+                            let issueID = issue.id
+                            Task {
+                                await recorder.reevaluate(utterance)
+                                // Drop any stale inline edit so the
+                                // TextEditor re-binds to the
+                                // refreshed row transcript.
+                                edits.removeValue(forKey: issueID)
+                                reevaluatedIssueIDs.insert(issueID)
+                            }
+                        } label: {
+                            if isThisRunning {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Label(
+                                    String(localized: "review.reevaluate"),
+                                    systemImage: "arrow.clockwise"
+                                )
+                                .labelStyle(.iconOnly)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isThisRunning)
                         Button(String(localized: "review.range")) {
                             recorder.stopPlayback()
                             editingIssueID = issue.id
@@ -242,15 +294,16 @@ struct TranscriptionReviewSheet: View {
         )
     }
 
-    /// Commit enabled when the user has typed something different
-    /// from the row's current text. Identical-to-original commits
-    /// would spend SER + fusion cycles on a no-op; if the user
-    /// thinks the row is fine after all, the right affordance is
-    /// Dismiss, not Commit.
+    /// Commit enabled when either (a) the user has typed something
+    /// different from the row's current text — the inline-edit case
+    /// — or (b) the row was just re-evaluated, in which case Commit
+    /// is the user's "acknowledge + dismiss" affordance and runs no
+    /// further edit pass.
     private func isCommitEnabled(
         for issue: TranscriptionIssue,
         original: String
     ) -> Bool {
+        if reevaluatedIssueIDs.contains(issue.id) { return true }
         let current = (edits[issue.id] ?? original)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedOriginal = original
@@ -264,6 +317,16 @@ struct TranscriptionReviewSheet: View {
         original: String
     ) {
         recorder.stopPlayback()
+        // Post-reeval Commit is a no-op accept: the pipeline already
+        // refreshed the row, so spending another `commitHandEdit`
+        // pass on the same text wastes SER + fusion cycles and would
+        // also clobber `wasReevaluated` with `wasHandEdited`.
+        if reevaluatedIssueIDs.contains(issue.id) {
+            recorder.dismissTranscriptionIssue(id: issue.id)
+            edits.removeValue(forKey: issue.id)
+            reevaluatedIssueIDs.remove(issue.id)
+            return
+        }
         let newText = edits[issue.id] ?? original
         Task {
             await recorder.commitHandEdit(
