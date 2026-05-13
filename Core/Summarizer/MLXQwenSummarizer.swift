@@ -26,13 +26,15 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     private let modelDirectory: URL
     private var container: ModelContainer?
 
-    /// Hard cap on tokens the LLM may emit per summary. Tuned to
-    /// the realistic size of the structured JSON we ask for (topic
-    /// + overall mood + ~5–8 per-speaker paragraphs) plus generous
-    /// headroom. Critical not to leave this nil — Qwen will run to
-    /// EOS otherwise, and the unbounded run can push the app past
-    /// its memory budget alongside the 4.3 GB resident weights.
-    private static let maxOutputTokens = 2048
+    /// Hard cap on tokens the LLM may emit per summary. The output
+    /// JSON is topic + overall mood + a per-speaker paragraph for
+    /// every speaker in the input; a busy session with 4–6 speakers
+    /// can want 3–4k tokens of output to fully populate. 2048 was
+    /// landing the parser at "Unexpected end of file" on
+    /// real-world conversations. 4096 fits the realistic max; the
+    /// tolerant parser below salvages the prefix when the model
+    /// still runs over.
+    private static let maxOutputTokens = 4096
 
     /// Cap on the number of utterances we feed into a single
     /// summary pass. Each row carries the full acoustic 9-class
@@ -344,10 +346,12 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         }.joined(separator: " ")
     }
 
-    /// Decode the LLM's JSON output. Robust against the common
-    /// failure modes of small-LLM output: leading / trailing prose
-    /// outside the JSON block, fenced code blocks, or partial
-    /// trailing fragments.
+    /// Decode the LLM's JSON output. Tolerates `<think>` blocks
+    /// (defensive even though `/no_think` is in the prompt),
+    /// ```fence``` wrappers, AND truncated output — when the model
+    /// ran past the output-token cap mid-`perSpeaker` array we
+    /// recover the per-speaker entries it managed to complete
+    /// rather than throwing the whole summary away.
     private static func parse(
         raw: String,
         speakerNames: [String: String],
@@ -360,13 +364,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         // any other processing.
         let dethought = stripThinkBlocks(raw)
         let stripped = stripCodeFence(dethought)
-        guard let braceStart = stripped.firstIndex(of: "{"),
-              let braceEnd = stripped.lastIndex(of: "}") else {
+        guard let braceStart = stripped.firstIndex(of: "{") else {
             throw SummarizerError.decodeFailed(reason: "no JSON object found")
-        }
-        let jsonString = String(stripped[braceStart...braceEnd])
-        guard let data = jsonString.data(using: .utf8) else {
-            throw SummarizerError.decodeFailed(reason: "non-utf8 output")
         }
         struct Wire: Decodable {
             struct PerSpeaker: Decodable {
@@ -378,13 +377,42 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             let overallMood: String
             let perSpeaker: [PerSpeaker]
         }
+        // Strict path: the substring between the first `{` and the
+        // last `}` parses as our schema whenever the model closed
+        // the JSON cleanly.
+        let strict: String? = {
+            guard let braceEnd = stripped.lastIndex(of: "}") else { return nil }
+            return String(stripped[braceStart...braceEnd])
+        }()
         let decoded: Wire
-        do {
-            decoded = try JSONDecoder().decode(Wire.self, from: data)
-        } catch {
-            throw SummarizerError.decodeFailed(
-                reason: String(describing: error)
+        if let strict, let data = strict.data(using: .utf8),
+           let ok = try? JSONDecoder().decode(Wire.self, from: data) {
+            decoded = ok
+        } else {
+            // Truncated output: walk the `perSpeaker` array forward
+            // from its `[`, find the last balanced entry object, and
+            // close the array + outer object manually. The in-flight
+            // (broken) entry is discarded; every complete one — plus
+            // `topic` and `overallMood` from earlier in the buffer —
+            // is preserved.
+            guard let recovered = recoverTruncatedSummary(
+                stripped: String(stripped[braceStart...])
+            ) else {
+                throw SummarizerError.decodeFailed(reason: "no JSON object found")
+            }
+            guard let data = recovered.data(using: .utf8) else {
+                throw SummarizerError.decodeFailed(reason: "non-utf8 output")
+            }
+            AppLog.app.info(
+                "MLXQwenSummarizer recovered truncated JSON (\(data.count, privacy: .public) bytes)"
             )
+            do {
+                decoded = try JSONDecoder().decode(Wire.self, from: data)
+            } catch {
+                throw SummarizerError.decodeFailed(
+                    reason: String(describing: error)
+                )
+            }
         }
         let perSpeaker = decoded.perSpeaker.map { entry in
             SessionSummary.SpeakerSummary(
@@ -401,6 +429,84 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             model: modelIdentifier,
             generatedAt: Date()
         )
+    }
+
+    /// Salvage a truncated `{"topic":..., "overallMood":...,
+    /// "perSpeaker":[...]}` blob by scanning the `perSpeaker` array,
+    /// tracking string-literal and brace-nesting state, and
+    /// remembering the position immediately after the *most recent
+    /// top-level object that closed* inside the array. When the scan
+    /// hits end-of-input mid-entry, we cut at that remembered
+    /// position and synthesize `]}` to close the array and outer
+    /// object. `topic` and `overallMood` appear before `perSpeaker`
+    /// in the prompt's schema description, so the model emits them
+    /// first and they survive intact inside the prefix we keep.
+    ///
+    /// Returns nil when the input doesn't look like our expected
+    /// shape — let the caller surface the original parse error in
+    /// that case rather than silently returning an empty summary.
+    private static func recoverTruncatedSummary(stripped: String) -> String? {
+        guard let perSpeakerKey = stripped.range(of: "\"perSpeaker\"") else {
+            return nil
+        }
+        guard let arrayOpenRange = stripped.range(
+            of: "[",
+            range: perSpeakerKey.upperBound..<stripped.endIndex
+        ) else {
+            return nil
+        }
+
+        var depth = 0
+        var inString = false
+        var escape = false
+        var lastCompleteEntryEnd: String.Index? = nil
+
+        var i = arrayOpenRange.upperBound
+        while i < stripped.endIndex {
+            let ch = stripped[i]
+            if escape {
+                escape = false
+            } else if inString {
+                if ch == "\\" {
+                    escape = true
+                } else if ch == "\"" {
+                    inString = false
+                }
+            } else {
+                switch ch {
+                case "\"":
+                    inString = true
+                case "{":
+                    depth += 1
+                case "}":
+                    depth -= 1
+                    if depth == 0 {
+                        lastCompleteEntryEnd = stripped.index(after: i)
+                    }
+                case "]" where depth == 0:
+                    // Array closed normally — the strict parser
+                    // should have handled this; bail so the caller
+                    // surfaces the original error.
+                    return nil
+                default:
+                    break
+                }
+            }
+            i = stripped.index(after: i)
+        }
+
+        // Cap the prefix at the end of the last complete entry; if
+        // no entry completed, cap at the array opener so we still
+        // emit a valid empty-array summary that carries topic and
+        // overallMood.
+        let cutEnd = lastCompleteEntryEnd ?? arrayOpenRange.upperBound
+        var truncated = String(stripped[..<cutEnd])
+        while let last = truncated.last,
+              last == "," || last.isWhitespace {
+            truncated.removeLast()
+        }
+        truncated.append("]}")
+        return truncated
     }
 
     /// Remove any `<think>...</think>` reasoning blocks Qwen3 emits
