@@ -57,6 +57,7 @@ fi
 MODELS=(
   "kotoba-whisper-v2.0|hf:kotoba-tech/kotoba-whisper-v2.0|"
   "w2v2-msp-dim|hf:audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim|"
+  "w2v2-age-gender|hf:audeering/wav2vec2-large-robust-6-ft-age-gender|"
   "emotion2vec-plus-large|hf:emotion2vec/emotion2vec_plus_large|"
 )
 
@@ -190,6 +191,7 @@ quantize_fp16() {
   touch "$sentinel"
 }
 quantize_fp16 Models/w2v2-msp-dim/model.onnx
+quantize_fp16 Models/w2v2-age-gender/model.onnx
 quantize_fp16 Models/wrime-roberta/model.onnx
 quantize_fp16 Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx
 

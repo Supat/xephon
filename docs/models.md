@@ -27,6 +27,12 @@ Fill rows in as `scripts/fetch_models.sh` is implemented and benchmarks run.
 | emotion2vec_plus_large | `emotion2vec/emotion2vec_plus_large` | Apache-2.0 | ONNX → Core ML | 9-class. Cross-lingual. |
 | Bagus/wav2vec2-xlsr-japanese-SER | HF | research demo | optional | JTES-trained; third opinion only. |
 
+## Speaker demographics (optional)
+
+| Model | Source | License | Conversion | Notes |
+|---|---|---|---|---|
+| audeering W2V2-large-robust-6-ft-age-gender | `audeering/wav2vec2-large-robust-6-ft-age-gender` | CC-BY-NC 4.0 ⚠️ | ONNX → ORT CoreML EP (FP16-quantized via `scripts/quantize_onnx_fp16.py`) | Continuous age regression + 3-class gender softmax (female/male/child). Same W2V2 backbone as the V/A/D model so the existing ONNX-via-ORT path applies. Non-commercial; fits the research-only posture. Off by default — wire up when the demographics surface is built. |
+
 ## SER (text)
 
 | Model | Source | License | Notes |
