@@ -2666,6 +2666,27 @@ final class RecordingController {
             ranges: plans.map { ($0.start, $0.end) },
             fallback: fallbackSpeaker
         )
+        // Push the per-slice speakers back onto the cumulative
+        // timeline so the strip reflects the same per-instant
+        // labels the hand-edit's split rows will show. Plans are
+        // contiguous and cover `[plans.first.start, plans.last.end]`
+        // by construction (see `planHandEditSentences`).
+        if let firstStart = plans.first?.start,
+           let lastEnd = plans.last?.end {
+            let timelineSlices: [DiarizedSegment] = plans.enumerated().map { i, plan in
+                let speaker = i < sliceSpeakers.count ? sliceSpeakers[i] : fallbackSpeaker
+                return DiarizedSegment(
+                    speakerID: speaker,
+                    start: plan.start,
+                    end: plan.end
+                )
+            }
+            rewriteTimelineWithSlices(
+                coveringStart: firstStart,
+                coveringEnd: lastEnd,
+                slices: timelineSlices
+            )
+        }
         var freshEstimates: [UtteranceEstimate] = []
         freshEstimates.reserveCapacity(plans.count)
         for (i, plan) in plans.enumerated() {
@@ -3133,6 +3154,43 @@ final class RecordingController {
             // Fully inside → drop.
         }
         rewritten.append(DiarizedSegment(speakerID: speakerID, start: start, end: end))
+        rewritten.sort { $0.start < $1.start }
+        diarizationTimeline = rewritten
+    }
+
+    /// Replace every cumulative-timeline observation overlapping
+    /// `[coveringStart, coveringEnd]` with the per-slice segments
+    /// in `slices`. Segments outside the covered range survive
+    /// intact; segments straddling either boundary get trimmed at
+    /// the boundary; segments fully inside are dropped. Used after
+    /// a multi-sentence hand-edit re-diarizes the parent window —
+    /// without this, the streaming pass's older per-instant
+    /// majority would still drive the timeline strip and disagree
+    /// with the post-edit per-row speaker labels.
+    private func rewriteTimelineWithSlices(
+        coveringStart: TimeInterval,
+        coveringEnd: TimeInterval,
+        slices: [DiarizedSegment]
+    ) {
+        guard coveringEnd > coveringStart, !slices.isEmpty else { return }
+        var rewritten: [DiarizedSegment] = []
+        rewritten.reserveCapacity(diarizationTimeline.count + slices.count)
+        for seg in diarizationTimeline {
+            if seg.end <= coveringStart || seg.start >= coveringEnd {
+                rewritten.append(seg)
+            } else if seg.start < coveringStart && seg.end > coveringEnd {
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: seg.start, end: coveringStart))
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: coveringEnd, end: seg.end))
+            } else if seg.start < coveringStart {
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: seg.start, end: coveringStart))
+            } else if seg.end > coveringEnd {
+                rewritten.append(DiarizedSegment(speakerID: seg.speakerID, start: coveringEnd, end: seg.end))
+            }
+            // Fully inside → drop.
+        }
+        for slice in slices where slice.end > slice.start {
+            rewritten.append(slice)
+        }
         rewritten.sort { $0.start < $1.start }
         diarizationTimeline = rewritten
     }
