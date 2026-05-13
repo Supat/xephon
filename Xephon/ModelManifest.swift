@@ -173,9 +173,19 @@ enum ModelManifest {
                     assetName: "w2v2-model.onnx",
                     installPath: "w2v2-msp-dim/model.onnx",
                     bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "w2v2-msp-dim"),
-                    approximateBytes: 330_752_674,
-                    sha256: "91878961bb39fc324ef04275f18fd35519ccd9f31ff77dccdb1e3b6180366a29"
-                )
+                    approximateBytes: 1_776_524,
+                    sha256: "3b71765f617cc770d2e4cd6e4ca82b1721ef065d651653b929e49f52d590841f"
+                ),
+                // External-data sidecar from the dynamo ONNX exporter
+                // (graph references it by `model.onnx.data` literally
+                // — same arrangement as the age-gender entry below).
+                ModelFile(
+                    assetName: "w2v2-model.data",
+                    installPath: "w2v2-msp-dim/model.onnx.data",
+                    bundleResource: BundleLookup(name: "model.onnx", ext: "data", subdirectory: "w2v2-msp-dim"),
+                    approximateBytes: 661_389_312,
+                    sha256: "addde67c46d692dbf8c03b5d02da44391d6a156865c9f88f8d0fc48aac8d463c"
+                ),
             ]
         ),
         ModelEntry(

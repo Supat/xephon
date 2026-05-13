@@ -164,6 +164,18 @@ else
 fi
 
 echo
+echo "[step] Exporting W2V2 V/A/D to ONNX (dimensional SER)…"
+# The audeering HF repo only ships PyTorch weights; the historical
+# `model.onnx` came from a Zenodo upload whose direct URL has
+# 404'd. We export from the local safetensors so the on-disk graph
+# is always reproducible.
+if [ ! -f Models/w2v2-msp-dim/model.onnx ]; then
+    python scripts/export_w2v2_msp_dim_onnx.py
+else
+    echo "[skip] w2v2-msp-dim (already exported)"
+fi
+
+echo
 echo "[step] Exporting W2V2 age-gender to ONNX (demographics)…"
 if [ ! -f Models/w2v2-age-gender/model.onnx ]; then
     python scripts/export_w2v2_age_gender_onnx.py
@@ -198,13 +210,16 @@ quantize_fp16() {
   python scripts/quantize_onnx_fp16.py "$model"
   touch "$sentinel"
 }
-quantize_fp16 Models/w2v2-msp-dim/model.onnx
-# w2v2-age-gender intentionally skipped: the dynamo-exported graph
-# carries an op layout the onnxruntime.transformers FP16 converter
-# mishandles (duplicate `graph_input_cast0` names → ORT rejects the
-# converted model at load). FP32 is ~348 MB; CoreML EP will still
-# compute in FP16 internally on M-series, so the runtime cost is the
-# same — only disk size and download bandwidth take the hit.
+# w2v2-msp-dim and w2v2-age-gender are intentionally NOT FP16-
+# quantized — the dynamo-exported graph carries an op layout the
+# onnxruntime.transformers FP16 converter mishandles (duplicate
+# `graph_input_cast0` / collapsed cast nodes both producing the
+# same tensor → ORT rejects the converted model at load with
+# "two nodes with same node name" / "Duplicate definition of
+# name"). FP32 ships at ~660 MB (V/A/D) and ~348 MB (age-gender);
+# CoreML EP still computes in FP16 internally on M-series, so
+# the runtime cost is the same — only disk size and download
+# bandwidth take the hit.
 quantize_fp16 Models/wrime-roberta/model.onnx
 quantize_fp16 Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx
 
