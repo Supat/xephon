@@ -31,9 +31,6 @@ struct SummarizerCard: View {
                 Text(String(localized: "settings.summarizer.enable"))
                     .font(.callout)
                 Spacer(minLength: 0)
-                if recorder.summarizerEnabled {
-                    summarizerBackendPicker
-                }
                 Toggle(
                     "",
                     isOn: Binding(
@@ -47,6 +44,12 @@ struct SummarizerCard: View {
                 .toggleStyle(.switch)
             }
             if recorder.summarizerEnabled {
+                HStack(spacing: 12) {
+                    Text(String(localized: "settings.summarizer.backend"))
+                        .font(.callout)
+                    Spacer(minLength: 0)
+                    summarizerBackendPicker
+                }
                 summarizerStatusLine
             }
         }
