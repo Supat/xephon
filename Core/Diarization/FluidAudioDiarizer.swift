@@ -1,5 +1,4 @@
 import Foundation
-import CoreML
 import FluidAudio
 import Audio
 import XephonLogging
@@ -15,16 +14,8 @@ public actor FluidAudioDiarizer: Diarizer {
     private let kind: FluidDiarizerKind
     // FluidAudio's DiarizerManager isn't formally Sendable; it's an internal
     // class with its own thread safety. Mark unsafe so Swift 6 lets us hold it
-    // inside an actor and call its async methods. `var` rather than `let`
-    // because `applyConfig(_:)` swaps it for a fresh manager when the user
-    // tunes thresholds mid-session — the manager's own `config` field is
-    // immutable so a new instance is the only way to change it.
-    private nonisolated(unsafe) var manager: DiarizerManager
-    /// Snapshot of the config the current `manager` was constructed
-    /// with. Surfaced via `currentConfig` so the controller / UI
-    /// can render the live values without reaching into FluidAudio
-    /// internals (its `DiarizerManager.config` is `internal`).
-    private var configSnapshot: DiarizerConfig
+    // inside an actor and call its async methods.
+    private nonisolated(unsafe) let manager: DiarizerManager
 
     /// Default config tuned for conversational speech. The two
     /// values that differ from `DiarizerConfig.default` are:
@@ -61,86 +52,6 @@ public actor FluidAudioDiarizer: Diarizer {
     ) {
         self.kind = kind
         self.manager = DiarizerManager(config: config)
-        self.configSnapshot = config
-    }
-
-    /// Project the FluidAudio config onto the public tuning
-    /// surface. The UI / controller never see FluidAudio's full
-    /// `DiarizerConfig` — just the two knobs that meaningfully
-    /// affect speaker assignment.
-    public var currentTuning: DiarizationTuning {
-        DiarizationTuning(
-            clusteringThreshold: configSnapshot.clusteringThreshold,
-            minSpeechDuration: configSnapshot.minSpeechDuration
-        )
-    }
-
-    /// Apply the tuning by building a fresh `DiarizerConfig` that
-    /// keeps every other field at its current value and swapping
-    /// `clusteringThreshold` / `minSpeechDuration`. Delegates to
-    /// the heavy lifting in `applyConfig(_:)`.
-    public func applyTuning(_ tuning: DiarizationTuning) async throws {
-        var fresh = configSnapshot
-        fresh.clusteringThreshold = tuning.clusteringThreshold
-        fresh.minSpeechDuration = tuning.minSpeechDuration
-        try await applyConfig(fresh)
-    }
-
-    /// Swap the underlying manager for one constructed with
-    /// `config`. The current speaker DB is exported and re-imported
-    /// into the fresh manager so user-promoted speakers and their
-    /// embeddings survive the swap; the cumulative timeline in
-    /// `AnalysisPipeline` (a separate field) is *not* reset by this
-    /// call — the controller decides whether to wipe and re-diarize
-    /// past audio after the swap.
-    ///
-    /// Re-runs model load against `.cpuAndNeuralEngine` so the new
-    /// manager honors the same iOS-background-safe compute target
-    /// the original load used.
-    private func applyConfig(_ config: DiarizerConfig) async throws {
-        // Snapshot before swap — `exportSpeakerDatabase` reads from
-        // the live manager's SpeakerManager.
-        let dbBlob = await exportSpeakerDatabase()
-
-        let freshManager = DiarizerManager(config: config)
-        let coreMLConfig = MLModelConfiguration()
-        coreMLConfig.computeUnits = .cpuAndNeuralEngine
-        do {
-            let models = try await DiarizerModels.download(
-                configuration: coreMLConfig
-            )
-            freshManager.initialize(models: models)
-        } catch {
-            throw DiarizationError.modelUnavailable(reason: String(describing: error))
-        }
-        self.manager = freshManager
-        self.configSnapshot = config
-
-        if let dbBlob {
-            // Restore the speaker DB into the new manager. Decoder
-            // errors aren't fatal — a fresh DB just means future
-            // segments cluster from scratch, which is the desired
-            // behavior when the user's tuning radically reshapes
-            // speaker boundaries anyway.
-            do {
-                let speakers = try JSONDecoder().decode([Speaker].self, from: dbBlob)
-                await freshManager.speakerManager.initializeKnownSpeakers(
-                    speakers,
-                    mode: .reset
-                )
-                AppLog.diarization.info(
-                    "diarizer reconfigured (clusteringThreshold=\(config.clusteringThreshold, privacy: .public), minSpeechDuration=\(config.minSpeechDuration, privacy: .public)); restored \(speakers.count, privacy: .public) speakers"
-                )
-            } catch {
-                AppLog.diarization.warning(
-                    "diarizer reconfigured but DB re-import failed: \(String(describing: error), privacy: .public)"
-                )
-            }
-        } else {
-            AppLog.diarization.info(
-                "diarizer reconfigured (clusteringThreshold=\(config.clusteringThreshold, privacy: .public), minSpeechDuration=\(config.minSpeechDuration, privacy: .public)); empty DB"
-            )
-        }
     }
 
     public func diarize(_ buffer: AudioChunk) async throws -> [DiarizedSegment] {
@@ -310,21 +221,7 @@ public actor FluidAudioDiarizer: Diarizer {
     private func loadModels() async throws {
         AppLog.diarization.info("Downloading FluidAudio diarizer models (first run)…")
         do {
-            // Pin to `.cpuAndNeuralEngine` so the diarizer never
-            // submits Metal work. iOS revokes background GPU access
-            // even with the `audio` background mode declared
-            // (E5RT / kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted),
-            // which crashed the continuous-diarize loop the moment
-            // the user switched to another app mid-recording. The
-            // ANE doesn't share that restriction and runs the
-            // Sortformer + embedding models comfortably; in
-            // foreground there's no measurable latency difference
-            // either, so this is a strict win.
-            let configuration = MLModelConfiguration()
-            configuration.computeUnits = .cpuAndNeuralEngine
-            let models = try await DiarizerModels.download(
-                configuration: configuration
-            )
+            let models = try await DiarizerModels.download()
             manager.initialize(models: models)
         } catch {
             throw DiarizationError.modelUnavailable(reason: String(describing: error))

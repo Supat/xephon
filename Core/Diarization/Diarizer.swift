@@ -1,32 +1,6 @@
 import Foundation
 import Audio
 
-/// Knobs the controller / UI can tune on a diarizer mid-session.
-/// Deliberately narrower than FluidAudio's full `DiarizerConfig` —
-/// only the two thresholds the user has a mental model for and that
-/// produce visibly different speaker assignments. Adding a third
-/// knob here forces a conscious choice rather than spraying every
-/// FluidAudio field into the UI.
-///
-/// Kept inside the Diarization module so the Xephon target and the
-/// pipeline don't have to take a hard dependency on FluidAudio just
-/// to talk about tuning.
-public struct DiarizationTuning: Sendable, Hashable {
-    /// Clustering threshold for speaker embeddings. Lower values
-    /// split more aggressively (more speakers); higher values
-    /// merge similar voices into one ID. Reasonable range 0.5–0.9.
-    public var clusteringThreshold: Float
-    /// Minimum speech segment duration in seconds. Shorter segments
-    /// are discarded by the diarizer rather than creating a fresh
-    /// speaker. Reasonable range 0.2–2.0.
-    public var minSpeechDuration: Float
-
-    public init(clusteringThreshold: Float, minSpeechDuration: Float) {
-        self.clusteringThreshold = clusteringThreshold
-        self.minSpeechDuration = minSpeechDuration
-    }
-}
-
 public struct DiarizedSegment: Sendable, Hashable, Codable {
     public let speakerID: String
     public let start: TimeInterval
@@ -114,17 +88,6 @@ public protocol Diarizer: Actor {
     /// deliberate act and shouldn't be silently undone by an
     /// unrelated reassignment elsewhere.
     func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws
-    /// Surface the diarizer's current tuning so the UI can render
-    /// the live values. Implementations that don't expose
-    /// configuration (mocks, alternate backends) can leave the
-    /// default — the controller treats the values as advisory and
-    /// re-reads after every `applyTuning(_:)` call.
-    var currentTuning: DiarizationTuning { get async }
-    /// Reconfigure the underlying model with new thresholds. The
-    /// speaker DB should be preserved across the swap;
-    /// implementations that can't honor that should reset cleanly.
-    /// No-op default for diarizers that don't support tuning.
-    func applyTuning(_ tuning: DiarizationTuning) async throws
 }
 
 public extension Diarizer {
@@ -136,8 +99,4 @@ public extension Diarizer {
     func promoteSpeaker(id: String, embedding: [Float]) async throws {}
     func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws {}
     func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws {}
-    var currentTuning: DiarizationTuning {
-        get async { DiarizationTuning(clusteringThreshold: 0.6, minSpeechDuration: 0.5) }
-    }
-    func applyTuning(_ tuning: DiarizationTuning) async throws {}
 }

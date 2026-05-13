@@ -157,7 +157,10 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
             parts.append(u.speakerID)
         }
         parts.append(String(format: "t=%.1f", u.start))
-        parts.append("\"\(PromptHelpers.escapeForQuotedLiteral(u.transcript))\"")
+        let escaped = u.transcript
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        parts.append("\"\(escaped)\"")
         return parts.joined(separator: " ")
     }
 }
