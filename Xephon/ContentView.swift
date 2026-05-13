@@ -704,16 +704,18 @@ struct ContentView: View {
     }
 
     /// Conversation duration for the timeline strip's X axis.
-    /// Prefer the source-file's full length when known (so the
-    /// strip stays anchored to the recording's true endpoint, not
-    /// the latest utterance). Falls back to the latest utterance
-    /// end, then to the latest diarized observation's end, so the
-    /// strip still has a scale during mic-mode recording before
-    /// any utterance has finalized.
+    /// Always derived from the latest processed timestamp — the
+    /// max of any finalized utterance's end and the diarizer's
+    /// latest observation — so the strip grows in real time as
+    /// analysis progresses. File mode previously preferred the
+    /// source-file's full length here, which made the strip
+    /// snap to its final width the moment the file opened and
+    /// left the highlighter inching along the leftmost few
+    /// percent during analysis. That was jarring — the user
+    /// wants the same "depict what we've actually processed so
+    /// far" semantics they get from a live mic recording, in both
+    /// modes.
     private var transcriptTotalDuration: TimeInterval {
-        if let fileTotal = recorder.fileTotalAudioDuration, fileTotal > 0 {
-            return fileTotal
-        }
         let utteranceMax = recorder.utterances.map(\.end).max() ?? 0
         let timelineMax = recorder.diarizationTimeline.map(\.end).max() ?? 0
         return max(utteranceMax, timelineMax)
