@@ -54,6 +54,12 @@ public actor AudioFileCapture: AudioCapture {
     /// of fast pacing, where playing the file at the analyzer's wall
     /// clock would just produce chipmunked-up noise.
     private let audioOutputEnabled: Bool
+    /// Position to seek to (in file-time seconds) before starting
+    /// the pump. Nonzero only on a pause/resume recreation — the
+    /// controller computes the elapsed audio-time at pause and
+    /// passes it here so the new capture instance picks up where
+    /// the previous one stopped instead of replaying from frame 0.
+    private let startingSecond: TimeInterval
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var pumpTask: Task<Void, Never>?
@@ -65,13 +71,15 @@ public actor AudioFileCapture: AudioCapture {
         chunkFrames: AVAudioFrameCount = 4096,
         realTimePacing: Bool = false,
         fastPaceMultiplier: Int = 8,
-        audioOutputEnabled: Bool = false
+        audioOutputEnabled: Bool = false,
+        startingSecond: TimeInterval = 0
     ) {
         self.fileURL = fileURL
         self.chunkFrames = chunkFrames
         self.realTimePacing = realTimePacing
         self.fastPaceMultiplier = fastPaceMultiplier
         self.audioOutputEnabled = audioOutputEnabled
+        self.startingSecond = startingSecond
     }
 
     public func start() async throws -> CaptureStreams {
@@ -87,6 +95,20 @@ public actor AudioFileCapture: AudioCapture {
         } catch {
             stopAccessingScopedResource()
             throw AudioError.underlying(error)
+        }
+        // Seek before pump start. AVAudioFile.framePosition is the
+        // next-read offset in file-native frames, so multiply
+        // `startingSecond` by the file's native sample rate (NOT
+        // the pipeline's 16 kHz — those can differ for sources at
+        // 44.1/48 kHz). Clamp to file.length so a stale offset
+        // doesn't drive `framePosition` past EOF and produce zero
+        // reads forever.
+        if startingSecond > 0 {
+            let nativeRate = file.processingFormat.sampleRate
+            let targetFrame = AVAudioFramePosition(
+                (startingSecond * nativeRate).rounded()
+            )
+            file.framePosition = min(targetFrame, file.length)
         }
 
         guard let outputFormat = AVAudioFormat(

@@ -62,13 +62,23 @@ public struct RollingAudioBuffer: Sendable {
     /// capacity (so the first append doesn't reallocate) and
     /// re-reserves up to `maxSamples`.
     public mutating func reset() {
+        resetTo(originSec: 0)
+    }
+
+    /// Drop every buffered sample and reseat `origin` at
+    /// `originSec`. Used by the pause/resume path so the
+    /// resumed-audio timestamps the diarizer sees line up with
+    /// the new audio-time the controller is using (either the
+    /// last-utterance-end rewind for file mode, or the wall-clock
+    /// gap for mic mode). Capacity is preserved.
+    public mutating func resetTo(originSec: TimeInterval) {
         samples.removeAll(keepingCapacity: true)
         // Pre-reserve so Array's exponential capacity growth never
         // triggers a multi-MB allocation when the buffer approaches
         // the cap. `reserveCapacity` is a no-op if the existing
         // capacity already covers `maxSamples`.
         samples.reserveCapacity(maxSamples)
-        origin = 0
+        origin = originSec
     }
 
     /// Append new samples, trimming the head first if the result

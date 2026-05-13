@@ -255,6 +255,16 @@ final class RecordingController {
     /// Apply button + shows a spinner while this is on.
     private(set) var diarizerTuningApplyInProgress: Bool = false
 
+    /// Wall-clock timestamp captured at the moment of pause, used
+    /// only in mic-mode resume to compute the pause duration that
+    /// should be reflected as a gap in the audio timeline.
+    /// "Preserves the passage of time" — a 10-minute conversation
+    /// pause shows up as a 10-minute jump in audio time, so emotion
+    /// arcs and per-row time stamps stay meaningful in post-hoc
+    /// review. File mode ignores this field; it rewinds to the
+    /// last finalized utterance instead.
+    private var pauseStartedAt: Date?
+
     /// Time offset (in seconds) added to every incoming ASR segment
     /// before it lands in the session timeline. Bumped on `resume()`
     /// to the audio time at the moment of pause, so the new
@@ -321,6 +331,18 @@ final class RecordingController {
         case microphone
         case file(URL)
     }
+
+    /// Snapshot of the pacing args from the most recent
+    /// `startFromFile` invocation, retained so `resume()` can
+    /// rebuild `AudioFileCapture` with the same playback settings
+    /// (and a starting offset derived from `samplesCaptured`).
+    /// Nil whenever the current session is mic-mode.
+    private struct FileSessionConfig: Equatable {
+        let realTimePacing: Bool
+        let fastPaceMultiplier: Int
+        let audioOutputEnabled: Bool
+    }
+    private var fileSessionConfig: FileSessionConfig?
     private var pipeline: AnalysisPipeline?
     private var pipelineTask: Task<AutoConfiguredPipeline, Never>?
     private let exporter = JSONExporter()
@@ -618,6 +640,8 @@ final class RecordingController {
         sessionToken = UUID()
         utterances = []
         asrTimeOffset = 0
+        fileSessionConfig = nil
+        pauseStartedAt = nil
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
         speakerNameOverrides.removeAll()
@@ -921,7 +945,12 @@ final class RecordingController {
     /// button (the session is already deterministic).
     func pause() async {
         guard phase == .recording else { return }
-        guard case .microphone = sourceMode else { return }
+        // Both mic-mode and file-mode are supported. The mic path
+        // re-acquires the audio engine on resume; the file path
+        // rebuilds `AudioFileCapture` with a `startingSecond` so
+        // the pump picks up where the previous instance stopped
+        // instead of replaying the file from frame 0. See
+        // `resume()` for the recreation logic.
 
         fileEndWatcherTask?.cancel()
         fileEndWatcherTask = nil
@@ -948,6 +977,9 @@ final class RecordingController {
         await analysisTask?.value
         analysisTask = nil
 
+        // Wall-clock at pause. Only consulted by the mic-mode
+        // resume path to compute the gap; file mode ignores it.
+        pauseStartedAt = Date()
         phase = .paused
         liveActivity.scheduleUpdate(currentLiveActivityState)
         AppLog.app.info("recording paused")
@@ -959,13 +991,42 @@ final class RecordingController {
     /// the analysis pumps back up.
     func resume() async {
         guard phase == .paused else { return }
-        // Audio time at the moment of resume = total samples we've
-        // ever captured / sample rate. Pause kept `samplesCaptured`
-        // frozen (no audio flowed), so this equals the audio time
-        // at which the session left off, which is exactly the
-        // offset every new segment from the fresh transcriber
-        // needs added to its local-from-zero start/end.
-        asrTimeOffset = Double(samplesCaptured) / PipelineAudio.sampleRate
+        // Compute the new audio-time origin per mode:
+        //   - file mode: the user wants no audio lost between the
+        //     last finalized utterance and the pause point, so we
+        //     rewind to `utterances.last.end`. Resumed playback
+        //     re-reads any audio between that boundary and the
+        //     pause position, finalizing it as a fresh utterance.
+        //   - mic mode: the user wants the audio timeline to
+        //     reflect real elapsed time, so we add the wall-clock
+        //     pause duration as a gap. The next utterance lands
+        //     `pauseDuration` seconds later than the last one
+        //     instead of stitched seamlessly.
+        // Fallback when no utterances have finalized yet: pin the
+        // offset at the pause-time audio position so the timeline
+        // stays monotonic.
+        let pauseEndAudioTime = Double(samplesCaptured) / PipelineAudio.sampleRate
+        let newOffset: TimeInterval
+        switch sourceMode {
+        case .file:
+            newOffset = utterances.last?.end ?? pauseEndAudioTime
+        case .microphone:
+            let pauseDuration = pauseStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+            newOffset = pauseEndAudioTime + max(0, pauseDuration)
+        }
+        asrTimeOffset = newOffset
+        // Realign the rolling capture buffer + sample counter so
+        // the diarizer's window timestamps (computed from
+        // `capturedAudio.origin + index/sampleRate`) line up with
+        // the new audio-time. Without this the post-resume
+        // diarizationTimeline would have timestamps in the
+        // pre-pause frame, and the strip + per-utterance speaker
+        // resolution would render at wrong positions. We accept
+        // losing the rolling-buffer context window — the diarizer
+        // refills it over the next stride (~2 s).
+        capturedAudio.resetTo(originSec: newOffset)
+        samplesCaptured = Int((newOffset * PipelineAudio.sampleRate).rounded())
+        pauseStartedAt = nil
 
         // `StreamingSpeechAnalyzerTranscriber.finish()` puts the
         // analyzer into a terminal state, so a new instance is
@@ -975,6 +1036,21 @@ final class RecordingController {
         if canRecreateStreamingTranscriber {
             streamingTranscriber = StreamingSpeechAnalyzerTranscriber(
                 locale: sessionLanguage.locale
+            )
+        }
+
+        // File-mode capture is a one-shot pump that always reads
+        // from frame 0. Rebuild it with the new offset so the file
+        // seek + pipeline audio-time agree. Mic-mode capture is a
+        // long-lived actor that re-starts in place — the engine
+        // gets a fresh clock automatically.
+        if case .file(let url) = sourceMode, let cfg = fileSessionConfig {
+            capture = AudioFileCapture(
+                fileURL: url,
+                realTimePacing: cfg.realTimePacing,
+                fastPaceMultiplier: cfg.fastPaceMultiplier,
+                audioOutputEnabled: cfg.audioOutputEnabled,
+                startingSecond: newOffset
             )
         }
 
@@ -993,6 +1069,12 @@ final class RecordingController {
             spawnVolatilePollPump()
             spawnContinuousDiarizeTask()
             spawnSegmentAnalysisTask(segmentStream: segmentStream)
+            // Re-spawn the file-end watcher so an EOF after the
+            // resumed playback still auto-stops the session. Pause
+            // cancelled it; without re-spawning, the file would
+            // exhaust silently and leave the session stuck in
+            // `.recording` until the user hits Stop.
+            spawnFileEndWatcherIfNeeded()
             liveActivity.scheduleUpdate(currentLiveActivityState)
             AppLog.app.info(
                 "recording resumed (asrTimeOffset=\(self.asrTimeOffset, privacy: .public)s)"
@@ -1136,6 +1218,7 @@ final class RecordingController {
             phase = .idle
             await liveActivity.end(finalState: currentLiveActivityState)
             sessionStartedAt = nil
+            pauseStartedAt = nil
             return
         }
         // Re-entrancy guard. Manual Stop and the file-end watcher can both
@@ -1862,6 +1945,20 @@ final class RecordingController {
         audioOutputEnabled: Bool = false
     ) async {
         guard phase == .idle else { return }
+        // Wipe the previous session's observable state BEFORE we
+        // start mutating anything tied to the new file's identity
+        // (playbackSourceURL, fileTotalAudioDuration, sourceMode).
+        // The cumulative-timeline strip computes its width from
+        // `fileTotalAudioDuration` and its highlighter range from
+        // `utterances` + `diarizationTimeline` — if we set the new
+        // file's duration first, the strip scales up to it while
+        // the old session's rows + timeline are still in place,
+        // painting a brief frame where the highlighter sits at the
+        // old positions on the new file's dimensions. The reset
+        // happens again inside `start()` below for the mic path's
+        // benefit; the second call is a no-op against already-empty
+        // state.
+        resetSessionState()
         // Acquire the playback scope synchronously, before any await
         // hop. The picker's implicit grant for the URL is freshest
         // right after the dialog dismisses; by the time the analysis
@@ -1889,6 +1986,14 @@ final class RecordingController {
         asrLatencyMeaningful = realTimePacing
         capture = AudioFileCapture(
             fileURL: url,
+            realTimePacing: realTimePacing,
+            fastPaceMultiplier: fastPaceMultiplier,
+            audioOutputEnabled: audioOutputEnabled
+        )
+        // Remember the pacing so a pause→resume can rebuild this
+        // capture with a starting offset and the same playback
+        // settings the user originally picked.
+        fileSessionConfig = FileSessionConfig(
             realTimePacing: realTimePacing,
             fastPaceMultiplier: fastPaceMultiplier,
             audioOutputEnabled: audioOutputEnabled
