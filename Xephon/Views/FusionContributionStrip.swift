@@ -16,7 +16,7 @@ struct FusionContributionStrip: View {
     let utterances: [UtteranceEstimate]
     let totalDuration: TimeInterval
 
-    private static let height: CGFloat = 8
+    private static let height: CGFloat = 6
     /// Color for the acoustic share (W2V2 + emotion2vec). Matches
     /// the row's "Acoustic SER" section header convention — a
     /// neutral blue that doesn't compete with the speaker palette
