@@ -799,7 +799,13 @@ struct ContentView: View {
         if hasAnyModality, total > 0 {
             FusionContributionStrip(
                 utterances: recorder.utterances,
-                totalDuration: total
+                totalDuration: total,
+                selectedRange: selectedUtteranceRange,
+                onTapAtTime: { t in
+                    guard let target = nearestUtterance(toTime: t) else { return }
+                    selectedUtteranceID = target.id
+                    scrollRequestUtteranceID = target.id
+                }
             )
             .padding(.horizontal, 12)
             .padding(.bottom, 6)

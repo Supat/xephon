@@ -15,6 +15,16 @@ import Fusion
 struct FusionContributionStrip: View {
     let utterances: [UtteranceEstimate]
     let totalDuration: TimeInterval
+    /// Selected utterance's `[start, end]` window. Renders a
+    /// primary-color stroke over that range — matches the diarizer
+    /// and emotion strips so the three highlights line up at the
+    /// same audio time when a row is focused.
+    let selectedRange: (start: TimeInterval, end: TimeInterval)?
+    /// Fires when the user taps a point on the strip; the
+    /// `TimeInterval` is the audio-time the tap location maps to,
+    /// clamped to `[0, totalDuration]`. Same hook the other two
+    /// strips use to route the selection back through ContentView.
+    let onTapAtTime: ((TimeInterval) -> Void)?
 
     private static let height: CGFloat = 6
     /// Color for the acoustic share (W2V2 + emotion2vec). Matches
@@ -53,7 +63,28 @@ struct FusionContributionStrip: View {
                     }
                 }
             }
+            // Same primary-stroke selection overlay the diarizer
+            // and emotion strips use, so all three highlighters
+            // line up at the focused row's audio range.
+            .overlay(alignment: .leading) {
+                if let sel = selectedRange, totalDuration > 0 {
+                    let clampedStart = max(0, min(sel.start, totalDuration))
+                    let clampedEnd = max(clampedStart, min(sel.end, totalDuration))
+                    let x = geo.size.width * CGFloat(clampedStart / totalDuration)
+                    let w = geo.size.width * CGFloat((clampedEnd - clampedStart) / totalDuration)
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.9), lineWidth: 1.5)
+                        .frame(width: max(2, w), height: Self.height)
+                        .offset(x: x)
+                }
+            }
             .clipShape(Capsule())
+            .contentShape(Rectangle())
+            .onTapGesture(coordinateSpace: .local) { location in
+                guard let onTapAtTime, totalDuration > 0, geo.size.width > 0 else { return }
+                let t = totalDuration * Double(location.x / geo.size.width)
+                onTapAtTime(max(0, min(t, totalDuration)))
+            }
         }
         .frame(height: Self.height)
     }
