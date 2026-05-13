@@ -601,9 +601,9 @@ struct ContentView: View {
 
                     StatisticsCard(summary: displayedSummary)
 
-                    SpeakerHeatmapCard(cluster: recorder.speakerCluster)
-
                     SpeakerClusterCard(cluster: recorder.speakerCluster)
+
+                    SpeakerHeatmapCard(cluster: recorder.speakerCluster)
                 }
                 .frame(maxWidth: .infinity)
             }
