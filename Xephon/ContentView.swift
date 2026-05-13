@@ -636,6 +636,7 @@ struct ContentView: View {
                         PipelineCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
 
@@ -648,6 +649,7 @@ struct ContentView: View {
                         StatisticsCard(summary: displayedSummary)
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
 
@@ -657,6 +659,7 @@ struct ContentView: View {
                         SpeakerHeatmapCard(cluster: recorder.speakerCluster)
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
 
@@ -665,6 +668,7 @@ struct ContentView: View {
                         SummarizerCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
             }
