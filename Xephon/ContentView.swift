@@ -680,7 +680,10 @@ struct ContentView: View {
                             totalDuration: displayedSummary.totalDuration
                         )
                         StatisticsCard(summary: displayedSummary)
-                        SERAggregateCard(recorder: recorder)
+                        SERAggregateCard(
+                            recorder: recorder,
+                            focusedUtteranceID: selectedUtteranceID
+                        )
                         FusionLegendCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
@@ -693,13 +696,18 @@ struct ContentView: View {
                     VStack(spacing: 16) {
                         SpeakerRosterCard(
                             recorder: recorder,
-                            cluster: recorder.speakerCluster
-                        )
-                        SpeakerClusterCard(
                             cluster: recorder.speakerCluster,
                             highlightedSpeakerID: focusedUtteranceSpeakerID
                         )
-                        SpeakerHeatmapCard(cluster: recorder.speakerCluster)
+                        SpeakerClusterCard(
+                            cluster: recorder.speakerCluster,
+                            highlightedSpeakerID: focusedUtteranceSpeakerID,
+                            focusedEmbedding: focusedUtteranceEmbedding
+                        )
+                        SpeakerHeatmapCard(
+                            cluster: recorder.speakerCluster,
+                            highlightedSpeakerID: focusedUtteranceSpeakerID
+                        )
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
@@ -910,6 +918,17 @@ struct ContentView: View {
     private var focusedUtteranceSpeakerID: String? {
         guard let id = selectedUtteranceID else { return nil }
         return recorder.utterances.first(where: { $0.id == id })?.speakerID
+    }
+
+    /// Raw speaker embedding of the focused utterance, captured by
+    /// the pipeline at analysis time. Drives the cluster scatter's
+    /// per-observation focus arrow so it points at the *specific*
+    /// node for the focused row instead of falling back to the
+    /// speaker's centroid. Nil when the row predates this capture
+    /// (older session) or the diarizer was unavailable.
+    private var focusedUtteranceEmbedding: [Float]? {
+        guard let id = selectedUtteranceID else { return nil }
+        return recorder.utteranceEmbeddings[id]
     }
 
     private var selectedUtteranceRange: (start: TimeInterval, end: TimeInterval)? {

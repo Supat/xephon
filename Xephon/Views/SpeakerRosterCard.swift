@@ -17,6 +17,11 @@ import Fusion
 struct SpeakerRosterCard: View {
     let recorder: RecordingController
     let cluster: SpeakerClusterSnapshot
+    /// Speaker id of the currently-focused utterance, or nil.
+    /// Drives a soft background tint on the matching row so the
+    /// roster, cluster scatter, and heatmap all light up in sync
+    /// when the user is inspecting a row.
+    var highlightedSpeakerID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -68,6 +73,7 @@ struct SpeakerRosterCard: View {
     @ViewBuilder
     private func row(for id: String) -> some View {
         let demo = demographics[id]
+        let isHighlighted = highlightedSpeakerID == id
         HStack(spacing: 8) {
             Text(id)
                 .font(.caption.monospaced())
@@ -94,7 +100,43 @@ struct SpeakerRosterCard: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
+            // Per-speaker utterance count anchored to the trailing
+            // edge so the roster reads "id · name · demographics …
+            // n" left-to-right. Zero counts surface speakers that
+            // are in the diarizer DB but haven't been claimed by a
+            // row yet — useful diagnostic before the user decides
+            // whether to prune them.
+            Text("\(utteranceCounts[id, default: 0])")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
         }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(
+            // Tinted background only when the row's speaker matches
+            // the currently-focused utterance. Uses that speaker's
+            // own tint at low opacity so the highlight reads in the
+            // same color story the rest of the cluster diagnostics
+            // pages use.
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(
+                    isHighlighted
+                        ? speakerTint(for: id).opacity(0.18)
+                        : Color.clear
+                )
+        )
+    }
+
+    /// Utterance count per speaker id, computed once per render
+    /// from `recorder.utterances`. Speakers not present in any
+    /// utterance read as 0 — useful for spotting diarizer-DB
+    /// orphans that the user can prune.
+    private var utteranceCounts: [String: Int] {
+        var counts: [String: Int] = [:]
+        for utt in recorder.utterances {
+            counts[utt.speakerID, default: 0] += 1
+        }
+        return counts
     }
 
     /// Per-row demographics from the W2V2 age-gender model. Built

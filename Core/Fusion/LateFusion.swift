@@ -151,6 +151,47 @@ public actor LateFusion: Fuser {
         return (acoustic: acousticTotal / total, text: textTotal / total)
     }
 
+    /// Per-label fused scores — the same `[String: Float]` dict the
+    /// internal `topLabel` argmax operates on, exposed so the
+    /// inspector can show the runner-up labels (not just the
+    /// winner) and let the user see how confident the pick was.
+    /// Normalized to sum to 1 when the raw total > 0; returns nil
+    /// when neither modality contributed.
+    ///
+    /// Mirrors `topLabel`'s scoring rule exactly: acoustic argmax
+    /// weighted by `acousticWeight`, text Plutchik routed through
+    /// `plutchikToAcousticLabelMapping` weighted by
+    /// `max(textWeightFloor, asrConfidence)`. Sink buckets
+    /// (`"other"` / `"unknown"`) drop because the argmax falls
+    /// back to top Plutchik when they win — surfacing them in the
+    /// top-N would be misleading.
+    public static func labelFusionScores(
+        acoustic: CategoricalEmotion?,
+        plutchik: PlutchikScore?,
+        asrConfidence: Float,
+        acousticWeight: Float,
+        textWeightFloor: Float
+    ) -> [(label: String, score: Float)]? {
+        let textWeight = max(textWeightFloor, asrConfidence)
+        var scores: [String: Float] = [:]
+        if let a = acoustic {
+            for (k, v) in a.probabilities where k != .unknown && k != .other {
+                scores[k.rawValue, default: 0] += v * acousticWeight
+            }
+        }
+        if let p = plutchik {
+            for (k, v) in p.probabilities {
+                guard let mapped = plutchikToAcousticLabelMapping[k] else { continue }
+                scores[mapped, default: 0] += v * textWeight
+            }
+        }
+        let total = scores.values.reduce(0, +)
+        guard total > 0 else { return nil }
+        return scores
+            .map { (label: $0.key, score: $0.value / total) }
+            .sorted { $0.score > $1.score }
+    }
+
     /// Convenience overload using the compiled-in defaults. Kept so
     /// call sites that haven't been wired through to runtime weights
     /// yet continue to compile.
@@ -233,7 +274,7 @@ public actor LateFusion: Fuser {
         }
     }
 
-    private static func plutchikToValence(_ p: PlutchikScore) -> Float {
+    public static func plutchikToValence(_ p: PlutchikScore) -> Float {
         // Russell-style polar mapping. Coefficients are conservative defaults;
         // tune from a calibration set per docs/eval_log.md.
         let pos = (p.probabilities[.joy] ?? 0)
@@ -248,7 +289,7 @@ public actor LateFusion: Fuser {
         return max(0, min(1, 0.5 + raw * 0.25))
     }
 
-    private static func plutchikToArousal(_ p: PlutchikScore) -> Float {
+    public static func plutchikToArousal(_ p: PlutchikScore) -> Float {
         // Anger / fear / surprise / joy are high-arousal; sadness / trust low.
         let high = (p.probabilities[.anger] ?? 0)
                  + (p.probabilities[.fear] ?? 0)

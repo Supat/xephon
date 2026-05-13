@@ -145,6 +145,9 @@
 "fusion.controls.acousticWeight" = "音響の重み";
 "fusion.controls.textWeightFloor" = "テキスト重みの下限";
 "fusion.controls.reset" = "リセット";
+"fusion.mapping.header" = "Plutchik → 音響9クラス";
+"fusion.mapping.note" = "テキストのスコアはこの対応表を通して融合ラベルに寄与します。「trust」と「anticipation」は音響のシンククラスにマッピングされるためラベルを引き寄せませんが、行ごとのテキストSERバーには表示されます。";
+"fusion.mapping.sink" = "（無効化）";
 "speaker.rename.title" = "話者の名前を変更";
 "speaker.rename.placeholder" = "話者名";
 "speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";

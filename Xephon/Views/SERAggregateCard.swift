@@ -20,6 +20,11 @@ import SERText
 /// bias regardless of which subset is currently on screen.
 struct SERAggregateCard: View {
     let recorder: RecordingController
+    /// Utterance currently in focus, or nil. Used to enlarge +
+    /// halo the matching dot on the V×A scatter and draw an
+    /// arrow at it so the user can find that one row's V/A
+    /// position among hundreds of dots.
+    var focusedUtteranceID: UUID?
 
     private static let wheelHeight: CGFloat = 180
     private static let scatterHeight: CGFloat = 160
@@ -271,6 +276,7 @@ struct SERAggregateCard: View {
     }
 
     private struct VAPoint {
+        let id: UUID
         let valence: Float
         let arousal: Float
         let speakerID: String
@@ -286,7 +292,12 @@ struct SERAggregateCard: View {
         recorder.utterances.compactMap { utt in
             guard let v = utt.fusedValence,
                   let a = utt.fusedArousal else { return nil }
-            return VAPoint(valence: v, arousal: a, speakerID: utt.speakerID)
+            return VAPoint(
+                id: utt.id,
+                valence: v,
+                arousal: a,
+                speakerID: utt.speakerID
+            )
         }
     }
 
@@ -312,19 +323,47 @@ struct SERAggregateCard: View {
                 with: .color(.secondary.opacity(0.25)),
                 lineWidth: 0.5
             )
-            // Dots.
+            // Dots. The focused row's dot renders bigger + ringed
+            // so the user can spot it among hundreds in a long
+            // session without an explicit arrow — the halo is
+            // direction enough at this density.
             for p in points {
                 let cx = inset + CGFloat(max(0, min(1, p.valence))) * w
                 let cy = inset + (1 - CGFloat(max(0, min(1, p.arousal)))) * h
-                let r: CGFloat = 3.5
+                let tint = speakerTint(for: p.speakerID)
+                let isFocused = (p.id == focusedUtteranceID)
+                let r: CGFloat = isFocused ? 5.5 : 3.5
                 let rect = CGRect(
                     x: cx - r, y: cy - r,
                     width: 2 * r, height: 2 * r
                 )
+                if isFocused {
+                    let haloR: CGFloat = 11
+                    let haloRect = CGRect(
+                        x: cx - haloR, y: cy - haloR,
+                        width: 2 * haloR, height: 2 * haloR
+                    )
+                    ctx.fill(
+                        Path(ellipseIn: haloRect),
+                        with: .color(tint.opacity(0.25))
+                    )
+                    ctx.stroke(
+                        Path(ellipseIn: haloRect),
+                        with: .color(tint),
+                        lineWidth: 1.6
+                    )
+                }
                 ctx.fill(
                     Path(ellipseIn: rect),
-                    with: .color(speakerTint(for: p.speakerID).opacity(0.85))
+                    with: .color(tint.opacity(isFocused ? 1.0 : 0.85))
                 )
+                if isFocused {
+                    ctx.stroke(
+                        Path(ellipseIn: rect),
+                        with: .color(.white.opacity(0.95)),
+                        lineWidth: 1
+                    )
+                }
             }
             // Axis labels at the corners — V↗ (right), A↑ (top).
             ctx.draw(
@@ -358,7 +397,7 @@ struct SERAggregateCard: View {
             Divider()
             Text(String(localized: "ser.aggregate.shape.footnote"))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

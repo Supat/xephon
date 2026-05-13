@@ -624,6 +624,38 @@ struct UtteranceRow: View {
                 }
             }
 
+            // Outcome row: top fused labels on the left, the V/A
+            // three-pull scatter on the right. Pairs the "what
+            // label?" and "where in V/A space?" diagnostics on the
+            // same horizontal strip so they read together. The
+            // scatter only shows when both modalities contributed
+            // — without two pulls the geometry is degenerate.
+            HStack(alignment: .top, spacing: 16) {
+                if let candidates = topFusedLabels, !candidates.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        sectionHeader("Top fused labels")
+                        ForEach(candidates, id: \.label) { entry in
+                            ProbabilityBar(
+                                label: entry.label.capitalized(with: Locale(identifier: "en_US")),
+                                value: entry.score
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let scatter = fusionScatterInputs {
+                    VStack(alignment: .leading, spacing: 3) {
+                        sectionHeader("V/A pulls")
+                        FusionVAScatterMini(
+                            acoustic: scatter.acoustic,
+                            text: scatter.text,
+                            fused: scatter.fused
+                        )
+                        .frame(width: 110, height: 110)
+                    }
+                }
+            }
+
             HStack(alignment: .top, spacing: 16) {
                 if let cat = utterance.acousticCategorical, !cat.probabilities.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
@@ -646,6 +678,47 @@ struct UtteranceRow: View {
                 }
             }
         }
+    }
+
+    /// Inputs to the V/A three-pull mini-scatter, or nil when there
+    /// isn't a meaningful geometry to render. We gate on BOTH
+    /// modalities contributing — single-modality rows have a fused
+    /// point coincident with the source and the scatter would draw
+    /// one dot on top of another with no arrows, which is uglier
+    /// than just omitting the view.
+    private var fusionScatterInputs: (
+        acoustic: (v: Float, a: Float)?,
+        text: (v: Float, a: Float)?,
+        fused: (v: Float, a: Float)?
+    )? {
+        guard let dim = utterance.dimensional,
+              let plutchik = utterance.plutchik else { return nil }
+        let fusedV = utterance.fusedValence
+        let fusedA = utterance.fusedArousal
+        guard let v = fusedV, let a = fusedA else { return nil }
+        let textV = LateFusion.plutchikToValence(plutchik)
+        let textA = LateFusion.plutchikToArousal(plutchik)
+        return (
+            acoustic: (v: dim.valence, a: dim.arousal),
+            text: (v: textV, a: textA),
+            fused: (v: v, a: a)
+        )
+    }
+
+    /// Top 3 normalized fused-label candidates so the user can see
+    /// not just *which* label won but *how confidently* — a 0.42 vs
+    /// 0.39 runner-up reads very differently from 0.85 vs 0.05.
+    /// Nil when neither modality contributed score (no top label
+    /// to attribute anyway).
+    private var topFusedLabels: [(label: String, score: Float)]? {
+        guard let scored = LateFusion.labelFusionScores(
+            acoustic: utterance.acousticCategorical,
+            plutchik: utterance.plutchik,
+            asrConfidence: utterance.asrConfidence ?? 0.5,
+            acousticWeight: fusionAcousticWeight,
+            textWeightFloor: fusionTextWeightFloor
+        ), !scored.isEmpty else { return nil }
+        return Array(scored.prefix(3))
     }
 
     /// Compact "0.62 · 0.48 · 0.55" rendering of the fused V/A/D

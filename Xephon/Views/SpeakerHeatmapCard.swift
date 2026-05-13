@@ -19,6 +19,11 @@ import Diarization
 /// every snapshot refresh.
 struct SpeakerHeatmapCard: View {
     let cluster: SpeakerClusterSnapshot
+    /// Speaker id of the currently-focused utterance, or nil. Used
+    /// to outline the matching row + column in the grid so the
+    /// user can see "this is the speaker whose row I'm reading"
+    /// across the diagnostics page.
+    var highlightedSpeakerID: String?
 
     /// Identifies the cell whose popover is currently shown. Carries
     /// the row/column speaker ids + the cosine distance so the
@@ -144,7 +149,9 @@ struct SpeakerHeatmapCard: View {
                             colSpk: colSpk,
                             distance: d,
                             cellSize: cellSize,
-                            showLabel: showLabels
+                            showLabel: showLabels,
+                            highlighted: highlightedSpeakerID == rowSpk.id
+                                || highlightedSpeakerID == colSpk.id
                         )
                     }
                 }
@@ -162,7 +169,8 @@ struct SpeakerHeatmapCard: View {
         colSpk: SpeakerClusterSnapshot.Speaker,
         distance d: Float,
         cellSize: CGFloat,
-        showLabel: Bool
+        showLabel: Bool,
+        highlighted: Bool = false
     ) -> some View {
         let selection = HeatCellSelection(
             rowSpeaker: rowSpk.id,
@@ -176,6 +184,17 @@ struct SpeakerHeatmapCard: View {
                 Text(String(format: "%.2f", d))
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.95))
+            }
+            if highlighted {
+                // Outline cells in the highlighted speaker's row
+                // or column so the cross of cells stands out
+                // against the surrounding grid. White stroke at
+                // 90% reads on every heat color we render.
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(
+                        Color.white.opacity(0.9),
+                        lineWidth: 1.5
+                    )
             }
         }
         .frame(width: cellSize, height: cellSize)

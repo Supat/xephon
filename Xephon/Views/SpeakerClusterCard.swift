@@ -29,6 +29,14 @@ struct SpeakerClusterCard: View {
     /// PCA recompute trigger (`snapshotKey`) so a focus change
     /// repaints without re-fitting the basis.
     var highlightedSpeakerID: String?
+    /// Raw speaker embedding of the focused utterance. When set
+    /// (and the matching observation is still in the snapshot's
+    /// tail window), the halo + arrow shift from the speaker's
+    /// centroid to the specific observation that came from this
+    /// utterance — so the user sees "this row's node" rather than
+    /// "this row's speaker's average". Nil falls back to the
+    /// centroid behavior.
+    var focusedEmbedding: [Float]?
 
     /// Cached projection from the most recent PCA fit. Empty until
     /// the first snapshot with ≥ 2 distinct points arrives. Kept on
@@ -51,6 +59,143 @@ struct SpeakerClusterCard: View {
     /// speaker. Sized about 2.4× the centroid radius so the ring
     /// reads as a clear emphasis without crowding adjacent nodes.
     nonisolated private static let highlightHaloRadius: CGFloat = 12
+
+    /// Halo target — always the highlighted speaker's centroid.
+    /// Encodes "this row's speaker" context regardless of whether
+    /// we have a specific observation to pin down.
+    private func findHaloTarget(
+        in points: [Point],
+        project: (Point) -> CGPoint
+    ) -> (position: CGPoint, color: Color)? {
+        guard let speakerID = highlightedSpeakerID else { return nil }
+        guard let p = points.first(where: {
+            $0.speakerID == speakerID && $0.isCentroid
+        }) else { return nil }
+        return (position: project(p), color: p.color)
+    }
+
+    /// Arrow target — the specific observation that best matches
+    /// the focused utterance's stored embedding. Nil when we don't
+    /// have an embedding (older utterance / no diarizer / mic-mode
+    /// import) or the snapshot's tail no longer contains the
+    /// matching observation. The arrow stays absent rather than
+    /// fall back to the centroid because the halo already marks
+    /// the centroid — a centroid-pointed arrow would be redundant
+    /// emphasis on the same point.
+    private func findArrowTarget(
+        in points: [Point],
+        project: (Point) -> CGPoint
+    ) -> (position: CGPoint, color: Color)? {
+        guard let speakerID = highlightedSpeakerID,
+              let embedding = focusedEmbedding,
+              let bestIndex = nearestObservationIndex(
+                speakerID: speakerID, to: embedding
+              ),
+              let p = points.first(where: {
+                $0.speakerID == speakerID
+                    && $0.isCentroid == false
+                    && $0.observationIndex == bestIndex
+              }) else { return nil }
+        return (position: project(p), color: p.color)
+    }
+
+    /// Argmin Euclidean distance from `query` over the highlighted
+    /// speaker's observations in the snapshot. Nil when the
+    /// speaker has no observations in the current tail window
+    /// (snapshot capped at `clusterObservationsPerSpeaker` and the
+    /// utterance's window has aged out).
+    private func nearestObservationIndex(
+        speakerID: String,
+        to query: [Float]
+    ) -> Int? {
+        guard let speaker = cluster.speakers.first(where: { $0.id == speakerID }),
+              !speaker.observations.isEmpty else { return nil }
+        var bestIndex: Int?
+        var bestDist: Float = .infinity
+        for (i, obs) in speaker.observations.enumerated() {
+            let n = min(obs.count, query.count)
+            guard n > 0 else { continue }
+            var sum: Float = 0
+            for j in 0..<n {
+                let d = obs[j] - query[j]
+                sum += d * d
+            }
+            if sum < bestDist {
+                bestDist = sum
+                bestIndex = i
+            }
+        }
+        return bestIndex
+    }
+
+    /// Short fixed-length arrow pointing at `target` from the
+    /// upper-right (or whichever diagonal stays inside the canvas
+    /// at the chosen length). Sized so the tip kisses the dot's
+    /// outer edge without crowding it. Always white so the
+    /// pointer reads against every speaker tint behind it — using
+    /// the speaker's color made the arrow blend into the dot's
+    /// own halo, defeating the purpose.
+    nonisolated private static func drawFocusArrow(
+        ctx: GraphicsContext,
+        in canvas: CGRect,
+        to target: CGPoint
+    ) {
+        // 22pt total length, sitting at a 45° angle. Pick the
+        // diagonal that fits in the canvas — usually upper-right;
+        // mirror to other quadrants when the target hugs an edge
+        // so the arrow doesn't draw off-screen.
+        let armLength: CGFloat = 16
+        let signX: CGFloat = (target.x + armLength + 4 > canvas.maxX) ? -1 : 1
+        let signY: CGFloat = (target.y - armLength - 4 < canvas.minY) ? 1 : -1
+        let diag = armLength / sqrt(2)
+        let origin = CGPoint(
+            x: target.x + signX * diag,
+            y: target.y + signY * diag
+        )
+        let dx = target.x - origin.x
+        let dy = target.y - origin.y
+        let length = sqrt(dx * dx + dy * dy)
+        guard length > 4 else { return }
+        // Stop short of the dot so the tip kisses the edge rather
+        // than plunging through. Dot radius (5pt) + 1pt gap.
+        let dotEdgeGap: CGFloat = centroidRadius + 1
+        let stopDistance = max(0, length - dotEdgeGap)
+        let scale = stopDistance / length
+        let trimmedEnd = CGPoint(
+            x: origin.x + dx * scale,
+            y: origin.y + dy * scale
+        )
+        var shaft = Path()
+        shaft.move(to: origin)
+        shaft.addLine(to: trimmedEnd)
+        ctx.stroke(
+            shaft,
+            with: .color(.white.opacity(0.95)),
+            lineWidth: 1.4
+        )
+        let headLength: CGFloat = 6
+        let headHalfWidth: CGFloat = 3.5
+        let ux = dx / length
+        let uy = dy / length
+        let base = CGPoint(
+            x: trimmedEnd.x - ux * headLength,
+            y: trimmedEnd.y - uy * headLength
+        )
+        let left = CGPoint(
+            x: base.x + uy * headHalfWidth,
+            y: base.y - ux * headHalfWidth
+        )
+        let right = CGPoint(
+            x: base.x - uy * headHalfWidth,
+            y: base.y + ux * headHalfWidth
+        )
+        var head = Path()
+        head.move(to: trimmedEnd)
+        head.addLine(to: left)
+        head.addLine(to: right)
+        head.closeSubpath()
+        ctx.fill(head, with: .color(.white))
+    }
     /// Padding inside the canvas so the dots don't kiss the edges.
     nonisolated private static let canvasInset: CGFloat = 10
 
@@ -122,6 +267,61 @@ struct SpeakerClusterCard: View {
                         y: Self.canvasInset + (1 - CGFloat(ny)) * availH
                     )
                 }
+                // PCA mean-centers the data so projected (0, 0) is
+                // the data centroid. Drawing axis lines through it
+                // gives the user a reference for "which side of
+                // the mean does this cluster sit on?" along each
+                // principal component. Skipped per-axis when the
+                // origin falls outside the visible data extent
+                // (e.g. all observations clustered on positive
+                // PC1) — drawing the line would clip off-canvas.
+                let dataRect = CGRect(
+                    x: Self.canvasInset,
+                    y: Self.canvasInset,
+                    width: availW,
+                    height: availH
+                )
+                let originXFrac = (0 - minX) / dx
+                let originYFrac = (0 - minY) / dy
+                let originStyle: GraphicsContext.Shading =
+                    .color(.secondary.opacity(0.35))
+                if originXFrac >= 0 && originXFrac <= 1 {
+                    let x = Self.canvasInset + CGFloat(originXFrac) * availW
+                    var line = Path()
+                    line.move(to: CGPoint(x: x, y: dataRect.minY))
+                    line.addLine(to: CGPoint(x: x, y: dataRect.maxY))
+                    ctx.stroke(line, with: originStyle, lineWidth: 0.5)
+                }
+                if originYFrac >= 0 && originYFrac <= 1 {
+                    let y = Self.canvasInset + (1 - CGFloat(originYFrac)) * availH
+                    var line = Path()
+                    line.move(to: CGPoint(x: dataRect.minX, y: y))
+                    line.addLine(to: CGPoint(x: dataRect.maxX, y: y))
+                    ctx.stroke(line, with: originStyle, lineWidth: 0.5)
+                }
+                // Axis labels live just inside the data rect at
+                // diagonally-opposite corners — the canvas only
+                // reserves a 10pt inset around the data area,
+                // which isn't wide enough to fit the labels in
+                // the margin without clipping (PC2↑ pushed off
+                // the left edge previously). Caption2 / tertiary
+                // keeps them quiet behind the dots.
+                ctx.draw(
+                    Text("PC1→").font(.caption2).foregroundStyle(.tertiary),
+                    at: CGPoint(
+                        x: dataRect.maxX - 2,
+                        y: dataRect.maxY - 2
+                    ),
+                    anchor: .bottomTrailing
+                )
+                ctx.draw(
+                    Text("PC2↑").font(.caption2).foregroundStyle(.tertiary),
+                    at: CGPoint(
+                        x: dataRect.minX + 2,
+                        y: dataRect.minY + 2
+                    ),
+                    anchor: .topLeading
+                )
                 // Observations first so centroids stack on top.
                 for p in points where !p.isCentroid {
                     let r = Self.observationRadius
@@ -135,6 +335,18 @@ struct SpeakerClusterCard: View {
                         with: .color(p.color.opacity(Self.observationOpacity))
                     )
                 }
+                // Two distinct focus targets: the halo stays on the
+                // speaker's centroid (so the speaker context reads
+                // at a glance), while the arrow tips at the
+                // specific observation that came from the focused
+                // utterance (so the user sees "this row's node").
+                // Halo skips when the speaker has no centroid in
+                // this snapshot (orphan / DB-only); arrow skips
+                // when we couldn't pin a specific observation —
+                // older utterance whose embedding wasn't captured
+                // OR snapshot tail-trimmed past this utterance.
+                let haloTarget = findHaloTarget(in: points, project: project)
+                let arrowTarget = findArrowTarget(in: points, project: project)
                 for p in points where p.isCentroid {
                     let r = Self.centroidRadius
                     let center = project(p)
@@ -142,37 +354,38 @@ struct SpeakerClusterCard: View {
                         x: center.x - r, y: center.y - r,
                         width: 2 * r, height: 2 * r
                     )
-                    // Highlight ring around the focused-utterance's
-                    // centroid: a wider halo in the speaker's own
-                    // tint behind the filled dot so the matching
-                    // node pops without obscuring its position.
-                    // Drawn before the fill + standard white stroke
-                    // so those overlay it cleanly. Skipped when no
-                    // utterance is focused or when the focused row's
-                    // speaker has no centroid in this snapshot
-                    // (orphan after reassignment / DB-only entry).
-                    if let highlight = highlightedSpeakerID,
-                       p.speakerID == highlight {
-                        let haloR = Self.highlightHaloRadius
-                        let haloRect = CGRect(
-                            x: center.x - haloR, y: center.y - haloR,
-                            width: 2 * haloR, height: 2 * haloR
-                        )
-                        ctx.fill(
-                            Path(ellipseIn: haloRect),
-                            with: .color(p.color.opacity(0.30))
-                        )
-                        ctx.stroke(
-                            Path(ellipseIn: haloRect),
-                            with: .color(p.color),
-                            lineWidth: 2
-                        )
-                    }
                     ctx.fill(Path(ellipseIn: rect), with: .color(p.color))
                     ctx.stroke(
                         Path(ellipseIn: rect),
                         with: .color(.white.opacity(0.9)),
                         lineWidth: 1
+                    )
+                }
+                if let target = haloTarget {
+                    let haloR = Self.highlightHaloRadius
+                    let haloRect = CGRect(
+                        x: target.position.x - haloR,
+                        y: target.position.y - haloR,
+                        width: 2 * haloR, height: 2 * haloR
+                    )
+                    ctx.fill(
+                        Path(ellipseIn: haloRect),
+                        with: .color(target.color.opacity(0.30))
+                    )
+                    ctx.stroke(
+                        Path(ellipseIn: haloRect),
+                        with: .color(target.color),
+                        lineWidth: 2
+                    )
+                }
+                // Directional pointer at the focused observation
+                // (not the centroid — that's the halo's job).
+                // Drawn last so it sits above every other dot.
+                if let target = arrowTarget {
+                    Self.drawFocusArrow(
+                        ctx: ctx,
+                        in: CGRect(origin: .zero, size: size),
+                        to: target.position
                     )
                 }
             }
@@ -214,6 +427,12 @@ struct SpeakerClusterCard: View {
         let speakerID: String
         let color: Color
         let isCentroid: Bool
+        /// Index into the source speaker's `observations` array
+        /// when `isCentroid == false`; nil for the centroid Point.
+        /// Used to find the projected coordinate of a specific
+        /// observation when the focused-utterance embedding picks
+        /// a particular one out.
+        let observationIndex: Int?
     }
 
     private struct ProjectionResult: Sendable {
@@ -230,12 +449,27 @@ struct SpeakerClusterCard: View {
         snapshot: SpeakerClusterSnapshot,
         previousBasis: (v1: [Float], v2: [Float])
     ) -> ProjectionResult {
-        struct Row { let vec: [Float]; let speakerID: String; let isCentroid: Bool }
+        struct Row {
+            let vec: [Float]
+            let speakerID: String
+            let isCentroid: Bool
+            let observationIndex: Int?
+        }
         var rows: [Row] = []
         for spk in snapshot.speakers {
-            rows.append(Row(vec: spk.centroid, speakerID: spk.id, isCentroid: true))
-            for obs in spk.observations {
-                rows.append(Row(vec: obs, speakerID: spk.id, isCentroid: false))
+            rows.append(Row(
+                vec: spk.centroid,
+                speakerID: spk.id,
+                isCentroid: true,
+                observationIndex: nil
+            ))
+            for (i, obs) in spk.observations.enumerated() {
+                rows.append(Row(
+                    vec: obs,
+                    speakerID: spk.id,
+                    isCentroid: false,
+                    observationIndex: i
+                ))
             }
         }
         guard rows.count >= 2, let d = rows.first?.vec.count, d > 0 else {
@@ -333,7 +567,8 @@ struct SpeakerClusterCard: View {
                 x: x, y: y,
                 speakerID: rows[i].speakerID,
                 color: speakerTint(for: rows[i].speakerID),
-                isCentroid: rows[i].isCentroid
+                isCentroid: rows[i].isCentroid,
+                observationIndex: rows[i].observationIndex
             ))
         }
         return ProjectionResult(points: points, v1: v1, v2: v2)

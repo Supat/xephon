@@ -1,5 +1,6 @@
 import SwiftUI
 import Fusion
+import SERText
 
 /// Inline legend + adjustable controls for the per-utterance
 /// fusion-contribution strip. Lives on the left pane's affect page
@@ -81,6 +82,9 @@ struct FusionLegendCard: View {
             )
 
             Divider()
+            mappingSection
+
+            Divider()
             controlsSection
 
             Text(String(localized: "fusion.legend.footnote"))
@@ -92,6 +96,88 @@ struct FusionLegendCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// The Plutchik → acoustic-9-class translation table used by
+    /// late fusion to combine the text-side 8-class softmax with
+    /// the acoustic-side 9-class softmax under a single label
+    /// space. Rendered as a compact two-column list so users can
+    /// see why, e.g., a strong text "joy" pulls the fused label
+    /// toward acoustic "happy" — and why "trust" / "anticipation"
+    /// don't pull at all (mapped to acoustic's sink class).
+    @ViewBuilder
+    private var mappingSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(localized: "fusion.mapping.header"))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            // Stable display order — Plutchik's canonical wheel
+            // sequence, starting from joy clockwise. Matches the
+            // order users see in `SERAggregateCard`'s wheel so the
+            // two views read together cleanly.
+            let pairs: [(plutchik: PlutchikScore.Label, acoustic: String)] =
+                Self.mappingOrder.compactMap { p in
+                    LateFusion.plutchikToAcousticLabelMapping[p]
+                        .map { (plutchik: p, acoustic: $0) }
+                }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(pairs, id: \.plutchik) { pair in
+                    mappingRow(plutchik: pair.plutchik, acoustic: pair.acoustic)
+                }
+            }
+            Text(String(localized: "fusion.mapping.note"))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
+        }
+    }
+
+    /// Canonical Plutchik wheel order so the mapping table reads
+    /// the same direction as `SERAggregateCard`'s wedges (joy at
+    /// the top, clockwise through anticipation).
+    private static let mappingOrder: [PlutchikScore.Label] = [
+        .joy, .trust, .fear, .surprise,
+        .sadness, .disgust, .anger, .anticipation,
+    ]
+
+    @ViewBuilder
+    private func mappingRow(
+        plutchik: PlutchikScore.Label,
+        acoustic: String
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(plutchik.rawValue.capitalized)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(emotionTint(for: plutchik.rawValue))
+                .frame(width: 80, alignment: .leading)
+            Image(systemName: "arrow.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            // Splitting the foreground branch — `.tertiary` (a
+            // hierarchical shape style) and `emotionTint(...)`
+            // (a Color) don't share a result type in a ternary,
+            // and the workaround is a small if/else rather than
+            // wrapping both in `AnyShapeStyle`.
+            if isSinkBucket(acoustic) {
+                Text(acoustic.capitalized)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.tertiary)
+                Text(String(localized: "fusion.mapping.sink"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text(acoustic.capitalized)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(emotionTint(for: acoustic))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func isSinkBucket(_ label: String) -> Bool {
+        label == "other" || label == "unknown"
     }
 
     @ViewBuilder

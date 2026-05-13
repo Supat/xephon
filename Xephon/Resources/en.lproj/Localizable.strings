@@ -145,6 +145,9 @@
 "fusion.controls.acousticWeight" = "Acoustic weight";
 "fusion.controls.textWeightFloor" = "Text weight floor";
 "fusion.controls.reset" = "Reset";
+"fusion.mapping.header" = "Plutchik → acoustic 9-class";
+"fusion.mapping.note" = "Text scores route through this table before contributing to the fused label. \"Trust\" and \"anticipation\" map to acoustic's sink class, so they don't pull the label — but still show up in the per-row Text SER bars.";
+"fusion.mapping.sink" = "(no pull)";
 "speaker.rename.title" = "Rename Speaker";
 "speaker.rename.placeholder" = "Speaker name";
 "speaker.rename.message" = "Pick a custom name for speaker %@. Leave blank to revert to the default.";

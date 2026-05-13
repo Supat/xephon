@@ -82,22 +82,35 @@ struct TranscriptionReviewSheet: View {
                     onStopRange: { recorder.stopPlayback() },
                     isPreviewPlaying: recorder.isPreviewPlaying,
                     onCommit: { newText, newStart, newEnd in
-                        recorder.stopPlayback()
+                        // Capture everything into local constants
+                        // BEFORE the @State writes that dismiss this
+                        // sheet — `snapshot` is the content-builder
+                        // parameter and once `editingUtterance` is
+                        // cleared the SwiftUI hosting context can
+                        // tear down. Sourcing utteranceID + issueID
+                        // off `snapshot` / `editingIssueID` first
+                        // means the Task owns its own copies and
+                        // can't observe a torn-down state.
+                        let utteranceID = snapshot.id
                         let issueID = editingIssueID
-                        editingUtterance = nil
-                        editingIssueID = nil
+                        let committedText = newText
+                        let committedStart = newStart
+                        let committedEnd = newEnd
+                        recorder.stopPlayback()
                         Task {
                             await recorder.commitHandEdit(
-                                utteranceID: snapshot.id,
-                                newText: newText,
-                                newStart: newStart,
-                                newEnd: newEnd
+                                utteranceID: utteranceID,
+                                newText: committedText,
+                                newStart: committedStart,
+                                newEnd: committedEnd
                             )
                             if let issueID {
                                 recorder.dismissTranscriptionIssue(id: issueID)
                                 edits.removeValue(forKey: issueID)
                             }
                         }
+                        editingUtterance = nil
+                        editingIssueID = nil
                     },
                     onCancel: {
                         recorder.stopPlayback()

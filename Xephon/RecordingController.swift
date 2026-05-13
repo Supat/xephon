@@ -222,6 +222,16 @@ final class RecordingController {
     private(set) var speakerCluster: SpeakerClusterSnapshot =
         SpeakerClusterSnapshot(speakers: [])
 
+    /// Per-utterance speaker embedding, captured at the moment the
+    /// utterance is processed so the UI can match it back to the
+    /// specific node in the cluster scatter. Lives outside
+    /// `UtteranceEstimate` because the embedding doesn't belong in
+    /// the JSON export (it's a 256-D blob with no analytical value
+    /// to downstream consumers), and we don't want it bloating
+    /// every `.xph` either — orphan entries cleared by the same
+    /// retention logic that drops stale snapshot entries.
+    private(set) var utteranceEmbeddings: [UUID: [Float]] = [:]
+
     /// Cap on raw observations carried in each `speakerCluster`
     /// refresh. 50 covers ~50 s of contiguous speech per speaker
     /// at the diarizer's 1 s windowing — enough cloud density for
@@ -882,7 +892,20 @@ final class RecordingController {
                                     segmentAudio: split.audio,
                                     fallbackSpeakerID: split.speaker
                                 )
-                                await self?.applySegmentResult(estimate: estimate, metrics: metrics)
+                                // Stamp the per-utterance speaker
+                                // embedding so the cluster scatter
+                                // can later arrow at the exact node
+                                // for this row. Concurrent with the
+                                // result apply — the controller
+                                // serializes both writes.
+                                let embedding = await pipeline.extractSpeakerEmbedding(
+                                    audio: split.audio.samples
+                                )
+                                await self?.applySegmentResult(
+                                    estimate: estimate,
+                                    metrics: metrics,
+                                    embedding: embedding
+                                )
                             } catch {
                                 AppLog.app.error("segment process failed: \(String(describing: error), privacy: .public)")
                             }
@@ -2208,6 +2231,15 @@ final class RecordingController {
                     utteranceID: utteranceID,
                     fresh: fresh.withSpeakerID(speaker)
                 )
+                // Refresh the per-utterance embedding so the cluster
+                // scatter's focus arrow lands on the post-reeval
+                // observation, not whatever observation matched
+                // before the audio range was corrected.
+                if let embedding = await pipeline.extractSpeakerEmbedding(
+                    audio: chunk.samples
+                ) {
+                    utteranceEmbeddings[utteranceID] = embedding
+                }
                 return
             }
 
@@ -2305,6 +2337,14 @@ final class RecordingController {
                 utteranceID: utteranceID,
                 fresh: fresh.withSpeakerID(speaker)
             )
+            // Same embedding refresh as the no-retry path — the
+            // short-utterance retry loop may have rebuilt the
+            // audio window, so re-extract from the final `chunk`.
+            if let embedding = await pipeline.extractSpeakerEmbedding(
+                audio: chunk.samples
+            ) {
+                utteranceEmbeddings[utteranceID] = embedding
+            }
         } catch {
             AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
         }
@@ -2600,15 +2640,15 @@ final class RecordingController {
             return
         }
 
-        let freshEstimates = await runMultiSentenceHandEdit(
+        let freshResults = await runMultiSentenceHandEdit(
             plans: plans,
             diarChunk: diarChunk,
             url: url,
             fallbackSpeaker: fallbackSpeaker,
             pipeline: pipeline
         )
-        guard !freshEstimates.isEmpty else { return }
-        applyHandEditSplit(utteranceID: utteranceID, sentences: freshEstimates)
+        guard !freshResults.isEmpty else { return }
+        applyHandEditSplit(utteranceID: utteranceID, sentences: freshResults)
     }
 
     /// Mic-mode (no source audio) hand-edit dispatcher. Inherits
@@ -2653,8 +2693,8 @@ final class RecordingController {
             }
             return
         }
-        var freshEstimates: [UtteranceEstimate] = []
-        freshEstimates.reserveCapacity(plans.count)
+        var freshResults: [HandEditSplitResult] = []
+        freshResults.reserveCapacity(plans.count)
         for (i, plan) in plans.enumerated() {
             do {
                 let speaker = revoteSpeakerFromTimeline(
@@ -2670,15 +2710,22 @@ final class RecordingController {
                     text: plan.text,
                     inheriting: parent
                 )
-                freshEstimates.append(fresh)
+                // Mic-mode has no audio to re-extract from, so no
+                // embedding is captured for these rows. Cluster
+                // scatter falls back to centroid arrow on those,
+                // consistent with the original mic-mode behavior.
+                freshResults.append(HandEditSplitResult(
+                    estimate: fresh,
+                    embedding: nil
+                ))
             } catch {
                 AppLog.app.error(
                     "commitHandEdit (text-only) split[\(i, privacy: .public)] failed: \(String(describing: error), privacy: .public)"
                 )
             }
         }
-        guard !freshEstimates.isEmpty else { return }
-        applyHandEditSplit(utteranceID: utteranceID, sentences: freshEstimates)
+        guard !freshResults.isEmpty else { return }
+        applyHandEditSplit(utteranceID: utteranceID, sentences: freshResults)
     }
 
     /// Per-instant majority over the cumulative diarizer timeline
@@ -2815,6 +2862,11 @@ final class RecordingController {
                 fallbackSpeakerID: speaker
             )
             applyHandEdit(utteranceID: utteranceID, fresh: fresh)
+            if let embedding = await pipeline.extractSpeakerEmbedding(
+                audio: serChunk.samples
+            ) {
+                utteranceEmbeddings[utteranceID] = embedding
+            }
         } catch {
             AppLog.app.error("commitHandEdit failed: \(String(describing: error), privacy: .public)")
         }
@@ -2828,13 +2880,26 @@ final class RecordingController {
     /// (skipping any slice whose audio came back empty or whose
     /// pipeline call threw). Caller hands the result to
     /// `applyHandEditSplit`.
+    /// Per-slice result of a multi-sentence hand-edit. Pairs the
+    /// freshly-fused estimate with the speaker embedding extracted
+    /// from that slice's audio so the controller can stamp
+    /// `utteranceEmbeddings` for each split row — without this,
+    /// only the first slice (which inherits the parent's id and
+    /// therefore the parent's pre-edit embedding) ends up with a
+    /// cluster-scatter node, while the sibling rows fall back to
+    /// the centroid arrow.
+    private struct HandEditSplitResult {
+        let estimate: UtteranceEstimate
+        let embedding: [Float]?
+    }
+
     private func runMultiSentenceHandEdit(
         plans: [HandEditPlan],
         diarChunk: AudioChunk,
         url: URL,
         fallbackSpeaker: String,
         pipeline: AnalysisPipeline
-    ) async -> [UtteranceEstimate] {
+    ) async -> [HandEditSplitResult] {
         let sliceSpeakers = await pipeline.resolveSpeakersForRanges(
             audio: diarChunk,
             ranges: plans.map { ($0.start, $0.end) },
@@ -2861,8 +2926,8 @@ final class RecordingController {
                 slices: timelineSlices
             )
         }
-        var freshEstimates: [UtteranceEstimate] = []
-        freshEstimates.reserveCapacity(plans.count)
+        var freshResults: [HandEditSplitResult] = []
+        freshResults.reserveCapacity(plans.count)
         for (i, plan) in plans.enumerated() {
             let speaker = i < sliceSpeakers.count ? sliceSpeakers[i] : fallbackSpeaker
             do {
@@ -2886,14 +2951,20 @@ final class RecordingController {
                     segmentAudio: chunk,
                     fallbackSpeakerID: speaker
                 )
-                freshEstimates.append(fresh)
+                let embedding = await pipeline.extractSpeakerEmbedding(
+                    audio: chunk.samples
+                )
+                freshResults.append(HandEditSplitResult(
+                    estimate: fresh,
+                    embedding: embedding
+                ))
             } catch {
                 AppLog.app.error(
                     "commitHandEdit split[\(i, privacy: .public)] failed: \(String(describing: error), privacy: .public)"
                 )
             }
         }
-        return freshEstimates
+        return freshResults
     }
 
     /// One sentence's slot in a multi-sentence hand-edit commit:
@@ -2970,7 +3041,7 @@ final class RecordingController {
     /// the parent can also remove the siblings the split spawned.
     private func applyHandEditSplit(
         utteranceID: UUID,
-        sentences: [UtteranceEstimate]
+        sentences: [HandEditSplitResult]
     ) {
         guard !sentences.isEmpty else { return }
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
@@ -2979,7 +3050,7 @@ final class RecordingController {
         var newRows: [UtteranceEstimate] = []
         newRows.reserveCapacity(sentences.count)
         var siblingIDs: [UUID] = []
-        for (i, fresh) in sentences.enumerated() {
+        for (i, result) in sentences.enumerated() {
             // First row keeps the original id (so existing
             // references stay valid); siblings get fresh ids and
             // are tracked for revert-time cleanup. Speaker is the
@@ -2989,12 +3060,21 @@ final class RecordingController {
             if i > 0 { siblingIDs.append(rowID) }
             newRows.append(Self.mergedEstimate(
                 id: rowID,
-                speakerID: fresh.speakerID,
+                speakerID: result.estimate.speakerID,
                 speechBoost: original.speechBoost,
-                fresh: fresh,
+                fresh: result.estimate,
                 wasReevaluated: nil,
                 wasHandEdited: true
             ))
+            // Stamp the per-slice speaker embedding under the
+            // assigned row id so the cluster scatter can pin each
+            // split row to its own observation. The pre-edit
+            // parent's embedding stays at `original.id` for the
+            // first slice; nil-valued results (mic-mode / failed
+            // extraction) leave any existing entry untouched.
+            if let embedding = result.embedding {
+                utteranceEmbeddings[rowID] = embedding
+            }
         }
 
         utterances.remove(at: index)
@@ -3600,13 +3680,20 @@ final class RecordingController {
     /// Called from a TaskGroup child once a segment finishes processing.
     /// Inserts the utterance at the correct chronological index and updates
     /// the per-stage latency snapshot used by the pipeline visualization.
-    private func applySegmentResult(estimate: UtteranceEstimate, metrics: ProcessingMetrics) {
+    private func applySegmentResult(
+        estimate: UtteranceEstimate,
+        metrics: ProcessingMetrics,
+        embedding: [Float]? = nil
+    ) {
         // Stamp speech-boost state so the row badge reflects how the audio
         // was captured. Best-effort: reads the live toggle, which is fine
         // for the common case where it's not flipped mid-recording.
         let stamped = estimate.withSpeechBoost(isSpeechBoostEnabled)
         let index = utterances.firstIndex { $0.start > stamped.start } ?? utterances.endIndex
         utterances.insert(stamped, at: index)
+        if let embedding = embedding {
+            utteranceEmbeddings[stamped.id] = embedding
+        }
         conversationSummary.update(with: stamped)
         // Keep the speaker-id cache current for the streaming path
         // too (only `commitUtteranceChanges` is reached on edits;
