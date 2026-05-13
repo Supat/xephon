@@ -357,7 +357,15 @@ final class AnalysisPipeline: @unchecked Sendable {
         let w2v2URL: URL? = await Self.tryResolveAsync("W2V2", path: "w2v2-msp-dim/model.onnx", store: modelStore, diagnostics: &diagnostics)
         let dimensional: (any DimensionalAcousticSER)? = w2v2URL.flatMap { url in
             Self.tryInit("W2V2 dimensional SER", diagnostics: &diagnostics) {
-                try W2V2DimensionalSER(modelURL: url)
+                // CPU-only at construction. The post-FP16 graph
+                // CoreML EP previously consumed worked fine, but the
+                // dynamo-re-exported FP32 graph trips the EP with
+                // "broken/unsupported model (error code: -1)" on
+                // every first call — the per-instance fallback in
+                // `runInference` already rebuilds on CPU, but skipping
+                // the doomed first attempt avoids the noisy log line
+                // and the wasted session-init at every app launch.
+                try W2V2DimensionalSER(modelURL: url, useCoreML: false)
             }
         }
 
