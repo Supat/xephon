@@ -3,11 +3,14 @@ import Fusion
 
 /// Per-utterance horizontal bar showing how much each modality
 /// contributed to the fused-label argmax for that row. Each row's
-/// slot on the strip spans its `[start, end]` audio range; the slot
-/// is split horizontally into an acoustic-tinted segment and a
-/// text-tinted segment, sized by
-/// `LateFusion.defaultLabelFusionShare`. Rows with only one
-/// modality fall back to a full slot in that modality's color.
+/// slot on the strip spans its `[start, end]` audio range and is
+/// filled with a single color drawn from a divergent palette: full
+/// text → orange, balanced → neutral gray, full acoustic → blue,
+/// all values in between interpolated linearly on the
+/// `net = (acoustic − text) / (acoustic + text)` axis (range
+/// `[-1, +1]`). Mirrors the heatmap's "one color says it all"
+/// rendering style; rows with only one modality saturate to that
+/// modality's endpoint.
 ///
 /// Sits below the emotion-timeline strip in the transcript pane so
 /// the three strips read top-down as: speaker → emotion label →
@@ -27,20 +30,24 @@ struct FusionContributionStrip: View {
     let onTapAtTime: ((TimeInterval) -> Void)?
 
     private static let height: CGFloat = 6
-    /// Color for the acoustic share (W2V2 + emotion2vec). Matches
-    /// the row's "Acoustic SER" section header convention — a
-    /// neutral blue that doesn't compete with the speaker palette
-    /// in the strip above.
-    private static let acousticTint = Color(red: 0.30, green: 0.55, blue: 0.85)
-    /// Color for the text share (DeBERTa / Apple FM). Warm orange,
-    /// distinct from any speaker tint that might appear in the
-    /// diarizer strip; the two strips don't share a meaning so
-    /// keeping the palettes orthogonal is intentional.
-    private static let textTint = Color(red: 0.95, green: 0.62, blue: 0.30)
-    /// Fill opacity of the per-slot segments. Lower than the
+    /// Endpoint RGB for the acoustic side (W2V2 + emotion2vec).
+    /// Stored as a tuple, not a `Color`, so the per-slot blend can
+    /// interpolate component-wise without round-tripping through a
+    /// runtime color-extraction API. `FusionLegendCard` mirrors
+    /// these values when rendering the gradient swatch — keep the
+    /// two in sync.
+    static let acousticRGB: (r: Double, g: Double, b: Double) = (0.30, 0.55, 0.85)
+    /// Endpoint RGB for the text side (DeBERTa / Apple FM).
+    static let textRGB: (r: Double, g: Double, b: Double) = (0.95, 0.62, 0.30)
+    /// Midpoint RGB used when the two modalities contribute
+    /// roughly equally. Neutral mid-gray so a balanced row reads
+    /// as "neither modality dominates" rather than a muddy average
+    /// of orange + blue.
+    static let neutralRGB: (r: Double, g: Double, b: Double) = (0.55, 0.55, 0.55)
+    /// Fill opacity of the per-slot color. Lower than the
     /// diarizer strip's runs so the strip reads as supporting
     /// detail, not a peer-level signal.
-    private static let segmentOpacity: Double = 0.78
+    private static let segmentOpacity: Double = 0.85
     /// Background track tint behind the segments — visible only in
     /// the gaps between utterance slots.
     private static let trackTintOpacity: Double = 0.06
@@ -57,7 +64,14 @@ struct FusionContributionStrip: View {
                 ForEach(utterances) { utt in
                     let share = shareFor(utt)
                     if let geometry = slotGeometry(for: utt, width: geo.size.width) {
-                        slot(share: share)
+                        Rectangle()
+                            .fill(
+                                Self.contributionColor(
+                                    acoustic: share.acoustic,
+                                    text: share.text
+                                )
+                                .opacity(Self.segmentOpacity)
+                            )
                             .frame(width: geometry.width, height: Self.height)
                             .offset(x: geometry.x)
                     }
@@ -106,19 +120,29 @@ struct FusionContributionStrip: View {
         return (x: x, width: max(1, w))
     }
 
-    @ViewBuilder
-    private func slot(share: (acoustic: Float, text: Float)) -> some View {
-        let total = max(share.acoustic + share.text, 1e-6)
-        let acousticFraction = CGFloat(share.acoustic / total)
-        GeometryReader { slotGeo in
-            HStack(spacing: 0) {
-                Rectangle()
-                    .fill(Self.acousticTint.opacity(Self.segmentOpacity))
-                    .frame(width: slotGeo.size.width * acousticFraction)
-                Rectangle()
-                    .fill(Self.textTint.opacity(Self.segmentOpacity))
-            }
+    /// Map a `(acoustic, text)` share pair to a single color on
+    /// the diverging palette. `net = (acoustic − text) /
+    /// (acoustic + text)` is in `[-1, +1]`; we interpolate the
+    /// neutral midpoint toward `acousticRGB` for positive `net`
+    /// and toward `textRGB` for negative. Returns neutral when
+    /// neither side contributed (defensive — the caller filters
+    /// these out earlier, but keep the function total).
+    static func contributionColor(acoustic: Float, text: Float) -> Color {
+        let total = Double(acoustic + text)
+        guard total > 1e-6 else {
+            return Color(
+                red: neutralRGB.r,
+                green: neutralRGB.g,
+                blue: neutralRGB.b
+            )
         }
+        let net = (Double(acoustic) - Double(text)) / total
+        let endpoint = net >= 0 ? acousticRGB : textRGB
+        let t = abs(net)
+        let r = neutralRGB.r * (1 - t) + endpoint.r * t
+        let g = neutralRGB.g * (1 - t) + endpoint.g * t
+        let b = neutralRGB.b * (1 - t) + endpoint.b * t
+        return Color(red: r, green: g, blue: b)
     }
 
     /// Compute the (acoustic, text) fusion share for one row.

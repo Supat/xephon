@@ -11,15 +11,28 @@ import SwiftUI
 /// short footnote covering the all-one-color edge cases and the
 /// ASR-confidence coupling.
 struct FusionLegendCard: View {
-    /// Acoustic share tint — must mirror
-    /// `FusionContributionStrip.acousticTint` exactly so the legend
-    /// reads against the strip without drift.
-    private static let acousticTint = Color(red: 0.30, green: 0.55, blue: 0.85)
-    private static let textTint = Color(red: 0.95, green: 0.62, blue: 0.30)
-    /// Same fill opacity the strip uses for its segments — keeps
-    /// the swatches looking like an extract of the strip, not a
-    /// brighter advertisement of one.
-    private static let segmentOpacity: Double = 0.78
+    /// Palette endpoint tints — pulled from the strip's own RGB
+    /// constants so the legend can't drift out of sync with the
+    /// rendering it explains.
+    private static let acousticTint = Color(
+        red: FusionContributionStrip.acousticRGB.r,
+        green: FusionContributionStrip.acousticRGB.g,
+        blue: FusionContributionStrip.acousticRGB.b
+    )
+    private static let textTint = Color(
+        red: FusionContributionStrip.textRGB.r,
+        green: FusionContributionStrip.textRGB.g,
+        blue: FusionContributionStrip.textRGB.b
+    )
+    private static let neutralTint = Color(
+        red: FusionContributionStrip.neutralRGB.r,
+        green: FusionContributionStrip.neutralRGB.g,
+        blue: FusionContributionStrip.neutralRGB.b
+    )
+    /// Same fill opacity the strip uses, so the gradient preview
+    /// looks like an extract of the strip rather than a brighter
+    /// advertisement.
+    private static let segmentOpacity: Double = 0.85
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -29,14 +42,20 @@ struct FusionLegendCard: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            // Miniature strip preview so the user has the visual
-            // anchor inline next to the text below.
-            HStack(spacing: 0) {
-                Rectangle()
-                    .fill(Self.acousticTint.opacity(Self.segmentOpacity))
-                Rectangle()
-                    .fill(Self.textTint.opacity(Self.segmentOpacity))
-            }
+            // Miniature gradient preview so the user has the
+            // visual anchor inline next to the text below. The
+            // three-stop linear gradient mirrors the strip's
+            // divergent palette: text on the left (−1), neutral
+            // in the middle (0), acoustic on the right (+1).
+            LinearGradient(
+                stops: [
+                    .init(color: Self.textTint.opacity(Self.segmentOpacity), location: 0.0),
+                    .init(color: Self.neutralTint.opacity(Self.segmentOpacity), location: 0.5),
+                    .init(color: Self.acousticTint.opacity(Self.segmentOpacity), location: 1.0),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
             .frame(height: 6)
             .clipShape(Capsule())
 
