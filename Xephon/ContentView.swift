@@ -123,6 +123,16 @@ struct ContentView: View {
     /// the session is paused so the tuning + re-diarize work runs
     /// without racing the live audio pump.
     @State private var showingTuningSheet: Bool = false
+    /// Flips true the moment the record button's long-press
+    /// recognizes (which triggers `stop()`). The tap-action closure
+    /// reads + clears this on its next fire and bails — without
+    /// the guard, SwiftUI's `.simultaneousGesture` lets the tap
+    /// also fire after the long-press, which after stop() sees an
+    /// `.idle` controller and would immediately spin up a brand
+    /// new recording. Auto-clears on a short timer too so a tap
+    /// that never lands (gesture system suppressed it) doesn't
+    /// leave the flag latched into the next interaction.
+    @State private var recordLongPressConsumedTap: Bool = false
     /// Active in-flight LLM tasks, owned by the view so the dismiss
     /// path (and the regenerate-while-running path) can `.cancel()`
     /// them. The MLX inference closures observe `Task.isCancelled`
@@ -1127,6 +1137,14 @@ struct ContentView: View {
     @ViewBuilder
     private var recordButton: some View {
         Button {
+            // Suppress the tap-half of a simultaneous long-press +
+            // tap pair. The long-press handler already ran stop();
+            // letting the tap fall through would call toggle() on
+            // the now-idle controller and start a fresh recording.
+            if recordLongPressConsumedTap {
+                recordLongPressConsumedTap = false
+                return
+            }
             if recorder.isPaused || recorder.isRecording {
                 // Mid-session: tap toggles between recording and
                 // paused. The discard confirm doesn't fire here —
@@ -1157,7 +1175,18 @@ struct ContentView: View {
             LongPressGesture(minimumDuration: 0.6)
                 .onEnded { _ in
                     guard recorder.isRecording || recorder.isPaused else { return }
+                    recordLongPressConsumedTap = true
                     Task { await recorder.stop() }
+                    // Defensive auto-clear. The button's tap
+                    // action ought to fire (and consume the flag)
+                    // on release, but if SwiftUI suppresses it on
+                    // a particular OS build the flag would stay
+                    // latched and break the next interaction. A
+                    // 0.5 s timer is well past any plausible
+                    // release event.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        recordLongPressConsumedTap = false
+                    }
                 }
         )
     }
