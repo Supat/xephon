@@ -18,6 +18,14 @@ import Fusion
 struct FusionContributionStrip: View {
     let utterances: [UtteranceEstimate]
     let totalDuration: TimeInterval
+    /// Current acoustic-modality weight from the controller's
+    /// runtime fusion settings. Drives the per-slot color blend so
+    /// the strip reflects the live slider value, not the
+    /// compiled-in defaults.
+    let acousticWeight: Float
+    /// Current text-modality weight floor — same plumbing as
+    /// `acousticWeight`.
+    let textWeightFloor: Float
     /// Selected utterance's `[start, end]` window. Renders a
     /// primary-color stroke over that range — matches the diarizer
     /// and emotion strips so the three highlights line up at the
@@ -162,15 +170,19 @@ struct FusionContributionStrip: View {
         case (false, true):
             return (acoustic: 0, text: 1)
         case (true, true):
-            if let share = LateFusion.defaultLabelFusionShare(
+            if let share = LateFusion.labelFusionShare(
                 acoustic: utt.acousticCategorical,
                 plutchik: utt.plutchik,
-                asrConfidence: utt.asrConfidence ?? 0.5
+                asrConfidence: utt.asrConfidence ?? 0.5,
+                acousticWeight: acousticWeight,
+                textWeightFloor: textWeightFloor
             ) {
                 return share
             }
-            return LateFusion.defaultVAFusionShare(
-                asrConfidence: utt.asrConfidence ?? 0.5
+            return LateFusion.vaFusionShare(
+                asrConfidence: utt.asrConfidence ?? 0.5,
+                acousticWeight: acousticWeight,
+                textWeightFloor: textWeightFloor
             )
         }
     }

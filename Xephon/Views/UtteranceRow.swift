@@ -85,6 +85,15 @@ struct UtteranceRow: View {
     /// up as duplicate display ids on the cluster panels). Pure;
     /// caller is responsible for actually performing the reassign.
     let nextNewSpeakerID: () -> String
+    /// Live acoustic-modality weight from the controller's fusion
+    /// settings. Used by the inspector's V/A and label
+    /// contribution-share summaries so they reflect what fusion
+    /// WOULD do under the current slider values, not the
+    /// compiled-in defaults.
+    let fusionAcousticWeight: Float
+    /// Live text-modality weight floor — same plumbing as
+    /// `fusionAcousticWeight`.
+    let fusionTextWeightFloor: Float
     /// Fires when the user picks a different speaker from the chip
     /// menu with **Teach diarizer** *off*. ContentView calls
     /// `recorder.reassignSpeaker` — pure row-level annotation
@@ -744,8 +753,10 @@ struct UtteranceRow: View {
         case (false, true):
             return "Text 100% (no acoustic)"
         case (true, true):
-            let share = LateFusion.defaultVAFusionShare(
-                asrConfidence: utterance.asrConfidence ?? 0.5
+            let share = LateFusion.vaFusionShare(
+                asrConfidence: utterance.asrConfidence ?? 0.5,
+                acousticWeight: fusionAcousticWeight,
+                textWeightFloor: fusionTextWeightFloor
             )
             return String(
                 format: "Acoustic %.0f%% · Text %.0f%%",
@@ -762,10 +773,12 @@ struct UtteranceRow: View {
     /// of input).
     private var labelFusionSummary: String? {
         guard utterance.fusedTopLabel != nil else { return nil }
-        guard let share = LateFusion.defaultLabelFusionShare(
+        guard let share = LateFusion.labelFusionShare(
             acoustic: utterance.acousticCategorical,
             plutchik: utterance.plutchik,
-            asrConfidence: utterance.asrConfidence ?? 0.5
+            asrConfidence: utterance.asrConfidence ?? 0.5,
+            acousticWeight: fusionAcousticWeight,
+            textWeightFloor: fusionTextWeightFloor
         ) else { return nil }
         return String(
             format: "Acoustic %.0f%% · Text %.0f%%",

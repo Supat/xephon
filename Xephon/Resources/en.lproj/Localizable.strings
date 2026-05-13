@@ -114,6 +114,10 @@
 "fusion.legend.text" = "Text SER";
 "fusion.legend.text.detail" = "DeBERTa-WRIME / Apple FM Plutchik 8-class score.";
 "fusion.legend.footnote" = "Each slot's color is its net contribution along (acoustic − text) ÷ (acoustic + text): full orange = text-only, neutral gray = balanced, full blue = acoustic-only. Low ASR confidence pulls the color toward blue because text weight is scaled by ASR confidence.";
+"fusion.controls.header" = "Adjust Weights";
+"fusion.controls.acousticWeight" = "Acoustic weight";
+"fusion.controls.textWeightFloor" = "Text weight floor";
+"fusion.controls.reset" = "Reset";
 "speaker.rename.title" = "Rename Speaker";
 "speaker.rename.placeholder" = "Speaker name";
 "speaker.rename.message" = "Pick a custom name for speaker %@. Leave blank to revert to the default.";

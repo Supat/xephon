@@ -55,14 +55,30 @@ public actor LateFusion: Fuser {
     }
 
     /// Normalized (acoustic, text) fraction the V/A weighted average
-    /// would apply for an utterance with the given ASR confidence,
-    /// using the default weights. Fractions sum to 1.0.
+    /// applies for an utterance with the given ASR confidence and
+    /// the supplied weight pair. Fractions sum to 1.0.
+    public static func vaFusionShare(
+        asrConfidence: Float,
+        acousticWeight: Float,
+        textWeightFloor: Float
+    ) -> (acoustic: Float, text: Float) {
+        let text = max(textWeightFloor, asrConfidence)
+        let total = acousticWeight + text
+        guard total > 0 else { return (acoustic: 0, text: 0) }
+        return (acoustic: acousticWeight / total, text: text / total)
+    }
+
+    /// Convenience overload using the compiled-in defaults. Kept so
+    /// call sites that haven't been wired through to runtime weights
+    /// yet continue to compile.
     public static func defaultVAFusionShare(
         asrConfidence: Float
     ) -> (acoustic: Float, text: Float) {
-        let text = max(defaultTextWeightFloor, asrConfidence)
-        let total = defaultAcousticWeight + text
-        return (acoustic: defaultAcousticWeight / total, text: text / total)
+        vaFusionShare(
+            asrConfidence: asrConfidence,
+            acousticWeight: defaultAcousticWeight,
+            textWeightFloor: defaultTextWeightFloor
+        )
     }
 
     /// Coarse mapping from Plutchik labels to the overlapping
@@ -108,16 +124,18 @@ public actor LateFusion: Fuser {
     ///
     /// Returns nil only when neither side contributed any score
     /// (both inputs missing or all probabilities zero).
-    public static func defaultLabelFusionShare(
+    public static func labelFusionShare(
         acoustic: CategoricalEmotion?,
         plutchik: PlutchikScore?,
-        asrConfidence: Float
+        asrConfidence: Float,
+        acousticWeight: Float,
+        textWeightFloor: Float
     ) -> (acoustic: Float, text: Float)? {
-        let textWeight = max(defaultTextWeightFloor, asrConfidence)
+        let textWeight = max(textWeightFloor, asrConfidence)
         var acousticTotal: Float = 0
         if let a = acoustic {
             for (k, v) in a.probabilities where k != .unknown && k != .other {
-                acousticTotal += v * defaultAcousticWeight
+                acousticTotal += v * acousticWeight
             }
         }
         var textTotal: Float = 0
@@ -131,6 +149,23 @@ public actor LateFusion: Fuser {
         let total = acousticTotal + textTotal
         guard total > 0 else { return nil }
         return (acoustic: acousticTotal / total, text: textTotal / total)
+    }
+
+    /// Convenience overload using the compiled-in defaults. Kept so
+    /// call sites that haven't been wired through to runtime weights
+    /// yet continue to compile.
+    public static func defaultLabelFusionShare(
+        acoustic: CategoricalEmotion?,
+        plutchik: PlutchikScore?,
+        asrConfidence: Float
+    ) -> (acoustic: Float, text: Float)? {
+        labelFusionShare(
+            acoustic: acoustic,
+            plutchik: plutchik,
+            asrConfidence: asrConfidence,
+            acousticWeight: defaultAcousticWeight,
+            textWeightFloor: defaultTextWeightFloor
+        )
     }
 
     public func fuse(

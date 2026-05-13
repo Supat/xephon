@@ -352,6 +352,23 @@ final class RecordingController {
 
     private static let summarizerEnabledKey = "xephon.summarizerEnabled"
     private static let summarizerBackendKey = "xephon.summarizerBackend"
+    private static let fusionAcousticWeightKey = "xephon.fusionAcousticWeight"
+    private static let fusionTextWeightFloorKey = "xephon.fusionTextWeightFloor"
+
+    /// Current weight applied to the acoustic modality during late
+    /// fusion. Drives the live `LateFusion` instance on the
+    /// analysis pipeline AND the per-row inspector / fusion strip's
+    /// contribution-share rendering. Persists across launches via
+    /// `fusionAcousticWeightKey`. Adjustable from
+    /// `FusionLegendCard`'s sliders; the controller does NOT
+    /// retroactively re-fuse existing utterances on a change —
+    /// users re-evaluate specific rows if they want the new
+    /// weights applied historically.
+    private(set) var fusionAcousticWeight: Float
+    /// Floor for the text modality weight (text weight =
+    /// `max(floor, asrConfidence)`). Drives the same call sites
+    /// as `fusionAcousticWeight`.
+    private(set) var fusionTextWeightFloor: Float
 
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
@@ -366,6 +383,23 @@ final class RecordingController {
         self.summarizerEnabled = UserDefaults.standard.bool(forKey: Self.summarizerEnabledKey)
         let rawBackend = UserDefaults.standard.string(forKey: Self.summarizerBackendKey) ?? ""
         self.summarizerBackend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
+        // Restore fusion weights from UserDefaults if the user has
+        // touched the sliders before; otherwise inherit LateFusion's
+        // compiled-in defaults. The `0` sentinel covers the
+        // first-launch case where UserDefaults returns 0 for an
+        // unset Float key (UserDefaults Float lookup returns 0.0
+        // when the key is absent — distinguishable from a
+        // deliberately-saved 0 only via `object(forKey:)`).
+        if UserDefaults.standard.object(forKey: Self.fusionAcousticWeightKey) != nil {
+            self.fusionAcousticWeight = UserDefaults.standard.float(forKey: Self.fusionAcousticWeightKey)
+        } else {
+            self.fusionAcousticWeight = LateFusion.defaultAcousticWeight
+        }
+        if UserDefaults.standard.object(forKey: Self.fusionTextWeightFloorKey) != nil {
+            self.fusionTextWeightFloor = UserDefaults.standard.float(forKey: Self.fusionTextWeightFloorKey)
+        } else {
+            self.fusionTextWeightFloor = LateFusion.defaultTextWeightFloor
+        }
         self.summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
         self.streamingTranscriber = streamingTranscriber
@@ -430,6 +464,7 @@ final class RecordingController {
             self.pipeline = result.pipeline
             self.pipelineDiagnostics = result.diagnostics
             self.pipelineTask = nil
+            applyFusionWeights(to: result.pipeline)
             await refreshTextSERState(from: result.pipeline)
             return result.pipeline
         }
@@ -438,14 +473,27 @@ final class RecordingController {
             // modelStore init success. Construct an empty pipeline so the
             // app degrades gracefully rather than hanging on an await.
             let configured = AnalysisPipeline()
+            applyFusionWeights(to: configured)
             self.pipeline = configured
             return configured
         }
         let result = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
         self.pipelineDiagnostics = result.diagnostics
         self.pipeline = result.pipeline
+        applyFusionWeights(to: result.pipeline)
         await refreshTextSERState(from: result.pipeline)
         return result.pipeline
+    }
+
+    /// Apply the user's current fusion-weight settings to the
+    /// supplied pipeline so fresh utterances fuse under them.
+    /// Called at every pipeline bring-up site and whenever the
+    /// sliders move.
+    private func applyFusionWeights(to pipeline: AnalysisPipeline) {
+        pipeline.setFusionWeights(
+            acousticWeight: fusionAcousticWeight,
+            textWeightFloor: fusionTextWeightFloor
+        )
     }
 
     /// Run model hydration → pipeline warm → text-SER state refresh.
@@ -475,6 +523,7 @@ final class RecordingController {
         self.pipeline = result.pipeline
         self.pipelineDiagnostics = result.diagnostics
         self.pipelineTask = nil
+        applyFusionWeights(to: result.pipeline)
         await self.refreshTextSERState(from: result.pipeline)
     }
 
@@ -1046,6 +1095,54 @@ final class RecordingController {
            !summarizerDownloading {
             await triggerSummarizerDownload()
         }
+    }
+
+    /// Set the acoustic-modality weight applied during late
+    /// fusion. Persists across launches and is pushed into the
+    /// live pipeline so subsequent utterances fuse under the new
+    /// value. Existing utterances keep their cached fused V/A/D
+    /// — re-evaluate a row to apply the new weight to it.
+    /// `bumpUtterancesVersion` flips the filter-memo invalidation
+    /// counter so any view computing contribution shares from
+    /// `LateFusion.vaFusionShare`/`labelFusionShare` re-renders
+    /// against the new value.
+    func setFusionAcousticWeight(_ value: Float) {
+        let clamped = max(0, min(2, value))
+        guard clamped != fusionAcousticWeight else { return }
+        fusionAcousticWeight = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.fusionAcousticWeightKey)
+        if let pipeline { applyFusionWeights(to: pipeline) }
+        utterancesVersion &+= 1
+        AppLog.app.info(
+            "fusion.acousticWeight → \(clamped, privacy: .public)"
+        )
+    }
+
+    /// Set the text-modality weight floor. Same persistence +
+    /// pipeline-push semantics as `setFusionAcousticWeight`.
+    func setFusionTextWeightFloor(_ value: Float) {
+        let clamped = max(0, min(1, value))
+        guard clamped != fusionTextWeightFloor else { return }
+        fusionTextWeightFloor = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.fusionTextWeightFloorKey)
+        if let pipeline { applyFusionWeights(to: pipeline) }
+        utterancesVersion &+= 1
+        AppLog.app.info(
+            "fusion.textWeightFloor → \(clamped, privacy: .public)"
+        )
+    }
+
+    /// Restore both fusion weights to LateFusion's compiled-in
+    /// defaults. Clears the persisted values so a future launch
+    /// also inherits the defaults.
+    func resetFusionWeights() {
+        fusionAcousticWeight = LateFusion.defaultAcousticWeight
+        fusionTextWeightFloor = LateFusion.defaultTextWeightFloor
+        UserDefaults.standard.removeObject(forKey: Self.fusionAcousticWeightKey)
+        UserDefaults.standard.removeObject(forKey: Self.fusionTextWeightFloorKey)
+        if let pipeline { applyFusionWeights(to: pipeline) }
+        utterancesVersion &+= 1
+        AppLog.app.info("fusion weights reset to defaults")
     }
 
     /// Switch the summarizer backend. Apple FM has no

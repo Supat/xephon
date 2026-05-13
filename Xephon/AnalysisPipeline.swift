@@ -56,7 +56,12 @@ final class AnalysisPipeline: @unchecked Sendable {
     private let dimensionalSER: (any DimensionalAcousticSER)?
     private let categoricalSER: (any CategoricalAcousticSER)?
     private let textSER: (any TextSER)?
-    private let fuser: any Fuser
+    /// Mutable so the controller can swap in a `LateFusion` with
+    /// fresh weights when the user adjusts the fusion-control
+    /// sliders. New utterances fuse under the new weights; old
+    /// utterances keep their cached fused V/A/D until manually
+    /// re-evaluated.
+    private var fuser: any Fuser
     /// Bridges per-call diarizer outputs to session-stable speaker IDs
     /// by time-overlap matching. Reset between sessions via
     /// `resetSpeakerTracking()`.
@@ -92,6 +97,21 @@ final class AnalysisPipeline: @unchecked Sendable {
         // speaker via cosine similarity, conflating two different
         // people under the same ID.
         await diarizer?.resetSpeakers()
+    }
+
+    /// Swap in a fresh `LateFusion` with the supplied weights so
+    /// subsequent `fuse(...)` calls use them. Old already-fused
+    /// utterances are not retroactively updated — the controller
+    /// re-evaluates them out-of-band if the user wants the change
+    /// to apply to historical rows.
+    func setFusionWeights(
+        acousticWeight: Float,
+        textWeightFloor: Float
+    ) {
+        fuser = LateFusion(
+            textWeightFloor: textWeightFloor,
+            acousticWeight: acousticWeight
+        )
     }
 
     /// Run the diarizer on a window of audio and merge the result

@@ -648,7 +648,7 @@ struct ContentView: View {
                         )
                         StatisticsCard(summary: displayedSummary)
                         SERAggregateCard(recorder: recorder)
-                        FusionLegendCard()
+                        FusionLegendCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
@@ -800,6 +800,8 @@ struct ContentView: View {
             FusionContributionStrip(
                 utterances: recorder.utterances,
                 totalDuration: total,
+                acousticWeight: recorder.fusionAcousticWeight,
+                textWeightFloor: recorder.fusionTextWeightFloor,
                 selectedRange: selectedUtteranceRange,
                 onTapAtTime: { t in
                     guard let target = nearestUtterance(toTime: t) else { return }

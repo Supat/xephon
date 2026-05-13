@@ -1,16 +1,26 @@
 import SwiftUI
+import Fusion
 
-/// Inline legend for the per-utterance fusion-contribution strip
-/// that sits below the diarizer + emotion timelines. Lives on the
-/// left pane's affect page below `SERAggregateCard` so the legend
-/// is on the same surface the user is reading the bias data from.
+/// Inline legend + adjustable controls for the per-utterance
+/// fusion-contribution strip. Lives on the left pane's affect page
+/// below `SERAggregateCard` so the explanation, the live sliders,
+/// and the footnote all sit on the same surface the user is
+/// reading the strip from.
 ///
-/// The strip itself is intentionally lean (a 6pt band with no axis
-/// labels) so an explainer card off to the side carries the
-/// meaning. Two color swatches + one-line definitions, plus a
-/// short footnote covering the all-one-color edge cases and the
-/// ASR-confidence coupling.
+/// Layout, top-to-bottom:
+///   1. Gradient swatch preview spanning text → neutral → acoustic.
+///   2. Two labeled rows naming the endpoint modalities.
+///   3. Adjustable controls — sliders for `acousticWeight` and
+///      `textWeightFloor`, plus a Reset affordance.
+///   4. Footnote covering the color-mapping math and the ASR-
+///      confidence coupling.
+///
+/// Slider changes hit the controller immediately and propagate
+/// into the strip + per-row inspector on the next render. New
+/// utterances fuse under the new weights; existing utterances
+/// keep their cached fused V/A/D until manually re-evaluated.
 struct FusionLegendCard: View {
+    let recorder: RecordingController
     /// Palette endpoint tints — pulled from the strip's own RGB
     /// constants so the legend can't drift out of sync with the
     /// rendering it explains.
@@ -70,6 +80,9 @@ struct FusionLegendCard: View {
                 description: String(localized: "fusion.legend.text.detail")
             )
 
+            Divider()
+            controlsSection
+
             Text(String(localized: "fusion.legend.footnote"))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -79,6 +92,73 @@ struct FusionLegendCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var controlsSection: some View {
+        let acousticBinding = Binding<Float>(
+            get: { recorder.fusionAcousticWeight },
+            set: { recorder.setFusionAcousticWeight($0) }
+        )
+        let textFloorBinding = Binding<Float>(
+            get: { recorder.fusionTextWeightFloor },
+            set: { recorder.setFusionTextWeightFloor($0) }
+        )
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(String(localized: "fusion.controls.header"))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                Spacer()
+                Button(role: .destructive) {
+                    recorder.resetFusionWeights()
+                } label: {
+                    Text(String(localized: "fusion.controls.reset"))
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .disabled(
+                    recorder.fusionAcousticWeight == LateFusion.defaultAcousticWeight
+                        && recorder.fusionTextWeightFloor == LateFusion.defaultTextWeightFloor
+                )
+            }
+            sliderRow(
+                label: String(localized: "fusion.controls.acousticWeight"),
+                value: acousticBinding,
+                range: 0...2,
+                step: 0.05
+            )
+            sliderRow(
+                label: String(localized: "fusion.controls.textWeightFloor"),
+                value: textFloorBinding,
+                range: 0...1,
+                step: 0.05
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func sliderRow(
+        label: String,
+        value: Binding<Float>,
+        range: ClosedRange<Float>,
+        step: Float
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.2f", value.wrappedValue))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, alignment: .trailing)
+            }
+            Slider(value: value, in: range, step: step)
+                .controlSize(.small)
+        }
     }
 
     @ViewBuilder

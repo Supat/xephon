@@ -223,6 +223,8 @@ struct TranscriptList: View {
             knownSpeakerIDs: recorder.knownSpeakerIDs(),
             speakerDisplayName: { recorder.speakerDisplayName(forStored: $0) },
             nextNewSpeakerID: { recorder.nextAvailableSpeakerID() },
+            fusionAcousticWeight: recorder.fusionAcousticWeight,
+            fusionTextWeightFloor: recorder.fusionTextWeightFloor,
             onReassignSpeaker: { newSpeakerID in
                 recorder.reassignSpeaker(
                     utteranceID: item.u.id,
