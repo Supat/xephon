@@ -1,5 +1,7 @@
 import Foundation
 import Fusion
+import SERAcoustic
+import SERText
 import XephonLogging
 import MLX
 import MLXLLM
@@ -33,17 +35,16 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     private static let maxOutputTokens = 2048
 
     /// Cap on the number of utterances we feed into a single
-    /// summary pass. Prefill cost scales linearly in sequence
-    /// length and the KV cache is the dominant marginal memory
-    /// during inference — a 285-utterance / ~10k-token prompt
-    /// reliably trips iOS Jetsam on a 16 GB iPad once the 4.3 GB
-    /// weights are resident alongside the existing ONNX SER
-    /// actors. 80 utterances ≈ 3k tokens, ~10× headroom over the
-    /// case that crashed. Long sessions take the most recent
-    /// window — emotion arcs concentrate at the trailing edge of
-    /// a conversation, so the tail is what summary readers care
-    /// about most.
-    private static let maxPromptUtterances = 80
+    /// summary pass. Each row carries the full acoustic 9-class
+    /// softmax + Plutchik 8-class intensity in addition to the
+    /// fused label/V/A/D — ~2.3× the per-row token cost vs. a
+    /// fused-only line. 100 utterances at this richer format ≈
+    /// 10–14k input tokens, comfortably inside Qwen3's context
+    /// window and inside the increased-memory-limit entitlement's
+    /// per-app budget. Sessions longer than this take the most
+    /// recent window — emotion arcs concentrate at the trailing
+    /// edge of a conversation.
+    private static let maxPromptUtterances = 100
 
     public init(modelIdentifier: String, modelDirectory: URL) {
         self.modelIdentifier = modelIdentifier
@@ -261,7 +262,10 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         lines.append("  \"overallMood\" — one paragraph on the session's overall emotional tone.")
         lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakers.joined(separator: ", ")).")
         lines.append("Each perSpeaker entry has: { \"speakerID\": <id>, \"summary\": <one paragraph>, \"dominantMood\": <one short phrase> }.")
-        lines.append("Use the numerical V/A/D and label probabilities to judge confidence and weight your reasoning.")
+        lines.append("Each row carries: fused label and fused V/A/D (valence/arousal/dominance, 0–1), plus the raw per-modality probability vectors:")
+        lines.append("  aP = acoustic 9-class softmax (angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown)")
+        lines.append("  tP = text 8-class Plutchik intensity (joy, sadness, anticipation, surprise, anger, fear, disgust, trust)")
+        lines.append("Use these to judge confidence and to flag modality disagreement — e.g. a row where aP says sad but tP says joy is worth calling out per-speaker; the fused label hides that signal.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
         // Qwen3 ships with a "thinking" mode that emits a
         // `<think>...</think>` chain-of-thought block before the
@@ -285,9 +289,11 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         return lines.joined(separator: "\n")
     }
 
-    /// One per-utterance line. Keep order stable (speaker, time,
-    /// label, V/A, text) so the model sees consistent positional
-    /// cues across rows.
+    /// One per-utterance line. Order stable so the model sees
+    /// consistent positional cues across rows: speaker → time →
+    /// fused → per-modality probability vectors → transcript.
+    /// The transcript field is named `text` so to avoid collision
+    /// with the text-SER's Plutchik vector we name that `tP`.
     private static func compactLine(
         for u: UtteranceEstimate,
         speakerNames: [String: String]
@@ -302,11 +308,40 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         if let v = u.fusedValence { fields.append(String(format: "V=%.2f", v)) }
         if let a = u.fusedArousal { fields.append(String(format: "A=%.2f", a)) }
         if let d = u.fusedDominance { fields.append(String(format: "D=%.2f", d)) }
+        if let acoustic = u.acousticCategorical {
+            fields.append("aP={\(renderAcoustic(acoustic))}")
+        }
+        if let plutchik = u.plutchik {
+            fields.append("tP={\(renderPlutchik(plutchik))}")
+        }
         let escaped = u.transcript
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         fields.append("text=\"\(escaped)\"")
         return "- " + fields.joined(separator: " ")
+    }
+
+    /// Render the acoustic 9-class softmax in `Label.allCases`
+    /// order so every row's vector lines up by position — easier
+    /// for the LLM to compare rows column-wise. Missing classes
+    /// fall back to 0.00 rather than being omitted, so the schema
+    /// stays uniform across rows.
+    private static func renderAcoustic(_ score: CategoricalEmotion) -> String {
+        CategoricalEmotion.Label.allCases.map { label in
+            let p = score.probabilities[label] ?? 0
+            return String(format: "%@=%.2f", label.rawValue, p)
+        }.joined(separator: " ")
+    }
+
+    /// Render the text 8-class Plutchik intensity vector in
+    /// `Label.allCases` order. Same uniform-schema rationale as
+    /// `renderAcoustic` — and note these are intensities, not a
+    /// softmax (WRIME is multi-label), so they need not sum to 1.
+    private static func renderPlutchik(_ score: PlutchikScore) -> String {
+        PlutchikScore.Label.allCases.map { label in
+            let p = score.probabilities[label] ?? 0
+            return String(format: "%@=%.2f", label.rawValue, p)
+        }.joined(separator: " ")
     }
 
     /// Decode the LLM's JSON output. Robust against the common

@@ -186,12 +186,17 @@ struct EditUtteranceSheet: View {
     }
 
     /// One time control = label + numeric TextField + unit suffix
-    /// + Stepper, all wrapped in a single soft-fill rounded
-    /// rectangle so the three subviews read as one control rather
-    /// than the default disjointed `.roundedBorder` + bare Stepper.
-    /// The TextField runs `.plain` styling (the surrounding fill
-    /// is the border), with monospaced digits and a tertiary "s"
-    /// suffix.
+    /// + a pair of -/+ buttons, all wrapped in a single soft-fill
+    /// rounded rectangle so the four subviews read as one control.
+    ///
+    /// We swapped out `Stepper` for explicit `minus`/`plus` buttons
+    /// because the system Stepper's internal tap-target padding
+    /// doesn't compress when the iPad keyboard takes over half the
+    /// screen — the layout would push the `+` to the row's edge
+    /// with a wide gap from the value, and the Stepper's intrinsic
+    /// height didn't match the .title3 TextField so the vertical
+    /// centers drifted. Custom buttons let us pin spacing AND
+    /// vertical baseline.
     @ViewBuilder
     private func timeControl(
         label: String,
@@ -220,12 +225,36 @@ struct EditUtteranceSheet: View {
             Text("s")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-            Stepper("", value: value, in: range, step: 0.1)
-                .labelsHidden()
-                .controlSize(.regular)
+            stepButton(systemImage: "minus") {
+                let next = max(range.lowerBound, value.wrappedValue - 0.1)
+                value.wrappedValue = (next * 100).rounded() / 100
+            }
+            .disabled(value.wrappedValue <= range.lowerBound)
+            stepButton(systemImage: "plus") {
+                let next = min(range.upperBound, value.wrappedValue + 0.1)
+                value.wrappedValue = (next * 100).rounded() / 100
+            }
+            .disabled(value.wrappedValue >= range.upperBound)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// Fixed-size -/+ button used in place of the system `Stepper`
+    /// so the time control row stays tidy at any width — see
+    /// `timeControl(label:value:in:)` for the rationale.
+    @ViewBuilder
+    private func stepButton(
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.callout.weight(.semibold))
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
     }
 }

@@ -19,12 +19,15 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     private let modelDirectory: URL
     private var container: ModelContainer?
 
-    /// Cap on output tokens. Review JSON tends to be longer per
-    /// row than summary JSON (each entry carries its own reason
-    /// paragraph), but the input is bounded — `maxPromptUtterances`
-    /// rows × ~4 fields each. 1536 leaves comfortable headroom
-    /// without inviting unbounded runs that would push memory.
-    private static let maxOutputTokens = 1536
+    /// Cap on output tokens. Each suggestion is ~100–150 tokens of
+    /// JSON (rowIndex + kind + suggestedText + reason + confidence)
+    /// and a real-world Japanese session can produce 30+ flagged
+    /// rows, which overshoots the previous 1536 cap and lands the
+    /// parser at "Unexpected end of file" every time. 4096 fits
+    /// ~25–35 entries comfortably; the tolerant parser below
+    /// recovers the prefix if the model still runs past it on a
+    /// particularly noisy session.
+    private static let maxOutputTokens = 4096
 
     /// Cap on utterances per review pass. Qwen3-8B's 32k context
     /// is far roomier than Apple FM's, but prefill KV-cache cost
@@ -214,10 +217,13 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     }
 
     /// Decode the LLM's JSON output. Tolerates `<think>` blocks
-    /// (defensive even though `/no_think` is in the prompt) and
-    /// ```fence``` wrappers. Drops suggestions whose `rowIndex`
-    /// isn't a row we sent — better silent drop than aliasing onto
-    /// the wrong row and corrupting the user's transcript.
+    /// (defensive even though `/no_think` is in the prompt),
+    /// ```fence``` wrappers, AND truncated output — when the model
+    /// ran past the output-token cap mid-array we recover everything
+    /// up to the last complete suggestion entry rather than throwing
+    /// the whole list away. Drops suggestions whose `rowIndex` isn't
+    /// a row we sent — better silent drop than aliasing onto the
+    /// wrong row and corrupting the user's transcript.
     private static func parse(
         raw: String,
         indexToID: [Int: UUID],
@@ -225,13 +231,8 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     ) throws -> [TranscriptionSuggestion] {
         let dethought = stripThinkBlocks(raw)
         let stripped = stripCodeFence(dethought)
-        guard let braceStart = stripped.firstIndex(of: "{"),
-              let braceEnd = stripped.lastIndex(of: "}") else {
+        guard let braceStart = stripped.firstIndex(of: "{") else {
             throw TranscriptionReviewError.decodeFailed(reason: "no JSON object found")
-        }
-        let jsonString = String(stripped[braceStart...braceEnd])
-        guard let data = jsonString.data(using: .utf8) else {
-            throw TranscriptionReviewError.decodeFailed(reason: "non-utf8 output")
         }
         struct Wire: Decodable {
             struct Entry: Decodable {
@@ -243,13 +244,45 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
             }
             let suggestions: [Entry]
         }
+        // First try strict — the whole output between the first `{`
+        // and the last `}`. Works whenever the model closed its
+        // JSON cleanly.
+        let strict: String? = {
+            guard let braceEnd = stripped.lastIndex(of: "}") else { return nil }
+            return String(stripped[braceStart...braceEnd])
+        }()
         let decoded: Wire
-        do {
-            decoded = try JSONDecoder().decode(Wire.self, from: data)
-        } catch {
-            throw TranscriptionReviewError.decodeFailed(
-                reason: String(describing: error)
+        if let strict, let data = strict.data(using: .utf8),
+           let ok = try? JSONDecoder().decode(Wire.self, from: data) {
+            decoded = ok
+        } else {
+            // Truncated output: walk the suffix from the array's
+            // opening `[`, find the last balanced entry object, and
+            // close the array + outer object manually so the JSON
+            // parses. The in-flight (broken) entry is discarded;
+            // every complete one is preserved.
+            guard let recovered = recoverTruncatedSuggestions(
+                stripped: String(stripped[braceStart...])
+            ) else {
+                throw TranscriptionReviewError.decodeFailed(
+                    reason: "no JSON object found"
+                )
+            }
+            guard let data = recovered.data(using: .utf8) else {
+                throw TranscriptionReviewError.decodeFailed(
+                    reason: "non-utf8 output"
+                )
+            }
+            AppLog.app.info(
+                "MLXQwenTranscriptionReviewer recovered truncated JSON (\(data.count, privacy: .public) bytes)"
             )
+            do {
+                decoded = try JSONDecoder().decode(Wire.self, from: data)
+            } catch {
+                throw TranscriptionReviewError.decodeFailed(
+                    reason: String(describing: error)
+                )
+            }
         }
         return decoded.suggestions.compactMap { entry -> TranscriptionSuggestion? in
             guard let utteranceID = indexToID[entry.rowIndex] else { return nil }
@@ -295,6 +328,84 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
             s.removeSubrange(s.startIndex..<strayClose.upperBound)
         }
         return s
+    }
+
+    /// Salvage a truncated `{"suggestions":[...]}` blob by scanning
+    /// forward, tracking string-literal and brace-nesting state, and
+    /// remembering the position immediately after the *most recent
+    /// top-level object that closed* inside the array. When the
+    /// scan hits end-of-input mid-entry, we cut the string at that
+    /// remembered position, then synthesize `]}` to close the array
+    /// and outer object. The resulting JSON contains every complete
+    /// suggestion the model managed to emit before the token budget
+    /// ran out; the in-flight entry is discarded.
+    ///
+    /// Returns nil when the input doesn't look like our expected
+    /// `{"suggestions":[…` shape — let the caller surface the
+    /// original parse error in that case rather than silently
+    /// returning an empty list.
+    private static func recoverTruncatedSuggestions(stripped: String) -> String? {
+        guard let arrayOpenRange = stripped.range(of: "[") else { return nil }
+        // Sanity check: there should be a `"suggestions"` token
+        // before the bracket. If not, this isn't the shape we
+        // expect and recovery would be guessing.
+        let prefix = stripped[..<arrayOpenRange.lowerBound]
+        guard prefix.contains("suggestions") else { return nil }
+
+        var depth = 0
+        var inString = false
+        var escape = false
+        var lastCompleteEntryEnd: String.Index? = nil
+
+        var i = arrayOpenRange.upperBound
+        while i < stripped.endIndex {
+            let ch = stripped[i]
+            if escape {
+                escape = false
+            } else if inString {
+                if ch == "\\" {
+                    escape = true
+                } else if ch == "\"" {
+                    inString = false
+                }
+            } else {
+                switch ch {
+                case "\"":
+                    inString = true
+                case "{":
+                    depth += 1
+                case "}":
+                    depth -= 1
+                    if depth == 0 {
+                        // Just closed a top-level entry inside the
+                        // array. Record the position right after
+                        // this `}` so we can rewind here if the
+                        // scan runs out mid-next-entry.
+                        lastCompleteEntryEnd = stripped.index(after: i)
+                    }
+                case "]" where depth == 0:
+                    // The array closed normally — the strict
+                    // parser should have handled this; fall
+                    // through to nil so the caller surfaces the
+                    // original error.
+                    return nil
+                default:
+                    break
+                }
+            }
+            i = stripped.index(after: i)
+        }
+
+        guard let cutEnd = lastCompleteEntryEnd else { return nil }
+        // `stripped[..<cutEnd]` ends at "...},". Strip any trailing
+        // comma/whitespace, then close the array + object.
+        var truncated = String(stripped[..<cutEnd])
+        while let last = truncated.last,
+              last == "," || last.isWhitespace {
+            truncated.removeLast()
+        }
+        truncated.append("]}")
+        return truncated
     }
 
     private static func stripCodeFence(_ raw: String) -> String {

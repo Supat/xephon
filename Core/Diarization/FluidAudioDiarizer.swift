@@ -1,4 +1,5 @@
 import Foundation
+import CoreML
 import FluidAudio
 import Audio
 import XephonLogging
@@ -221,7 +222,21 @@ public actor FluidAudioDiarizer: Diarizer {
     private func loadModels() async throws {
         AppLog.diarization.info("Downloading FluidAudio diarizer models (first run)…")
         do {
-            let models = try await DiarizerModels.download()
+            // Pin to `.cpuAndNeuralEngine` so the diarizer never
+            // submits Metal work. iOS revokes background GPU access
+            // even with the `audio` background mode declared
+            // (E5RT / kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted),
+            // which crashed the continuous-diarize loop the moment
+            // the user switched to another app mid-recording. The
+            // ANE doesn't share that restriction and runs the
+            // Sortformer + embedding models comfortably; in
+            // foreground there's no measurable latency difference
+            // either, so this is a strict win.
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .cpuAndNeuralEngine
+            let models = try await DiarizerModels.download(
+                configuration: configuration
+            )
             manager.initialize(models: models)
         } catch {
             throw DiarizationError.modelUnavailable(reason: String(describing: error))
