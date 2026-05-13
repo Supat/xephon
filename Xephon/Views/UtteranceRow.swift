@@ -174,15 +174,6 @@ struct UtteranceRow: View {
     /// edit-press threshold so a momentary hold doesn't blow away
     /// state — the user has to commit to the gesture.
     private static let revertLongPressSec: Double = 2.0
-    /// Threshold for "expand this row" long-presses (empty space
-    /// inside the row's content area). Matches the revert long-
-    /// press so the gesture vocabulary is consistent: tap is the
-    /// quick action (focus), 2 s hold is the deeper one (expand /
-    /// revert). The inner 0.5 s long-presses on chip + transcript
-    /// text still win their own hit areas, so a hold on those
-    /// opens their dialogs before this 2 s threshold is reached.
-    private static let expandLongPressSec: Double = 2.0
-
     /// Tint strength (0…1) applied to the Liquid Glass capsule
     /// when the speaker color is laid over it. 0.4 gives a clearly
     /// readable speaker identity while letting the underlying
@@ -219,15 +210,12 @@ struct UtteranceRow: View {
                 }
             }
             .contentShape(Rectangle())
-            // 2 s hold expands / collapses the detail panel. `simul-
-            // taneousGesture` so it coexists with the outer
-            // `.onTapGesture` (which handles the tap-to-focus toggle)
-            // and with the inner chip + transcript long-presses on
-            // their own hit areas.
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: Self.expandLongPressSec)
-                    .onEnded { _ in onToggleExpanded() }
-            )
+            // Expansion is no longer a row-wide long-press —
+            // tapping the emotion label badge in `mainContentRight`
+            // toggles the detail panel. Long-pressing empty space
+            // was too easy to discover by accident and too obscure
+            // to find on purpose; the badge gives the gesture an
+            // explicit, visible target.
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
@@ -272,7 +260,14 @@ struct UtteranceRow: View {
                 ))
                     .font(.caption.bold())
                     .foregroundStyle(speakerTint(for: utterance.speakerID))
-                    .onLongPressGesture(minimumDuration: Self.editLongPressSec) {
+                    // Plain tap (was a 0.5 s long-press). Long-press
+                    // was a hidden gesture with no visual hint that
+                    // anything would happen; making the chip a
+                    // standard tappable element matches the way the
+                    // filter-bar chips behave and what users
+                    // actually try first.
+                    .contentShape(Rectangle())
+                    .onTapGesture {
                         showingSpeakerMenu = true
                     }
                     // Custom popover (not `confirmationDialog`) so we
@@ -604,6 +599,13 @@ struct UtteranceRow: View {
                         .padding(.vertical, 2)
                         .background(tint.opacity(0.18), in: Capsule())
                         .foregroundStyle(tint)
+                        // Tap-to-expand. `contentShape(Capsule())`
+                        // pins the hit area to the visible badge so
+                        // the gesture doesn't bleed onto the V/A
+                        // pills next to it. Replaces the previous
+                        // row-wide long-press.
+                        .contentShape(Capsule())
+                        .onTapGesture { onToggleExpanded() }
                 }
                 if let v = utterance.fusedValence {
                     vaLabel("V", value: v)
