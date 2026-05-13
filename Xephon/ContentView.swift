@@ -131,6 +131,11 @@ struct ContentView: View {
     /// controller's `transcriptionReviewRunning` + `transcriptionIssues`
     /// to render its three states.
     @State private var showingReviewView: Bool = false
+    /// Drives the `SearchReplaceSheet` presentation. Unlike review,
+    /// nothing is LLM-backed here — the sheet is just a filter +
+    /// substitute pass over the utterance list, so no
+    /// `isRunning`-flavored gating is needed.
+    @State private var showingSearchReplaceView: Bool = false
     /// Active in-flight LLM tasks, owned by the view so the dismiss
     /// path (and the regenerate-while-running path) can `.cancel()`
     /// them. The MLX inference closures observe `Task.isCancelled`
@@ -184,6 +189,9 @@ struct ContentView: View {
                     reviewToolbarButton
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    searchReplaceToolbarButton
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     exportToolbarButton
                 }
             }
@@ -219,6 +227,10 @@ struct ContentView: View {
                     }
                 )
             }
+            .modifier(SearchReplaceSheetPresenter(
+                isPresented: $showingSearchReplaceView,
+                recorder: recorder
+            ))
             // Cancel any in-flight MLX summarize/review the moment
             // the app backgrounds — see the `scenePhase` env
             // declaration for why this isn't optional. Cancellation
@@ -560,6 +572,26 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var searchReplaceToolbarButton: some View {
+        Button {
+            showingSearchReplaceView = true
+        } label: {
+            Label(
+                String(localized: "searchReplace.toolbar"),
+                systemImage: "magnifyingglass"
+            )
+        }
+        // Disable during recording / analysis: commitHandEdit requires
+        // the controller to be idle, and surfacing the sheet earlier
+        // would let the user queue work that silently fails.
+        .disabled(
+            recorder.utterances.isEmpty
+                || recorder.isRecording
+                || recorder.isAnalyzing
+        )
+    }
+
+    @ViewBuilder
     private var exportToolbarButton: some View {
         Button {
             Task {
@@ -659,15 +691,15 @@ struct ContentView: View {
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
+                        SpeakerRosterCard(
+                            recorder: recorder,
+                            cluster: recorder.speakerCluster
+                        )
                         SpeakerClusterCard(
                             cluster: recorder.speakerCluster,
                             highlightedSpeakerID: focusedUtteranceSpeakerID
                         )
                         SpeakerHeatmapCard(cluster: recorder.speakerCluster)
-                        SpeakerRosterCard(
-                            recorder: recorder,
-                            cluster: recorder.speakerCluster
-                        )
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
@@ -1722,6 +1754,26 @@ struct ContentView: View {
         )
     }
 
+}
+
+/// Hosts the find-and-replace sheet. Lifted into a dedicated
+/// `ViewModifier` because chaining a fourth `.sheet` directly onto
+/// `ContentView.mainBody` pushed the Swift type-checker past its
+/// "type-check in reasonable time" budget — extracting the sheet
+/// gives the type-checker a discrete boundary and the chain stays
+/// inferrable.
+private struct SearchReplaceSheetPresenter: ViewModifier {
+    @Binding var isPresented: Bool
+    let recorder: RecordingController
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: $isPresented) {
+            SearchReplaceSheet(
+                recorder: recorder,
+                onDismiss: { isPresented = false }
+            )
+        }
+    }
 }
 
 #Preview {
