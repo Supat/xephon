@@ -207,6 +207,34 @@ public actor FluidAudioDiarizer: Diarizer {
         )
     }
 
+    /// Snapshot the in-memory speaker cluster for the visualization
+    /// panels — every known speaker's averaged centroid plus a tail
+    /// window of raw observations (so the PCA scatter stays bounded
+    /// even on long sessions). Returns an empty snapshot before
+    /// models load. The L2 norm on centroids is FluidAudio's
+    /// invariant; we don't re-normalize here.
+    public func clusterSnapshot(
+        maxObservationsPerSpeaker: Int
+    ) async -> SpeakerClusterSnapshot {
+        guard manager.isAvailable else {
+            return SpeakerClusterSnapshot(speakers: [])
+        }
+        let raw = await manager.speakerManager.getSpeakerList()
+        let speakers: [SpeakerClusterSnapshot.Speaker] = raw.map { spk in
+            let allObs = spk.rawEmbeddings.map(\.embedding)
+            let tail = maxObservationsPerSpeaker > 0
+                && allObs.count > maxObservationsPerSpeaker
+                ? Array(allObs.suffix(maxObservationsPerSpeaker))
+                : allObs
+            return SpeakerClusterSnapshot.Speaker(
+                id: Self.formatGlobalID(spk.id),
+                centroid: spk.currentEmbedding,
+                observations: tail
+            )
+        }
+        return SpeakerClusterSnapshot(speakers: speakers)
+    }
+
     /// Forward to FluidAudio's `SpeakerManager.removeSpeaker(_:,
     /// keepIfPermanent:)`. Silent no-op when the id isn't in the
     /// DB or models haven't loaded yet (auto-demote shouldn't

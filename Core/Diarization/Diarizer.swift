@@ -13,6 +13,38 @@ public struct DiarizedSegment: Sendable, Hashable, Codable {
     }
 }
 
+/// Live snapshot of the diarizer's internal speaker cluster — the
+/// per-id averaged centroid plus every raw observation embedding
+/// retained for that speaker. Surfaced for the cluster-visualization
+/// panels (pairwise cosine-distance heatmap + 2D PCA scatter); these
+/// reads happen at ~1 Hz so the snapshot is value-typed and self-
+/// contained rather than handing out actor-internal references.
+public struct SpeakerClusterSnapshot: Sendable {
+    public struct Speaker: Sendable {
+        /// Display-format id (`S01`, `S02`, …) — already bridged from
+        /// FluidAudio's raw numeric ids so consumers don't need to
+        /// reformat.
+        public let id: String
+        /// L2-normalized averaged embedding (256-D for the FluidAudio
+        /// extractor).
+        public let centroid: [Float]
+        /// Raw per-observation embeddings, capped to the most recent
+        /// few dozen at the source so PCA over the cloud stays cheap.
+        public let observations: [[Float]]
+
+        public init(id: String, centroid: [Float], observations: [[Float]]) {
+            self.id = id
+            self.centroid = centroid
+            self.observations = observations
+        }
+    }
+    public let speakers: [Speaker]
+
+    public init(speakers: [Speaker]) {
+        self.speakers = speakers
+    }
+}
+
 /// Result of an embedding-based speaker lookup. `id` is nil when the
 /// closest known speaker is farther than the diarizer's similarity
 /// threshold (i.e. the audio doesn't match anyone we've seen yet);
@@ -88,6 +120,12 @@ public protocol Diarizer: Actor {
     /// deliberate act and shouldn't be silently undone by an
     /// unrelated reassignment elsewhere.
     func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws
+    /// Snapshot of the diarizer's current speaker cluster — every
+    /// known speaker's averaged centroid plus a cap-bounded slice of
+    /// raw observations. Read by the cluster-visualization panels at
+    /// ~1 Hz; cheap enough to call inline because the implementation
+    /// just hands back already-resident `[Float]` arrays.
+    func clusterSnapshot(maxObservationsPerSpeaker: Int) async -> SpeakerClusterSnapshot
 }
 
 public extension Diarizer {
@@ -99,4 +137,7 @@ public extension Diarizer {
     func promoteSpeaker(id: String, embedding: [Float]) async throws {}
     func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws {}
     func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws {}
+    func clusterSnapshot(maxObservationsPerSpeaker: Int) async -> SpeakerClusterSnapshot {
+        SpeakerClusterSnapshot(speakers: [])
+    }
 }

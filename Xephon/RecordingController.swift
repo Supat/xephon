@@ -218,6 +218,22 @@ final class RecordingController {
     /// until re-recording or hand-edit/reeval flows repopulate it.
     private(set) var diarizationTimeline: [DiarizedSegment] = []
 
+    /// Latest snapshot of the diarizer's speaker cluster — every
+    /// known speaker's averaged centroid plus a tail window of raw
+    /// observations. Drives the heatmap + PCA cluster panels.
+    /// Refreshed on every continuous-diarize tick and on demand via
+    /// `refreshClusterSnapshot()` (the panel kicks a 1 Hz loop while
+    /// visible so the views stay live even when not recording).
+    private(set) var speakerCluster: SpeakerClusterSnapshot =
+        SpeakerClusterSnapshot(speakers: [])
+
+    /// Cap on raw observations carried in each `speakerCluster`
+    /// refresh. 50 covers ~50 s of contiguous speech per speaker
+    /// at the diarizer's 1 s windowing — enough cloud density for
+    /// the PCA scatter to read as a cluster, but bounded so the
+    /// projection step stays sub-10 ms even with 10 speakers.
+    private static let clusterObservationsPerSpeaker = 50
+
     /// True while a `playRange(start:end:)` preview is in flight.
     /// Distinct from row-level playback (`playingUtteranceID`) so
     /// the Edit Utterance sheet's play button can toggle to a stop
@@ -577,6 +593,7 @@ final class RecordingController {
         conversationSummary.reset()
         capturedAudio.reset()
         diarizationTimeline = []
+        speakerCluster = SpeakerClusterSnapshot(speakers: [])
         lastKnownSpeakerIDs = []
         cachedKnownSpeakerIDs = []
         distinctSpeakerCountCache = 0
@@ -710,8 +727,23 @@ final class RecordingController {
                 guard !window.samples.isEmpty else { continue }
                 await pipeline.ingestDiarizationWindow(window)
                 self.diarizationTimeline = await pipeline.diarizationTimelineSnapshot()
+                self.speakerCluster = await pipeline.clusterSnapshot(
+                    maxObservationsPerSpeaker: Self.clusterObservationsPerSpeaker
+                )
             }
         }
+    }
+
+    /// Pull a fresh `speakerCluster` from the diarizer. View-facing
+    /// hook for the heatmap + PCA panels — they spin a 1 Hz loop
+    /// while visible so the panels stay live even when no recording
+    /// is in progress. Cheap (just hands back resident `[Float]`
+    /// arrays); safe to call when no pipeline is up (no-op).
+    func refreshClusterSnapshot() async {
+        guard let pipeline = self.pipeline else { return }
+        speakerCluster = await pipeline.clusterSnapshot(
+            maxObservationsPerSpeaker: Self.clusterObservationsPerSpeaker
+        )
     }
 
     /// Drain finalized ASR segments → split → SER+fuse → append.
@@ -1708,6 +1740,7 @@ final class RecordingController {
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
         diarizationTimeline = []
+        speakerCluster = SpeakerClusterSnapshot(speakers: [])
         lastKnownSpeakerIDs = []
         // The cached summary was generated against the previous
         // session's utterances. Default to clearing it; restore

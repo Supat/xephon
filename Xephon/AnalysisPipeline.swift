@@ -117,6 +117,19 @@ final class AnalysisPipeline: @unchecked Sendable {
         await diarizer?.exportSpeakerDatabase()
     }
 
+    /// Snapshot the in-memory speaker cluster for the visualization
+    /// panels. Empty when no diarizer is configured. Forwards
+    /// `maxObservationsPerSpeaker` so the caller can bound the PCA
+    /// observation cloud size.
+    func clusterSnapshot(maxObservationsPerSpeaker: Int) async -> SpeakerClusterSnapshot {
+        guard let diarizer else {
+            return SpeakerClusterSnapshot(speakers: [])
+        }
+        return await diarizer.clusterSnapshot(
+            maxObservationsPerSpeaker: maxObservationsPerSpeaker
+        )
+    }
+
     /// Restore a previously-saved speaker database. No-op when the
     /// diarizer isn't configured. Throws on malformed blobs;
     /// callers handle/log.

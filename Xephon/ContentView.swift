@@ -600,8 +600,26 @@ struct ContentView: View {
                     )
 
                     StatisticsCard(summary: displayedSummary)
+
+                    SpeakerHeatmapCard(cluster: recorder.speakerCluster)
+
+                    SpeakerClusterCard(cluster: recorder.speakerCluster)
                 }
                 .frame(maxWidth: .infinity)
+            }
+            // While idle (no recording in flight) the controller's
+            // continuous-diarize tick isn't refreshing the cluster
+            // snapshot — pull at 1 Hz so the heatmap + scatter stay
+            // live after a file analysis completes or a session is
+            // loaded. Cheap (just hands back resident `[Float]`
+            // arrays), no-op when no pipeline is up.
+            .task {
+                while !Task.isCancelled {
+                    if !recorder.isRecording {
+                        await recorder.refreshClusterSnapshot()
+                    }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
             }
         }
         .padding()

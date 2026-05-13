@@ -93,6 +93,10 @@
 "summary.dispersion" = "± %.2f";
 "statistics.header" = "Statistics";
 "statistics.empty" = "No labels yet.";
+"cluster.heatmap.header" = "Speaker Distance";
+"cluster.scatter.header" = "Speaker Cluster";
+"cluster.empty" = "No speakers yet.";
+"cluster.warmingUp" = "Collecting observations…";
 "speaker.rename.title" = "Rename Speaker";
 "speaker.rename.placeholder" = "Speaker name";
 "speaker.rename.message" = "Pick a custom name for speaker %@. Leave blank to revert to the default.";
