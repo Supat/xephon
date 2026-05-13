@@ -612,17 +612,19 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
             }
 
-            // Card section split across three swipeable pages so
+            // Card section split across four swipeable pages so
             // the left pane doesn't grow into a long single scroll
             // (the cluster + heatmap especially want vertical room
             // to render their data legibly). Page 1: session
             // controls — Settings + Pipeline. Page 2: read-only
             // affect output — Summary + Statistics. Page 3:
-            // diarizer cluster diagnostics — PCA scatter +
-            // pairwise heatmap. The page-style indicator dots
-            // render at the bottom of the TabView; we force
-            // `backgroundDisplayMode: .always` so they stay
-            // visible against the glass cards on iPadOS 26.
+            // diarizer cluster diagnostics — PCA scatter + pairwise
+            // heatmap. Page 4: summarizer configuration — toggle,
+            // backend picker, install / Remove-model. The page-
+            // style indicator dots render at the bottom of the
+            // TabView; we force `backgroundDisplayMode: .always`
+            // so they stay visible against the glass cards on
+            // iPadOS 26.
             TabView {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
@@ -653,6 +655,14 @@ struct ContentView: View {
                     VStack(spacing: 16) {
                         SpeakerClusterCard(cluster: recorder.speakerCluster)
                         SpeakerHeatmapCard(cluster: recorder.speakerCluster)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 32)
+                }
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 16) {
+                        SummarizerCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 32)

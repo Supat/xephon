@@ -1,24 +1,23 @@
 import SwiftUI
 import Summarizer
 
-/// Modal sheet that surfaces the on-device session summary, and
-/// hosts the summarizer's own configuration controls along the
-/// bottom edge — toggle, backend picker, install / progress state
-/// — so the user can enable, swap backends, or reclaim disk for
-/// the model without leaving the sheet they came to see results in.
+/// Modal sheet that surfaces the on-device session summary.
+/// Strictly a result viewer — summarizer configuration (enable
+/// toggle, backend picker, install / Remove-model affordance) lives
+/// in `SummarizerCard` on the left pane's 4th page so the sheet
+/// doesn't need to grow secondary chrome for state the user
+/// configured once.
 ///
 /// Vertical layout, top-to-bottom:
 ///   1. Content area: result paragraphs, the "generating" spinner,
 ///      or the empty-state placeholder, depending on state.
-///   2. Regenerate bar (only when a summary already exists or one
-///      is currently generating).
-///   3. Summarizer controls — always pinned at the very bottom so
-///      the user can find them in any state.
+///   2. Regenerate bar (only when a summary already exists, one is
+///      currently generating, or the summarizer is ready).
 ///
 /// The caller auto-runs `onRegenerate` once when the sheet is first
 /// opened with no cached summary AND the summarizer is ready;
 /// otherwise the user explicitly initiates generation via the
-/// regenerate bar after configuring the bottom controls.
+/// regenerate bar after configuring the summarizer card.
 struct SessionSummarySheet: View {
     let recorder: RecordingController
     let summary: SessionSummary?
@@ -31,13 +30,6 @@ struct SessionSummarySheet: View {
     /// over the summary sheet. Conforms to Identifiable via a URL
     /// extension elsewhere in the app.
     @State private var markdownExportURL: URL?
-    /// Drives the destructive-action confirmation dialog for the
-    /// Remove-model glyph. Deleting the Qwen weights forces a
-    /// ~4.6 GB re-download, so a tap-confirm gate avoids the
-    /// "oops I meant to tap something else" failure mode that
-    /// borderless icon buttons are especially prone to.
-    @State private var showingRemoveModelConfirm: Bool = false
-
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -64,9 +56,6 @@ struct SessionSummarySheet: View {
                     Divider()
                     regenerateBar
                 }
-
-                Divider()
-                summarizerSection
             }
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "summary.title"))
@@ -280,165 +269,4 @@ struct SessionSummarySheet: View {
         .padding(.top, 8)
     }
 
-    // MARK: - Summarizer controls (pinned to the bottom of the sheet)
-
-    /// On-device session summarizer controls. The toggle drives
-    /// `RecordingController.setSummarizerEnabled` which kicks off
-    /// the on-demand model download via `ModelStore.ensureOptional`;
-    /// inline progress / install state renders under it. A "Remove
-    /// model" affordance lets the user reclaim the ~4 GB working
-    /// set without disabling the feature. Strictly on-device — the
-    /// download fetches from the pinned Hugging Face release,
-    /// inference runs locally on MLX.
-    @ViewBuilder
-    private var summarizerSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Text(String(localized: "settings.summarizer.enable"))
-                    .font(.callout)
-                Spacer(minLength: 0)
-                if recorder.summarizerEnabled {
-                    summarizerBackendPicker
-                }
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { recorder.summarizerEnabled },
-                        set: { newValue in
-                            Task { await recorder.setSummarizerEnabled(newValue) }
-                        }
-                    )
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-            }
-            if recorder.summarizerEnabled {
-                summarizerStatusLine
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-    }
-
-    @ViewBuilder
-    private var summarizerBackendPicker: some View {
-        Picker(
-            String(localized: "settings.summarizer.backend"),
-            selection: Binding(
-                get: { recorder.summarizerBackend },
-                set: { newValue in
-                    Task { await recorder.setSummarizerBackend(newValue) }
-                }
-            )
-        ) {
-            Text(String(localized: "settings.summarizer.backend.appleFM"))
-                .tag(SummarizerBackend.appleFM)
-            Text(String(localized: "settings.summarizer.backend.qwen"))
-                .tag(SummarizerBackend.qwen)
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
-    }
-
-    @ViewBuilder
-    private var summarizerStatusLine: some View {
-        switch recorder.summarizerBackend {
-        case .appleFM:
-            if recorder.summarizerAppleFMAvailable {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                    Text(String(localized: "settings.summarizer.ready"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text(String(localized: "settings.summarizer.appleFM.unavailable"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        case .qwen:
-            if recorder.summarizerDownloading {
-                HStack(spacing: 8) {
-                    CircularDownloadProgress(
-                        downloaded: recorder.modelDownload.downloadedBytes,
-                        total: recorder.modelDownload.totalBytes
-                    )
-                    Text(downloadProgressText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if recorder.summarizerModelInstalled {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                    Text(String(localized: "settings.summarizer.ready"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 6)
-                    Button {
-                        showingRemoveModelConfirm = true
-                    } label: {
-                        Label(
-                            String(localized: "settings.summarizer.remove"),
-                            systemImage: "trash"
-                        )
-                        .labelStyle(.iconOnly)
-                        .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text(String(localized: "settings.summarizer.remove")))
-                    .confirmationDialog(
-                        String(localized: "settings.summarizer.removeConfirm.title"),
-                        isPresented: $showingRemoveModelConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        Button(
-                            String(localized: "settings.summarizer.removeConfirm.confirm"),
-                            role: .destructive
-                        ) {
-                            Task { await recorder.removeSummarizerModel() }
-                        }
-                        Button(
-                            String(localized: "settings.summarizer.removeConfirm.cancel"),
-                            role: .cancel
-                        ) {}
-                    } message: {
-                        Text(String(localized: "settings.summarizer.removeConfirm.message"))
-                    }
-                }
-            } else {
-                Text(String(localized: "settings.summarizer.notInstalled"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    /// "Downloading Qwen3 · 412 MB of 4.6 GB" or similar — the
-    /// fraction comes from the circular indicator next to it, so
-    /// the text is byte counts, not a percent.
-    private var downloadProgressText: String {
-        let downloaded = recorder.modelDownload.downloadedBytes
-        let total = recorder.modelDownload.totalBytes
-        if total > 0, downloaded > 0 {
-            return String(
-                format: String(localized: "settings.summarizer.downloading.bytes"),
-                Self.formatBytes(downloaded),
-                Self.formatBytes(total)
-            )
-        }
-        return String(localized: "settings.summarizer.downloading")
-    }
-
-    /// `1.7 GB`, `412 MB`, etc. — tracks Apple's convention for
-    /// human-readable byte sizes (decimal SI).
-    private static func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        formatter.allowedUnits = bytes >= 1_000_000_000 ? [.useGB] : [.useMB]
-        return formatter.string(fromByteCount: bytes)
-    }
 }

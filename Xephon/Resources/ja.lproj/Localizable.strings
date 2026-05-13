@@ -97,6 +97,7 @@
 "cluster.scatter.header" = "話者クラスター";
 "cluster.empty" = "話者がまだ検出されていません。";
 "cluster.warmingUp" = "観測を収集中…";
+"summarizer.header" = "要約エンジン";
 "speaker.rename.title" = "話者の名前を変更";
 "speaker.rename.placeholder" = "話者名";
 "speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";
