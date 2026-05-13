@@ -371,7 +371,19 @@ final class AnalysisPipeline: @unchecked Sendable {
         let ageGenderURL: URL? = await Self.tryResolveAsync("W2V2 age-gender", path: "w2v2-age-gender/model.onnx", store: modelStore, diagnostics: &diagnostics)
         let ageGender: (any AgeGenderSER)? = ageGenderURL.flatMap { url in
             Self.tryInit("W2V2 age-gender SER", diagnostics: &diagnostics) {
-                try W2V2AgeGenderSER(modelURL: url)
+                // CPU-only by design — same reasoning as DeBERTa.
+                // We already run W2V2 V/A/D and emotion2vec on the
+                // CoreML EP; adding a third CoreML session was the
+                // exact thing that triggered `IOSurface creation
+                // failed: kIOReturnNoMemory` cascades historically.
+                // Under backgrounding it's worse: three CoreML
+                // sessions all hit the "GPU not permitted from
+                // background" wall at once and rebuild concurrently
+                // under tightened memory, which takes pure-CPU
+                // DeBERTa down with it. Age-gender is small enough
+                // (~6 transformer layers) that CPU latency is
+                // comfortable under the per-segment budget.
+                try W2V2AgeGenderSER(modelURL: url, useCoreML: false)
             }
         }
 
