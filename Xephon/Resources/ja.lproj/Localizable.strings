@@ -100,6 +100,14 @@
 "summarizer.header" = "要約エンジン";
 "roster.header" = "話者一覧";
 "roster.empty" = "話者がまだ登録されていません。";
+"ser.aggregate.header" = "SER 集計";
+"ser.aggregate.empty" = "発話がまだありません。";
+"ser.aggregate.plutchik" = "テキストSER · Plutchik";
+"ser.aggregate.plutchik.empty" = "テキストSERの結果がありません。";
+"ser.aggregate.acoustic" = "音響SER · 9クラス";
+"ser.aggregate.acoustic.empty" = "音響SERの結果がありません。";
+"ser.aggregate.va" = "ヴァレンス × アローザル";
+"ser.aggregate.va.empty" = "融合V/Aがありません。";
 "speaker.rename.title" = "話者の名前を変更";
 "speaker.rename.placeholder" = "話者名";
 "speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";

@@ -647,6 +647,7 @@ struct ContentView: View {
                             totalDuration: displayedSummary.totalDuration
                         )
                         StatisticsCard(summary: displayedSummary)
+                        SERAggregateCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
@@ -717,6 +718,7 @@ struct ContentView: View {
                 speakerChipBar
                 diarizationTimelineStrip
                 emotionTimelineStrip
+                fusionContributionStrip
                 if filteredIndexedUtterances.isEmpty {
                     noMatchesView
                 } else {
@@ -777,6 +779,28 @@ struct ContentView: View {
             // Tighter vertical pad than the speaker strip so the
             // two strips read as a stacked pair, not two unrelated
             // bars with whitespace between them.
+            .padding(.bottom, 6)
+        }
+    }
+
+    /// Per-utterance modality-balance strip — for each row, a
+    /// horizontal bar split into acoustic (blue) / text (orange)
+    /// segments sized by `LateFusion.defaultLabelFusionShare`. Lets
+    /// the user scan the conversation and spot stretches where one
+    /// modality dominated the fused label. Hidden until at least
+    /// one utterance carries one of the two modality outputs.
+    @ViewBuilder
+    private var fusionContributionStrip: some View {
+        let total = transcriptTotalDuration
+        let hasAnyModality = recorder.utterances.contains {
+            $0.acousticCategorical != nil || $0.plutchik != nil
+        }
+        if hasAnyModality, total > 0 {
+            FusionContributionStrip(
+                utterances: recorder.utterances,
+                totalDuration: total
+            )
+            .padding(.horizontal, 12)
             .padding(.bottom, 6)
         }
     }

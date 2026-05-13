@@ -610,6 +610,10 @@ struct UtteranceRow: View {
     private var detailSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider()
+            // Two rows: meta numbers up top, fusion attribution +
+            // disagreement badge below. Splitting prevents the
+            // single-row layout from wrapping inelegantly once we
+            // added Fused V/A/D alongside the acoustic V/A/D.
             HStack(spacing: 12) {
                 if let conf = utterance.asrConfidence {
                     metaLine("ASR conf", String(format: "%.2f", conf))
@@ -623,11 +627,19 @@ struct UtteranceRow: View {
                         )
                     )
                 }
+                if let fused = fusedVADSummary {
+                    metaLine("Fused V/A/D", fused)
+                }
+            }
+            HStack(spacing: 12) {
                 if let weightText = fusionWeightSummary {
                     metaLine("Fusion V/A", weightText)
                 }
                 if let labelText = labelFusionSummary {
                     metaLine("Fusion label", labelText)
+                }
+                if disagreesAcrossModalities {
+                    disagreementBadge
                 }
             }
 
@@ -653,6 +665,67 @@ struct UtteranceRow: View {
                 }
             }
         }
+    }
+
+    /// Compact "0.62 · 0.48 · 0.55" rendering of the fused V/A/D
+    /// numbers. Returned nil only when none of the three components
+    /// fused — in which case the row's fusion summary is also nil
+    /// and there's nothing to attribute.
+    private var fusedVADSummary: String? {
+        let v = utterance.fusedValence
+        let a = utterance.fusedArousal
+        let d = utterance.fusedDominance
+        guard v != nil || a != nil || d != nil else { return nil }
+        func fmt(_ x: Float?) -> String {
+            x.map { String(format: "%.2f", $0) } ?? "—"
+        }
+        return "\(fmt(v)) · \(fmt(a)) · \(fmt(d))"
+    }
+
+    /// True when the top acoustic class (mapped through
+    /// `plutchikToAcousticLabelMapping`) and the top Plutchik class
+    /// (also mapped through the same table for comparability) name
+    /// different acoustic-label buckets. Used to flag rows where
+    /// the two modalities openly disagree — the fused label hides
+    /// this signal; the inspector should not.
+    ///
+    /// Excludes acoustic "other"/"unknown" buckets (those are sink
+    /// classes — disagreement there is uninformative) and only
+    /// counts text classes that have a mapping (trust /
+    /// anticipation route to "other" too, see LateFusion's
+    /// mapping doc).
+    private var disagreesAcrossModalities: Bool {
+        guard let acoustic = utterance.acousticCategorical?.probabilities,
+              let plutchik = utterance.plutchik?.probabilities else {
+            return false
+        }
+        let validAcoustic = acoustic
+            .filter { $0.key != .unknown && $0.key != .other }
+        guard let topAcoustic = validAcoustic.max(by: { $0.value < $1.value })?.key else {
+            return false
+        }
+        let mappedText: [(label: String, value: Float)] = plutchik.compactMap { entry in
+            guard let mapped = LateFusion.plutchikToAcousticLabelMapping[entry.key],
+                  mapped != "other" else { return nil }
+            return (label: mapped, value: entry.value)
+        }
+        guard let topText = mappedText.max(by: { $0.value < $1.value })?.label else {
+            return false
+        }
+        return topText != topAcoustic.rawValue
+    }
+
+    @ViewBuilder
+    private var disagreementBadge: some View {
+        Label("Modality disagreement", systemImage: "exclamationmark.triangle.fill")
+            .font(.caption2.weight(.semibold))
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                Capsule().fill(Color.orange.opacity(0.18))
+            )
     }
 
     /// Compact summary of how V/A fusion weighted the two sides for
