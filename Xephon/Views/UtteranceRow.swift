@@ -49,7 +49,6 @@ struct UtteranceRow: View {
 
     let number: Int
     let utterance: UtteranceEstimate
-    let isMultiSpeaker: Bool
     let isExpanded: Bool
     let onToggleExpanded: () -> Void
     let playback: PlaybackAvailability
@@ -253,7 +252,6 @@ struct UtteranceRow: View {
                 // separate affordance.
                 Text(formatSpeakerLabel(
                     utterance.speakerID,
-                    multiSpeaker: isMultiSpeaker,
                     customName: speakerCustomName
                 ))
                     .font(.caption.bold())
@@ -365,7 +363,6 @@ struct UtteranceRow: View {
     private var speakerMenuPopover: some View {
         let currentLabel = formatSpeakerLabel(
             utterance.speakerID,
-            multiSpeaker: true,
             customName: speakerCustomName
         )
         let others = knownSpeakerIDs.filter { $0 != utterance.speakerID }
@@ -526,7 +523,6 @@ struct UtteranceRow: View {
         popoverCapsule(tint: speakerTint(for: spk)) {
             Text(formatSpeakerLabel(
                 spk,
-                multiSpeaker: true,
                 customName: speakerDisplayName(spk)
             ))
         }

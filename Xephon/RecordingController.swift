@@ -186,11 +186,6 @@ final class RecordingController {
     /// session. Maintained in lockstep with `lastKnownSpeakerIDs`
     /// at every utterance-mutation boundary.
     private(set) var cachedKnownSpeakerIDs: [String] = []
-    /// Cached count of distinct speaker ids in `utterances`, used
-    /// to gate the per-row speaker chip rendering. Same motivation
-    /// as `cachedKnownSpeakerIDs` — recomputing `Set` membership
-    /// per body re-eval scaled with list length.
-    private(set) var distinctSpeakerCountCache: Int = 0
 
     /// Extra rows produced when a hand-edit commit contained more
     /// than one sentence. Keyed by the *parent* utterance id (the
@@ -201,8 +196,8 @@ final class RecordingController {
     private var handEditChildren: [UUID: [UUID]] = [:]
     /// User-supplied display names keyed by stored speaker id
     /// (e.g. `"S01" → "Alice"`). When present, takes precedence
-    /// over the default `S01` / `M01` formatting that
-    /// `formatSpeakerLabel` produces. Cleared at session start;
+    /// over the default `S01`-style label `formatSpeakerLabel`
+    /// produces. Cleared at session start;
     /// restored from the `.xph` bundle on `loadSession`. The stored
     /// id stays canonical — diarizer matching, JSON identity, and
     /// per-speaker tint keying all keep operating on the original
@@ -596,7 +591,6 @@ final class RecordingController {
         speakerCluster = SpeakerClusterSnapshot(speakers: [])
         lastKnownSpeakerIDs = []
         cachedKnownSpeakerIDs = []
-        distinctSpeakerCountCache = 0
         // New session invalidates the previous summary — the
         // utterance list it was generated against is gone.
         lastSessionSummary = nil
@@ -2257,7 +2251,6 @@ final class RecordingController {
         }
         lastKnownSpeakerIDs = current
         cachedKnownSpeakerIDs = current.sorted()
-        distinctSpeakerCountCache = current.count
     }
 
     /// Drop every trace of speakers that no row references
@@ -2946,7 +2939,7 @@ final class RecordingController {
 
     /// Set a custom display name for `stored` (e.g. `S01`). Pass an
     /// empty / whitespace-only `name` to clear the override (revert
-    /// to the default `S01` / `M01` formatting). Bumps
+    /// to the default `S01`-style label). Bumps
     /// `utterancesVersion` so the ContentView filter memo
     /// invalidates and every row re-renders with the new label.
     func renameSpeaker(stored: String, to name: String) {
@@ -3457,7 +3450,6 @@ final class RecordingController {
         if !lastKnownSpeakerIDs.contains(stamped.speakerID) {
             lastKnownSpeakerIDs.insert(stamped.speakerID)
             cachedKnownSpeakerIDs = lastKnownSpeakerIDs.sorted()
-            distinctSpeakerCountCache = lastKnownSpeakerIDs.count
         }
         lastAcousticDuration = metrics.acousticDuration
         lastTextDuration = metrics.textDuration

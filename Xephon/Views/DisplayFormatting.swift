@@ -53,26 +53,16 @@ private func formatSI(_ v: Double, _ suffix: String) -> String {
 }
 
 /// Render a stored speaker ID for display. The diarizer-tracker
-/// writes `S01`, `S02`, … internally; the row label uses an `M`
-/// prefix ("multi") when there are two or more distinct speakers
-/// in the session, leaving `S` ("single") for the simple case. The
-/// number is preserved either way.
-///
-/// `customName` takes precedence over the default formatting and
-/// is returned as-is — the user named this speaker, so honour the
-/// name they typed without re-imposing `S`/`M` prefix conventions.
+/// writes `S01`, `S02`, … internally; the display label is the
+/// stored id verbatim, unless the user has supplied a custom name
+/// (taken as-is).
 func formatSpeakerLabel(
     _ stored: String,
-    multiSpeaker: Bool,
     customName: String? = nil
 ) -> String {
     if let name = customName?.trimmingCharacters(in: .whitespacesAndNewlines),
        !name.isEmpty {
         return name
-    }
-    let prefix = multiSpeaker ? "M" : "S"
-    if let trail = stored.dropFirst().first, trail.isNumber {
-        return "\(prefix)\(stored.dropFirst())"
     }
     return stored
 }

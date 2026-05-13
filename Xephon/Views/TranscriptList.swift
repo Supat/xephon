@@ -36,7 +36,6 @@ private final class MismatchMemo {
 struct TranscriptList: View {
     let recorder: RecordingController
     let items: [(idx: Int, u: UtteranceEstimate)]
-    let distinctSpeakerCount: Int
 
     @Binding var selectedUtteranceID: UUID?
     /// Set by the diarizer-timeline-strip tap handler in
@@ -210,7 +209,6 @@ struct TranscriptList: View {
         UtteranceRow(
             number: item.idx + 1,
             utterance: item.u,
-            isMultiSpeaker: distinctSpeakerCount > 1,
             isExpanded: expandedUtteranceIDs.contains(item.u.id),
             onToggleExpanded: { onToggleExpansion(item.u.id) },
             playback: playbackAvailability(item.u),

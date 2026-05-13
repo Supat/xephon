@@ -416,7 +416,7 @@ struct ContentView: View {
             // is the stored speaker id (e.g. `S01`); the bound text
             // is pre-filled with the current override if any.
             // Confirming with a blank field clears the override
-            // (reverts to the default `S01`/`M01` formatting).
+            // (reverts to the default `S01`-style label).
             .alert(
                 String(localized: "speaker.rename.title"),
                 isPresented: Binding(
@@ -908,7 +908,6 @@ struct ContentView: View {
                             ForEach(speakers, id: \.self) { id in
                                 let label = formatSpeakerLabel(
                                     id,
-                                    multiSpeaker: true,
                                     customName: recorder.speakerDisplayName(forStored: id)
                                 )
                                 let tint = speakerTint(for: id)
@@ -1217,15 +1216,6 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var distinctSpeakerCount: Int {
-        // Backed by a cache the controller maintains at every
-        // utterance-mutation boundary. Used to be a per-render
-        // O(N) Set build, which on a 500-row session was running
-        // on every scroll (ContentView body re-evaluates when
-        // visibleUtteranceIDs changes).
-        recorder.distinctSpeakerCountCache
     }
 
     /// Summary derived from whatever's currently displayed in the
@@ -1547,7 +1537,6 @@ struct ContentView: View {
         TranscriptList(
             recorder: recorder,
             items: filteredIndexedUtterances,
-            distinctSpeakerCount: distinctSpeakerCount,
             selectedUtteranceID: $selectedUtteranceID,
             scrollRequestUtteranceID: $scrollRequestUtteranceID,
             expandedUtteranceIDs: $expandedUtteranceIDs,
