@@ -9,6 +9,18 @@ import XephonLogging
 
 struct ContentView: View {
     @Environment(MenuCommands.self) private var menuCommands
+    /// Backgrounding the app while an MLX summarize/review is in
+    /// flight crashes the process: iOS revokes GPU access for
+    /// background apps and MLX's next Metal command buffer comes
+    /// back as `kIOGPUCommandBufferCallbackErrorBackgroundExecution-
+    /// NotPermitted`, surfacing as an uncaught C++ exception that
+    /// Swift can't catch. We watch `scenePhase` and cancel both
+    /// in-flight tasks on `.background` so the generate loop's
+    /// `Task.isCancelled` check bails before submitting the next
+    /// forward pass. (The diarizer doesn't share this hazard —
+    /// `FluidAudioDiarizer.loadModels` pins to `.cpuAndNeuralEngine`
+    /// so it never touches Metal.)
+    @Environment(\.scenePhase) private var scenePhase
     @State private var recorder = RecordingController()
     @State private var shareURL: URL?
     @State private var showingDiscardConfirm: Bool = false
@@ -206,6 +218,22 @@ struct ContentView: View {
                         showingReviewView = false
                     }
                 )
+            }
+            // Cancel any in-flight MLX summarize/review the moment
+            // the app backgrounds — see the `scenePhase` env
+            // declaration for why this isn't optional. Cancellation
+            // propagates into MLXLMCommon.generate's didGenerate
+            // hook, which returns `.stop` and exits the loop before
+            // the next forward pass submits to Metal. We don't
+            // dismiss the sheets here: the user comes back to the
+            // empty / partial state with the Regenerate button live,
+            // which is the right resume behaviour.
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase == .background else { return }
+                inflightSummarizationTask?.cancel()
+                inflightSummarizationTask = nil
+                inflightReviewTask?.cancel()
+                inflightReviewTask = nil
             }
             // File → Open… (⌘O) command pipe. The menu writes a fresh
             // UUID into `menuCommands.openAudioFileToken`; we observe
