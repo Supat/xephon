@@ -239,6 +239,33 @@ enum ModelManifest {
                 ),
             ]
         ),
+        ModelEntry(
+            id: "w2v2-age-gender",
+            displayName: "audeering W2V2 (age + gender)",
+            files: [
+                ModelFile(
+                    assetName: "w2v2-age-gender-model.onnx",
+                    installPath: "w2v2-age-gender/model.onnx",
+                    bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "w2v2-age-gender"),
+                    approximateBytes: 1_055_734,
+                    sha256: "bf99916cb5bdd90f2d9bdf5c33593f6b3d6ddbab7c1ea7b8d5cb893c6c401854"
+                ),
+                // The dynamo ONNX exporter writes the weight blob as a
+                // `model.onnx.data` sidecar next to `model.onnx`, and the
+                // graph proto references it by that exact name — we
+                // can't rename to the conventional `model.data` without
+                // editing the graph. `BundleLookup` splits on the LAST
+                // dot, so name="model.onnx" ext="data" resolves the
+                // right file inside the bundle.
+                ModelFile(
+                    assetName: "w2v2-age-gender-model.data",
+                    installPath: "w2v2-age-gender/model.onnx.data",
+                    bundleResource: BundleLookup(name: "model.onnx", ext: "data", subdirectory: "w2v2-age-gender"),
+                    approximateBytes: 363_266_048,
+                    sha256: "680c9bcedc7d8ed065df3b54bb89087bfdbb8a921397d789fa2621b79897e766"
+                ),
+            ]
+        ),
     ]
 }
 

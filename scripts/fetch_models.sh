@@ -164,6 +164,14 @@ else
 fi
 
 echo
+echo "[step] Exporting W2V2 age-gender to ONNX (demographics)…"
+if [ ! -f Models/w2v2-age-gender/model.onnx ]; then
+    python scripts/export_w2v2_age_gender_onnx.py
+else
+    echo "[skip] w2v2-age-gender (already exported)"
+fi
+
+echo
 echo "[step] Exporting emotion2vec_plus_large to ONNX (acoustic categorical SER)…"
 if [ ! -f Models/emotion2vec-plus-large/emotion2vec_model.onnx ]; then
     python scripts/export_emotion2vec_onnx.py
@@ -191,7 +199,12 @@ quantize_fp16() {
   touch "$sentinel"
 }
 quantize_fp16 Models/w2v2-msp-dim/model.onnx
-quantize_fp16 Models/w2v2-age-gender/model.onnx
+# w2v2-age-gender intentionally skipped: the dynamo-exported graph
+# carries an op layout the onnxruntime.transformers FP16 converter
+# mishandles (duplicate `graph_input_cast0` names → ORT rejects the
+# converted model at load). FP32 is ~348 MB; CoreML EP will still
+# compute in FP16 internally on M-series, so the runtime cost is the
+# same — only disk size and download bandwidth take the hit.
 quantize_fp16 Models/wrime-roberta/model.onnx
 quantize_fp16 Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx
 

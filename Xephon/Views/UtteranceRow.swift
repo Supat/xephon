@@ -651,6 +651,21 @@ struct UtteranceRow: View {
                     disagreementBadge
                 }
             }
+            if let ageGender = utterance.ageGender {
+                HStack(spacing: 12) {
+                    metaLine(
+                        "Age",
+                        String(format: "%.0f", ageGender.ageYears)
+                    )
+                    if let top = ageGender.topGender,
+                       let p = ageGender.genderProbabilities[top] {
+                        metaLine(
+                            "Gender",
+                            String(format: "%@ (%.0f%%)", top.rawValue, p * 100)
+                        )
+                    }
+                }
+            }
 
             HStack(alignment: .top, spacing: 16) {
                 if let cat = utterance.acousticCategorical, !cat.probabilities.isEmpty {

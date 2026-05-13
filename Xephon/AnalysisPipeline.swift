@@ -55,6 +55,10 @@ final class AnalysisPipeline: @unchecked Sendable {
     private let diarizer: (any Diarizer)?
     private let dimensionalSER: (any DimensionalAcousticSER)?
     private let categoricalSER: (any CategoricalAcousticSER)?
+    /// Optional speaker-demographics inferencer (W2V2 age-gender).
+    /// Skipped when the model isn't installed; pipeline degrades
+    /// gracefully and rows just carry `ageGender == nil`.
+    private let ageGenderSER: (any AgeGenderSER)?
     private let textSER: (any TextSER)?
     /// Mutable so the controller can swap in a `LateFusion` with
     /// fresh weights when the user adjusts the fusion-control
@@ -72,6 +76,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         diarizer: (any Diarizer)? = nil,
         dimensionalSER: (any DimensionalAcousticSER)? = nil,
         categoricalSER: (any CategoricalAcousticSER)? = nil,
+        ageGenderSER: (any AgeGenderSER)? = nil,
         textSER: (any TextSER)? = nil,
         fuser: any Fuser = LateFusion(),
         speakerTracker: StreamingSpeakerTracker = StreamingSpeakerTracker()
@@ -80,6 +85,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         self.diarizer = diarizer
         self.dimensionalSER = dimensionalSER
         self.categoricalSER = categoricalSER
+        self.ageGenderSER = ageGenderSER
         self.textSER = textSER
         self.fuser = fuser
         self.speakerTracker = speakerTracker
@@ -362,6 +368,13 @@ final class AnalysisPipeline: @unchecked Sendable {
             }
         }
 
+        let ageGenderURL: URL? = await Self.tryResolveAsync("W2V2 age-gender", path: "w2v2-age-gender/model.onnx", store: modelStore, diagnostics: &diagnostics)
+        let ageGender: (any AgeGenderSER)? = ageGenderURL.flatMap { url in
+            Self.tryInit("W2V2 age-gender SER", diagnostics: &diagnostics) {
+                try W2V2AgeGenderSER(modelURL: url)
+            }
+        }
+
         // wrime needs both an ONNX file and a tokenizer directory. Resolve
         // both — they live under the same `wrime-roberta/` subdir.
         let wrimeModelURL: URL? = await Self.tryResolveAsync("wrime model", path: "wrime-roberta/model.onnx", store: modelStore, diagnostics: &diagnostics)
@@ -393,13 +406,14 @@ final class AnalysisPipeline: @unchecked Sendable {
         )
 
         AppLog.app.info(
-            "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), deberta=\(deberta != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
+            "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), ageGender=\(ageGender != nil, privacy: .public), deberta=\(deberta != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
         )
 
         let pipeline = AnalysisPipeline(
             diarizer: diarizer,
             dimensionalSER: dimensional,
             categoricalSER: categorical,
+            ageGenderSER: ageGender,
             textSER: textSER
         )
         return AutoConfiguredPipeline(pipeline: pipeline, diagnostics: diagnostics)
@@ -706,6 +720,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         let acousticStart = Date()
         async let dimensional = runDimensional(segmentAudio)
         async let categorical = runCategorical(segmentAudio)
+        async let demographics = runAgeGender(segmentAudio)
         async let plutchik = runText(asr.text)
 
         // Acoustic timing = wall time until both dimensional + categorical
@@ -717,6 +732,7 @@ final class AnalysisPipeline: @unchecked Sendable {
 
         let dim = await dimensional
         let cat = await categorical
+        let ageGender = await demographics
         let acousticDuration = Date().timeIntervalSince(acousticStart)
 
         let baseEstimate = try await fuser.fuse(
@@ -731,7 +747,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         let textBackend: String? = txt == nil
             ? nil
             : await (textSER as? SwitchingTextSER)?.currentBackend.rawValue
-        let estimate = baseEstimate.withTextBackend(textBackend)
+        let estimate = baseEstimate
+            .withTextBackend(textBackend)
+            .withAgeGender(ageGender)
         let metrics = ProcessingMetrics(
             acousticDuration: dim != nil || cat != nil ? acousticDuration : nil,
             textDuration: txt != nil ? textDuration : nil,
@@ -807,6 +825,15 @@ final class AnalysisPipeline: @unchecked Sendable {
         let capped = Self.capForSER(buffer)
         do { return try await categoricalSER.score(capped) } catch {
             AppLog.app.debug("categorical SER skipped: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    private func runAgeGender(_ buffer: AudioChunk) async -> AgeGenderEstimate? {
+        guard let ageGenderSER else { return nil }
+        let capped = Self.capForSER(buffer)
+        do { return try await ageGenderSER.estimate(capped) } catch {
+            AppLog.app.debug("age-gender SER skipped: \(String(describing: error), privacy: .public)")
             return nil
         }
     }

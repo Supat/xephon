@@ -29,6 +29,13 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     // Acoustic side
     public let dimensional: VADScore?
     public let acousticCategorical: CategoricalEmotion?
+    /// Per-utterance demographics estimate from the W2V2 age-gender
+    /// model. Optional because: (1) the model is only present when
+    /// the user has downloaded the weights, and (2) very short
+    /// clips don't always produce a stable read. Persisted in the
+    /// `.xph` bundle and the JSON export so external tooling can
+    /// stratify by demographics.
+    public let ageGender: AgeGenderEstimate?
 
     // Text side
     public let plutchik: PlutchikScore?
@@ -73,6 +80,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         asrConfidence: Float?,
         dimensional: VADScore?,
         acousticCategorical: CategoricalEmotion?,
+        ageGender: AgeGenderEstimate? = nil,
         plutchik: PlutchikScore?,
         textBackend: String? = nil,
         speechBoost: Bool? = nil,
@@ -92,6 +100,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.asrConfidence = asrConfidence
         self.dimensional = dimensional
         self.acousticCategorical = acousticCategorical
+        self.ageGender = ageGender
         self.plutchik = plutchik
         self.textBackend = textBackend
         self.speechBoost = speechBoost
@@ -118,6 +127,36 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             asrConfidence: asrConfidence,
             dimensional: dimensional,
             acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
+            plutchik: plutchik,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
+    /// Stamp the per-utterance demographics estimate (age + gender)
+    /// onto an already-fused row. The pipeline runs the W2V2
+    /// age-gender model in parallel with the SER models and stitches
+    /// its output on with this helper since `LateFusion.fuse` is
+    /// affect-only.
+    public func withAgeGender(_ score: AgeGenderEstimate?) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            ageGender: score,
             plutchik: plutchik,
             textBackend: textBackend,
             speechBoost: speechBoost,
@@ -141,6 +180,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             asrConfidence: asrConfidence,
             dimensional: dimensional,
             acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
             plutchik: plutchik,
             textBackend: backend,
             speechBoost: speechBoost,
@@ -164,6 +204,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             asrConfidence: asrConfidence,
             dimensional: dimensional,
             acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
             plutchik: plutchik,
             textBackend: textBackend,
             speechBoost: speechBoost,
@@ -192,6 +233,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             asrConfidence: asrConfidence,
             dimensional: dimensional,
             acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
             plutchik: plutchik,
             textBackend: textBackend,
             speechBoost: speechBoost,
@@ -215,6 +257,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             asrConfidence: asrConfidence,
             dimensional: dimensional,
             acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
             plutchik: plutchik,
             textBackend: textBackend,
             speechBoost: enabled,
