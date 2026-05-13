@@ -3113,7 +3113,7 @@ final class RecordingController {
             AppLog.app.warning("promote: embedding extractor unavailable")
             return nil
         }
-        let newID = Self.nextNewSpeakerID(in: knownSpeakerIDs())
+        let newID = nextAvailableSpeakerID()
         do {
             try await pipeline.promoteSpeaker(id: newID, embedding: embedding)
         } catch {
@@ -3131,10 +3131,27 @@ final class RecordingController {
         return newID
     }
 
+    /// Smallest `S0N` id not in use anywhere the user might see it:
+    /// neither in the current utterance roster nor in the diarizer's
+    /// internal speaker DB. The latter matters because FluidAudio's
+    /// streaming `assignSpeaker` mints raw numeric ids ("4") that
+    /// our snapshot formats to "S04" for display — picking that same
+    /// "S04" for a promote would leave two distinct DB entries
+    /// rendering as the same chip and trigger SwiftUI's "id occurs
+    /// multiple times" warning on the cluster panels. Used by every
+    /// "new speaker" allocation path (chip-menu reassign, promote).
+    func nextAvailableSpeakerID() -> String {
+        var used = cachedKnownSpeakerIDs
+        used.append(contentsOf: speakerCluster.speakers.map(\.id))
+        return Self.nextNewSpeakerID(in: used)
+    }
+
     /// Smallest unused `S0N` id given the supplied existing ids.
-    /// Matches the chip menu's `nextNewSpeakerID` logic so both
-    /// the "New Speaker" and "Promote New Speaker" paths agree
-    /// on which slot to fill.
+    /// Backs `nextAvailableSpeakerID` — kept static + pure so callers
+    /// that already have a specific id set in hand can use it
+    /// directly. Both "New Speaker" and "Promote New Speaker" route
+    /// through `nextAvailableSpeakerID` so they agree on which slot
+    /// to fill.
     private static func nextNewSpeakerID(in existing: [String]) -> String {
         var used: Set<Int> = []
         for id in existing {

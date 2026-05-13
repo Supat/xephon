@@ -222,6 +222,7 @@ struct TranscriptList: View {
             hasSpeakerMismatch: hasSpeakerMismatch,
             knownSpeakerIDs: recorder.knownSpeakerIDs(),
             speakerDisplayName: { recorder.speakerDisplayName(forStored: $0) },
+            nextNewSpeakerID: { recorder.nextAvailableSpeakerID() },
             onReassignSpeaker: { newSpeakerID in
                 recorder.reassignSpeaker(
                     utteranceID: item.u.id,

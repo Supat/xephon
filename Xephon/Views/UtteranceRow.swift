@@ -78,6 +78,13 @@ struct UtteranceRow: View {
     /// default-named speakers. Used by the chip menu so a
     /// reassignment target reads `S02 Alice` instead of just `S02`.
     let speakerDisplayName: (String) -> String?
+    /// Mint a fresh `S0N` id for the chip menu's "New Speaker"
+    /// action. Routes through the controller so the allocation
+    /// considers *both* the current utterance roster *and* ids
+    /// FluidAudio's DB already holds (which would otherwise show
+    /// up as duplicate display ids on the cluster panels). Pure;
+    /// caller is responsible for actually performing the reassign.
+    let nextNewSpeakerID: () -> String
     /// Fires when the user picks a different speaker from the chip
     /// menu with **Teach diarizer** *off*. ContentView calls
     /// `recorder.reassignSpeaker` — pure row-level annotation
@@ -559,25 +566,6 @@ struct UtteranceRow: View {
                 Image(systemName: "person.crop.circle.badge.plus")
             }
         }
-    }
-
-    /// Compute the next free `S0N` speaker id by scanning the
-    /// numeric suffix of every known speaker and returning the
-    /// smallest positive integer not in use. Falls back to
-    /// `S\(N+1)` when no existing id parses (rare; would mean the
-    /// diarizer produced a non-`S\d+` label, e.g. a user-typed
-    /// override). Pure of any controller state — the row already
-    /// receives `knownSpeakerIDs` and that's the only input
-    /// needed.
-    private func nextNewSpeakerID() -> String {
-        var used: Set<Int> = []
-        for id in knownSpeakerIDs {
-            guard id.hasPrefix("S") else { continue }
-            if let n = Int(id.dropFirst()) { used.insert(n) }
-        }
-        var candidate = 1
-        while used.contains(candidate) { candidate += 1 }
-        return String(format: "S%02d", candidate)
     }
 
     @ViewBuilder
