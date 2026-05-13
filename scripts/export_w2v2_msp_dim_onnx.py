@@ -147,6 +147,26 @@ def main() -> int:
             dynamo=True,
         )
 
+    # The dynamo exporter splits weights into a `model.onnx.data`
+    # sidecar by default. ORT's optimizer (at .extended) hits an
+    # `Initializer::Initializer() … model_path must not be empty`
+    # crash when it tries to constant-fold over the sidecar — the
+    # path isn't threaded through that pass for our graph. Re-saving
+    # inline yields a single self-contained .onnx with weights
+    # embedded; well under the 2 GB protobuf cap at ~660 MB.
+    print(f"[inline] re-saving weights inline (dropping .data sidecar)")
+    model = onnx.load(str(OUT_ONNX), load_external_data=True)
+    for init in model.graph.initializer:
+        init.ClearField("external_data")
+        if init.data_location == onnx.TensorProto.EXTERNAL:
+            init.data_location = onnx.TensorProto.DEFAULT
+    onnx.save_model(model, str(OUT_ONNX), save_as_external_data=False)
+    # Clean up the now-orphaned sidecar so a fresh fetch doesn't
+    # see a stale partial layout.
+    data_sidecar = OUT_ONNX.with_name(OUT_ONNX.name + ".data")
+    if data_sidecar.exists():
+        data_sidecar.unlink()
+
     onnx.checker.check_model(str(OUT_ONNX))
     print(f"[wrote] {OUT_ONNX}")
     print_schema(OUT_ONNX)

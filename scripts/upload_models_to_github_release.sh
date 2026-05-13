@@ -30,7 +30,6 @@ cd "$(dirname "$0")/.."
 # GitHub upload needed.
 declare -a UPLOADS=(
   "Models/w2v2-msp-dim/model.onnx|w2v2-model.onnx|W2V2_MODEL"
-  "Models/w2v2-msp-dim/model.onnx.data|w2v2-model.data|W2V2_DATA"
   "Models/w2v2-age-gender/model.onnx|w2v2-age-gender-model.onnx|W2V2_AGE_GENDER_MODEL"
   "Models/w2v2-age-gender/model.onnx.data|w2v2-age-gender-model.data|W2V2_AGE_GENDER_DATA"
   "Models/emotion2vec-plus-large/emotion2vec_onnx/model.onnx|emotion2vec-model.onnx|EMOTION2VEC_MODEL"

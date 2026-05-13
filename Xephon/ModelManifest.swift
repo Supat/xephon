@@ -169,22 +169,18 @@ enum ModelManifest {
             id: "w2v2-msp-dim",
             displayName: "audeering W2V2 (V/A/D)",
             files: [
+                // Single self-contained ONNX — weights inlined by
+                // the export script. The dynamo exporter's default
+                // external-data layout tripped ORT's .extended
+                // optimizer with "Initializer::Initializer() …
+                // model_path must not be empty" when it tried to
+                // constant-fold over the sidecar.
                 ModelFile(
                     assetName: "w2v2-model.onnx",
                     installPath: "w2v2-msp-dim/model.onnx",
                     bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "w2v2-msp-dim"),
-                    approximateBytes: 1_776_524,
-                    sha256: "3b71765f617cc770d2e4cd6e4ca82b1721ef065d651653b929e49f52d590841f"
-                ),
-                // External-data sidecar from the dynamo ONNX exporter
-                // (graph references it by `model.onnx.data` literally
-                // — same arrangement as the age-gender entry below).
-                ModelFile(
-                    assetName: "w2v2-model.data",
-                    installPath: "w2v2-msp-dim/model.onnx.data",
-                    bundleResource: BundleLookup(name: "model.onnx", ext: "data", subdirectory: "w2v2-msp-dim"),
-                    approximateBytes: 661_389_312,
-                    sha256: "addde67c46d692dbf8c03b5d02da44391d6a156865c9f88f8d0fc48aac8d463c"
+                    approximateBytes: 663_105_424,
+                    sha256: "0bdd79367f0f1e1e75683c51937db5e7f870c3ab85bf9f5e56efc7d2e5c84340"
                 ),
             ]
         ),
