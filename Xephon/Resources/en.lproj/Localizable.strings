@@ -108,6 +108,12 @@
 "ser.aggregate.acoustic.empty" = "No acoustic rows.";
 "ser.aggregate.va" = "Valence × Arousal";
 "ser.aggregate.va.empty" = "No fused V/A rows.";
+"fusion.legend.header" = "Fusion Strip";
+"fusion.legend.acoustic" = "Acoustic SER";
+"fusion.legend.acoustic.detail" = "W2V2 V/A/D + emotion2vec 9-class score.";
+"fusion.legend.text" = "Text SER";
+"fusion.legend.text.detail" = "DeBERTa-WRIME / Apple FM Plutchik 8-class score.";
+"fusion.legend.footnote" = "Segment widths are each modality's share of the fused-label argmax. An all-one-color slot means only that modality ran; low ASR confidence shrinks the text segment because text weight is scaled by ASR confidence.";
 "speaker.rename.title" = "Rename Speaker";
 "speaker.rename.placeholder" = "Speaker name";
 "speaker.rename.message" = "Pick a custom name for speaker %@. Leave blank to revert to the default.";

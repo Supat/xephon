@@ -648,6 +648,7 @@ struct ContentView: View {
                         )
                         StatisticsCard(summary: displayedSummary)
                         SERAggregateCard(recorder: recorder)
+                        FusionLegendCard()
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)

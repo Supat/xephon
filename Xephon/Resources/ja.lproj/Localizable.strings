@@ -108,6 +108,12 @@
 "ser.aggregate.acoustic.empty" = "音響SERの結果がありません。";
 "ser.aggregate.va" = "ヴァレンス × アローザル";
 "ser.aggregate.va.empty" = "融合V/Aがありません。";
+"fusion.legend.header" = "融合ストリップの凡例";
+"fusion.legend.acoustic" = "音響SER";
+"fusion.legend.acoustic.detail" = "W2V2のV/A/D + emotion2vecの9クラス出力。";
+"fusion.legend.text" = "テキストSER";
+"fusion.legend.text.detail" = "DeBERTa-WRIME / Apple FMのPlutchik 8クラス出力。";
+"fusion.legend.footnote" = "セグメント幅は融合ラベル決定への各モダリティの寄与率です。全てが片方の色になるのは、そのモダリティだけが動作した場合です。ASR信頼度が低いとテキスト重みが下がるため、オレンジのセグメントが小さくなります。";
 "speaker.rename.title" = "話者の名前を変更";
 "speaker.rename.placeholder" = "話者名";
 "speaker.rename.message" = "話者 %@ にカスタム名を設定します。空欄にするとデフォルトに戻ります。";
