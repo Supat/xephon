@@ -71,6 +71,17 @@
 "record.start" = "録音を開始";
 "record.stop" = "録音を停止";
 "record.stop.file" = "再生を停止";
+"record.pause" = "録音を一時停止";
+"record.resume" = "録音を再開";
+"tuning.open" = "話者識別を調整";
+"tuning.title" = "話者識別の調整";
+"tuning.apply" = "適用して再識別";
+"tuning.intro.title" = "セッション中の調整";
+"tuning.intro.body" = "話者を分割する強さを調整します。適用すると録音済みの音声を再識別し、既存の発話に新しい話者IDを割り当てます。";
+"tuning.clustering.title" = "クラスタリングしきい値";
+"tuning.clustering.hint" = "値を下げると似た声を別の話者に分割しやすくなります。上げると統合されます。会話音声では0.6が既定値です。";
+"tuning.minSpeech.title" = "最短発話時間";
+"tuning.minSpeech.hint" = "短い区間は無視されます。「うん」「そう」などの相槌が単語レベルで誤って話者になる場合は上げてください。";
 "record.status.format" = "%@ · %@ サンプル";
 "analyze.inProgress" = "解析中…";
 "warmup.inProgress" = "モデルを読み込み中…";

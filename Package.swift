@@ -139,6 +139,16 @@ let package = Package(
             dependencies: [
                 "XephonLogging",
                 "Fusion",
+                // SER per-modality probability types — Summarizer
+                // walks each utterance's CategoricalEmotion +
+                // PlutchikScore distributions into the LLM prompt
+                // so the model can reason about modality
+                // disagreement (acoustic-sad / text-joy etc.). Both
+                // are field types on `UtteranceEstimate` (in
+                // Fusion) but Swift doesn't re-export across module
+                // boundaries, so the import has to be direct.
+                "SERAcoustic",
+                "SERText",
                 // `MLX` is the low-level runtime we use directly for
                 // `MLX.GPU.set(cacheLimit:)` (memory tuning around the
                 // 8B weights). Declared explicitly so SPM stops

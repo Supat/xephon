@@ -1,8 +1,8 @@
 import Foundation
 import Fusion
+import SERAcoustic
+import SERText
 import XephonLogging
-import MLX
-import MLXLLM
 import MLXLMCommon
 
 /// MLX-backed summarizer using a Qwen2.5-Instruct 4-bit model
@@ -33,17 +33,17 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     private static let maxOutputTokens = 2048
 
     /// Cap on the number of utterances we feed into a single
-    /// summary pass. Prefill cost scales linearly in sequence
-    /// length and the KV cache is the dominant marginal memory
-    /// during inference — a 285-utterance / ~10k-token prompt
-    /// reliably trips iOS Jetsam on a 16 GB iPad once the 4.3 GB
-    /// weights are resident alongside the existing ONNX SER
-    /// actors. 80 utterances ≈ 3k tokens, ~10× headroom over the
-    /// case that crashed. Long sessions take the most recent
-    /// window — emotion arcs concentrate at the trailing edge of
-    /// a conversation, so the tail is what summary readers care
-    /// about most.
-    private static let maxPromptUtterances = 80
+    /// summary pass. Each row now carries the full acoustic
+    /// 9-class softmax + Plutchik 8-class intensity in addition to
+    /// the fused label/V/A/D — ~2.3× the per-row token cost vs.
+    /// the fused-only line. 100 utterances at the richer format
+    /// roughly matches the prompt-token footprint of the previous
+    /// 200-utt fused-only build (~10–14k input tokens), keeping
+    /// memory comfortable under the increased-memory-limit
+    /// entitlement and well inside Qwen3-8B's 32k context. Sessions
+    /// longer than this take the most recent window — emotion arcs
+    /// concentrate at the trailing edge of a conversation.
+    private static let maxPromptUtterances = 100
 
     public init(modelIdentifier: String, modelDirectory: URL) {
         self.modelIdentifier = modelIdentifier
@@ -59,28 +59,11 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     /// error (corrupted weights, format mismatch, etc.).
     public func load() async throws {
         if container != nil { return }
-        AppLog.app.info(
-            "MLXQwenSummarizer loading from \(self.modelDirectory.path, privacy: .public)"
-        )
-        // Cap MLX's buffer cache to keep the working set tight.
-        // The default is bounded by Metal's recommendedMaxWorking-
-        // SetSize, which on a 16 GB iPad sits high enough to push
-        // the process over the Jetsam ceiling once Qwen weights
-        // and the SER pipeline coexist. 32 MB is the value the
-        // mlx-swift docs recommend for LLM evaluation on iOS.
-        MLX.GPU.set(cacheLimit: 32 * 1024 * 1024)
         do {
-            // MLXLMCommon resolves a directory containing
-            // `config.json`, `tokenizer.json`, and the safetensors
-            // shards into a `ModelContainer` that owns the loaded
-            // weights + tokenizer for the duration of the actor.
-            let configuration = ModelConfiguration(
-                directory: modelDirectory
+            container = try await MLXContainerLoader.load(
+                directory: modelDirectory,
+                logLabel: "MLXQwenSummarizer"
             )
-            container = try await LLMModelFactory.shared.loadContainer(
-                configuration: configuration
-            )
-            AppLog.app.info("MLXQwenSummarizer loaded")
         } catch {
             throw SummarizerError.modelLoadFailed(
                 reason: String(describing: error)
@@ -221,22 +204,6 @@ public actor MLXQwenSummarizer: SessionSummarizer {
 
     // MARK: - Prompt + parser
 
-    /// Order distinct speaker ids in their first-appearance order,
-    /// matching the chip-bar ordering in the UI so the LLM's
-    /// per-speaker arc reads in the same order the user is reading
-    /// the rows in.
-    private static func orderedSpeakerIDs(
-        from utterances: [UtteranceEstimate]
-    ) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utterances where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
-    }
-
     /// Build the chat-style prompt the model sees. Compact JSON-ish
     /// per-utterance lines keep the token budget bounded — every
     /// numerical score is preserved (the whole point of going
@@ -252,7 +219,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         speakerNames: [String: String],
         truncatedFromTotal: Int?
     ) -> String {
-        let speakers = orderedSpeakerIDs(from: utterances)
+        let speakers = PromptHelpers.orderedSpeakerIDs(from: utterances)
         var lines: [String] = []
         lines.reserveCapacity(utterances.count + 12)
         lines.append("You are an analyst summarizing a multi-speaker conversation.")
@@ -261,7 +228,10 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         lines.append("  \"overallMood\" — one paragraph on the session's overall emotional tone.")
         lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakers.joined(separator: ", ")).")
         lines.append("Each perSpeaker entry has: { \"speakerID\": <id>, \"summary\": <one paragraph>, \"dominantMood\": <one short phrase> }.")
-        lines.append("Use the numerical V/A/D and label probabilities to judge confidence and weight your reasoning.")
+        lines.append("Each row carries: fused label and fused V/A/D (valence/arousal/dominance, 0–1), plus the raw per-modality probability vectors:")
+        lines.append("  aP = acoustic 9-class softmax (angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown)")
+        lines.append("  tP = text 8-class Plutchik intensity (joy, sadness, anticipation, surprise, anger, fear, disgust, trust)")
+        lines.append("Use these to judge confidence and to flag modality disagreement — e.g. a row where aP says sad but tP says joy is worth calling out per-speaker; the fused label hides that signal.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
         // Qwen3 ships with a "thinking" mode that emits a
         // `<think>...</think>` chain-of-thought block before the
@@ -285,9 +255,11 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         return lines.joined(separator: "\n")
     }
 
-    /// One per-utterance line. Keep order stable (speaker, time,
-    /// label, V/A, text) so the model sees consistent positional
-    /// cues across rows.
+    /// One per-utterance line. Order stable so the model sees
+    /// consistent positional cues across rows: speaker → time →
+    /// fused → per-modality probability vectors → transcript.
+    /// The transcript field is named `text` so to avoid collision
+    /// with the text-SER's Plutchik vector we name that `tP`.
     private static func compactLine(
         for u: UtteranceEstimate,
         speakerNames: [String: String]
@@ -302,11 +274,37 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         if let v = u.fusedValence { fields.append(String(format: "V=%.2f", v)) }
         if let a = u.fusedArousal { fields.append(String(format: "A=%.2f", a)) }
         if let d = u.fusedDominance { fields.append(String(format: "D=%.2f", d)) }
-        let escaped = u.transcript
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        fields.append("text=\"\(escaped)\"")
+        if let acoustic = u.acousticCategorical {
+            fields.append("aP={\(renderAcoustic(acoustic))}")
+        }
+        if let plutchik = u.plutchik {
+            fields.append("tP={\(renderPlutchik(plutchik))}")
+        }
+        fields.append("text=\"\(PromptHelpers.escapeForQuotedLiteral(u.transcript))\"")
         return "- " + fields.joined(separator: " ")
+    }
+
+    /// Render the acoustic 9-class softmax in `Label.allCases`
+    /// order so every row's vector lines up by position — easier
+    /// for the LLM to compare rows column-wise. Missing classes
+    /// fall back to 0.00 rather than being omitted, so the schema
+    /// stays uniform across rows.
+    private static func renderAcoustic(_ score: CategoricalEmotion) -> String {
+        CategoricalEmotion.Label.allCases.map { label in
+            let p = score.probabilities[label] ?? 0
+            return String(format: "%@=%.2f", label.rawValue, p)
+        }.joined(separator: " ")
+    }
+
+    /// Render the text 8-class Plutchik intensity vector in
+    /// `Label.allCases` order. Same uniform-schema rationale as
+    /// `renderAcoustic` — and note these are intensities, not a
+    /// softmax (WRIME is multi-label), so they need not sum to 1.
+    private static func renderPlutchik(_ score: PlutchikScore) -> String {
+        PlutchikScore.Label.allCases.map { label in
+            let p = score.probabilities[label] ?? 0
+            return String(format: "%@=%.2f", label.rawValue, p)
+        }.joined(separator: " ")
     }
 
     /// Decode the LLM's JSON output. Robust against the common
@@ -323,8 +321,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         // pair, and any chain-of-thought inside can carry braces
         // that mislead "first '{'" scanning. Strip the block before
         // any other processing.
-        let dethought = stripThinkBlocks(raw)
-        let stripped = stripCodeFence(dethought)
+        let dethought = MLXOutputCleaner.stripThinkBlocks(raw)
+        let stripped = MLXOutputCleaner.stripCodeFence(dethought)
         guard let braceStart = stripped.firstIndex(of: "{"),
               let braceEnd = stripped.lastIndex(of: "}") else {
             throw SummarizerError.decodeFailed(reason: "no JSON object found")
@@ -368,45 +366,4 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         )
     }
 
-    /// Remove any `<think>...</think>` reasoning blocks Qwen3 emits
-    /// when its thinking mode is engaged. Greedy across newlines.
-    /// Also drops a stray closing `</think>` if the model elided
-    /// the opening tag (occasionally seen with `/no_think`).
-    private static func stripThinkBlocks(_ raw: String) -> String {
-        var s = raw
-        while let openRange = s.range(of: "<think>") {
-            if let closeRange = s.range(
-                of: "</think>",
-                range: openRange.upperBound..<s.endIndex
-            ) {
-                s.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
-            } else {
-                // Unterminated block — drop everything from the
-                // opener forward; the JSON, if any, was supposed
-                // to come after a `</think>` we never saw.
-                s.removeSubrange(openRange.lowerBound..<s.endIndex)
-                break
-            }
-        }
-        // Tolerate a stray closing tag without an opener.
-        if let strayClose = s.range(of: "</think>") {
-            s.removeSubrange(s.startIndex..<strayClose.upperBound)
-        }
-        return s
-    }
-
-    /// Strip ```json ... ``` fences a chat-tuned model might emit
-    /// even after being told "JSON only." Leaves bare JSON alone.
-    private static func stripCodeFence(_ raw: String) -> String {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.hasPrefix("```") {
-            if let firstNewline = s.firstIndex(of: "\n") {
-                s = String(s[s.index(after: firstNewline)...])
-            }
-        }
-        if s.hasSuffix("```") {
-            s = String(s.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return s
-    }
 }

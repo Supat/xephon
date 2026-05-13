@@ -172,6 +172,57 @@ final class AnalysisPipeline: @unchecked Sendable {
         _ = await speakerTracker.ingest(diarized)
     }
 
+    /// Read the diarizer's current tuning so the UI can prime its
+    /// sliders. Nil when no diarizer is configured.
+    func diarizerTuning() async -> DiarizationTuning? {
+        await diarizer?.currentTuning
+    }
+
+    /// Push new tuning into the diarizer. The diarizer swaps its
+    /// underlying model with the new thresholds and re-imports the
+    /// speaker DB so user-promoted speakers survive. Throws on
+    /// model-load failure; the controller surfaces this as a
+    /// banner. No-op when no diarizer is configured.
+    func applyDiarizerTuning(_ tuning: DiarizationTuning) async throws {
+        try await diarizer?.applyTuning(tuning)
+    }
+
+    /// Re-run diarization over `audio` (typically the entire
+    /// captured rolling buffer) AFTER a tuning change, and return
+    /// (a) the rebuilt cumulative timeline, (b) the re-resolved
+    /// speaker id for each utterance range. Resets the
+    /// `speakerTracker`'s cumulative state so the timeline strip
+    /// reflects the new tuning instead of the old observations.
+    ///
+    /// Caller is responsible for stamping the resolved ids back
+    /// onto `utterances` and refreshing UI state.
+    func redariarize(
+        over audio: AudioChunk,
+        utteranceRanges: [(id: UUID, start: TimeInterval, end: TimeInterval, fallback: String)]
+    ) async -> (timeline: [DiarizedSegment], speakerByUtteranceID: [UUID: String]) {
+        guard diarizer != nil else { return ([], [:]) }
+        let fresh = await runDiarization(audio)
+        await speakerTracker.reset()
+        if !fresh.isEmpty {
+            _ = await speakerTracker.ingest(fresh)
+        }
+        let resolved: [UUID: String] = Dictionary(
+            uniqueKeysWithValues: utteranceRanges.map { entry in
+                let speaker = fresh.isEmpty
+                    ? entry.fallback
+                    : Self.dominantSpeakerInSegments(
+                        fresh,
+                        from: entry.start,
+                        to: entry.end,
+                        fallback: entry.fallback
+                    )
+                return (entry.id, speaker)
+            }
+        )
+        let timeline = await speakerTracker.cumulativeSnapshot()
+        return (timeline, resolved)
+    }
+
     /// Run the diarizer on `audio` in isolation and resolve a
     /// speaker for each requested sub-range from **only the fresh
     /// segments** — i.e. without consulting the cumulative timeline

@@ -71,6 +71,17 @@
 "record.start" = "Start Recording";
 "record.stop" = "Stop Recording";
 "record.stop.file" = "Stop Playback";
+"record.pause" = "Pause Recording";
+"record.resume" = "Resume Recording";
+"tuning.open" = "Tune Diarizer";
+"tuning.title" = "Diarizer Tuning";
+"tuning.apply" = "Apply & Re-diarize";
+"tuning.intro.title" = "Mid-Session Tuning";
+"tuning.intro.body" = "Adjust how aggressively the diarizer splits speakers. Apply re-diarizes the recorded audio so existing rows pick up new speaker IDs.";
+"tuning.clustering.title" = "Clustering threshold";
+"tuning.clustering.hint" = "Lower values split similar voices into separate speakers. Higher values merge them. 0.6 is the default for conversational audio.";
+"tuning.minSpeech.title" = "Min speech duration";
+"tuning.minSpeech.hint" = "Shorter segments are dropped. Raise this if backchannels (うん, そう) create spurious one-word speakers.";
 "record.status.format" = "%@ · %@ samples";
 "analyze.inProgress" = "Analyzing…";
 "warmup.inProgress" = "Loading models…";

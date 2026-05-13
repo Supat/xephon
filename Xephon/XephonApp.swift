@@ -25,6 +25,13 @@ struct XephonApp: App {
         // Hardware-keyboard menu integration. iPadOS 26's menu strip
         // (cmd-hold) and macOS / Catalyst menu bar both honor these.
         .commands {
+            // Two adjacent `CommandGroup`s instead of a single
+            // `CommandGroup` with an inline `Divider()` — the latter
+            // doesn't render a visible separator on iPadOS 26's menu
+            // strip (SwiftUI bug). Splitting on the `.newItem` /
+            // `.saveItem` placements gets us a system-drawn divider
+            // between Open*/Save* + matches the conventional File
+            // menu grouping users expect.
             CommandGroup(replacing: .newItem) {
                 Button(String(localized: "menu.openAudioFile")) {
                     menuCommands.openAudioFileToken = UUID()
@@ -34,7 +41,8 @@ struct XephonApp: App {
                     menuCommands.importSessionToken = UUID()
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
-                Divider()
+            }
+            CommandGroup(replacing: .saveItem) {
                 Button(String(localized: "menu.saveSession")) {
                     menuCommands.saveSessionToken = UUID()
                 }

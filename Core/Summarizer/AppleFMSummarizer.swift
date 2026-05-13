@@ -63,7 +63,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
             truncatedFrom = nil
         }
 
-        let speakers = Self.orderedSpeakerIDs(from: promptUtterances)
+        let speakers = PromptHelpers.orderedSpeakerIDs(from: promptUtterances)
         let utteranceLines = promptUtterances
             .map { Self.compactLine(for: $0, speakerNames: speakerNames) }
             .joined(separator: "\n")
@@ -135,18 +135,6 @@ public actor AppleFMSummarizer: SessionSummarizer {
         speaker id in the input. Do not invent speakers.
         """
 
-    private static func orderedSpeakerIDs(
-        from utterances: [UtteranceEstimate]
-    ) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utterances where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
-    }
-
     /// Tight per-utterance line tuned for the 4k context.
     /// Drops dominance (least-used affect axis) and the
     /// optional `name=` field (we re-map names from the
@@ -162,10 +150,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
         if let label = u.fusedTopLabel { parts.append(label) }
         if let v = u.fusedValence { parts.append(String(format: "V%.2f", v)) }
         if let a = u.fusedArousal { parts.append(String(format: "A%.2f", a)) }
-        let escaped = u.transcript
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        parts.append("\"\(escaped)\"")
+        parts.append("\"\(PromptHelpers.escapeForQuotedLiteral(u.transcript))\"")
         return parts.joined(separator: " ")
     }
 }

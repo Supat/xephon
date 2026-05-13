@@ -119,6 +119,10 @@ struct ContentView: View {
     /// controller's `transcriptionReviewRunning` + `transcriptionSuggestions`
     /// to render its three states.
     @State private var showingReviewView: Bool = false
+    /// Drives `DiarizerTuningSheet` presentation. Only shown while
+    /// the session is paused so the tuning + re-diarize work runs
+    /// without racing the live audio pump.
+    @State private var showingTuningSheet: Bool = false
     /// Active in-flight LLM tasks, owned by the view so the dismiss
     /// path (and the regenerate-while-running path) can `.cancel()`
     /// them. The MLX inference closures observe `Task.isCancelled`
@@ -207,6 +211,10 @@ struct ContentView: View {
                     }
                 )
             }
+            .modifier(TuningSheetModifier(
+                isPresented: $showingTuningSheet,
+                recorder: recorder
+            ))
             // File → Open… (⌘O) command pipe. The menu writes a fresh
             // UUID into `menuCommands.openAudioFileToken`; we observe
             // the change and raise the same `.fileImporter` the
@@ -569,9 +577,13 @@ struct ContentView: View {
                 openFileButton
             }
 
-            if recorder.isRecording {
+            if recorder.isRecording || recorder.isPaused {
                 LevelMeterView(level: recorder.inputLevel)
                     .frame(maxWidth: 280)
+            }
+
+            if recorder.isPaused {
+                tuneDiarizerButton
             }
 
             statusLine
@@ -1115,7 +1127,13 @@ struct ContentView: View {
     @ViewBuilder
     private var recordButton: some View {
         Button {
-            if !recorder.isRecording && !recorder.utterances.isEmpty {
+            if recorder.isPaused || recorder.isRecording {
+                // Mid-session: tap toggles between recording and
+                // paused. The discard confirm doesn't fire here —
+                // there are no orphan utterances to lose, the
+                // session is still alive.
+                Task { await recorder.toggle() }
+            } else if !recorder.utterances.isEmpty {
                 showingDiscardConfirm = true
             } else {
                 Task { await recorder.toggle() }
@@ -1123,23 +1141,68 @@ struct ContentView: View {
         } label: {
             Label(
                 recordButtonTitle,
-                systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill"
+                systemImage: recordButtonSystemImage
             )
             .font(.title3)
         }
         .buttonStyle(.borderedProminent)
-        .tint(recorder.isRecording ? .red : .accentColor)
+        .tint(recordButtonTint)
         .disabled(recorder.isAnalyzing)
+        // Long-press fully stops the session from either recording
+        // or paused. Discoverable via the standard iPad long-press
+        // affordance; tap stays the fast path for the common
+        // pause/resume rhythm. 0.6 s is long enough to not trip on
+        // a sloppy tap, short enough to feel deliberate.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.6)
+                .onEnded { _ in
+                    guard recorder.isRecording || recorder.isPaused else { return }
+                    Task { await recorder.stop() }
+                }
+        )
     }
 
     private var recordButtonTitle: String {
+        if recorder.isPaused {
+            return String(localized: "record.resume")
+        }
         guard recorder.isRecording else {
             return String(localized: "record.start")
         }
         if case .file = recorder.sourceMode {
             return String(localized: "record.stop.file")
         }
-        return String(localized: "record.stop")
+        return String(localized: "record.pause")
+    }
+
+    private var recordButtonSystemImage: String {
+        if recorder.isPaused { return "play.circle.fill" }
+        if recorder.isRecording { return "pause.circle.fill" }
+        return "mic.circle.fill"
+    }
+
+    private var recordButtonTint: Color {
+        if recorder.isPaused { return .orange }
+        if recorder.isRecording { return .red }
+        return .accentColor
+    }
+
+    /// Entry point to the diarizer tuning sheet, surfaced only
+    /// while the session is paused (the tuning + re-diarize work
+    /// can't run while the audio engine is live). Tapping opens
+    /// the modal sliders; the sheet handles its own state.
+    private var tuneDiarizerButton: some View {
+        Button {
+            showingTuningSheet = true
+        } label: {
+            Label(
+                String(localized: "tuning.open"),
+                systemImage: "slider.horizontal.3"
+            )
+            .font(.callout)
+        }
+        .buttonStyle(.bordered)
+        .tint(.orange)
     }
 
     private var openFileButton: some View {
@@ -1586,6 +1649,26 @@ struct ContentView: View {
         )
     }
 
+}
+
+/// Extracted so the `.sheet` attachment doesn't live inline in
+/// `ContentView.body`'s modifier chain. With three sheets + a stack
+/// of `.alert` / `.onChange` modifiers already piled on, adding a
+/// fourth inline `.sheet { DiarizerTuningSheet(...) }` tipped
+/// SwiftUI's type-checker past its inference budget. A
+/// `ViewModifier` breaks the chain into a smaller-to-check segment.
+private struct TuningSheetModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    let recorder: RecordingController
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: $isPresented) {
+            DiarizerTuningSheet(
+                recorder: recorder,
+                onDismiss: { isPresented = false }
+            )
+        }
+    }
 }
 
 #Preview {

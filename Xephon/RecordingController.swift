@@ -19,6 +19,15 @@ final class RecordingController {
         case idle
         case warmingUp
         case recording
+        /// Mid-session pause. The audio engine + streaming
+        /// transcriber are torn down so the mic light goes off and
+        /// no new utterances arrive; existing state (utterances,
+        /// rolling buffer, diarizer DB) is preserved untouched.
+        /// `resume()` brings up a fresh transcriber + capture and
+        /// translates its local-from-zero timestamps onto the
+        /// global session timeline via `asrTimeOffset`. Intended
+        /// for diarizer/SER parameter tuning mid-session.
+        case paused
         case analyzing
     }
 
@@ -231,8 +240,29 @@ final class RecordingController {
     private(set) var modelsReady: Bool = false
 
     var isRecording: Bool { phase == .recording }
+    var isPaused: Bool { phase == .paused }
     var isAnalyzing: Bool { phase == .analyzing }
     var isWarmingUp: Bool { phase == .warmingUp }
+
+    /// Live snapshot of the diarizer's tunable thresholds. The
+    /// tuning sheet reads from this to populate its sliders, and
+    /// `applyDiarizerTuning(_:)` writes back to it after the
+    /// pipeline-level swap succeeds. Nil before the pipeline has
+    /// warmed (no diarizer to query yet).
+    private(set) var diarizerTuning: DiarizationTuning?
+    /// True while a tuning apply (model swap + re-diarization of
+    /// captured audio) is running. The tuning sheet disables its
+    /// Apply button + shows a spinner while this is on.
+    private(set) var diarizerTuningApplyInProgress: Bool = false
+
+    /// Time offset (in seconds) added to every incoming ASR segment
+    /// before it lands in the session timeline. Bumped on `resume()`
+    /// to the audio time at the moment of pause, so the new
+    /// `StreamingTranscriber` instance — which always reports local
+    /// times starting at 0 — produces utterances that continue
+    /// seamlessly from where the pre-pause session left off. Reset
+    /// to 0 at every fresh session start.
+    private var asrTimeOffset: TimeInterval = 0
     var elapsedSeconds: Double {
         Double(samplesCaptured) / PipelineAudio.sampleRate
     }
@@ -308,6 +338,20 @@ final class RecordingController {
     /// per-segment gives sharper speaker boundaries on fast-pace
     /// turn-takes (the per-segment 60 s context blurs them).
     private var continuousDiarizeTask: Task<Void, Never>?
+    /// Tick stream that drives the continuous-diarize loop. The
+    /// raw audio pump yields a `()` once every
+    /// `continuousDiarizeStrideSec` worth of fresh samples; the
+    /// diarize task awaits these instead of `Task.sleep`. Crucial
+    /// for iOS background — under the `audio` background mode the
+    /// audio buffers keep flowing in, but `Task.sleep` is coalesced
+    /// with system timers and effectively stalls. Anchoring the
+    /// stride to sample arrival keeps diarization ticking at the
+    /// same cadence regardless of foreground/background state.
+    private var diarizeTickContinuation: AsyncStream<Void>.Continuation?
+    /// Samples appended since the last diarize tick. Only the raw
+    /// audio pump reads/writes this, so no synchronization is
+    /// needed — both run on the MainActor.
+    private var samplesSinceLastDiarizeTick: Int = 0
     /// Lock-Screen / Dynamic Island integration. See
     /// `LiveActivityController` for the activity-id, coalescing, and
     /// nonisolated update plumbing.
@@ -507,7 +551,9 @@ final class RecordingController {
         case .idle:
             await start()
         case .recording:
-            await stop()
+            await pause()
+        case .paused:
+            await resume()
         case .warmingUp, .analyzing:
             break
         }
@@ -571,6 +617,7 @@ final class RecordingController {
         // utterances during cleanup.
         sessionToken = UUID()
         utterances = []
+        asrTimeOffset = 0
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
         speakerNameOverrides.removeAll()
@@ -641,6 +688,16 @@ final class RecordingController {
     private func spawnRawAudioPump(streams: CaptureStreams) {
         rawTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Convert the wall-clock stride (2 s) into a sample
+            // count once. PipelineAudio.sampleRate is the canonical
+            // 16 kHz the whole pipeline runs at, so 2 s → 32_000
+            // samples. We tick the diarizer when this many samples
+            // have arrived, NOT on a wall-clock timer — see the
+            // `diarizeTickContinuation` field doc for the iOS-
+            // background rationale.
+            let diarizeTickThreshold = Int(
+                Self.continuousDiarizeStrideSec * PipelineAudio.sampleRate
+            )
             for await buffer in streams.raw {
                 // The trim-before-append cap and origin advance
                 // both live inside RollingAudioBuffer. See its
@@ -651,6 +708,11 @@ final class RecordingController {
                     previous: self.inputLevel,
                     current: Self.perceptualLevel(buffer.samples)
                 )
+                self.samplesSinceLastDiarizeTick += buffer.samples.count
+                if self.samplesSinceLastDiarizeTick >= diarizeTickThreshold {
+                    self.samplesSinceLastDiarizeTick = 0
+                    self.diarizeTickContinuation?.yield()
+                }
             }
             self.inputLevel = 0
         }
@@ -695,13 +757,20 @@ final class RecordingController {
     /// inside the pipeline. Skipped when the pipeline failed to
     /// load a diarizer (`ingestDiarizationWindow` is a no-op).
     private func spawnContinuousDiarizeTask() {
+        // Wire up the tick stream BEFORE spawning the task. The raw
+        // audio pump can start yielding the moment `streams.raw`
+        // begins delivering buffers (which can race with this task
+        // being spawned in `start()`); having the continuation in
+        // place first means we don't drop the first stride's tick.
+        samplesSinceLastDiarizeTick = 0
+        let (tickStream, continuation) = AsyncStream<Void>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        diarizeTickContinuation = continuation
         continuousDiarizeTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let pipeline = await self.ensurePipeline()
-            while !Task.isCancelled {
-                try? await Task.sleep(
-                    nanoseconds: UInt64(Self.continuousDiarizeStrideSec * 1_000_000_000)
-                )
+            for await _ in tickStream {
                 if Task.isCancelled { return }
                 guard self.isRecording else { continue }
                 let window = self.capturedAudio.snapshotTail(
@@ -735,7 +804,15 @@ final class RecordingController {
             // already reset in `prepareSessionForRecording()` before
             // this task is spawned, so no further reset is needed.
             await withTaskGroup(of: Void.self) { group in
-                for await segment in segmentStream {
+                for await rawSegment in segmentStream {
+                    // Translate the segment's local-from-zero times
+                    // to the global session timeline. `asrTimeOffset`
+                    // is 0 in fresh sessions and only nonzero after
+                    // a pause/resume — see the field's doc comment.
+                    let segment = Self.applyTimeOffset(
+                        to: rawSegment,
+                        offset: self.asrTimeOffset
+                    )
                     // Record finalize latency at the moment of receipt:
                     // wall-clock now minus the wall-clock when the audio
                     // for this utterance ended. Only meaningful when
@@ -828,8 +905,239 @@ final class RecordingController {
         }
     }
 
+    /// Pause an in-flight recording. Tears down the audio engine
+    /// + streaming transcriber so the mic light goes off and no new
+    /// utterances arrive, but keeps everything else (the rolling
+    /// audio buffer, the diarizer's speaker DB, the utterance list)
+    /// intact. Pending ASR state is finalized so any half-finished
+    /// utterance lands as a row before the pause. `resume()` brings
+    /// up a fresh transcriber + capture and translates its local
+    /// clock onto the global session timeline via `asrTimeOffset`,
+    /// so the post-pause utterance times continue from where the
+    /// pre-pause session ended (no gap inserted for the pause
+    /// duration).
+    ///
+    /// Mic-mode only — file-mode sessions don't expose a Pause
+    /// button (the session is already deterministic).
+    func pause() async {
+        guard phase == .recording else { return }
+        guard case .microphone = sourceMode else { return }
+
+        fileEndWatcherTask?.cancel()
+        fileEndWatcherTask = nil
+
+        await capture.stop()
+        await rawTask?.value
+        await feedTask?.value
+        rawTask = nil
+        feedTask = nil
+
+        volatilePollTask?.cancel()
+        volatilePollTask = nil
+        continuousDiarizeTask?.cancel()
+        continuousDiarizeTask = nil
+        diarizeTickContinuation?.finish()
+        diarizeTickContinuation = nil
+        samplesSinceLastDiarizeTick = 0
+        volatileText = ""
+
+        // Finalize ASR + drain the analysis loop. The streaming
+        // transcriber is now in a terminal state and will be
+        // replaced wholesale by `resume()`.
+        await streamingTranscriber.finish()
+        await analysisTask?.value
+        analysisTask = nil
+
+        phase = .paused
+        liveActivity.scheduleUpdate(currentLiveActivityState)
+        AppLog.app.info("recording paused")
+    }
+
+    /// Resume a paused recording. Bumps `asrTimeOffset` to the
+    /// current audio time so the fresh transcriber's segment times
+    /// land on the global session timeline, then spins capture +
+    /// the analysis pumps back up.
+    func resume() async {
+        guard phase == .paused else { return }
+        // Audio time at the moment of resume = total samples we've
+        // ever captured / sample rate. Pause kept `samplesCaptured`
+        // frozen (no audio flowed), so this equals the audio time
+        // at which the session left off, which is exactly the
+        // offset every new segment from the fresh transcriber
+        // needs added to its local-from-zero start/end.
+        asrTimeOffset = Double(samplesCaptured) / PipelineAudio.sampleRate
+
+        // `StreamingSpeechAnalyzerTranscriber.finish()` puts the
+        // analyzer into a terminal state, so a new instance is
+        // required. The recreate gate is the same one
+        // `setSessionLanguage` uses — tests inject a non-recreatable
+        // stub via the initializer.
+        if canRecreateStreamingTranscriber {
+            streamingTranscriber = StreamingSpeechAnalyzerTranscriber(
+                locale: sessionLanguage.locale
+            )
+        }
+
+        do {
+            let segmentStream = try await streamingTranscriber.start()
+            let streams: CaptureStreams
+            do {
+                streams = try await capture.start()
+            } catch {
+                await streamingTranscriber.finish()
+                throw error
+            }
+            phase = .recording
+            spawnRawAudioPump(streams: streams)
+            spawnTranscriberFeedPump(streams: streams)
+            spawnVolatilePollPump()
+            spawnContinuousDiarizeTask()
+            spawnSegmentAnalysisTask(segmentStream: segmentStream)
+            liveActivity.scheduleUpdate(currentLiveActivityState)
+            AppLog.app.info(
+                "recording resumed (asrTimeOffset=\(self.asrTimeOffset, privacy: .public)s)"
+            )
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "recording resume failed: \(String(describing: error), privacy: .public)"
+            )
+            // Stay in paused state on failure so the user can retry
+            // without losing session data.
+        }
+    }
+
+    /// Translate an ASR segment's local-from-zero times to the
+    /// global session timeline. No-op when offset is 0 (the common
+    /// pre-pause case) — early return avoids the per-token map
+    /// allocation in the hot path.
+    private static func applyTimeOffset(
+        to segment: ASRSegment,
+        offset: TimeInterval
+    ) -> ASRSegment {
+        if offset == 0 { return segment }
+        return ASRSegment(
+            text: segment.text,
+            start: segment.start + offset,
+            end: segment.end + offset,
+            confidence: segment.confidence,
+            tokens: segment.tokens.map { token in
+                ASRSegment.Token(
+                    text: token.text,
+                    start: token.start + offset,
+                    end: token.end + offset
+                )
+            }
+        )
+    }
+
+    // MARK: - Diarizer tuning (paused-state only)
+
+    /// Prime `diarizerTuning` from the pipeline. Called by the
+    /// tuning sheet on first appearance so its sliders match the
+    /// diarizer's actual live values rather than a hard-coded
+    /// default. No-op when the pipeline isn't warm yet.
+    func refreshDiarizerTuning() async {
+        guard let pipeline else { return }
+        diarizerTuning = await pipeline.diarizerTuning()
+    }
+
+    /// Apply new tuning thresholds + re-diarize the captured audio
+    /// so existing utterances pick up speaker IDs that reflect the
+    /// new settings. Designed to run while paused — the audio
+    /// engine is already stopped, the diarizer isn't being ticked
+    /// concurrently, and the user is staring at the result.
+    ///
+    /// Steps:
+    ///   1. Swap the diarizer's model with one built from `tuning`.
+    ///      Speaker DB is preserved across the swap.
+    ///   2. Snapshot the entire rolling capture buffer (which
+    ///      survives across pause/resume).
+    ///   3. Re-diarize and re-resolve every utterance's speakerID
+    ///      against the fresh segments.
+    ///   4. Stamp the new IDs back onto `utterances`,
+    ///      `diarizationTimeline`, and the speaker-DB auto-demote
+    ///      sweep so any speakers that no longer appear get
+    ///      pruned.
+    ///
+    /// Errors surface via `errorMessage`. The Apply flag drives
+    /// the spinner in the tuning sheet.
+    func applyDiarizerTuning(_ tuning: DiarizationTuning) async {
+        guard phase == .paused else { return }
+        guard !diarizerTuningApplyInProgress else { return }
+        guard let pipeline else { return }
+        diarizerTuningApplyInProgress = true
+        defer { diarizerTuningApplyInProgress = false }
+        do {
+            try await pipeline.applyDiarizerTuning(tuning)
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "applyDiarizerTuning: model swap failed: \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+        diarizerTuning = tuning
+
+        // Snapshot the captured audio. If nothing has been recorded
+        // yet (paused immediately after start) there's nothing to
+        // re-diarize and we're done.
+        let chunk = capturedAudio.snapshotForDiarization()
+        guard !chunk.samples.isEmpty, !utterances.isEmpty else {
+            AppLog.app.info("applyDiarizerTuning: no audio / no utterances; skipping re-diarize")
+            return
+        }
+
+        let ranges: [(id: UUID, start: TimeInterval, end: TimeInterval, fallback: String)] =
+            utterances.map { ($0.id, $0.start, $0.end, $0.speakerID) }
+        let (timeline, resolved) = await pipeline.redariarize(
+            over: chunk,
+            utteranceRanges: ranges
+        )
+        diarizationTimeline = timeline
+
+        // Stamp new IDs back. `withSpeakerID` preserves every
+        // other field — affect, transcript, name override map,
+        // tokens — so the only thing that visibly changes is the
+        // chip color / row label.
+        var touchedOldIDs: Set<String> = []
+        var nextUtterances = utterances
+        for index in nextUtterances.indices {
+            let utterance = nextUtterances[index]
+            guard let newID = resolved[utterance.id], newID != utterance.speakerID else { continue }
+            touchedOldIDs.insert(utterance.speakerID)
+            nextUtterances[index] = utterance.withSpeakerID(newID)
+        }
+        utterances = nextUtterances
+        commitUtteranceChanges()
+
+        // Auto-demote any old speaker IDs that no row references
+        // anymore — same sweep the reassign / promote paths use.
+        let stillReferenced = Set(nextUtterances.map(\.speakerID))
+        let orphaned = touchedOldIDs.subtracting(stillReferenced)
+        if !orphaned.isEmpty {
+            sweepUnreferencedSpeakers(orphaned)
+        }
+        AppLog.app.info(
+            "applyDiarizerTuning: re-diarized \(self.utterances.count, privacy: .public) utterances, \(touchedOldIDs.count, privacy: .public) speakers re-mapped, \(orphaned.count, privacy: .public) pruned"
+        )
+    }
+
     /// Stop capture, finalize the analyzer, drain remaining segments, then idle.
     func stop() async {
+        // Paused state has already torn everything down — capture
+        // is off, transcriber finalized, tasks nilled. Just flip
+        // the phase and clean up live activity / session timer.
+        // Done first so the early-return guard below stays focused
+        // on the recording case and remains the canonical teardown
+        // path.
+        if phase == .paused {
+            UISounds.playRecordingStop()
+            phase = .idle
+            await liveActivity.end(finalState: currentLiveActivityState)
+            sessionStartedAt = nil
+            return
+        }
         // Re-entrancy guard. Manual Stop and the file-end watcher can both
         // race to call this — the watcher's `await self.stop()` is queued
         // before we cancel its task on the manual path, so two `stop()`
@@ -861,6 +1169,14 @@ final class RecordingController {
 
         continuousDiarizeTask?.cancel()
         continuousDiarizeTask = nil
+        // Finish the tick stream so the diarize task's `for await`
+        // returns instead of hanging on a continuation that nobody
+        // will ever yield to. Order matters: cancel first (so an
+        // in-flight ingest cooperates), then finish (so the next
+        // `await tickStream.next()` returns nil).
+        diarizeTickContinuation?.finish()
+        diarizeTickContinuation = nil
+        samplesSinceLastDiarizeTick = 0
         volatileText = ""
 
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
@@ -1145,12 +1461,55 @@ final class RecordingController {
         )
     }
 
-    /// Apple FM path. The system model itself is system-managed,
+    /// Generic LLM-task dispatcher shared by the four summarize/
+    /// review × AppleFM/Qwen paths. Each one previously open-coded
+    /// the same skeleton: flip a running flag, defer the rewarm,
+    /// log memory around the call, swallow `CancellationError`,
+    /// surface other errors via `errorMessage`. Centralizing it
+    /// here makes "add a third backend" a one-line addition at the
+    /// call site instead of a copy-paste of 30 lines.
+    ///
+    /// Pre-flight checks (model availability, model-directory
+    /// lookup, sibling actor unload, lazy actor construction) stay
+    /// at the call site — they're genuinely per-backend and don't
+    /// fit a single generic mold.
+    private func runLLMTask<R>(
+        running: ReferenceWritableKeyPath<RecordingController, Bool>,
+        label: String,
+        onSuccess: (R) -> Void,
+        produce: () async throws -> R
+    ) async -> R? {
+        self[keyPath: running] = true
+        defer {
+            self[keyPath: running] = false
+            scheduleSummarizerUnloadAndPipelineRewarm()
+        }
+        logAvailableMemory(label: "\(label) (before respond)")
+        do {
+            let result = try await produce()
+            logAvailableMemory(label: "\(label) (after respond)")
+            onSuccess(result)
+            return result
+        } catch is CancellationError {
+            // User dismissed the sheet mid-generation. Silent —
+            // this isn't an error condition from their POV.
+            AppLog.app.info("\(label, privacy: .public) cancelled by user")
+            return nil
+        } catch {
+            errorMessage = String(describing: error)
+            AppLog.app.error(
+                "\(label, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Apple FM summarizer path. The system model is system-managed,
     /// but the path goes through a `LanguageModelSession` which
-    /// allocates per-call buffers in our process; combined with
-    /// the still-resident analysis pipeline this can OOM even
-    /// though FM is "lightweight on paper." We rely on
-    /// `summarizeSession` having already released the pipeline.
+    /// allocates per-call buffers in our process; combined with the
+    /// still-resident analysis pipeline this can OOM even though
+    /// FM is "lightweight on paper." We rely on `summarizeSession`
+    /// having already released the pipeline.
     private func summarizeWithAppleFM() async -> SessionSummary? {
         guard SystemLanguageModel.default.isAvailable else {
             errorMessage = String(describing: SummarizerError.modelNotInstalled)
@@ -1158,39 +1517,23 @@ final class RecordingController {
             return nil
         }
         let backend = AppleFMSummarizer()
-        summarizerInferenceRunning = true
-        defer {
-            summarizerInferenceRunning = false
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        logAvailableMemory(label: "summarize Apple FM (before respond)")
-        do {
-            let summary = try await backend.summarize(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides
+        return await runLLMTask(
+            running: \.summarizerInferenceRunning,
+            label: "summarize Apple FM",
+            onSuccess: { self.lastSessionSummary = $0 }
+        ) {
+            try await backend.summarize(
+                utterances: self.utterances,
+                speakerNames: self.speakerNameOverrides
             )
-            logAvailableMemory(label: "summarize Apple FM (after respond)")
-            lastSessionSummary = summary
-            return summary
-        } catch is CancellationError {
-            // User dismissed the sheet mid-generation. Silent —
-            // this isn't an error condition from their POV.
-            AppLog.app.info("summarizeWithAppleFM cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "summarizeWithAppleFM failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
         }
     }
 
-    /// Qwen path — releases the analysis pipeline before loading
-    /// the 4.3 GB weights to fit under iOS's per-app memory
-    /// ceiling, runs inference, then unloads Qwen and re-warms
-    /// the pipeline (with the speaker DB restored). See the
-    /// helpers below for the orchestration detail.
+    /// Qwen summarizer path — releases the analysis pipeline before
+    /// loading the 4.6 GB weights to fit under iOS's per-app memory
+    /// ceiling, runs inference, then unloads Qwen and re-warms the
+    /// pipeline (with the speaker DB restored). See the helpers
+    /// below for the orchestration detail.
     private func summarizeWithQwen() async -> SessionSummary? {
         guard let modelStore else {
             scheduleSummarizerUnloadAndPipelineRewarm()
@@ -1203,10 +1546,8 @@ final class RecordingController {
             scheduleSummarizerUnloadAndPipelineRewarm()
             return nil
         }
-
         // Pipeline release happens up in `summarizeSession`
         // before this dispatch, so we don't repeat it here.
-
         let actor: MLXQwenSummarizer
         if let existing = summarizerActor {
             actor = existing
@@ -1217,28 +1558,15 @@ final class RecordingController {
             )
             summarizerActor = actor
         }
-
-        summarizerInferenceRunning = true
-        defer {
-            summarizerInferenceRunning = false
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        do {
-            let summary = try await actor.summarize(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides
+        return await runLLMTask(
+            running: \.summarizerInferenceRunning,
+            label: "summarize Qwen",
+            onSuccess: { self.lastSessionSummary = $0 }
+        ) {
+            try await actor.summarize(
+                utterances: self.utterances,
+                speakerNames: self.speakerNameOverrides
             )
-            lastSessionSummary = summary
-            return summary
-        } catch is CancellationError {
-            AppLog.app.info("summarizeWithQwen cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "summarizeWithQwen failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
         }
     }
 
@@ -1364,30 +1692,16 @@ final class RecordingController {
             return nil
         }
         let backend = AppleFMTranscriptionReviewer()
-        transcriptionReviewRunning = true
-        defer {
-            transcriptionReviewRunning = false
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        logAvailableMemory(label: "review Apple FM (before respond)")
-        do {
-            let suggestions = try await backend.review(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides,
-                language: reviewLanguage()
+        return await runLLMTask(
+            running: \.transcriptionReviewRunning,
+            label: "review Apple FM",
+            onSuccess: { self.transcriptionSuggestions = $0 }
+        ) {
+            try await backend.review(
+                utterances: self.utterances,
+                speakerNames: self.speakerNameOverrides,
+                language: self.reviewLanguage()
             )
-            logAvailableMemory(label: "review Apple FM (after respond)")
-            transcriptionSuggestions = suggestions
-            return suggestions
-        } catch is CancellationError {
-            AppLog.app.info("reviewWithAppleFM cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "reviewWithAppleFM failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
         }
     }
 
@@ -1403,13 +1717,11 @@ final class RecordingController {
             scheduleSummarizerUnloadAndPipelineRewarm()
             return nil
         }
-
         // Belt-and-braces: drop the summarizer actor before bringing
         // up the reviewer. Both share Qwen3-8B's 4.6 GB weights;
         // holding both = ~9 GB resident and a guaranteed Jetsam.
         await summarizerActor?.unload()
         summarizerActor = nil
-
         let actor: MLXQwenTranscriptionReviewer
         if let existing = reviewerActor {
             actor = existing
@@ -1420,29 +1732,16 @@ final class RecordingController {
             )
             reviewerActor = actor
         }
-
-        transcriptionReviewRunning = true
-        defer {
-            transcriptionReviewRunning = false
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        do {
-            let suggestions = try await actor.review(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides,
-                language: reviewLanguage()
+        return await runLLMTask(
+            running: \.transcriptionReviewRunning,
+            label: "review Qwen",
+            onSuccess: { self.transcriptionSuggestions = $0 }
+        ) {
+            try await actor.review(
+                utterances: self.utterances,
+                speakerNames: self.speakerNameOverrides,
+                language: self.reviewLanguage()
             )
-            transcriptionSuggestions = suggestions
-            return suggestions
-        } catch is CancellationError {
-            AppLog.app.info("reviewWithQwen cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "reviewWithQwen failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
         }
     }
 
