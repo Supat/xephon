@@ -657,6 +657,10 @@ struct ContentView: View {
                     VStack(spacing: 16) {
                         SpeakerClusterCard(cluster: recorder.speakerCluster)
                         SpeakerHeatmapCard(cluster: recorder.speakerCluster)
+                        SpeakerRosterCard(
+                            recorder: recorder,
+                            cluster: recorder.speakerCluster
+                        )
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
