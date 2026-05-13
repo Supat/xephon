@@ -42,7 +42,7 @@ struct FusionLegendCard: View {
     /// Same fill opacity the strip uses, so the gradient preview
     /// looks like an extract of the strip rather than a brighter
     /// advertisement.
-    private static let segmentOpacity: Double = 0.85
+    private static let segmentOpacity: Double = 1.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

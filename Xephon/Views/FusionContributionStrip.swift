@@ -43,19 +43,25 @@ struct FusionContributionStrip: View {
     /// interpolate component-wise without round-tripping through a
     /// runtime color-extraction API. `FusionLegendCard` mirrors
     /// these values when rendering the gradient swatch — keep the
-    /// two in sync.
-    static let acousticRGB: (r: Double, g: Double, b: Double) = (0.30, 0.55, 0.85)
+    /// two in sync. Punched up to a vivid royal blue so the 6pt
+    /// strip reads clearly against the glass track even on rows
+    /// where the share is mid-range and dilutes toward the
+    /// neutral midpoint.
+    static let acousticRGB: (r: Double, g: Double, b: Double) = (0.05, 0.35, 1.00)
     /// Endpoint RGB for the text side (DeBERTa / Apple FM).
-    static let textRGB: (r: Double, g: Double, b: Double) = (0.95, 0.62, 0.30)
+    /// Saturated vermillion — high contrast against both the
+    /// blue endpoint and the gray midpoint.
+    static let textRGB: (r: Double, g: Double, b: Double) = (1.00, 0.30, 0.05)
     /// Midpoint RGB used when the two modalities contribute
-    /// roughly equally. Neutral mid-gray so a balanced row reads
-    /// as "neither modality dominates" rather than a muddy average
-    /// of orange + blue.
-    static let neutralRGB: (r: Double, g: Double, b: Double) = (0.55, 0.55, 0.55)
-    /// Fill opacity of the per-slot color. Lower than the
-    /// diarizer strip's runs so the strip reads as supporting
-    /// detail, not a peer-level signal.
-    private static let segmentOpacity: Double = 0.85
+    /// roughly equally. Darker than mid-gray so a balanced slot
+    /// is visually distinct from background instead of fading in
+    /// against it.
+    static let neutralRGB: (r: Double, g: Double, b: Double) = (0.32, 0.32, 0.32)
+    /// Fill opacity of the per-slot color. Fully opaque so the
+    /// saturated tints hit at their full intensity — anything
+    /// below 1.0 ate the contrast at slot boundaries against the
+    /// glass track underneath.
+    private static let segmentOpacity: Double = 1.0
     /// Background track tint behind the segments — visible only in
     /// the gaps between utterance slots.
     private static let trackTintOpacity: Double = 0.06
