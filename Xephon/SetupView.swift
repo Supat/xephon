@@ -105,7 +105,16 @@ private struct FileLine: View {
         case .satisfied:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .downloading:
-            ProgressView().controlSize(.small)
+            // Circular fill mirroring the summarizer-download row in
+            // SummarizerCard. Falls back to the indeterminate spinner
+            // while we're still waiting for the first didWriteData
+            // callback to report a total (the manifest's
+            // approximateBytes is the seed so the ring still moves
+            // before the HTTP Content-Length arrives).
+            CircularDownloadProgress(
+                downloaded: state.fileBytes[file.assetName] ?? 0,
+                total: state.fileExpected[file.assetName] ?? file.approximateBytes
+            )
         case .completed:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed:
