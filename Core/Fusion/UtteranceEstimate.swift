@@ -103,6 +103,33 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.fusedTopLabel = fusedTopLabel
     }
 
+    /// Return a copy with `transcript` replaced. Used by the
+    /// transcription-review sheet to hand the in-progress inline
+    /// edit off to the full Edit Utterance panel without losing
+    /// what the user has already typed.
+    public func withTranscript(_ newTranscript: String) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: newTranscript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            plutchik: plutchik,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
     public func withTextBackend(_ backend: String?) -> UtteranceEstimate {
         UtteranceEstimate(
             id: id,

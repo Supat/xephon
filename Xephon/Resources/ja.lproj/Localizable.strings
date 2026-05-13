@@ -29,8 +29,9 @@
 "review.rerun" = "再校閲";
 "review.inProgress" = "オンデバイスで校閲中です。初回は1分ほどかかる場合があります。";
 "review.empty" = "指摘はありません。校閲をタップして文字起こしをスキャンしてください。";
-"review.edit" = "編集";
+"review.commit" = "適用";
 "review.dismiss" = "却下";
+"review.range" = "範囲…";
 "review.kind.homophone" = "同音異義";
 "review.kind.contextual" = "文脈";
 "review.kind.grammar" = "文法";

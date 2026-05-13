@@ -2843,7 +2843,17 @@ final class RecordingController {
     /// Utterance dialog's preview button — the dialog's spinners
     /// hold arbitrary times that don't correspond to an existing
     /// utterance row, so `togglePlayback(for:)` doesn't apply.
-    func playRange(start: TimeInterval, end: TimeInterval) {
+    ///
+    /// `owner` ties the playback session to a specific utterance id
+    /// when one applies — the review sheet's inline play buttons use
+    /// this so each card knows whether it's the active one. Pass
+    /// nil for arbitrary-range previews (the edit dialog's preview
+    /// button, where the spinners may not correspond to any row).
+    func playRange(
+        start: TimeInterval,
+        end: TimeInterval,
+        owner: UUID? = nil
+    ) {
         guard let url = playbackSourceURL else { return }
         guard phase == .idle else { return }
         guard end > start else { return }
@@ -2866,6 +2876,7 @@ final class RecordingController {
             player.currentTime = max(0, start)
             guard player.play() else { return }
             isPreviewPlaying = true
+            playingUtteranceID = owner
             let duration = max(0, end - start)
             playbackStopTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))

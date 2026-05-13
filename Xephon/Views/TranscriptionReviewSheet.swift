@@ -4,11 +4,12 @@ import Summarizer
 
 /// Modal sheet that surfaces the on-device transcription review
 /// — a list of LLM-flagged rows, each with a kind chip, optional
-/// confidence, the row's current transcript for context, and the
-/// model's one-sentence reason. Acting on an issue raises the same
-/// `EditUtteranceSheet` a long-press on the row would: the human
-/// is responsible for the actual correction, the model is only
-/// flagging where to look. Dismiss drops the issue from the list.
+/// confidence, an inline transcript editor, the model's reason,
+/// and per-row Commit / Dismiss / (Range…) affordances. The
+/// inline editor handles the common case (a homophone / particle
+/// fix); "Range…" hands the in-progress text off to the full
+/// `EditUtteranceSheet` for the rarer case that needs time-range
+/// surgery too.
 ///
 /// Three states, top-to-bottom:
 ///   1. Content area: issue list, the "reviewing" spinner, or an
@@ -26,18 +27,24 @@ struct TranscriptionReviewSheet: View {
     let onReview: () -> Void
     let onDismiss: () -> Void
 
-    /// Snapshot of the utterance whose `EditUtteranceSheet` is
-    /// currently raised from inside this review sheet. Non-nil
+    /// Snapshot of the utterance whose full `EditUtteranceSheet` is
+    /// raised from inside this review sheet via "Range…". Non-nil
     /// drives the child `.sheet(item:)` presentation; cleared on
-    /// commit / cancel / dismiss. Held as the full struct (not the
-    /// id) so the edit sheet's initial state populates from a
-    /// stable snapshot even if a parallel re-eval mutates the row.
+    /// commit / cancel. The snapshot carries any in-progress inline
+    /// text edit so the user doesn't lose work when switching to
+    /// the full panel.
     @State private var editingUtterance: UtteranceEstimate?
-    /// The issue id whose edit panel is currently up. After a
-    /// commit we drop that issue from the cached list — the row's
-    /// been touched, so the flag is stale regardless of whether
-    /// the user actually changed the text.
+    /// Which issue raised the current Range… edit sheet. After a
+    /// commit we drop the issue — the row has been re-evaluated so
+    /// the flag is stale.
     @State private var editingIssueID: UUID?
+    /// Per-issue inline transcript edits. Keyed by `issue.id` so a
+    /// row that's been edited but not yet committed survives view
+    /// re-renders (the controller's utterance list refreshes
+    /// constantly under live SER work). The value is whatever the
+    /// user has typed into the inline TextEditor; missing means
+    /// "no edit yet, fall through to the row's current transcript".
+    @State private var edits: [UUID: String] = [:]
 
     var body: some View {
         NavigationStack {
@@ -77,12 +84,9 @@ struct TranscriptionReviewSheet: View {
                                 newStart: newStart,
                                 newEnd: newEnd
                             )
-                            // Whether or not the user actually
-                            // changed anything, the row has been
-                            // re-evaluated — drop the issue so the
-                            // user isn't nagged about it again.
                             if let issueID {
                                 recorder.dismissTranscriptionIssue(id: issueID)
+                                edits.removeValue(forKey: issueID)
                             }
                         }
                     },
@@ -126,7 +130,11 @@ struct TranscriptionReviewSheet: View {
         // we want to surface the current state, not a stale snapshot.
         // Missing means the row was deleted entirely; render nothing.
         if let utterance = recorder.utterances.first(where: { $0.id == issue.utteranceID }) {
-            VStack(alignment: .leading, spacing: 8) {
+            let original = utterance.transcript
+            let audioEditingEnabled = recorder.playbackSourceURL != nil
+            let isThisPlaying = recorder.isPreviewPlaying
+                && recorder.playingUtteranceID == utterance.id
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     kindChip(issue.kind)
                     if let confidence = issue.confidence {
@@ -135,20 +143,47 @@ struct TranscriptionReviewSheet: View {
                             .foregroundStyle(.tertiary)
                     }
                     Spacer(minLength: 4)
-                    Button {
-                        editingIssueID = issue.id
-                        editingUtterance = utterance
-                    } label: {
-                        Label(
-                            String(localized: "review.edit"),
-                            systemImage: "pencil"
-                        )
-                        .labelStyle(.iconOnly)
+                    if audioEditingEnabled {
+                        Button {
+                            if isThisPlaying {
+                                recorder.stopPlayback()
+                            } else {
+                                recorder.playRange(
+                                    start: utterance.start,
+                                    end: utterance.end,
+                                    owner: utterance.id
+                                )
+                            }
+                        } label: {
+                            Image(systemName: isThisPlaying
+                                ? "stop.circle.fill"
+                                : "play.circle.fill"
+                            )
+                                .font(.title2)
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                }
+                TextEditor(text: textBinding(for: issue, original: original))
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 72)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(uiColor: .secondarySystemBackground))
+                    )
+                Text(issue.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Spacer()
                     Button {
                         recorder.dismissTranscriptionIssue(id: issue.id)
+                        edits.removeValue(forKey: issue.id)
                     } label: {
                         Label(
                             String(localized: "review.dismiss"),
@@ -157,20 +192,88 @@ struct TranscriptionReviewSheet: View {
                         .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    if audioEditingEnabled {
+                        Button(String(localized: "review.range")) {
+                            recorder.stopPlayback()
+                            editingIssueID = issue.id
+                            editingUtterance = utterance.withTranscript(
+                                edits[issue.id] ?? original
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button {
+                        commitInlineEdit(
+                            issue: issue,
+                            utterance: utterance,
+                            original: original
+                        )
+                    } label: {
+                        Label(
+                            String(localized: "review.commit"),
+                            systemImage: "checkmark"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isCommitEnabled(for: issue, original: original))
                 }
-                Text(utterance.transcript)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(issue.reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .controlSize(.small)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    /// Binding that reads `edits[issue.id] ?? original` and writes
+    /// back into the dict. Lets the TextEditor pre-populate from
+    /// the row's current transcript on first paint without us
+    /// mutating @State during view body, and preserves the in-
+    /// progress edit across re-renders that the live SER pipeline
+    /// constantly triggers.
+    private func textBinding(
+        for issue: TranscriptionIssue,
+        original: String
+    ) -> Binding<String> {
+        Binding(
+            get: { edits[issue.id] ?? original },
+            set: { edits[issue.id] = $0 }
+        )
+    }
+
+    /// Commit enabled when the user has typed something different
+    /// from the row's current text. Identical-to-original commits
+    /// would spend SER + fusion cycles on a no-op; if the user
+    /// thinks the row is fine after all, the right affordance is
+    /// Dismiss, not Commit.
+    private func isCommitEnabled(
+        for issue: TranscriptionIssue,
+        original: String
+    ) -> Bool {
+        let current = (edits[issue.id] ?? original)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOriginal = original
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !current.isEmpty && current != trimmedOriginal
+    }
+
+    private func commitInlineEdit(
+        issue: TranscriptionIssue,
+        utterance: UtteranceEstimate,
+        original: String
+    ) {
+        recorder.stopPlayback()
+        let newText = edits[issue.id] ?? original
+        Task {
+            await recorder.commitHandEdit(
+                utteranceID: utterance.id,
+                newText: newText,
+                newStart: utterance.start,
+                newEnd: utterance.end
+            )
+            recorder.dismissTranscriptionIssue(id: issue.id)
+            edits.removeValue(forKey: issue.id)
         }
     }
 
