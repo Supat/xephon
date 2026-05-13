@@ -85,7 +85,27 @@ public actor SwitchingTextSER: TextSER {
             // currentBackend already gates this — deberta is non-nil here.
             return try await deberta!.classify(text)
         case .foundationModels:
-            return try await foundationModels.classify(text)
+            do {
+                return try await foundationModels.classify(text)
+            } catch {
+                // Apple Foundation Models runs on the ANE/GPU; when
+                // the app is backgrounded iOS revokes that access
+                // and `respond(...)` throws. If DeBERTa is loaded
+                // and the session language matches it, transparently
+                // fall back so background-captured rows still get
+                // text SER — losing Plutchik for a third of a
+                // recording because the user tabbed away is the
+                // failure mode this guards against. We DON'T flip
+                // `preferredBackend` so the next foreground call
+                // returns to FM automatically.
+                if let deberta, debertaIsLanguageMatched {
+                    AppLog.serText.warning(
+                        "FoundationModels classify failed (\(String(describing: error), privacy: .public)); falling through to DeBERTa for this row"
+                    )
+                    return try await deberta.classify(text)
+                }
+                throw error
+            }
         }
     }
 }
