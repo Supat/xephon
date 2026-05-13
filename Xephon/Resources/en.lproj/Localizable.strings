@@ -29,10 +29,8 @@
 "review.rerun" = "Re-review";
 "review.inProgress" = "Reviewing on-device. This can take a minute on the first run.";
 "review.empty" = "No issues flagged. Tap Review to scan the transcript.";
-"review.original" = "Original";
-"review.suggested" = "Suggested";
-"review.accept" = "Accept";
-"review.reject" = "Reject";
+"review.edit" = "Edit";
+"review.dismiss" = "Dismiss";
 "review.kind.homophone" = "Homophone";
 "review.kind.contextual" = "Context";
 "review.kind.grammar" = "Grammar";

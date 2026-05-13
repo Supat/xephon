@@ -116,7 +116,7 @@ struct ContentView: View {
     @State private var showingSummaryView: Bool = false
     /// Drives the `TranscriptionReviewSheet` presentation. Same
     /// pattern as `showingSummaryView` — sheet observes the
-    /// controller's `transcriptionReviewRunning` + `transcriptionSuggestions`
+    /// controller's `transcriptionReviewRunning` + `transcriptionIssues`
     /// to render its three states.
     @State private var showingReviewView: Bool = false
     /// Active in-flight LLM tasks, owned by the view so the dismiss
@@ -197,7 +197,7 @@ struct ContentView: View {
             .sheet(isPresented: $showingReviewView) {
                 TranscriptionReviewSheet(
                     recorder: recorder,
-                    suggestions: recorder.transcriptionSuggestions,
+                    issues: recorder.transcriptionIssues,
                     isReviewing: recorder.transcriptionReviewRunning,
                     onReview: { startReviewTask() },
                     onDismiss: {
@@ -511,7 +511,7 @@ struct ContentView: View {
             // Same auto-fire policy as the summarize button: kick
             // off only when we have nothing cached AND the backend
             // is fully configured.
-            if recorder.transcriptionSuggestions.isEmpty
+            if recorder.transcriptionIssues.isEmpty
                 && recorder.summarizerEnabled
                 && recorder.summarizerReady {
                 startReviewTask()

@@ -19,14 +19,12 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     private let modelDirectory: URL
     private var container: ModelContainer?
 
-    /// Cap on output tokens. Each suggestion is ~100–150 tokens of
-    /// JSON (rowIndex + kind + suggestedText + reason + confidence)
+    /// Cap on output tokens. Each issue is ~50–80 tokens of JSON
+    /// (rowIndex + kind + reason + confidence — no suggested text)
     /// and a real-world Japanese session can produce 30+ flagged
-    /// rows, which overshoots the previous 1536 cap and lands the
-    /// parser at "Unexpected end of file" every time. 4096 fits
-    /// ~25–35 entries comfortably; the tolerant parser below
-    /// recovers the prefix if the model still runs past it on a
-    /// particularly noisy session.
+    /// rows. 4096 fits 60+ entries comfortably even for the noisiest
+    /// sessions; the tolerant parser below recovers the prefix if
+    /// the model still runs past it.
     private static let maxOutputTokens = 4096
 
     /// Cap on utterances per review pass. Qwen3-8B's 32k context
@@ -73,7 +71,7 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         language: ReviewLanguage
-    ) async throws -> [TranscriptionSuggestion] {
+    ) async throws -> [TranscriptionIssue] {
         try await load()
         guard let container else {
             throw TranscriptionReviewError.modelNotInstalled
@@ -144,13 +142,7 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
             "MLXQwenTranscriptionReviewer raw output: \(raw.count, privacy: .public) chars"
         )
 
-        return try Self.parse(
-            raw: raw,
-            indexToID: indexToID,
-            originalsByID: Dictionary(
-                uniqueKeysWithValues: promptUtterances.map { ($0.id, $0.transcript) }
-            )
-        )
+        return try Self.parse(raw: raw, indexToID: indexToID)
     }
 
     // MARK: - Prompt + parser
@@ -180,9 +172,9 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         lines.append("Do NOT flag rows that are merely informal, dialectal, or unusual but coherent.")
         lines.append("")
         lines.append("Return ONLY a JSON object with one field:")
-        lines.append("  \"suggestions\": array of { \"rowIndex\": int, \"kind\": one of \"homophone\"|\"contextual\"|\"grammar\"|\"other\", \"suggestedText\": string, \"reason\": one short sentence, \"confidence\": number 0.0–1.0 }")
-        lines.append("Omit rows that read correctly. If you cannot propose a concrete fix, set suggestedText to \"\" and still include the reason.")
-        lines.append("CRITICAL: suggestedText MUST differ from the original transcript. Never echo the original text back unchanged — if the only fix you can think of is identical to the original, omit the row entirely.")
+        lines.append("  \"issues\": array of { \"rowIndex\": int, \"kind\": one of \"homophone\"|\"contextual\"|\"grammar\"|\"other\", \"reason\": one short sentence describing what looks wrong, \"confidence\": number 0.0–1.0 }")
+        lines.append("DO NOT propose a corrected transcript — the human user will edit the row themselves. Just identify which rows look wrong and why.")
+        lines.append("Omit rows that read correctly.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
         lines.append("/no_think")
         if let total = truncatedFromTotal {
@@ -220,15 +212,14 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     /// (defensive even though `/no_think` is in the prompt),
     /// ```fence``` wrappers, AND truncated output — when the model
     /// ran past the output-token cap mid-array we recover everything
-    /// up to the last complete suggestion entry rather than throwing
-    /// the whole list away. Drops suggestions whose `rowIndex` isn't
-    /// a row we sent — better silent drop than aliasing onto the
-    /// wrong row and corrupting the user's transcript.
+    /// up to the last complete issue entry rather than throwing the
+    /// whole list away. Drops issues whose `rowIndex` isn't a row
+    /// we sent — better silent drop than aliasing the flag onto the
+    /// wrong row and confusing the user.
     private static func parse(
         raw: String,
-        indexToID: [Int: UUID],
-        originalsByID: [UUID: String]
-    ) throws -> [TranscriptionSuggestion] {
+        indexToID: [Int: UUID]
+    ) throws -> [TranscriptionIssue] {
         let dethought = stripThinkBlocks(raw)
         let stripped = stripCodeFence(dethought)
         guard let braceStart = stripped.firstIndex(of: "{") else {
@@ -238,11 +229,10 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
             struct Entry: Decodable {
                 let rowIndex: Int
                 let kind: String
-                let suggestedText: String
                 let reason: String
                 let confidence: Float?
             }
-            let suggestions: [Entry]
+            let issues: [Entry]
         }
         // First try strict — the whole output between the first `{`
         // and the last `}`. Works whenever the model closed its
@@ -261,7 +251,7 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
             // close the array + outer object manually so the JSON
             // parses. The in-flight (broken) entry is discarded;
             // every complete one is preserved.
-            guard let recovered = recoverTruncatedSuggestions(
+            guard let recovered = recoverTruncatedIssues(
                 stripped: String(stripped[braceStart...])
             ) else {
                 throw TranscriptionReviewError.decodeFailed(
@@ -284,27 +274,12 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
                 )
             }
         }
-        return decoded.suggestions.compactMap { entry -> TranscriptionSuggestion? in
+        return decoded.issues.compactMap { entry -> TranscriptionIssue? in
             guard let utteranceID = indexToID[entry.rowIndex] else { return nil }
-            let kind = TranscriptionSuggestion.Kind(rawValue: entry.kind) ?? .other
-            let original = originalsByID[utteranceID] ?? ""
-            // Drop no-op suggestions where the model echoed the
-            // original verbatim. Qwen frequently emits these even
-            // when told "omit rows that read correctly" — the
-            // schema constraint plus the model's tendency to fill
-            // every output slot beats the instruction. Compare on
-            // normalized form so a stray trailing space doesn't
-            // count as a real change.
-            let trimmedSuggestion = entry.suggestedText
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let trimmedOriginal = original
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedSuggestion == trimmedOriginal { return nil }
-            return TranscriptionSuggestion(
+            let kind = TranscriptionIssue.Kind(rawValue: entry.kind) ?? .other
+            return TranscriptionIssue(
                 utteranceID: utteranceID,
                 kind: kind,
-                originalText: original,
-                suggestedText: entry.suggestedText,
                 reason: entry.reason,
                 confidence: entry.confidence
             )
@@ -330,27 +305,27 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         return s
     }
 
-    /// Salvage a truncated `{"suggestions":[...]}` blob by scanning
+    /// Salvage a truncated `{"issues":[...]}` blob by scanning
     /// forward, tracking string-literal and brace-nesting state, and
     /// remembering the position immediately after the *most recent
     /// top-level object that closed* inside the array. When the
     /// scan hits end-of-input mid-entry, we cut the string at that
     /// remembered position, then synthesize `]}` to close the array
     /// and outer object. The resulting JSON contains every complete
-    /// suggestion the model managed to emit before the token budget
-    /// ran out; the in-flight entry is discarded.
+    /// issue the model managed to emit before the token budget ran
+    /// out; the in-flight entry is discarded.
     ///
     /// Returns nil when the input doesn't look like our expected
-    /// `{"suggestions":[…` shape — let the caller surface the
-    /// original parse error in that case rather than silently
-    /// returning an empty list.
-    private static func recoverTruncatedSuggestions(stripped: String) -> String? {
+    /// `{"issues":[…` shape — let the caller surface the original
+    /// parse error in that case rather than silently returning an
+    /// empty list.
+    private static func recoverTruncatedIssues(stripped: String) -> String? {
         guard let arrayOpenRange = stripped.range(of: "[") else { return nil }
-        // Sanity check: there should be a `"suggestions"` token
-        // before the bracket. If not, this isn't the shape we
-        // expect and recovery would be guessing.
+        // Sanity check: there should be an `"issues"` token before
+        // the bracket. If not, this isn't the shape we expect and
+        // recovery would be guessing.
         let prefix = stripped[..<arrayOpenRange.lowerBound]
-        guard prefix.contains("suggestions") else { return nil }
+        guard prefix.contains("issues") else { return nil }
 
         var depth = 0
         var inString = false

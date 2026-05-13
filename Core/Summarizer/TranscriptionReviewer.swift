@@ -72,8 +72,8 @@ public enum ReviewLanguage: Sendable, Hashable {
 /// Abstract interface a transcription reviewer conforms to. Same
 /// shape as `SessionSummarizer`: async, throwing, two backends (Apple
 /// FM + MLX Qwen). The reviewer takes the same utterance list the
-/// summarizer does and returns a flat list of suggestions located
-/// by `utteranceID` — order doesn't matter for the consumer.
+/// summarizer does and returns a flat list of issues located by
+/// `utteranceID` — order doesn't matter for the consumer.
 public protocol TranscriptionReviewer: Sendable {
     var modelIdentifier: String { get async }
     var isReady: Bool { get async }
@@ -81,14 +81,14 @@ public protocol TranscriptionReviewer: Sendable {
     /// Walk `utterances` and return any transcription issues the
     /// model can identify. `speakerNames` lets the prompt refer to
     /// renamed speakers by their friendly names so the model's
-    /// reasoning reads naturally; the returned suggestions are
-    /// keyed by `UtteranceEstimate.id` only — names are presentation.
+    /// reasoning reads naturally; the returned issues are keyed by
+    /// `UtteranceEstimate.id` only — names are presentation.
     /// `language` pins the prompt to the session's natural language
     /// — critical for the Qwen path, which otherwise interprets
-    /// kanji as Mandarin and emits useless suggestions.
+    /// kanji as Mandarin and emits useless issue reasons.
     func review(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         language: ReviewLanguage
-    ) async throws -> [TranscriptionSuggestion]
+    ) async throws -> [TranscriptionIssue]
 }

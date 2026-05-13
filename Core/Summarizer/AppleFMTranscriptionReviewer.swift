@@ -6,15 +6,14 @@ import XephonLogging
 /// Transcription reviewer backed by Apple Foundation Models. Uses
 /// the same `LanguageModelSession` + `@Generable` pattern as
 /// `AppleFMSummarizer` — fresh session per call, constrained
-/// decoding for the suggestion list, schema kept out of the prompt
-/// to stay under the 4096-token context.
+/// decoding for the issue list, schema kept out of the prompt to
+/// stay under the 4096-token context.
 ///
 /// The on-device model addresses the row by 1-based `rowIndex` (so
 /// the prompt doesn't have to carry full UUIDs); we map back to
-/// `UtteranceEstimate.id` after decoding. Index → UUID lookup is
-/// tight enough that an out-of-range index from the model just
-/// drops that suggestion silently — better to lose a row than to
-/// corrupt the user's transcript by aliasing onto the wrong one.
+/// `UtteranceEstimate.id` after decoding. An out-of-range index
+/// from the model just drops that issue silently — better to lose
+/// a flag than to alias onto the wrong row and confuse the user.
 public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
     public let modelIdentifier = "apple-foundation-models"
 
@@ -36,7 +35,7 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         language: ReviewLanguage
-    ) async throws -> [TranscriptionSuggestion] {
+    ) async throws -> [TranscriptionIssue] {
         guard SystemLanguageModel.default.isAvailable else {
             throw TranscriptionReviewError.modelNotInstalled
         }
@@ -53,7 +52,7 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         }
         // 1-based row index → utterance id. The LLM's output refers
         // back to these indices; we look them up to construct
-        // `TranscriptionSuggestion`s keyed by the canonical UUID.
+        // `TranscriptionIssue`s keyed by the canonical UUID.
         let indexToID: [Int: UUID] = Dictionary(
             uniqueKeysWithValues: promptUtterances
                 .enumerated()
@@ -80,11 +79,11 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
             "AppleFMTranscriptionReviewer reviewing \(promptUtterances.count, privacy: .public) utterances"
         )
         let session = LanguageModelSession(instructions: Self.instructions)
-        let response: LanguageModelSession.Response<GenerableReviewList>
+        let response: LanguageModelSession.Response<GenerableIssueList>
         do {
             response = try await session.respond(
                 to: userMessage,
-                generating: GenerableReviewList.self,
+                generating: GenerableIssueList.self,
                 includeSchemaInPrompt: false
             )
         } catch let error as TranscriptionReviewError {
@@ -97,31 +96,12 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
                 reason: String(describing: error)
             )
         }
-        return response.content.suggestions.compactMap { entry -> TranscriptionSuggestion? in
+        return response.content.issues.compactMap { entry -> TranscriptionIssue? in
             guard let utteranceID = indexToID[entry.rowIndex] else { return nil }
-            // `originalText` is stamped from the live utterance list
-            // (not the LLM's echo) — defensive against the model
-            // paraphrasing the original in its response, which would
-            // make the staleness check at accept time meaningless.
-            let original = promptUtterances
-                .first { $0.id == utteranceID }?
-                .transcript ?? ""
-            let kind = TranscriptionSuggestion.Kind(rawValue: entry.kind) ?? .other
-            // Drop no-op suggestions where the model echoed the row
-            // verbatim. Constrained decoding plus a schema slot for
-            // `suggestedText` makes "leave it empty for a no-op"
-            // unstable across runs — the model often fills it with
-            // the original. Normalize whitespace before comparing.
-            let trimmedSuggestion = entry.suggestedText
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let trimmedOriginal = original
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedSuggestion == trimmedOriginal { return nil }
-            return TranscriptionSuggestion(
+            let kind = TranscriptionIssue.Kind(rawValue: entry.kind) ?? .other
+            return TranscriptionIssue(
                 utteranceID: utteranceID,
                 kind: kind,
-                originalText: original,
-                suggestedText: entry.suggestedText,
                 reason: entry.reason,
                 confidence: entry.confidence
             )
@@ -137,10 +117,10 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         not fit the session context, or (c) a clear grammar slip. Do not
         flag rows that are merely informal or unusual but coherent.
         For each issue, return rowIndex, a short kind tag from
-        ["homophone","contextual","grammar","other"], the suggested fix,
-        a one-sentence reason, and a 0.0–1.0 confidence. If you cannot
-        propose a concrete fix, leave suggestedText empty and still emit
-        the reason. Skip the field entirely when a row reads correctly.
+        ["homophone","contextual","grammar","other"], a one-sentence reason
+        explaining what looks wrong, and a 0.0–1.0 confidence. DO NOT
+        propose a corrected transcript — the human user will edit the row
+        themselves. Skip rows that read correctly.
         """
 
     /// `1 S01 t=12.3 「テキスト」` — minimal so the prompt fits.
@@ -166,21 +146,19 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
 }
 
 @Generable
-private struct GenerableSuggestion {
+private struct GenerableIssue {
     @Guide(description: "1-based row index from the input list")
     var rowIndex: Int
     @Guide(description: "Issue kind: homophone, contextual, grammar, or other")
     var kind: String
-    @Guide(description: "Proposed corrected transcript; empty if no concrete fix")
-    var suggestedText: String
-    @Guide(description: "One short sentence explaining the issue")
+    @Guide(description: "One short sentence explaining what looks wrong")
     var reason: String
-    @Guide(description: "Self-reported confidence in this fix, 0.0–1.0")
+    @Guide(description: "Self-reported confidence in this flag, 0.0–1.0")
     var confidence: Float
 }
 
 @Generable
-private struct GenerableReviewList {
+private struct GenerableIssueList {
     @Guide(description: "Zero or more flagged rows; omit rows that read correctly")
-    var suggestions: [GenerableSuggestion]
+    var issues: [GenerableIssue]
 }
