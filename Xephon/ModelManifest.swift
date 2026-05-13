@@ -173,8 +173,8 @@ enum ModelManifest {
                     assetName: "w2v2-model.onnx",
                     installPath: "w2v2-msp-dim/model.onnx",
                     bundleResource: BundleLookup(name: "model", ext: "onnx", subdirectory: "w2v2-msp-dim"),
-                    approximateBytes: 330_752_344,
-                    sha256: "4306aaabb46cc8e2d0a40caac2b48bf2cbe706573866512fbd05ca1ebb60a8f7"
+                    approximateBytes: 330_752_674,
+                    sha256: "91878961bb39fc324ef04275f18fd35519ccd9f31ff77dccdb1e3b6180366a29"
                 )
             ]
         ),
