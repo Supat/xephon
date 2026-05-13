@@ -639,6 +639,7 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
+                .clipped()
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
@@ -654,6 +655,7 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
+                .clipped()
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
@@ -668,6 +670,7 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
+                .clipped()
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
@@ -677,6 +680,7 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 32)
                 }
+                .clipped()
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
