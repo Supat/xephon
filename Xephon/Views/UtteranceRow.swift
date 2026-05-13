@@ -309,7 +309,7 @@ struct UtteranceRow: View {
                 }
                 if utterance.speechBoost == true {
                     Label("Boost", systemImage: "waveform.badge.plus")
-                        .labelStyle(.titleAndIcon)
+                        .labelStyle(.iconOnly)
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
@@ -328,7 +328,7 @@ struct UtteranceRow: View {
                 // a single revert handler covers both.
                 if utterance.wasHandEdited == true {
                     Label(String(localized: "edit.badge"), systemImage: "pencil.tip")
-                        .labelStyle(.titleAndIcon)
+                        .labelStyle(.iconOnly)
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)

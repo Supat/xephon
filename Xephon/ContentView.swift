@@ -1038,14 +1038,18 @@ struct ContentView: View {
 
     private var speechBoostToggleBody: some View {
         Toggle(
-            String(localized: "settings.speechBoost"),
             isOn: Binding(
                 get: { recorder.isSpeechBoostEnabled },
                 set: { newValue in
                     Task { await recorder.setSpeechBoostEnabled(newValue) }
                 }
             )
-        )
+        ) {
+            Label(
+                String(localized: "settings.speechBoost"),
+                systemImage: "waveform.badge.plus"
+            )
+        }
         .toggleStyle(.switch)
         .padding(.horizontal)
     }
