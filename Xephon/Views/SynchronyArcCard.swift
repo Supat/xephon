@@ -62,11 +62,13 @@ struct SynchronyArcCard: View {
 
     @ViewBuilder
     private func header(speakerCount: Int) -> some View {
-        HStack {
+        HStack(spacing: 6) {
             Text(String(localized: "synchronyArc.header"))
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
-            Spacer()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 4)
             if speakerCount > 0 {
                 Button {
                     axis = (axis == .valence) ? .arousal : .valence
@@ -77,6 +79,7 @@ struct SynchronyArcCard: View {
                     )
                     .font(.caption2)
                     .labelStyle(.titleAndIcon)
+                    .lineLimit(1)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(
@@ -95,18 +98,12 @@ struct SynchronyArcCard: View {
 
     @ViewBuilder
     private func speakerLegend(_ ids: [String]) -> some View {
-        HStack(spacing: 6) {
-            ForEach(ids, id: \.self) { id in
-                HStack(spacing: 3) {
-                    Capsule()
-                        .fill(speakerTint(for: id))
-                        .frame(width: 12, height: 2)
-                    Text(id)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(speakerTint(for: id))
-                }
-            }
-            Spacer(minLength: 0)
+        // Pin the session-mean swatch on the left (always
+        // visible, anchors the reading) and let the per-speaker
+        // chips scroll horizontally when there are more than the
+        // card's interior fits. Without this the row blows the
+        // iPad portrait pane budget on 3+ speakers.
+        HStack(spacing: 8) {
             HStack(spacing: 3) {
                 Capsule()
                     .fill(Color(uiColor: .label))
@@ -114,6 +111,22 @@ struct SynchronyArcCard: View {
                 Text(String(localized: "synchronyArc.legend.sessionMean"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(ids, id: \.self) { id in
+                        HStack(spacing: 3) {
+                            Capsule()
+                                .fill(speakerTint(for: id))
+                                .frame(width: 12, height: 2)
+                            Text(id)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(speakerTint(for: id))
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
             }
         }
     }

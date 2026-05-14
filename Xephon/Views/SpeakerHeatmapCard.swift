@@ -77,11 +77,13 @@ struct SpeakerHeatmapCard: View {
     var body: some View {
         let speakers = visibleSpeakers
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 Text(String(localized: "cluster.heatmap.header"))
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 4)
                 // Only surface the toggle when at least one
                 // cluster speaker isn't in the utterance-linked
                 // set — otherwise it'd be a no-op control.
@@ -98,6 +100,7 @@ struct SpeakerHeatmapCard: View {
                         )
                         .font(.caption2)
                         .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(

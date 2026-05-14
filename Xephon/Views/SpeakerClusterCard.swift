@@ -355,11 +355,13 @@ struct SpeakerClusterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 Text(String(localized: "cluster.scatter.header"))
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 4)
                 // Only show the toggle when there's something to
                 // filter — either at least one pinned observation
                 // (observation-dot filtering) or at least one
@@ -385,6 +387,7 @@ struct SpeakerClusterCard: View {
                         )
                         .font(.caption2)
                         .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(

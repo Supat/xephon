@@ -57,11 +57,13 @@ struct SpeakerBehaviorCard: View {
 
     @ViewBuilder
     private func header(profileCount: Int) -> some View {
-        HStack {
+        HStack(spacing: 6) {
             Text(String(localized: "behavior.header"))
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
-            Spacer()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 4)
             if profileCount > 0 {
                 Text("\(profileCount)")
                     .font(.caption2.monospacedDigit())

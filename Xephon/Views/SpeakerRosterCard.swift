@@ -37,11 +37,13 @@ struct SpeakerRosterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 Text(String(localized: "roster.header"))
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 4)
                 // Same caption2 link-icon button the cluster card
                 // uses. Only surfaces when there's at least one
                 // unreferenced speaker the toggle would actually
@@ -59,6 +61,7 @@ struct SpeakerRosterCard: View {
                         )
                         .font(.caption2)
                         .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(

@@ -75,11 +75,13 @@ struct AffectiveSynchronyCard: View {
 
     @ViewBuilder
     private func header(pairCount: Int) -> some View {
-        HStack {
+        HStack(spacing: 6) {
             Text(String(localized: "synchrony.header"))
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
-            Spacer()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 4)
             if pairCount > 0 {
                 Button {
                     axis = (axis == .valence) ? .arousal : .valence
@@ -90,6 +92,7 @@ struct AffectiveSynchronyCard: View {
                     )
                     .font(.caption2)
                     .labelStyle(.titleAndIcon)
+                    .lineLimit(1)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(
@@ -168,14 +171,16 @@ struct AffectiveSynchronyCard: View {
                 speakerChip(entry.pair.follower)
                 Spacer(minLength: 4)
                 correlationBar(for: value)
-                Text(formattedCorrelation(value))
+                // Value + sample count are combined into one
+                // monospaced column ("+0.52 · 12") so the inline
+                // row fits the iPad portrait left-pane budget
+                // (~238pt after card chrome). Per-lag sample
+                // counts still live in the tap-popover for users
+                // who need the breakdown.
+                Text(formattedValueWithCount(value, entry.sampleCount))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.primary)
-                    .frame(width: 36, alignment: .trailing)
-                Text("\(entry.sampleCount)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 26, alignment: .trailing)
+                    .lineLimit(1)
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
@@ -418,14 +423,10 @@ struct AffectiveSynchronyCard: View {
                     speakerChip(score.speakerID)
                     Spacer(minLength: 4)
                     correlationBar(for: value)
-                    Text(formattedCorrelation(value))
+                    Text(formattedValueWithCount(value, score.sampleCount))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.primary)
-                        .frame(width: 36, alignment: .trailing)
-                    Text("\(score.sampleCount)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 26, alignment: .trailing)
+                        .lineLimit(1)
                 }
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
@@ -513,5 +514,16 @@ struct AffectiveSynchronyCard: View {
     private func formattedCorrelation(_ value: Double?) -> String {
         guard let value else { return "—" }
         return String(format: "%+.2f", value)
+    }
+
+    /// Single-column readout combining correlation + sample count
+    /// for the narrow inline row, e.g. "+0.52 · 12". When the
+    /// correlation is missing, falls back to "— · n".
+    private func formattedValueWithCount(
+        _ value: Double?,
+        _ sampleCount: Int
+    ) -> String {
+        let corr = formattedCorrelation(value)
+        return "\(corr) · \(sampleCount)"
     }
 }
