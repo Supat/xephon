@@ -330,26 +330,52 @@ struct TranscriptionReviewSheet: View {
         original: String
     ) {
         recorder.stopPlayback()
-        // Post-reeval Commit is a no-op accept: the pipeline already
-        // refreshed the row, so spending another `commitHandEdit`
-        // pass on the same text wastes SER + fusion cycles and would
-        // also clobber `wasReevaluated` with `wasHandEdited`.
-        if reevaluatedIssueIDs.contains(issue.id) {
+        let edited = (edits[issue.id] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Look up the live (possibly post-reeval) transcript so we
+        // can tell whether the user's typed-in edit still differs.
+        // Without this, a Commit after Re-evaluate would drop a
+        // pending multi-sentence edit on the floor — the row was
+        // refreshed to the re-eval's ASR result, but the user's
+        // typed-in split-worthy text in `edits[issue.id]` never
+        // reached `commitHandEdit`, so the split path was skipped.
+        let liveTranscript = recorder.utterances
+            .first(where: { $0.id == utterance.id })?
+            .transcript
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? original.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wasReevaluated = reevaluatedIssueIDs.contains(issue.id)
+        let hasPendingEdit = !edited.isEmpty && edited != liveTranscript
+
+        // Re-eval with no further inline edit on top: nothing left to
+        // commit, just dismiss. A second `commitHandEdit` pass on the
+        // same text would burn SER + fusion cycles and would clobber
+        // `wasReevaluated` with `wasHandEdited`.
+        if wasReevaluated && !hasPendingEdit {
             recorder.dismissTranscriptionIssue(id: issue.id)
             edits.removeValue(forKey: issue.id)
             reevaluatedIssueIDs.remove(issue.id)
             return
         }
-        let newText = edits[issue.id] ?? original
+
+        // Capture into locals before the @State mutations dismiss
+        // the row — the Task body shouldn't dereference `issue` /
+        // `utterance` whose hosting view may already be gone.
+        let issueID = issue.id
+        let utteranceID = utterance.id
+        let newStart = utterance.start
+        let newEnd = utterance.end
+        let newText = hasPendingEdit ? edited : (edits[issue.id] ?? original)
         Task {
             await recorder.commitHandEdit(
-                utteranceID: utterance.id,
+                utteranceID: utteranceID,
                 newText: newText,
-                newStart: utterance.start,
-                newEnd: utterance.end
+                newStart: newStart,
+                newEnd: newEnd
             )
-            recorder.dismissTranscriptionIssue(id: issue.id)
-            edits.removeValue(forKey: issue.id)
+            recorder.dismissTranscriptionIssue(id: issueID)
+            edits.removeValue(forKey: issueID)
+            reevaluatedIssueIDs.remove(issueID)
         }
     }
 
