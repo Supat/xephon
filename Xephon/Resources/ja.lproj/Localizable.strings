@@ -57,6 +57,7 @@
 "summary.done" = "完了";
 "summary.generating" = "オンデバイスで要約を生成中です。初回は1分ほどかかる場合があります。";
 "summary.empty" = "要約はまだありません。ツールバーの「要約」をタップしてください。";
+"summary.section.setting" = "シチュエーション";
 "summary.section.topic" = "トピック";
 "summary.section.overallMood" = "全体の雰囲気";
 "summary.section.perSpeaker" = "話者ごと";

@@ -106,6 +106,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         }
         guard !utterances.isEmpty else {
             return SessionSummary(
+                inferredSetting: nil,
                 topic: "",
                 overallMood: "",
                 perSpeaker: [],
@@ -259,9 +260,10 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         var lines: [String] = []
         lines.reserveCapacity(utterances.count + 12)
         lines.append("You are an analyst summarizing a multi-speaker conversation.")
-        lines.append("Read every utterance below and produce a JSON object with three fields:")
+        lines.append("Read every utterance below and produce a JSON object with four fields:")
+        lines.append("  \"setting\" — one short sentence identifying the conversation's setting / situation / register (e.g. 'casual phone catchup between friends', 'job interview', 'classroom discussion'). Stay general — do not invent specific locations or institutions. Emit this FIRST so the rest stays consistent with it.")
         lines.append("  \"topic\" — one or two sentences on what the conversation is about.")
-        lines.append("  \"overallMood\" — one paragraph on the session's overall emotional tone.")
+        lines.append("  \"overallMood\" — one paragraph on the session's overall emotional tone, consistent with the inferred setting.")
         lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakers.joined(separator: ", ")).")
         lines.append("Each perSpeaker entry has: { \"speakerID\": <id>, \"summary\": <one paragraph>, \"dominantMood\": <one short phrase> }.")
         lines.append("Each row carries: fused label and fused V/A/D (valence/arousal/dominance, 0–1), plus the raw per-modality probability vectors:")
@@ -390,6 +392,10 @@ public actor MLXQwenSummarizer: SessionSummarizer {
                 let summary: String
                 let dominantMood: String
             }
+            // Optional so a model that legitimately couldn't infer a
+            // setting (or an older prompt that didn't ask for one)
+            // decodes cleanly instead of failing the whole summary.
+            let setting: String?
             let topic: String
             let overallMood: String
             let perSpeaker: [PerSpeaker]
@@ -440,6 +446,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             )
         }
         return SessionSummary(
+            inferredSetting: decoded.setting?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
             topic: decoded.topic,
             overallMood: decoded.overallMood,
             perSpeaker: perSpeaker,
@@ -455,9 +463,10 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     /// top-level object that closed* inside the array. When the scan
     /// hits end-of-input mid-entry, we cut at that remembered
     /// position and synthesize `]}` to close the array and outer
-    /// object. `topic` and `overallMood` appear before `perSpeaker`
-    /// in the prompt's schema description, so the model emits them
-    /// first and they survive intact inside the prefix we keep.
+    /// object. `setting`, `topic`, and `overallMood` appear before
+    /// `perSpeaker` in the prompt's schema description, so the
+    /// model emits them first and they survive intact inside the
+    /// prefix we keep.
     ///
     /// Returns nil when the input doesn't look like our expected
     /// shape — let the caller surface the original parse error in

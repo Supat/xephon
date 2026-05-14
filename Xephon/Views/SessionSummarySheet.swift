@@ -106,6 +106,14 @@ struct SessionSummarySheet: View {
     private func resultView(for summary: SessionSummary) -> some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 18) {
+                if let setting = summary.inferredSetting?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !setting.isEmpty {
+                    section(
+                        header: String(localized: "summary.section.setting"),
+                        body: setting
+                    )
+                }
                 section(
                     header: String(localized: "summary.section.topic"),
                     body: summary.topic

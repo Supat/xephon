@@ -38,6 +38,17 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         }
     }
 
+    /// One-sentence inferred setting / situation / register — "what
+    /// kind of conversation is this" (e.g. "casual phone catchup
+    /// between friends", "job interview", "classroom discussion").
+    /// Emitted FIRST by the LLM so the rest of the summary stays
+    /// consistent with the chosen frame: a clinical-interview
+    /// reading vs. casual-chat reading of the same transcript
+    /// produces very different per-speaker arcs, and committing
+    /// the register up front avoids tone-drift mid-summary.
+    /// Optional + nil-default so older `.xph` bundles whose
+    /// `SessionSummary` predates this field decode cleanly.
+    public let inferredSetting: String?
     /// One- or two-sentence topical summary — "what is the
     /// conversation about." Independent of mood / affect.
     public let topic: String
@@ -58,12 +69,14 @@ public struct SessionSummary: Sendable, Hashable, Codable {
     public let generatedAt: Date
 
     public init(
+        inferredSetting: String? = nil,
         topic: String,
         overallMood: String,
         perSpeaker: [SpeakerSummary],
         model: String,
         generatedAt: Date
     ) {
+        self.inferredSetting = inferredSetting
         self.topic = topic
         self.overallMood = overallMood
         self.perSpeaker = perSpeaker
@@ -79,6 +92,13 @@ public struct SessionSummary: Sendable, Hashable, Codable {
     public func toMarkdown() -> String {
         var lines: [String] = []
         lines.append("# Session Summary")
+        if let setting = inferredSetting?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !setting.isEmpty {
+            lines.append("")
+            lines.append("## Setting")
+            lines.append(setting)
+        }
         lines.append("")
         lines.append("## Topic")
         lines.append(topic.isEmpty ? "—" : topic)

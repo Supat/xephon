@@ -57,6 +57,7 @@
 "summary.done" = "Done";
 "summary.generating" = "Generating summary on-device. This can take a minute on the first run.";
 "summary.empty" = "No summary yet. Tap Summarize from the toolbar.";
+"summary.section.setting" = "Setting";
 "summary.section.topic" = "Topic";
 "summary.section.overallMood" = "Overall Mood";
 "summary.section.perSpeaker" = "Per Speaker";

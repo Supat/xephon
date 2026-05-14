@@ -45,6 +45,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
         }
         guard !utterances.isEmpty else {
             return SessionSummary(
+                inferredSetting: nil,
                 topic: "",
                 overallMood: "",
                 perSpeaker: [],
@@ -124,6 +125,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
                 )
             }
             return SessionSummary(
+                inferredSetting: g.setting,
                 topic: g.topic,
                 overallMood: g.overallMood,
                 perSpeaker: perSpeaker,
@@ -148,7 +150,11 @@ public actor AppleFMSummarizer: SessionSummarizer {
         Summarize a multi-speaker conversation. Each input line has
         speaker, time, fused emotion label, valence V (0..1, 0.5 = neutral),
         and arousal A (0..1, higher = stronger affect), then the transcript.
-        Produce: a one-sentence topic, a one-paragraph overall mood, and one
+        First, infer the conversation's setting / situation / register in one
+        short sentence (e.g. "casual phone catchup", "job interview",
+        "classroom discussion"). Stay general — do not invent specific
+        locations or institutions. Then produce a one-sentence topic, a
+        one-paragraph overall mood consistent with that setting, and one
         per-speaker entry (short paragraph + dominant-mood phrase) for every
         speaker id in the input. Do not invent speakers.
         """
@@ -200,9 +206,16 @@ private struct GenerableSpeakerSummary {
 
 @Generable
 private struct GenerableSummary {
+    // `setting` is intentionally the FIRST field so constrained
+    // decoding commits to a frame (casual / clinical / classroom /
+    // …) before generating topic / mood / per-speaker arcs.
+    // Without this anchoring, the model's tone can drift mid-output
+    // for ambiguous transcripts.
+    @Guide(description: "One short sentence identifying the conversation's setting / situation / register (e.g. 'casual phone catchup between friends', 'job interview', 'classroom discussion'). Stay general — do not invent specific locations or institutions.")
+    var setting: String
     @Guide(description: "One or two sentences on what the conversation is about")
     var topic: String
-    @Guide(description: "One paragraph on the session's overall emotional tone, factoring V/A/D and labels")
+    @Guide(description: "One paragraph on the session's overall emotional tone, factoring V/A/D and labels, consistent with the setting above")
     var overallMood: String
     @Guide(description: "Per-speaker emotional arcs, one entry per distinct speaker id in the input")
     var perSpeaker: [GenerableSpeakerSummary]
