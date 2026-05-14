@@ -22,9 +22,13 @@ struct SpeakerBehaviorCard: View {
     @State private var inspectedSpeakerID: String?
 
     private static let barHeight: CGFloat = 18
-    private static let barWidth: CGFloat = 16
-    private static let barSpacing: CGFloat = 6
-    private static let labelColumnWidth: CGFloat = 50
+    // Wide enough for the 2–3-char metric labels ("Lab" / "Ld") to
+    // sit inside their column rather than overflowing into the
+    // neighbor. `.lineLimit(1).minimumScaleFactor(0.7)` on the
+    // label text guards the JA abbreviations too (発話 / 変動 etc.).
+    private static let barWidth: CGFloat = 22
+    private static let barSpacing: CGFloat = 4
+    private static let labelColumnWidth: CGFloat = 44
 
     var body: some View {
         let profiles = SpeakerBehavior.computeProfiles(utterances: utterances)
@@ -80,6 +84,8 @@ struct SpeakerBehaviorCard: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .textCase(.uppercase)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                     .frame(width: Self.barWidth)
                     .accessibilityLabel(Text(label.2))
             }

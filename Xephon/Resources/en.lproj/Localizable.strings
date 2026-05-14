@@ -138,6 +138,10 @@
 "synchrony.metric.valence" = "Valence";
 "synchrony.metric.arousal" = "Arousal";
 "synchrony.footnote" = "Pearson correlation between leader's and follower's fused emotion across consecutive speaker-change turns. Sparkline shows correlation evolution from lag 0 (immediate response) to higher lags (one or more intervening turns). Excludes turns without V/A scores.";
+"synchrony.popover.lag" = "Lag";
+"synchrony.popover.valenceShort" = "V";
+"synchrony.popover.arousalShort" = "A";
+"synchrony.popover.sampleCount" = "n";
 "synchrony.leadership.header" = "Leadership";
 "synchrony.leadership.lagNote" = "lag +1";
 "synchrony.dyad.header" = "Plutchik Dyads";

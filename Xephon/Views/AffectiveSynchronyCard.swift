@@ -26,6 +26,14 @@ struct AffectiveSynchronyCard: View {
     /// arousal. Drives both the headline correlation column and the
     /// sparkline data.
     @State private var axis: Axis = .valence
+    /// Pair whose inspector popover is currently open, if any.
+    /// Tapping a pair row toggles it; the popover surfaces the
+    /// full lag profile for both V and A — content that used to
+    /// sit inline as a sparkline but overflowed the iPad portrait
+    /// row budget. Mirrors `SpeakerBehaviorCard`'s tap-popover
+    /// pattern so the affordance is consistent across cluster
+    /// diagnostics cards.
+    @State private var inspectedPair: AffectiveSynchrony.DirectedPair?
 
     enum Axis: Hashable {
         case valence, arousal
@@ -138,46 +146,54 @@ struct AffectiveSynchronyCard: View {
         }
     }
 
-    private func axisProfile(
-        _ entry: AffectiveSynchrony.PairResult
-    ) -> [Double?] {
-        switch axis {
-        case .valence: return entry.valenceProfile
-        case .arousal: return entry.arousalProfile
-        }
-    }
-
     @ViewBuilder
     private func pairRow(
         for entry: AffectiveSynchrony.PairResult,
         maxLag: Int
     ) -> some View {
+        // Layout sized for the iPad portrait left-pane budget
+        // (~280pt). Inline width is tight on purpose — anything
+        // richer (lag-profile sparkline, per-lag sample counts)
+        // lives in the tap-popover.
         let value = axisValue(entry)
-        HStack(spacing: 8) {
-            speakerChip(entry.pair.leader)
-            Image(systemName: "arrow.right")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            speakerChip(entry.pair.follower)
-            Spacer(minLength: 4)
-            // Lag-profile sparkline (omitted when only lag 0 carries
-            // data — visually noisy and uninformative otherwise).
-            if maxLag > 0,
-               axisProfile(entry).dropFirst().contains(where: { $0 != nil }) {
-                lagSparkline(axisProfile(entry))
+        Button {
+            inspectedPair = (inspectedPair == entry.pair)
+                ? nil : entry.pair
+        } label: {
+            HStack(spacing: 6) {
+                speakerChip(entry.pair.leader)
+                Image(systemName: "arrow.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                speakerChip(entry.pair.follower)
+                Spacer(minLength: 4)
+                correlationBar(for: value)
+                Text(formattedCorrelation(value))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, alignment: .trailing)
+                Text("\(entry.sampleCount)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 26, alignment: .trailing)
             }
-            correlationBar(for: value)
-            Text(formattedCorrelation(value))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.primary)
-                .frame(width: 44, alignment: .trailing)
-            Text("n=\(entry.sampleCount)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .frame(width: 40, alignment: .trailing)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
+        .buttonStyle(.plain)
+        .popover(
+            isPresented: Binding(
+                get: { inspectedPair == entry.pair },
+                set: { isPresented in
+                    if !isPresented { inspectedPair = nil }
+                }
+            ),
+            arrowEdge: .top
+        ) {
+            pairInspectorPopover(entry, maxLag: maxLag)
+                .presentationCompactAdaptation(.popover)
+        }
     }
 
     @ViewBuilder
@@ -196,7 +212,11 @@ struct AffectiveSynchronyCard: View {
     @ViewBuilder
     private func correlationBar(for value: Double?) -> some View {
         let height: CGFloat = 6
-        let halfWidth: CGFloat = 32
+        // Half-width 24 (total 48pt) keeps the inline row inside the
+        // iPad portrait left-pane budget while staying readable —
+        // the bar's job is sign + rough magnitude, not precise
+        // value. Numeric value sits next to it for the exact read.
+        let halfWidth: CGFloat = 24
         ZStack(alignment: .center) {
             Capsule()
                 .fill(Color(uiColor: .tertiarySystemFill))
@@ -220,18 +240,69 @@ struct AffectiveSynchronyCard: View {
         .frame(width: halfWidth * 2, height: height + 2)
     }
 
-    /// Small Canvas sparkline showing the correlation evolution over
-    /// lags 0…maxLag. Y-axis is fixed at ±1 with a midline at 0;
-    /// each lag is a dot connected by a polyline, dot color tinted
-    /// green / red by sign. Width is bounded so it slots into the
-    /// row inline without forcing layout to grow.
+    // MARK: - Pair inspector popover
+
+    /// Tap-revealed inspector showing both V and A lag profiles +
+    /// a per-lag numeric table for the pair. Wider sparklines than
+    /// would fit inline, and the full numeric breakdown for users
+    /// who want to read precise correlations rather than rough
+    /// magnitude off the headline bar.
+    @ViewBuilder
+    private func pairInspectorPopover(
+        _ entry: AffectiveSynchrony.PairResult,
+        maxLag: Int
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                speakerChip(entry.pair.leader)
+                Image(systemName: "arrow.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                speakerChip(entry.pair.follower)
+            }
+            Divider()
+            sparklineGroup(
+                title: String(localized: "synchrony.metric.valence"),
+                profile: entry.valenceProfile
+            )
+            sparklineGroup(
+                title: String(localized: "synchrony.metric.arousal"),
+                profile: entry.arousalProfile
+            )
+            Divider()
+            lagTable(entry, maxLag: maxLag)
+        }
+        .padding(12)
+        .frame(minWidth: 260)
+    }
+
+    @ViewBuilder
+    private func sparklineGroup(
+        title: String,
+        profile: [Double?]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            lagSparkline(profile)
+                .frame(height: 18)
+        }
+    }
+
+    /// Small Canvas plot of correlation evolution over lags
+    /// 0…maxLag. Y-axis fixed at ±1 with a midline at 0; each
+    /// lag is a dot connected by a polyline; dot color tinted
+    /// green / red by sign. Nil values (sample-count below the
+    /// threshold) break the line so the user can see which lags
+    /// actually carried data.
     @ViewBuilder
     private func lagSparkline(_ profile: [Double?]) -> some View {
         Canvas { ctx, size in
             let height = size.height
             let width = size.width
             let mid = height / 2
-            // Midline
             var midline = Path()
             midline.move(to: CGPoint(x: 0, y: mid))
             midline.addLine(to: CGPoint(x: width, y: mid))
@@ -240,7 +311,6 @@ struct AffectiveSynchronyCard: View {
                 with: .color(Color(uiColor: .separator)),
                 lineWidth: 0.5
             )
-            // Points
             let count = max(profile.count, 1)
             var path = Path()
             var hasLastPoint = false
@@ -253,7 +323,7 @@ struct AffectiveSynchronyCard: View {
                     continue
                 }
                 let clamped = max(-1.0, min(1.0, v))
-                let y = mid - CGFloat(clamped) * (height / 2 - 1)
+                let y = mid - CGFloat(clamped) * (height / 2 - 2)
                 let pt = CGPoint(x: x, y: y)
                 if hasLastPoint {
                     path.addLine(to: pt)
@@ -261,7 +331,7 @@ struct AffectiveSynchronyCard: View {
                     path.move(to: pt)
                 }
                 hasLastPoint = true
-                let dotR: CGFloat = 1.5
+                let dotR: CGFloat = 2
                 let dotRect = CGRect(
                     x: pt.x - dotR, y: pt.y - dotR,
                     width: 2 * dotR, height: 2 * dotR
@@ -274,11 +344,54 @@ struct AffectiveSynchronyCard: View {
             ctx.stroke(
                 path,
                 with: .color(Color.secondary.opacity(0.6)),
-                lineWidth: 0.8
+                lineWidth: 0.9
             )
         }
-        .frame(width: 36, height: 14)
         .accessibilityHidden(true)
+    }
+
+    /// 4-column table (Lag · V · A · n) listing the correlation at
+    /// each lag with its supporting sample count. "—" for lags
+    /// where the sample count fell below the threshold.
+    @ViewBuilder
+    private func lagTable(
+        _ entry: AffectiveSynchrony.PairResult,
+        maxLag: Int
+    ) -> some View {
+        VStack(spacing: 2) {
+            HStack {
+                Text(String(localized: "synchrony.popover.lag"))
+                    .frame(width: 36, alignment: .leading)
+                Text(String(localized: "synchrony.popover.valenceShort"))
+                    .frame(width: 52, alignment: .trailing)
+                Text(String(localized: "synchrony.popover.arousalShort"))
+                    .frame(width: 52, alignment: .trailing)
+                Text(String(localized: "synchrony.popover.sampleCount"))
+                    .frame(width: 36, alignment: .trailing)
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            ForEach(0...maxLag, id: \.self) { lag in
+                HStack {
+                    Text("\(lag)")
+                        .frame(width: 36, alignment: .leading)
+                    Text(formattedCorrelation(
+                        lag < entry.valenceProfile.count
+                            ? entry.valenceProfile[lag] : nil
+                    ))
+                    .frame(width: 52, alignment: .trailing)
+                    Text(formattedCorrelation(
+                        lag < entry.arousalProfile.count
+                            ? entry.arousalProfile[lag] : nil
+                    ))
+                    .frame(width: 52, alignment: .trailing)
+                    Text("\(lag < entry.sampleCountsByLag.count ? entry.sampleCountsByLag[lag] : 0)")
+                        .frame(width: 36, alignment: .trailing)
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.primary)
+            }
+        }
     }
 
     // MARK: - Leadership
@@ -301,18 +414,18 @@ struct AffectiveSynchronyCard: View {
                 let value: Double? = (axis == .valence)
                     ? score.valenceLeadership
                     : score.arousalLeadership
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     speakerChip(score.speakerID)
                     Spacer(minLength: 4)
                     correlationBar(for: value)
                     Text(formattedCorrelation(value))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.primary)
-                        .frame(width: 44, alignment: .trailing)
-                    Text("n=\(score.sampleCount)")
+                        .frame(width: 36, alignment: .trailing)
+                    Text("\(score.sampleCount)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
-                        .frame(width: 40, alignment: .trailing)
+                        .frame(width: 26, alignment: .trailing)
                 }
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
@@ -331,16 +444,19 @@ struct AffectiveSynchronyCard: View {
                 .font(.caption2.bold())
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
-            // Horizontal flow with wrapping. Each chip is a small
-            // capsule: "love · 12". Width-bounded VStack of HStacks
-            // would be cleaner with FlowLayout, but a single HStack
-            // with `.lineLimit(1)` per chip + lazy width handling
-            // covers the typical N≤8 dyads case fine.
-            HStack(spacing: 6) {
-                ForEach(tallies, id: \.dyad) { tally in
-                    dyadChip(tally)
+            // Horizontal scroll lets the chip row exceed the card's
+            // width without forcing the card to grow — typical N≤8
+            // dyads usually fit, but a wide ja/zh chip text can
+            // push past the iPad portrait left-pane budget.
+            // `showsIndicators: false` keeps the scroll affordance
+            // invisible at rest; the user discovers it on swipe.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(tallies, id: \.dyad) { tally in
+                        dyadChip(tally)
+                    }
                 }
-                Spacer(minLength: 0)
+                .padding(.horizontal, 2)
             }
         }
     }

@@ -138,6 +138,10 @@
 "synchrony.metric.valence" = "感情価";
 "synchrony.metric.arousal" = "覚醒度";
 "synchrony.footnote" = "話者交代の連続ターンにおける、先行話者と応答話者の融合感情のピアソン相関。スパークラインはラグ 0(即時応答)から高ラグ(間に他話者ターンを挟む)への相関の推移。V/A スコアが欠落しているターンは除外。";
+"synchrony.popover.lag" = "ラグ";
+"synchrony.popover.valenceShort" = "V";
+"synchrony.popover.arousalShort" = "A";
+"synchrony.popover.sampleCount" = "n";
 "synchrony.leadership.header" = "リーダーシップ";
 "synchrony.leadership.lagNote" = "ラグ +1";
 "synchrony.dyad.header" = "プルチク二次感情";
