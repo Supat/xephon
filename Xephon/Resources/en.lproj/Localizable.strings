@@ -121,7 +121,7 @@
 "cluster.scatter.linkedOnly" = "Linked only";
 "behavior.header" = "Speaker Behavior";
 "behavior.empty" = "Not enough utterances yet.";
-"behavior.footnote" = "Each bar is rank-normalized within the session, so heights compare speakers to each other rather than to absolute scales. Tap a row for raw values.";
+"behavior.footnote" = "Each bar is rank-normalized within the session, so heights compare speakers to each other rather than to absolute scales. R is inverted — a taller bar means a faster responder. Tap a row for raw values.";
 "behavior.utterances.count" = "%lld utterance(s)";
 "behavior.metric.talkShare" = "Talk share";
 "behavior.metric.valence" = "Mean valence";

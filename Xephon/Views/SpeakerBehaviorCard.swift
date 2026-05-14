@@ -44,9 +44,7 @@ struct SpeakerBehaviorCard: View {
                 ForEach(profiles, id: \.speakerID) { profile in
                     profileRow(profile)
                 }
-                Text(String(localized: "behavior.footnote"))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                footnoteBlock
                     .padding(.top, 4)
             }
         }
@@ -217,6 +215,31 @@ struct SpeakerBehaviorCard: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.primary)
         }
+    }
+
+    /// Two-line footer: a `T = Talk share · V = Mean valence · …`
+    /// legend decoding the abbreviated column headers, plus the
+    /// existing rank-normalization note. The legend is built from
+    /// `metricLabels()` so the column headers and the legend can't
+    /// drift apart — same source of truth.
+    @ViewBuilder
+    private var footnoteBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(legendText)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(String(localized: "behavior.footnote"))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var legendText: String {
+        Self.metricLabels()
+            .map { "\($0.1) = \($0.2)" }
+            .joined(separator: " · ")
     }
 
     // MARK: - Metric labels

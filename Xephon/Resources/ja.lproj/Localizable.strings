@@ -121,7 +121,7 @@
 "cluster.scatter.linkedOnly" = "発話と連動のみ";
 "behavior.header" = "話者の振る舞い";
 "behavior.empty" = "発話数が不足しています。";
-"behavior.footnote" = "各バーはセッション内で順位正規化されており、話者間の相対比較を示します(絶対値ではありません)。行をタップすると生の値が表示されます。";
+"behavior.footnote" = "各バーはセッション内で順位正規化されており、話者間の相対比較を示します(絶対値ではありません)。「応答」は反転表示で、バーが高いほど応答が速いことを示します。行をタップすると生の値が表示されます。";
 "behavior.utterances.count" = "発話数 %lld 件";
 "behavior.metric.talkShare" = "発話時間比率";
 "behavior.metric.valence" = "平均感情価";
