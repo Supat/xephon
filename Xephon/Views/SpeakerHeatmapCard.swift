@@ -24,6 +24,17 @@ struct SpeakerHeatmapCard: View {
     /// user can see "this is the speaker whose row I'm reading"
     /// across the diagnostics page.
     var highlightedSpeakerID: String?
+    /// Speaker ids referenced by at least one utterance. Drives
+    /// the "Linked only" toggle: when on, rows + columns for
+    /// speakers absent from this set are dropped from the grid
+    /// so the matrix focuses on the conversation's active cast.
+    /// Nil disables the toggle.
+    var linkedSpeakerIDs: Set<String>?
+
+    /// Header toggle: hide speakers whose id isn't in
+    /// `linkedSpeakerIDs`. Same caption2 link-icon button the
+    /// cluster card uses.
+    @State private var hideUnreferencedSpeakers: Bool = false
 
     /// Identifies the cell whose popover is currently shown. Carries
     /// the row/column speaker ids + the cosine distance so the
@@ -64,25 +75,50 @@ struct SpeakerHeatmapCard: View {
     private static let rowLabelWidth: CGFloat = 28
 
     var body: some View {
+        let speakers = visibleSpeakers
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(String(localized: "cluster.heatmap.header"))
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
-                if !cluster.speakers.isEmpty {
-                    Text("\(cluster.speakers.count)")
+                // Only surface the toggle when at least one
+                // cluster speaker isn't in the utterance-linked
+                // set — otherwise it'd be a no-op control.
+                if let linked = linkedSpeakerIDs,
+                   cluster.speakers.contains(where: { !linked.contains($0.id) }) {
+                    Button {
+                        hideUnreferencedSpeakers.toggle()
+                    } label: {
+                        Label(
+                            String(localized: "cluster.scatter.linkedOnly"),
+                            systemImage: hideUnreferencedSpeakers
+                                ? "link.circle.fill"
+                                : "link.circle"
+                        )
+                        .font(.caption2)
+                        .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(
+                        hideUnreferencedSpeakers
+                            ? AnyShapeStyle(Color.accentColor)
+                            : AnyShapeStyle(HierarchicalShapeStyle.secondary)
+                    )
+                }
+                if !speakers.isEmpty {
+                    Text("\(speakers.count)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
             }
-            if cluster.speakers.isEmpty {
+            if speakers.isEmpty {
                 Text(String(localized: "cluster.empty"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                grid
+                grid(for: speakers)
             }
         }
         .padding(12)
@@ -90,8 +126,18 @@ struct SpeakerHeatmapCard: View {
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    /// Speaker list the grid actually renders. Applies the
+    /// "Linked only" filter when the toggle is on and a
+    /// referenced-id set is available; otherwise the full
+    /// `cluster.speakers` array.
+    private var visibleSpeakers: [SpeakerClusterSnapshot.Speaker] {
+        guard hideUnreferencedSpeakers,
+              let linked = linkedSpeakerIDs else { return cluster.speakers }
+        return cluster.speakers.filter { linked.contains($0.id) }
+    }
+
     @ViewBuilder
-    private var grid: some View {
+    private func grid(for speakers: [SpeakerClusterSnapshot.Speaker]) -> some View {
         // GeometryReader gives us the card's interior width post-
         // padding, which is the only signal we have for how big a
         // square N×N grid can be without overflowing. Wrapping the
@@ -99,7 +145,6 @@ struct SpeakerHeatmapCard: View {
         // side keeps the layout deterministic (GeometryReader's own
         // sizing is greedy by default, which would blow the card
         // out vertically).
-        let speakers = cluster.speakers
         let n = CGFloat(max(speakers.count, 1))
         GeometryReader { proxy in
             let cellSize = Self.cellSide(available: proxy.size.width, n: n)

@@ -22,6 +22,18 @@ struct SpeakerRosterCard: View {
     /// roster, cluster scatter, and heatmap all light up in sync
     /// when the user is inspecting a row.
     var highlightedSpeakerID: String?
+    /// Speaker ids that are referenced by at least one utterance.
+    /// Drives the "Linked only" toggle: when enabled, rows for
+    /// speaker ids absent from this set (diarizer-DB orphans,
+    /// promoted-but-unclaimed entries) are hidden so the roster
+    /// reads as the conversation's active cast. Nil disables the
+    /// toggle — nothing meaningful to filter against.
+    var linkedSpeakerIDs: Set<String>?
+
+    /// Header toggle: hide speaker rows whose id isn't in
+    /// `linkedSpeakerIDs`. Styled to match the cluster card's
+    /// matching toggle.
+    @State private var hideUnreferencedSpeakers: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -30,6 +42,31 @@ struct SpeakerRosterCard: View {
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
+                // Same caption2 link-icon button the cluster card
+                // uses. Only surfaces when there's at least one
+                // unreferenced speaker the toggle would actually
+                // hide — otherwise it'd be a no-op control.
+                if let linked = linkedSpeakerIDs,
+                   allSpeakerIDs.contains(where: { !linked.contains($0) }) {
+                    Button {
+                        hideUnreferencedSpeakers.toggle()
+                    } label: {
+                        Label(
+                            String(localized: "cluster.scatter.linkedOnly"),
+                            systemImage: hideUnreferencedSpeakers
+                                ? "link.circle.fill"
+                                : "link.circle"
+                        )
+                        .font(.caption2)
+                        .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(
+                        hideUnreferencedSpeakers
+                            ? AnyShapeStyle(Color.accentColor)
+                            : AnyShapeStyle(HierarchicalShapeStyle.secondary)
+                    )
+                }
                 if !speakerIDs.isEmpty {
                     Text("\(speakerIDs.count)")
                         .font(.caption2.monospacedDigit())
@@ -54,11 +91,13 @@ struct SpeakerRosterCard: View {
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// Sorted union of utterance-roster ids and cluster-DB ids.
-    /// Sort is alphabetical, which for `S0N` ids is also numeric;
-    /// no point overthinking ordering when the keys are zero-padded
-    /// 2-digit suffixes.
-    private var speakerIDs: [String] {
+    /// Sorted union of utterance-roster ids and cluster-DB ids,
+    /// before any "Linked only" filtering. Sort is alphabetical,
+    /// which for `S0N` ids is also numeric; no point overthinking
+    /// ordering when the keys are zero-padded 2-digit suffixes.
+    /// The header's toggle-visibility check reads this so it can
+    /// decide whether anything would actually get hidden.
+    private var allSpeakerIDs: [String] {
         var seen: Set<String> = []
         var ids: [String] = []
         for id in recorder.knownSpeakerIDs() where seen.insert(id).inserted {
@@ -68,6 +107,15 @@ struct SpeakerRosterCard: View {
             ids.append(spk.id)
         }
         return ids.sorted()
+    }
+
+    /// What the body actually renders. Applies the "Linked only"
+    /// filter when the toggle is on and the controller has supplied
+    /// a referenced-id set; otherwise hands back the full union.
+    private var speakerIDs: [String] {
+        guard hideUnreferencedSpeakers,
+              let linked = linkedSpeakerIDs else { return allSpeakerIDs }
+        return allSpeakerIDs.filter { linked.contains($0) }
     }
 
     @ViewBuilder

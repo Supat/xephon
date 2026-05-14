@@ -700,7 +700,8 @@ struct ContentView: View {
                         SpeakerRosterCard(
                             recorder: recorder,
                             cluster: recorder.speakerCluster,
-                            highlightedSpeakerID: focusedUtteranceSpeakerID
+                            highlightedSpeakerID: focusedUtteranceSpeakerID,
+                            linkedSpeakerIDs: linkedSpeakerIDs
                         )
                         SpeakerClusterCard(
                             cluster: recorder.speakerCluster,
@@ -733,7 +734,8 @@ struct ContentView: View {
                         )
                         SpeakerHeatmapCard(
                             cluster: recorder.speakerCluster,
-                            highlightedSpeakerID: focusedUtteranceSpeakerID
+                            highlightedSpeakerID: focusedUtteranceSpeakerID,
+                            linkedSpeakerIDs: linkedSpeakerIDs
                         )
                     }
                     .frame(maxWidth: .infinity)
@@ -1009,6 +1011,14 @@ struct ContentView: View {
     private var focusedUtteranceEmbedding: [Float]? {
         guard let id = selectedUtteranceID else { return nil }
         return recorder.utteranceEmbeddings[id]
+    }
+
+    /// Speaker ids referenced by at least one utterance in the live
+    /// list. Fed to the roster + heatmap cards as the seed set
+    /// their "Linked only" toggles filter against — same pattern
+    /// the cluster scatter card uses for observation ids.
+    private var linkedSpeakerIDs: Set<String> {
+        Set(recorder.utterances.map(\.speakerID))
     }
 
     private var selectedUtteranceRange: (start: TimeInterval, end: TimeInterval)? {
