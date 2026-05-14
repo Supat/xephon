@@ -12,6 +12,15 @@ extension SwitchingTextSER.Backend {
     }
 }
 
+/// Lightweight view-model for the text-SER badge rendered on each
+/// `UtteranceRow`. Carries the chip label plus a flag for the Apple
+/// FoundationModels guardrail-decline state, which is rendered in
+/// place of the regular "Apple FM" chip with a warning tint.
+struct TextBackendBadge: Equatable {
+    let label: String
+    let isGuardrail: Bool
+}
+
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
 }

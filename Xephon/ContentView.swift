@@ -54,7 +54,6 @@ struct ContentView: View {
     /// recorder has taken its own ref (or the user has cancelled).
     @State private var pendingFileScopeAcquired: Bool = false
     @State private var showingFileDiscardConfirm: Bool = false
-    @State private var showingPacingDialog: Bool = false
     /// Currently-visible utterance row IDs. Maintained via per-row
     /// `.onAppear`/`.onDisappear` so we can tell whether the most recent
     /// utterance is in frame and decide between auto-scroll vs. surfacing
@@ -153,6 +152,13 @@ struct ContentView: View {
     /// without triggering a SwiftUI re-render — `@State` retains it
     /// across renders but doesn't observe its internal properties.
     @State private var filterMemo = FilterMemo()
+    @State private var mismatchMemo = MismatchMemo()
+    /// When true, the transcript list is filtered to utterances whose
+    /// stored speaker disagrees with the cumulative diarization
+    /// timeline's per-instant majority. Driven by the "Mismatched"
+    /// chip in `speakerChipBar`; the chip itself only appears when
+    /// at least one mismatched utterance exists.
+    @State private var showingMismatchOnly: Bool = false
 
     var body: some View {
         if !recorder.modelsReady {
@@ -367,10 +373,10 @@ struct ContentView: View {
                 isPresented: $showingFileDiscardConfirm
             ) {
                 Button(String(localized: "record.discardConfirm.confirm"), role: .destructive) {
-                    // Discard accepted — proceed to pacing choice. The
-                    // pendingFileURL + scope ref are preserved across
-                    // alerts so they survive the second hop.
-                    showingPacingDialog = true
+                    // Discard accepted — start analysis directly.
+                    if let url = pendingFileURL {
+                        startFromFileAndReleaseScope(url)
+                    }
                 }
                 Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
                     releasePendingFileScope()
@@ -382,36 +388,6 @@ struct ContentView: View {
                         recorder.utterances.count
                     )
                 )
-            }
-            .alert(
-                String(localized: "pacing.title"),
-                isPresented: $showingPacingDialog
-            ) {
-                Button(String(localized: "pacing.realtime")) {
-                    if let url = pendingFileURL {
-                        startFromFileAndReleaseScope(url, realTimePacing: true)
-                    }
-                }
-                Button(String(localized: "pacing.realtime.audio")) {
-                    if let url = pendingFileURL {
-                        startFromFileAndReleaseScope(url, realTimePacing: true, audioOutputEnabled: true)
-                    }
-                }
-                Button(String(localized: "pacing.fast8x")) {
-                    if let url = pendingFileURL {
-                        startFromFileAndReleaseScope(url, realTimePacing: false, fastPaceMultiplier: 8)
-                    }
-                }
-                Button(String(localized: "pacing.fast4x")) {
-                    if let url = pendingFileURL {
-                        startFromFileAndReleaseScope(url, realTimePacing: false, fastPaceMultiplier: 4)
-                    }
-                }
-                Button(String(localized: "record.discardConfirm.cancel"), role: .cancel) {
-                    releasePendingFileScope()
-                }
-            } message: {
-                Text(String(localized: "pacing.message"))
             }
             // Edit Utterance sheet — raised by long-press on the
             // transcript Text of a row. Carries an
@@ -757,6 +733,7 @@ struct ContentView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
                         SummarizerCard(recorder: recorder)
+                        ModelsCard(recorder: recorder)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
@@ -1175,9 +1152,32 @@ struct ContentView: View {
                             speakerChip(
                                 text: String(localized: "filter.speaker.all"),
                                 tint: .secondary,
-                                isSelected: selectedSpeakerFilter == nil
+                                isSelected: selectedSpeakerFilter == nil && !showingMismatchOnly
                             ) {
                                 selectedSpeakerFilter = nil
+                                showingMismatchOnly = false
+                            }
+                            // Mismatch chip — visible only when the
+                            // cumulative timeline disagrees with at
+                            // least one stored speaker. Mutually
+                            // exclusive with the per-speaker chips
+                            // since "all speakers with mismatches" is
+                            // the meaningful narrowing; a single
+                            // speaker's mismatched rows would be a
+                            // narrower-still slice nobody asked for.
+                            if !mismatchedUtteranceIDs.isEmpty {
+                                speakerChip(
+                                    text: String(localized: "filter.speaker.mismatch"),
+                                    tint: .orange,
+                                    isSelected: showingMismatchOnly
+                                ) {
+                                    if showingMismatchOnly {
+                                        showingMismatchOnly = false
+                                    } else {
+                                        showingMismatchOnly = true
+                                        selectedSpeakerFilter = nil
+                                    }
+                                }
                             }
                             ForEach(speakers, id: \.self) { id in
                                 let label = formatSpeakerLabel(
@@ -1191,6 +1191,7 @@ struct ContentView: View {
                                     isSelected: selectedSpeakerFilter == id
                                 ) {
                                     selectedSpeakerFilter = (selectedSpeakerFilter == id) ? nil : id
+                                    showingMismatchOnly = false
                                 }
                             }
                         }
@@ -1247,6 +1248,7 @@ struct ContentView: View {
                 searchText = ""
                 selectedLabelFilter = nil
                 selectedSpeakerFilter = nil
+                showingMismatchOnly = false
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1530,6 +1532,41 @@ struct ContentView: View {
         return ordered
     }
 
+    /// Utterance IDs whose stored `speakerID` disagrees with the
+    /// cumulative diarization timeline's per-instant majority verdict
+    /// for that row's `[start, end]` window. Same logic the row-level
+    /// warning glyph uses; surfaced here so the "Mismatched" chip in
+    /// `speakerChipBar` can both check whether to render itself and
+    /// filter the list. Memoized on `(utterancesVersion, timelineCount,
+    /// utteranceCount)` because the body re-evaluates often and the
+    /// vote loop is O(N × samples × segments).
+    private var mismatchedUtteranceIDs: Set<UUID> {
+        let key = MismatchMemo.Key(
+            utterancesVersion: recorder.utterancesVersion,
+            timelineCount: recorder.diarizationTimeline.count,
+            utteranceCount: recorder.utterances.count
+        )
+        if mismatchMemo.lastKey == key { return mismatchMemo.set }
+        let timeline = recorder.diarizationTimeline
+        var result: Set<UUID> = []
+        if !timeline.isEmpty {
+            for u in recorder.utterances {
+                let dominant = AnalysisPipeline.dominantSpeakerInSegments(
+                    timeline,
+                    from: u.start,
+                    to: u.end,
+                    fallback: u.speakerID
+                )
+                if dominant != u.speakerID {
+                    result.insert(u.id)
+                }
+            }
+        }
+        mismatchMemo.lastKey = key
+        mismatchMemo.set = result
+        return result
+    }
+
     /// `(originalIndex, utterance)` pairs surviving both filters. The
     /// original index is preserved so each row's "#N" badge keeps the
     /// utterance's stable session number even when the list is
@@ -1554,11 +1591,14 @@ struct ContentView: View {
                 : JapaneseSearchNormalizer.normalize(trimmed),
             labelFilter: selectedLabelFilter,
             speakerFilter: selectedSpeakerFilter,
+            mismatchOnly: showingMismatchOnly,
             utteranceCount: recorder.utterances.count,
-            utterancesVersion: recorder.utterancesVersion
+            utterancesVersion: recorder.utterancesVersion,
+            timelineCount: recorder.diarizationTimeline.count
         )
         if filterMemo.lastKey == key { return }
 
+        let mismatchSet: Set<UUID> = key.mismatchOnly ? mismatchedUtteranceIDs : []
         let results: [(idx: Int, u: UtteranceEstimate)] = recorder
             .utterances
             .enumerated()
@@ -1569,6 +1609,9 @@ struct ContentView: View {
                 }
                 if let filterSpeaker = key.speakerFilter,
                    u.speakerID != filterSpeaker {
+                    return nil
+                }
+                if key.mismatchOnly, !mismatchSet.contains(u.id) {
                     return nil
                 }
                 if !key.normalizedQuery.isEmpty {
@@ -1674,7 +1717,7 @@ struct ContentView: View {
                 if !recorder.utterances.isEmpty {
                     showingFileDiscardConfirm = true
                 } else {
-                    showingPacingDialog = true
+                    startFromFileAndReleaseScope(url)
                 }
             case .session:
                 Task { await loadSessionFromPickedFile(url) }
@@ -1718,8 +1761,8 @@ struct ContentView: View {
     }
 
     /// Release the picker's scope ref we grabbed in the fileImporter
-    /// callback and clear the pending URL. Used by all cancel paths
-    /// in the discard / pacing dialogs.
+    /// callback and clear the pending URL. Used by the discard-cancel
+    /// path.
     private func releasePendingFileScope() {
         if pendingFileScopeAcquired, let url = pendingFileURL {
             url.stopAccessingSecurityScopedResource()
@@ -1731,22 +1774,12 @@ struct ContentView: View {
     /// Hand the URL to the recorder (which acquires its own scope ref
     /// synchronously in `startFromFile`), then release the picker's
     /// ref we've been holding through the dialog hop.
-    private func startFromFileAndReleaseScope(
-        _ url: URL,
-        realTimePacing: Bool = false,
-        fastPaceMultiplier: Int = 8,
-        audioOutputEnabled: Bool = false
-    ) {
+    private func startFromFileAndReleaseScope(_ url: URL) {
         let acquired = pendingFileScopeAcquired
         pendingFileScopeAcquired = false
         pendingFileURL = nil
         Task {
-            await recorder.startFromFile(
-                url,
-                realTimePacing: realTimePacing,
-                fastPaceMultiplier: fastPaceMultiplier,
-                audioOutputEnabled: audioOutputEnabled
-            )
+            await recorder.startFromFile(url)
             if acquired {
                 url.stopAccessingSecurityScopedResource()
             }

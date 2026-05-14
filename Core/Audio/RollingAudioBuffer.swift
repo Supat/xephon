@@ -2,7 +2,7 @@ import Foundation
 
 /// Bounded rolling buffer over a 16 kHz mono Float32 capture stream.
 /// Encapsulates the trim-before-append, deep-copy-on-snapshot, and
-/// origin-tracking invariants that previously lived as scattered
+/// file-time tracking invariants that previously lived as scattered
 /// methods + comments on RecordingController.
 ///
 /// Shape of the contract:
@@ -25,10 +25,18 @@ import Foundation
 ///    initializer copies), so callers can hand the result to a
 ///    background actor without contending for `samples`.
 ///
-/// 4. `origin` advances every time samples are dropped from the head.
-///    Audio-time → buffer-index mapping uses
-///    `(audioTime - origin) * sampleRate`, so callers don't need to
-///    track trimming themselves.
+/// 4. **Indexing is file-time, not output-time.** Each `append(_:)`
+///    records an anchor `(sampleIndex, fileTime)` from the incoming
+///    chunk's `timestamp`. Slice/trim convert file-time → sample-index
+///    via piecewise-linear interpolation across those anchors. This
+///    closes the drift gap between SpeechAnalyzer's reported result
+///    ranges (which are corrected to file-time in
+///    `StreamingSpeechAnalyzerTranscriber.handleResult`) and the
+///    sample-position math used to slice the rolling buffer. With
+///    plain `i / sampleRate` indexing, a 30-min 44.1 kHz file
+///    accumulates 1-3 s of mismatch between ASR ranges and the audio
+///    fed to acoustic SER — slicing in file-time fixes that
+///    end-to-end.
 public struct RollingAudioBuffer: Sendable {
     public let sampleRate: Double
     /// Hard cap on the rolling capture buffer, sized for the worst
@@ -41,9 +49,22 @@ public struct RollingAudioBuffer: Sendable {
     public let contextSeconds: TimeInterval
 
     public private(set) var samples: [Float] = []
-    /// Audio-time (seconds) of `samples[0]`. Advances each time
-    /// samples are dropped from the head.
-    public private(set) var origin: TimeInterval = 0
+
+    /// `(sampleIndex, fileTime)` anchor: at `samples[sampleIndex]`, the
+    /// source-file timeline reads `fileTime`. Maintained sorted by
+    /// `sampleIndex` ascending, with `anchors.first?.sampleIndex == 0`
+    /// when the buffer is non-empty.
+    private struct Anchor: Sendable {
+        var sampleIndex: Int
+        var fileTime: TimeInterval
+    }
+    private var anchors: [Anchor] = []
+
+    /// File-time of `samples[0]`. Derived from the head anchor.
+    /// Zero when the buffer is empty (no audio yet).
+    public var origin: TimeInterval {
+        anchors.first?.fileTime ?? 0
+    }
 
     public var count: Int { samples.count }
     public var isEmpty: Bool { samples.isEmpty }
@@ -63,69 +84,83 @@ public struct RollingAudioBuffer: Sendable {
     /// re-reserves up to `maxSamples`.
     public mutating func reset() {
         samples.removeAll(keepingCapacity: true)
-        // Pre-reserve so Array's exponential capacity growth never
-        // triggers a multi-MB allocation when the buffer approaches
-        // the cap. `reserveCapacity` is a no-op if the existing
-        // capacity already covers `maxSamples`.
         samples.reserveCapacity(maxSamples)
-        origin = 0
+        anchors.removeAll(keepingCapacity: false)
     }
 
-    /// Append new samples, trimming the head first if the result
-    /// would exceed `maxSamples`. The pre-trim discipline is the
-    /// invariant that pins capacity to the initial reservation —
-    /// see the type's doc comment for why post-trim doesn't work.
-    public mutating func append(_ incoming: [Float]) {
-        let projected = samples.count + incoming.count
+    /// Append a captured chunk. Records a `(sampleIndex, fileTime)`
+    /// anchor at the chunk's start so subsequent file-time queries
+    /// (slice / trim / snapshotTail) can interpolate sample positions
+    /// accurately even when the source file's sample-rate-conversion
+    /// to 16 kHz accumulates per-chunk rounding drift.
+    ///
+    /// `chunk.timestamp` must be monotonic; non-monotonic chunks
+    /// (rare AVAudioEngine glitches on route changes) are dropped on
+    /// the floor — their samples are still appended, but the prior
+    /// anchor's slope continues to govern interpolation through the
+    /// dropped region.
+    public mutating func append(_ chunk: AudioChunk) {
+        let incomingCount = chunk.samples.count
+        guard incomingCount > 0 else { return }
+
+        // Trim head first to keep capacity pinned — see invariant #1.
+        let projected = samples.count + incomingCount
         if projected > maxSamples {
-            // `min` guards against a hypothetical capture chunk
-            // larger than `maxSamples` itself — without it
-            // `removeFirst` would trap on n > count.
             let excess = min(projected - maxSamples, samples.count)
-            samples.removeFirst(excess)
-            origin += Double(excess) / sampleRate
+            dropHead(excess)
         }
-        samples.append(contentsOf: incoming)
+
+        // Record the anchor before appending so `sampleIndex` reflects
+        // where this chunk's first sample lands in the buffer.
+        let chunkStartIndex = samples.count
+        let monotonic = anchors.last.map { chunk.timestamp > $0.fileTime } ?? true
+        if monotonic {
+            anchors.append(Anchor(sampleIndex: chunkStartIndex, fileTime: chunk.timestamp))
+        }
+
+        samples.append(contentsOf: chunk.samples)
     }
 
     /// Drop processed audio from the head, keeping the last
-    /// `contextSeconds` of audio behind `boundary` as cross-segment
-    /// speaker context for the diarizer. Caller is responsible for
-    /// having sliced any segments below `boundary` first; the SER
-    /// task already owns its own copy of the slice, so trimming is
-    /// safe.
+    /// `contextSeconds` of audio behind `boundary` (file-time) as
+    /// cross-segment speaker context for the diarizer.
     public mutating func trimProcessed(below boundary: TimeInterval) {
         let cutoff = boundary - contextSeconds
-        let dropSeconds = cutoff - origin
-        guard dropSeconds > 0 else { return }
-        let frames = min(Int(dropSeconds * sampleRate), samples.count)
+        let cutoffIndex = indexForFileTime(cutoff)
+        let frames = min(max(cutoffIndex, 0), samples.count)
         guard frames > 0 else { return }
-        samples.removeFirst(frames)
-        origin += Double(frames) / sampleRate
+        dropHead(frames)
     }
 
-    /// Materialize a fresh `[Float]` for the requested audio-time
+    /// Materialize a fresh `[Float]` for the requested file-time
     /// range. Returns an empty chunk when the range falls outside
-    /// the current buffer. The slice is a real copy (`Array(_:)`
-    /// from a slice copies), so the caller can hand it off to a
-    /// background actor without contending for the live buffer.
+    /// the current buffer.
+    ///
+    /// The returned chunk's `timestamp` is the file-time of its
+    /// **actual** first sample — which may be later than `start` if
+    /// the head has been evicted past `start`. Without that, a
+    /// downstream consumer like `FluidAudioDiarizer.atTime` would
+    /// anchor its segments to a time the audio doesn't correspond
+    /// to.
     public func slice(start: TimeInterval, end: TimeInterval) -> AudioChunk {
-        let localStart = max(0, start - origin)
-        let localEnd   = max(localStart, end - origin)
-        let startIndex = min(Int(localStart * sampleRate), samples.count)
-        let endIndex   = min(Int(localEnd * sampleRate), samples.count)
-        guard startIndex < endIndex else {
+        guard !samples.isEmpty else {
             return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: start)
         }
-        let slice = Array(samples[startIndex..<endIndex])
-        return AudioChunk(samples: slice, sampleRate: sampleRate, timestamp: start)
+        let startIdx = min(max(indexForFileTime(start), 0), samples.count)
+        let endIdx = min(max(indexForFileTime(end), startIdx), samples.count)
+        guard startIdx < endIdx else {
+            return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: start)
+        }
+        let slice = Array(samples[startIdx..<endIdx])
+        let actualStart = fileTimeForIndex(startIdx)
+        return AudioChunk(samples: slice, sampleRate: sampleRate, timestamp: actualStart)
     }
 
     /// Sendable snapshot of the entire current buffer for FluidAudio
     /// diarization. Forces a deep copy via
     /// `unsafeUninitializedCapacity` rather than letting Swift
-    /// Array's CoW share storage with `samples`. See invariant #2
-    /// in the type-level doc comment.
+    /// Array's CoW share storage with `samples`. The chunk's
+    /// timestamp is the file-time of `samples[0]`.
     public func snapshotForDiarization() -> AudioChunk {
         let isolated = samples.withUnsafeBufferPointer { src -> [Float] in
             guard let base = src.baseAddress else { return [] }
@@ -145,9 +180,13 @@ public struct RollingAudioBuffer: Sendable {
 
     /// Deep-copy snapshot of the trailing `seconds` of audio. Used
     /// by the continuous-diarization path which only needs a short
-    /// (~10 s) sliding window, not the full rolling buffer. Same
-    /// CoW-isolation guarantee as `snapshotForDiarization` so the
-    /// snapshot doesn't alias the live buffer.
+    /// (~10 s) sliding window, not the full rolling buffer.
+    /// `seconds` is wall-clock seconds; the slice is sized off the
+    /// buffer's nominal sample rate (the diarizer doesn't care about
+    /// per-chunk drift internally — it just needs the most recent
+    /// audio in chronological order). The returned chunk's
+    /// `timestamp` is the file-time of its first sample so the
+    /// diarizer's `atTime` anchor lands in the correct timeline.
     public func snapshotTail(seconds: TimeInterval) -> AudioChunk {
         guard !samples.isEmpty else {
             return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: origin)
@@ -158,7 +197,7 @@ public struct RollingAudioBuffer: Sendable {
         }
         let count = Int(seconds * sampleRate)
         let startIndex = samples.count - count
-        let timestamp = origin + Double(startIndex) / sampleRate
+        let timestamp = fileTimeForIndex(startIndex)
         let isolated = [Float](unsafeUninitializedCapacity: count) { dst, initializedCount in
             samples.withUnsafeBufferPointer { src in
                 if let dstBase = dst.baseAddress, let srcBase = src.baseAddress {
@@ -168,5 +207,118 @@ public struct RollingAudioBuffer: Sendable {
             initializedCount = count
         }
         return AudioChunk(samples: isolated, sampleRate: sampleRate, timestamp: timestamp)
+    }
+
+    // MARK: - Anchor-based file-time math
+
+    /// Map sample index → file-time using anchor interpolation.
+    /// Outside the anchor range, extrapolates from the nearest pair's
+    /// slope; with a single anchor, falls back to nominal sample-rate
+    /// stepping (good enough until the second anchor lands).
+    private func fileTimeForIndex(_ index: Int) -> TimeInterval {
+        guard let first = anchors.first else {
+            return Double(index) / sampleRate
+        }
+        if anchors.count == 1 {
+            return first.fileTime + Double(index - first.sampleIndex) / sampleRate
+        }
+        // Binary-search for the first anchor with sampleIndex > index.
+        var lo = 0
+        var hi = anchors.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if anchors[mid].sampleIndex <= index {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        let upperIdx = lo
+        if upperIdx == 0 {
+            let a = anchors[0]
+            let b = anchors[1]
+            return interpolateFileTime(at: index, between: a, and: b)
+        }
+        if upperIdx == anchors.count {
+            let a = anchors[anchors.count - 2]
+            let b = anchors[anchors.count - 1]
+            return interpolateFileTime(at: index, between: a, and: b)
+        }
+        let a = anchors[upperIdx - 1]
+        let b = anchors[upperIdx]
+        return interpolateFileTime(at: index, between: a, and: b)
+    }
+
+    /// Map file-time → sample index (inverse of `fileTimeForIndex`).
+    private func indexForFileTime(_ t: TimeInterval) -> Int {
+        guard let first = anchors.first else {
+            return Int(t * sampleRate)
+        }
+        if anchors.count == 1 {
+            return first.sampleIndex + Int((t - first.fileTime) * sampleRate)
+        }
+        var lo = 0
+        var hi = anchors.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if anchors[mid].fileTime <= t {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        let upperIdx = lo
+        if upperIdx == 0 {
+            let a = anchors[0]
+            let b = anchors[1]
+            return interpolateIndex(at: t, between: a, and: b)
+        }
+        if upperIdx == anchors.count {
+            let a = anchors[anchors.count - 2]
+            let b = anchors[anchors.count - 1]
+            return interpolateIndex(at: t, between: a, and: b)
+        }
+        let a = anchors[upperIdx - 1]
+        let b = anchors[upperIdx]
+        return interpolateIndex(at: t, between: a, and: b)
+    }
+
+    private func interpolateFileTime(at index: Int, between a: Anchor, and b: Anchor) -> TimeInterval {
+        let span = b.sampleIndex - a.sampleIndex
+        if span <= 0 { return a.fileTime }
+        let t = Double(index - a.sampleIndex) / Double(span)
+        return a.fileTime + t * (b.fileTime - a.fileTime)
+    }
+
+    private func interpolateIndex(at fileTime: TimeInterval, between a: Anchor, and b: Anchor) -> Int {
+        let span = b.fileTime - a.fileTime
+        if span <= 0 { return a.sampleIndex }
+        let t = (fileTime - a.fileTime) / span
+        return a.sampleIndex + Int(t * Double(b.sampleIndex - a.sampleIndex))
+    }
+
+    /// Drop `count` samples from the head, shifting anchors so
+    /// `anchors[0].sampleIndex == 0` afterwards.
+    private mutating func dropHead(_ count: Int) {
+        guard count > 0, count <= samples.count else { return }
+        // Compute the file-time at the new head BEFORE mutating anchors.
+        let newOriginFileTime = fileTimeForIndex(count)
+        samples.removeFirst(count)
+        // Shift remaining anchors and drop those that now sit at
+        // negative sample indices.
+        anchors = anchors.compactMap { anchor in
+            let shifted = anchor.sampleIndex - count
+            guard shifted >= 0 else { return nil }
+            return Anchor(sampleIndex: shifted, fileTime: anchor.fileTime)
+        }
+        // Ensure the head anchor pins sampleIndex 0 to the right
+        // file-time. If the first remaining anchor isn't at index 0,
+        // synthesize one from the interpolated origin.
+        if anchors.first?.sampleIndex != 0 {
+            anchors.insert(
+                Anchor(sampleIndex: 0, fileTime: newOriginFileTime),
+                at: 0
+            )
+        }
     }
 }

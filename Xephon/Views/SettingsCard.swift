@@ -7,9 +7,13 @@ import SwiftUI
 /// session-summarizer controls live on `SessionSummarySheet` so they
 /// sit next to the artifact they affect.
 ///
-/// Language and Text SER share a row so the two configuration-y
-/// dropdowns read as siblings. Speech-boost (a toggle, distinct
-/// affordance) sits below on its own line.
+/// Language and Text SER share a row when there's enough horizontal
+/// space (landscape, regular iPad layout). In portrait — where the
+/// left pane shrinks to ~1/3 of screen width — they stack vertically
+/// so neither dropdown gets truncated. `ViewThatFits` picks the
+/// first variant whose horizontal extent fits the available width,
+/// falling back to the stacked layout otherwise. Speech-boost (a
+/// toggle, distinct affordance) sits below on its own line.
 struct SettingsCard<
     Language: View,
     SpeechBoost: View,
@@ -21,9 +25,15 @@ struct SettingsCard<
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 16) {
-                languagePicker()
-                textSERPicker()
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    languagePicker()
+                    textSERPicker()
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    languagePicker()
+                    textSERPicker()
+                }
             }
             speechBoostToggle()
         }

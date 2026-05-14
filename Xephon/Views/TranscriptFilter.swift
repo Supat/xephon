@@ -10,6 +10,13 @@ struct FilterDepsKey: Equatable {
     let normalizedQuery: String
     let labelFilter: String?
     let speakerFilter: String?
+    /// When true, only utterances whose stored speaker disagrees
+    /// with the cumulative-timeline majority survive the filter.
+    /// Independent of `speakerFilter` (which selects a single
+    /// speaker); the two never combine usefully so the chip bar
+    /// makes the mismatch chip mutually exclusive with speaker
+    /// chips.
+    let mismatchOnly: Bool
     /// Utterance count handles appends (live streaming) and most
     /// resets. Paired with `utterancesVersion` for in-place mutations
     /// (re-evaluate, hand-edit, speaker rename) where the count
@@ -17,6 +24,11 @@ struct FilterDepsKey: Equatable {
     /// the controller.
     let utteranceCount: Int
     let utterancesVersion: Int
+    /// Diarization-timeline observation count — moves the mismatch
+    /// set whenever the timeline grows or is rewritten. Doesn't
+    /// affect non-mismatch filtering but cheap to include in the
+    /// fingerprint either way.
+    let timelineCount: Int
 }
 
 /// Reference-typed memo for the filter + summary derivation in
@@ -29,4 +41,19 @@ final class FilterMemo {
     var lastKey: FilterDepsKey?
     var results: [(idx: Int, u: UtteranceEstimate)] = []
     var summary: ConversationSummary = ConversationSummary()
+}
+
+/// Reference-typed memo for the speaker-mismatch set in ContentView.
+/// Same pattern as `FilterMemo` — held via `@State` so internal
+/// mutation doesn't trigger body re-eval, and the per-render cost
+/// drops to a key compare when nothing's changed.
+@MainActor
+final class MismatchMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let timelineCount: Int
+        let utteranceCount: Int
+    }
+    var lastKey: Key?
+    var set: Set<UUID> = []
 }

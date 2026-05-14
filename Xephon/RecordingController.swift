@@ -131,9 +131,7 @@ final class RecordingController {
     /// for it" (Date() at the analysisTask receipt). Indicates how long
     /// SpeechAnalyzer's volatile-stabilization window held the segment
     /// before promoting it to a final — typical 200–800 ms on M-class.
-    /// Nil until the first finalize lands, and nil under fast-pace file
-    /// analysis (audio time != wall-clock time, so the delta has no
-    /// physical meaning).
+    /// Nil until the first finalize lands.
     private(set) var lastASRFinalizeLatency: TimeInterval?
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
@@ -298,10 +296,7 @@ final class RecordingController {
     /// Fraction of the file's audio that has been captured so far, in
     /// `[0, 1]`. Nil when not in file mode or the duration probe at
     /// `startFromFile` couldn't read the file. Compares the pipeline's
-    /// captured-sample audio time against the file's total duration —
-    /// independent of pacing (fast-pace pumps samples through faster
-    /// in wall-clock, but each sample still represents 1/16 ms of
-    /// audio either way).
+    /// captured-sample audio time against the file's total duration.
     var fileCompletionFraction: Double? {
         guard let total = fileTotalAudioDuration, total > 0 else { return nil }
         return min(1.0, max(0.0, elapsedSeconds / total))
@@ -352,6 +347,20 @@ final class RecordingController {
     }
     private var pipeline: AnalysisPipeline?
     private var pipelineTask: Task<AutoConfiguredPipeline, Never>?
+
+    /// Per-component readiness shims for the "Models" card. Each
+    /// proxies through to the active pipeline's nonisolated snapshot
+    /// flags, or returns `false` while the pipeline is still pre-
+    /// warming (the card hides under SetupView during that window
+    /// anyway). Kept here rather than threaded through the view so
+    /// `ModelsCard` doesn't have to know how `AnalysisPipeline` is
+    /// stored.
+    var pipelineHasDiarizer: Bool { pipeline?.hasDiarizer ?? false }
+    var pipelineHasDimensionalSER: Bool { pipeline?.hasDimensionalSER ?? false }
+    var pipelineHasCategoricalSER: Bool { pipeline?.hasCategoricalSER ?? false }
+    var pipelineHasAgeGenderSER: Bool { pipeline?.hasAgeGenderSER ?? false }
+    var pipelineHasDeBERTaTextSER: Bool { pipeline?.hasDeBERTaTextSER ?? false }
+
     private let exporter = JSONExporter()
     private var rawTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
@@ -364,30 +373,61 @@ final class RecordingController {
     /// last `continuousDiarizeWindowSec` of audio to the pipeline's
     /// speaker timeline. The timeline is what `dominantSpeaker`
     /// queries per sentence — running it continuously rather than
-    /// per-segment gives sharper speaker boundaries on fast-pace
+    /// per-segment gives sharper speaker boundaries on rapid
     /// turn-takes (the per-segment 60 s context blurs them).
     private var continuousDiarizeTask: Task<Void, Never>?
+    /// First chunk's timestamp from the raw audio pump, used to
+    /// rebase capture timestamps into session-relative time. In file
+    /// mode this is always 0; in mic mode it's the engine's
+    /// `sampleTime / sampleRate` at first tap, which can be any
+    /// non-zero value (the engine's clock continues across
+    /// start/stop cycles). The transcriber does the same rebase
+    /// internally for its anchors — we need it on the raw branch
+    /// too so `capturedAudio`'s anchors and the diarizer's
+    /// cumulative timeline land in the same timeline as ASR.
+    private var rawPumpBaseTimestamp: TimeInterval?
+    /// Latest session-relative file-time seen by the raw audio pump.
+    /// Tracked here because `samplesCaptured / sampleRate` is
+    /// output-time, which diverges from file-time by the per-chunk
+    /// resampling drift (1-3 s over a 30 min file at 44.1 kHz).
+    /// The continuous-diarize task reads this so its slice / fire
+    /// cursors stay in the same timeline as `ASRSegment` ranges
+    /// and the diarizer's `atTime` anchor.
+    private var latestCapturedFileTime: TimeInterval = 0
+    /// Latest file-time the continuous-diarize task has processed.
+    /// Used as a lower bound when trimming the rolling capture
+    /// buffer so audio isn't evicted before diarize reaches it.
+    /// With the non-realtime file pump, ASR can race ahead of the
+    /// diarize task transiently; without this guard, the
+    /// per-segment trim would drop audio diarize still needs and
+    /// the cumulative timeline would gap.
+    private var lastDiarizedAudioTime: TimeInterval = 0
     /// Lock-Screen / Dynamic Island integration. See
     /// `LiveActivityController` for the activity-id, coalescing, and
     /// nonisolated update plumbing.
     private let liveActivity = LiveActivityController()
     /// Wall-clock time the current session began, captured at `start()`.
     /// Used by the Lock Screen / Dynamic Island clock so it ticks at
-    /// real time even when fast-pace file analysis is racing through
-    /// audio at multi-x speed (where `samplesCaptured / sampleRate`
-    /// would jump in fast-forward).
+    /// real time alongside the audio timeline.
     private var sessionStartedAt: Date?
     /// True when audio time progresses at wall-clock rate, so the ASR
-    /// finalize-latency metric is physically meaningful. Mic mode is
-    /// always wall-clock; file mode is wall-clock only when
-    /// `realTimePacing` was passed to `startFromFile`.
+    /// finalize-latency metric is physically meaningful. Always true
+    /// today (mic + real-time file analysis); kept as an explicit flag
+    /// so reintroducing a non-realtime audio source later doesn't
+    /// silently corrupt the latency stat.
     private var asrLatencyMeaningful: Bool = true
     /// Bounded rolling buffer over the raw capture stream. Owns the
     /// trim-before-append cap, the deep-copy-on-snapshot discipline,
     /// and the audio-time → buffer-index origin tracking. See
     /// `RollingAudioBuffer` for the invariants enforced.
     private var capturedAudio = RollingAudioBuffer(
-        maxSeconds: 120,
+        // Sized generously so the non-realtime pump can race ahead of
+        // the continuous-diarize task without the head-cap evicting
+        // audio diarize still needs. ASR is the typical bottleneck
+        // (~5-15× real-time on M-class); diarize is faster but can
+        // transiently fall behind on contention. 300 s gives ~5 min
+        // of slack at ~38 MB resident (16 kHz × 4 B × 300 s).
+        maxSeconds: 300,
         contextSeconds: 60
     )
 
@@ -402,6 +442,7 @@ final class RecordingController {
     private static let summarizerBackendKey = "xephon.summarizerBackend"
     private static let fusionAcousticWeightKey = "xephon.fusionAcousticWeight"
     private static let fusionTextWeightFloorKey = "xephon.fusionTextWeightFloor"
+
 
     /// Current weight applied to the acoustic modality during late
     /// fusion. Drives the live `LateFusion` instance on the
@@ -708,6 +749,9 @@ final class RecordingController {
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
         lastChunkSentenceCount = 0
+        lastDiarizedAudioTime = 0
+        latestCapturedFileTime = 0
+        rawPumpBaseTimestamp = nil
         // Reset per-segment latencies so the pipeline visualization's
         // SER rows return to .idle when a new session starts.
         // Without this, lastAcousticDuration / lastTextDuration
@@ -759,11 +803,55 @@ final class RecordingController {
         rawTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for await buffer in streams.raw {
+                // Rebase chunk timestamp into session-relative time
+                // (subtract the first chunk's stamp). Mic-mode chunks
+                // carry the engine's running sampleTime which can be
+                // any value at the start of a fresh session — without
+                // this, capturedAudio's anchors and the diarize
+                // cursor would live at engine-time while ASR uses
+                // session-relative time, producing a cumulative
+                // timeline that doesn't line up with utterances and
+                // a strip whose totalDuration explodes.
+                let base = self.rawPumpBaseTimestamp ?? buffer.timestamp
+                if self.rawPumpBaseTimestamp == nil {
+                    self.rawPumpBaseTimestamp = base
+                }
+                let rebasedChunk = AudioChunk(
+                    samples: buffer.samples,
+                    sampleRate: buffer.sampleRate,
+                    timestamp: buffer.timestamp - base
+                )
+                // Backpressure on diarize lag. The rolling buffer
+                // has a hard `maxSeconds` cap; once it's hit,
+                // `append()` silently evicts the oldest samples and
+                // the continuous-diarize task's next slice into the
+                // evicted range produces a gap in the cumulative
+                // timeline. Pausing here lets diarize catch up
+                // before the cap is reached. Audio is still being
+                // pulled from the file pump on demand (AudioFileCapture
+                // backpressures on us via `.bufferingOldest` +
+                // retry-on-drop), so blocking here just slows the
+                // upstream pipeline to the diarize-bound rate.
+                let chunkEndFileTime =
+                    rebasedChunk.timestamp + Double(rebasedChunk.samples.count) / rebasedChunk.sampleRate
+                while !Task.isCancelled,
+                      chunkEndFileTime - self.lastDiarizedAudioTime > Self.maxDiarizeLagSeconds {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
                 // The trim-before-append cap and origin advance
                 // both live inside RollingAudioBuffer. See its
                 // doc comment for why the order matters.
-                self.capturedAudio.append(buffer.samples)
-                self.samplesCaptured += buffer.samples.count
+                self.capturedAudio.append(rebasedChunk)
+                self.samplesCaptured += rebasedChunk.samples.count
+                // Track latest file-time so the continuous-diarize
+                // task can advance its cursor in file-time (matching
+                // the timeline the diarizer's `atTime` anchor + the
+                // ASR-corrected segment ranges both use). Chunk
+                // duration is approximated at the nominal 16 kHz
+                // rate; tiny per-chunk error vs. true file-rate is
+                // absorbed by the diarizer's own segmentation.
+                self.latestCapturedFileTime =
+                    rebasedChunk.timestamp + Double(rebasedChunk.samples.count) / rebasedChunk.sampleRate
                 self.inputLevel = Self.smoothLevel(
                     previous: self.inputLevel,
                     current: Self.perceptualLevel(buffer.samples)
@@ -815,21 +903,58 @@ final class RecordingController {
         continuousDiarizeTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let pipeline = await self.ensurePipeline()
+            // Fire on AUDIO-TIME progress, not wall-clock. With the
+            // non-realtime file pump, wall-clock can run several×
+            // faster than audio time — a single sleep-then-fire
+            // iteration can cover many seconds of audio, exceeding
+            // the 10-s window length and leaving gaps in the
+            // cumulative timeline. The catch-up loop below fires
+            // one diarize call per stride until we've covered all
+            // the audio added since the last fire. Per-fire window
+            // stays at the canonical `[fireEnd - windowSec, fireEnd]`
+            // so observations overlap by `windowSec - strideSec` as
+            // designed, regardless of how fast audio is arriving.
+            var lastFiredAudioTime: TimeInterval = 0
             while !Task.isCancelled {
-                try? await Task.sleep(
-                    nanoseconds: UInt64(Self.continuousDiarizeStrideSec * 1_000_000_000)
-                )
+                try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return }
                 guard self.isRecording else { continue }
-                let window = self.capturedAudio.snapshotTail(
-                    seconds: Self.continuousDiarizeWindowSec
-                )
-                guard !window.samples.isEmpty else { continue }
-                await pipeline.ingestDiarizationWindow(window)
+                // File-time cursor — same timeline `slice`,
+                // `FluidAudioDiarizer.atTime`, and ASR-corrected
+                // segment ranges all use. Output-time
+                // (`samplesCaptured / sampleRate`) would drift by
+                // 1-3 s over a 30 min file and put diarize segments
+                // in a different frame than ASR's, producing
+                // dominantSpeaker lookup misses that look like
+                // gaps in the cumulative timeline.
+                let audioTime = self.latestCapturedFileTime
+                var fired = false
+                while lastFiredAudioTime + Self.continuousDiarizeStrideSec <= audioTime {
+                    let fireEnd = lastFiredAudioTime + Self.continuousDiarizeStrideSec
+                    let fireStart = max(0, fireEnd - Self.continuousDiarizeWindowSec)
+                    lastFiredAudioTime = fireEnd
+                    let window = self.capturedAudio.slice(start: fireStart, end: fireEnd)
+                    guard !window.samples.isEmpty else { continue }
+                    await pipeline.ingestDiarizationWindow(window)
+                    // Publish progress so `trimProcessedAudio` can
+                    // hold the buffer back if ASR races ahead.
+                    self.lastDiarizedAudioTime = fireEnd
+                    fired = true
+                }
+                guard fired else { continue }
                 self.diarizationTimeline = await pipeline.diarizationTimelineSnapshot()
                 self.speakerCluster = await pipeline.clusterSnapshot(
                     maxObservationsPerSpeaker: Self.clusterObservationsPerSpeaker
                 )
+                // Self-trim to keep the rolling buffer bounded
+                // even when ASR is between finalizations (which
+                // would otherwise gate the per-segment trim). The
+                // `trimProcessedAudio` helper already respects the
+                // `min(asr, lastDiarized) - context` floor, so this
+                // is safe to call from here too — it just lets
+                // diarize-side progress drive the trim cursor when
+                // ASR's hasn't moved yet.
+                self.trimProcessedAudio(below: self.lastDiarizedAudioTime)
             }
         }
     }
@@ -841,9 +966,23 @@ final class RecordingController {
     /// arrays); safe to call when no pipeline is up (no-op).
     func refreshClusterSnapshot() async {
         guard let pipeline = self.pipeline else { return }
-        speakerCluster = await pipeline.clusterSnapshot(
+        let next = await pipeline.clusterSnapshot(
             maxObservationsPerSpeaker: Self.clusterObservationsPerSpeaker
         )
+        // No-write when the new snapshot equals the resident one.
+        // `clusterSnapshot()` builds fresh value-typed structs every
+        // call, so a naive assignment fires @Observable didChange
+        // even when the underlying speaker DB hasn't moved. With the
+        // 1 Hz refresh loop in ContentView's TabView, that's a
+        // didChange per second forever, cascading re-renders into
+        // every ContentView child that reads `speakerCluster`
+        // (cluster card, heatmap, roster) AND every sibling view in
+        // the same parent body that SwiftUI then has to re-diff —
+        // including the cumulative diarization strip in the
+        // transcript pane, whose `.glassEffect` repaints visibly on
+        // each rebuild. Equating first kills the loop's churn at
+        // the source.
+        if next != speakerCluster { speakerCluster = next }
     }
 
     /// Drain finalized ASR segments → split → SER+fuse → append.
@@ -853,12 +992,12 @@ final class RecordingController {
     /// task finishes first.
     ///
     /// Concurrency is capped at `maxConcurrentSegments` to bound
-    /// peak memory during fast-pace file analysis. Without the cap,
-    /// the file capture pump can deliver tens of segments before
-    /// any have finalized, each holding its own audio slice + ONNX
-    /// I/O tensors — enough to OOM on long files. The poll-and-
-    /// yield wait is coarse but lets the MainActor service updates
-    /// between checks.
+    /// peak memory during long file analysis. Without the cap, the
+    /// capture pump can deliver tens of segments before any have
+    /// finalized, each holding its own audio slice + ONNX I/O
+    /// tensors — enough to OOM on long files. The poll-and-yield
+    /// wait is coarse but lets the MainActor service updates between
+    /// checks.
     private func spawnSegmentAnalysisTask(segmentStream: AsyncStream<ASRSegment>) {
         analysisTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -870,12 +1009,8 @@ final class RecordingController {
                 for await segment in segmentStream {
                     // Record finalize latency at the moment of receipt:
                     // wall-clock now minus the wall-clock when the audio
-                    // for this utterance ended. Only meaningful when
-                    // audio time tracks wall-clock (mic / real-time
-                    // file). Under fast-pace the audio pump runs
-                    // multi-x faster than real, so segment.end is in
-                    // accelerated audio time and the delta would be
-                    // negative — surface nil instead.
+                    // for this utterance ended. Audio time tracks
+                    // wall-clock for both mic and file capture today.
                     if self.asrLatencyMeaningful, let started = self.sessionStartedAt {
                         let endWallClock = started.addingTimeInterval(segment.end)
                         let latency = Date().timeIntervalSince(endWallClock)
@@ -1004,6 +1139,17 @@ final class RecordingController {
         volatilePollTask?.cancel()
         volatilePollTask = nil
 
+        // Drain the continuous-diarize task so the cumulative
+        // timeline covers all captured audio before we finalize.
+        // Bounded wait so a misbehaving diarizer can't hang stop().
+        // (capture / raw / feed have all drained above, so
+        // `latestCapturedFileTime` is final at this point.)
+        let diarizeDeadline = Date().addingTimeInterval(30)
+        while lastDiarizedAudioTime + Self.continuousDiarizeStrideSec < latestCapturedFileTime,
+              Date() < diarizeDeadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+
         continuousDiarizeTask?.cancel()
         continuousDiarizeTask = nil
         volatileText = ""
@@ -1015,6 +1161,18 @@ final class RecordingController {
         await streamingTranscriber.finish()
         await analysisTask?.value
         analysisTask = nil
+
+        // Reconcile every utterance's speaker against the now-final
+        // cumulative timeline. The streaming-pass assignment uses
+        // the timeline as it stood when the utterance was first
+        // emitted — by end-of-file, later observations may have
+        // moved the per-instant majority. File mode only: mic
+        // sessions have no "final" moment (the user could keep
+        // recording), and reconciliation should run against a
+        // settled timeline.
+        if case .file = sourceMode {
+            reconcileSpeakersWithTimeline()
+        }
         phase = .idle
         await liveActivity.end(finalState: currentLiveActivityState)
         sessionStartedAt = nil
@@ -1709,24 +1867,11 @@ final class RecordingController {
     // MARK: - File-backed source
 
     /// Switch to a file-backed audio source and immediately begin streaming
-    /// it through the same pipeline used for the microphone.
-    ///
-    /// - Parameter realTimePacing: when `true`, audio is yielded at the
-    ///   file's wall-clock duration so SpeechAnalyzer behaves identically
-    ///   to a live recording (best ASR/SER quality). When `false` (default),
-    ///   audio is yielded as fast as the analyzer can ingest, which can
-    ///   complete several times faster than real time at some risk to
-    ///   accuracy on long files.
-    /// - Parameter audioOutputEnabled: only meaningful with real-time
-    ///   pacing — plays the file out the speaker alongside analysis so
-    ///   the user can hear what's being transcribed. Ignored under
-    ///   fast pacing (no useful audio at multi-x speed).
-    func startFromFile(
-        _ url: URL,
-        realTimePacing: Bool = false,
-        fastPaceMultiplier: Int = 8,
-        audioOutputEnabled: Bool = false
-    ) async {
+    /// it through the same pipeline used for the microphone. File analysis
+    /// always runs at the file's real-time pace — that's what keeps
+    /// SpeechAnalyzer's volatile-stabilization timing identical to a
+    /// live recording and chunk timestamps locked to the source timeline.
+    func startFromFile(_ url: URL) async {
         guard phase == .idle else { return }
         // Acquire the playback scope synchronously, before any await
         // hop. The picker's implicit grant for the URL is freshest
@@ -1748,17 +1893,12 @@ final class RecordingController {
             return TimeInterval(Double(f.length) / rate)
         }()
         sourceMode = .file(url)
-        // ASR finalize latency only makes sense when audio time tracks
-        // wall-clock time. Fast-pace pumps audio multi-x faster than
-        // real, so segment.end ≠ wall-clock-end, and the latency
-        // computation would yield negative or meaningless deltas.
-        asrLatencyMeaningful = realTimePacing
-        capture = AudioFileCapture(
-            fileURL: url,
-            realTimePacing: realTimePacing,
-            fastPaceMultiplier: fastPaceMultiplier,
-            audioOutputEnabled: audioOutputEnabled
-        )
+        // File analysis runs as fast as the consumers can drain — see
+        // AudioFileCapture's doc-comment. `asrLatencyMeaningful` stays
+        // false here because chunk timestamps (file-time) decouple
+        // from wall-clock when the pump runs faster than 1×.
+        asrLatencyMeaningful = false
+        capture = AudioFileCapture(fileURL: url)
         availableInputs = []
         currentInputUID = nil
         await start()
@@ -2996,10 +3136,20 @@ final class RecordingController {
         fallbackSpeaker: String,
         pipeline: AnalysisPipeline
     ) async -> [HandEditSplitResult] {
+        // Split path: ask the diarizer for verdicts on the
+        // sub-ranges WITHOUT enrolling the audio into the speaker
+        // database. A hand-edit split is the user carving up a
+        // single original utterance into N pieces — they want the
+        // dominant-speaker call per piece, not for each piece's
+        // audio to fold itself into the centroids and skew future
+        // decisions. The other two `resolveSpeakersForRanges` call
+        // sites (re-evaluation, single-sentence hand-edit) keep the
+        // default behaviour of enrolling.
         let sliceSpeakers = await pipeline.resolveSpeakersForRanges(
             audio: diarChunk,
             ranges: plans.map { ($0.start, $0.end) },
-            fallback: fallbackSpeaker
+            fallback: fallbackSpeaker,
+            preserveSpeakerDatabase: true
         )
         // Push the per-slice speakers back onto the cumulative
         // timeline so the strip reflects the same per-instant
@@ -3292,6 +3442,40 @@ final class RecordingController {
     /// nil otherwise. Convenience for the view layer.
     func speakerDisplayName(forStored stored: String) -> String? {
         speakerNameOverrides[stored]
+    }
+
+    /// Walk every utterance once and reassign its `speakerID` to
+    /// the cumulative timeline's per-instant majority verdict for
+    /// its `[start, end]` window. Streaming-pass assignment uses
+    /// the timeline as it stood at finalize-time; by end-of-file,
+    /// later observations may have shifted the majority. This pass
+    /// brings the labels into sync with the strip so the two
+    /// visualizations agree before the session goes idle.
+    ///
+    /// Mutates in place + a single `commitUtteranceChanges()` at
+    /// the end, so the auto-demote sweep and version bump fire
+    /// once for the whole batch instead of N times.
+    private func reconcileSpeakersWithTimeline() {
+        guard !diarizationTimeline.isEmpty, !utterances.isEmpty else { return }
+        var changed = 0
+        for i in utterances.indices {
+            let utt = utterances[i]
+            let dominant = AnalysisPipeline.dominantSpeakerInSegments(
+                diarizationTimeline,
+                from: utt.start,
+                to: utt.end,
+                fallback: utt.speakerID
+            )
+            if dominant != utt.speakerID {
+                utterances[i] = utt.withSpeakerID(dominant)
+                changed += 1
+            }
+        }
+        guard changed > 0 else { return }
+        AppLog.app.info(
+            "finalize: reconciled \(changed, privacy: .public) utterance speaker assignments against cumulative timeline"
+        )
+        commitUtteranceChanges()
     }
 
     /// Manually reassign one utterance's `speakerID`. Used by the
@@ -3816,9 +4000,9 @@ final class RecordingController {
         lastTextDuration = metrics.textDuration
         lastSegmentTotal = metrics.totalDuration
         // Coalesce Live Activity updates instead of spawning one task per
-        // segment — fast-pace fires segments faster than the system can
-        // process Activity updates, and the queued tasks themselves
-        // contribute to MainActor congestion.
+        // segment — dense turn-taking can fire segments faster than the
+        // system can process Activity updates, and the queued tasks
+        // themselves contribute to MainActor congestion.
         liveActivity.scheduleUpdate(currentLiveActivityState)
     }
 
@@ -3834,10 +4018,9 @@ final class RecordingController {
     }
 
     /// Current snapshot for the Live Activity. Lock Screen clock uses
-    /// wall-clock since session start, NOT `samplesCaptured /
-    /// sampleRate` — the latter accelerates wildly during fast-pace
-    /// file analysis since the pump yields hours of audio in minutes.
-    /// Recenters V/A to [-1, +1] for parity with the in-app summary.
+    /// wall-clock since session start for parity with the audio
+    /// timeline. Recenters V/A to [-1, +1] for parity with the in-app
+    /// summary.
     private var currentLiveActivityState: XephonActivityAttributes.ContentState {
         let liveElapsed = sessionStartedAt.map { Date().timeIntervalSince($0) } ?? elapsedSeconds
         return XephonActivityAttributes.ContentState(
@@ -3879,12 +4062,12 @@ final class RecordingController {
     /// each retaining its audio slice + ONNX I/O tensors — sufficient to
     /// OOM on long files. 2 is empirically the highest value that doesn't
     /// trigger `IOSurface creation failed: kIOReturnNoMemory` cascades
-    /// from CoreML EP under sustained fast-pace pressure on 16 GB iPad
-    /// Pro: each acoustic SER inference allocates IOSurface-backed
-    /// tensors per running call, and 2 segments × 2 acoustic models
-    /// (× 3 input bins worth of compiled MLModels each) saturates the
-    /// system IOSurface pool. ASR typically emits 1-2 segments/sec so
-    /// 2-wide concurrency is rarely the throughput bottleneck anyway.
+    /// from CoreML EP under sustained load on 16 GB iPad Pro: each
+    /// acoustic SER inference allocates IOSurface-backed tensors per
+    /// running call, and 2 segments × 2 acoustic models (× 3 input
+    /// bins worth of compiled MLModels each) saturates the system
+    /// IOSurface pool. ASR typically emits 1-2 segments/sec so 2-wide
+    /// concurrency is rarely the throughput bottleneck anyway.
     private static let maxConcurrentSegments: Int = 2
 
     /// Sliding-window length for continuous diarization. 10 s is the
@@ -3897,11 +4080,28 @@ final class RecordingController {
     /// each new boundary < 2 s of latency before the timeline learns
     /// about it, while keeping diarizer load to ~0.5 calls/s. Going
     /// shorter spends CPU on overlapping windows that mostly agree;
-    /// going longer makes fast-pace turn-takes show up late.
+    /// going longer makes rapid turn-takes show up late.
     private static let continuousDiarizeStrideSec: TimeInterval = 2
+    /// Maximum audio-time gap the raw audio pump allows between
+    /// `latestCapturedFileTime` and `lastDiarizedAudioTime` before
+    /// blocking to let diarize catch up. Sized below
+    /// `capturedAudio.maxSeconds` minus `contextSeconds` minus a
+    /// safety margin so the rolling buffer's hard-cap eviction
+    /// never trips on diarize-side lag — eviction silently drops
+    /// audio and produces gaps in the cumulative timeline.
+    private static let maxDiarizeLagSeconds: TimeInterval = 220
 
     private func trimProcessedAudio(below boundary: TimeInterval) {
-        capturedAudio.trimProcessed(below: boundary)
+        // Don't trim past where the continuous-diarize task has
+        // processed. Otherwise on a non-realtime pump where ASR
+        // races ahead of diarize, the head-eviction would drop
+        // audio the diarize task still wants to slice — producing
+        // gaps in the cumulative timeline. While diarize hasn't
+        // fired yet (lastDiarizedAudioTime == 0), this gate just
+        // means we don't trim — bounded by `maxSeconds` anyway.
+        let effective = min(boundary, lastDiarizedAudioTime)
+        guard effective > 0 else { return }
+        capturedAudio.trimProcessed(below: effective)
     }
 
     // MARK: - Level meter helpers

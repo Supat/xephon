@@ -293,6 +293,14 @@ public actor FluidAudioDiarizer: Diarizer {
         )
     }
 
+    /// Public entry point for the pipeline pre-warm so the
+    /// first-install model download + compile cost is paid before
+    /// recording starts. No-op when already loaded.
+    public func preload() async throws {
+        guard !manager.isAvailable else { return }
+        try await loadModels()
+    }
+
     private func loadModels() async throws {
         AppLog.diarization.info("Downloading FluidAudio diarizer models (first run)…")
         do {

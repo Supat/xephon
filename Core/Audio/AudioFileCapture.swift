@@ -5,78 +5,39 @@ import XephonLogging
 /// `AudioCapture` implementation that streams an audio file through the
 /// same pipeline used for the mic. Reads `fileURL` in fixed-size chunks,
 /// resamples to 16 kHz mono Float32, and yields chunks to the raw and
-/// processed streams.
+/// processed streams **as fast as the downstream consumers can drain them**.
 ///
-/// Two pacing modes:
-///   - `realTimePacing: true`  — sleeps the chunk's source duration after
-///     each yield, so volatile previews and stage animations look the same
-///     as a live recording. A 5-min file analyzes in 5 min.
-///   - `realTimePacing: false` (default) — fixed N× real-time per
-///     `fastPaceMultiplier`. Sleeps `chunkDuration / N` after each yield,
-///     so a 5-min file finishes in `5 min / N`. Empirically 4–8× still
-///     preserves SpeechAnalyzer's volatile-stabilization timing relative
-///     to real-time, which (because `capForSER` quantizes audio length
-///     into 2/4/8 s bins) is what keeps SER labels stable across modes.
-///     Going significantly higher shifts segment finalization
-///     timestamps and can flip dominant labels. The earlier "as fast as
-///     the analyzer can keep up" approach was unbounded and produced
-///     both label drift AND OOMs.
-///
-/// Streams use unbounded buffering in fast mode so the pump never has to
-/// drop chunks while downstream catches up — bounded by file size, since
-/// the pump exits at EOF.
+/// Pacing is not real-time. The pump uses `.bufferingOldest(N)` continuations
+/// and retries on `.dropped`, so the producer naturally throttles to the
+/// slowest downstream stage (typically ASR). This eliminates the silent
+/// audio loss that real-time pacing produced on long files when
+/// `SpeechAnalyzer`'s drain rate dipped below 1× — at the cost of no
+/// side-channel speaker playback during analysis (the file's audible
+/// timeline would no longer match the analysis cursor, so playback was
+/// removed entirely).
 ///
 /// Both `raw` and `processed` streams carry the same content — the speech
 /// boost EQ doesn't apply to pre-recorded material. Input selection is
 /// disabled while a file is the active source.
 public actor AudioFileCapture: AudioCapture {
-    /// Multiplier used by fast-pace mode. Empirically 4–8× preserves
-    /// SpeechAnalyzer's segment-boundary alignment with real-time mode
-    /// on M-class iPads; above this range the volatile-stabilization
-    /// timers fire at different timestamps, sometimes flipping a
-    /// `capForSER` bin and producing different SER labels for the same
-    /// audio. 8× is the throughput sweet spot but has been observed
-    /// to nudge a few SER labels off versus real-time on edge cases;
-    /// 4× cuts that drift roughly in half at the cost of doubled
-    /// wall-clock analysis time. Bumping above 8× requires
-    /// re-validating SER label stability against a reference set.
-
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
-    private let realTimePacing: Bool
-    /// Multiplier applied to fast-pace chunk-sleep duration. Ignored
-    /// when `realTimePacing` is true. 8× is the default; the file
-    /// importer dialog also exposes 4× when accuracy matters more
-    /// than throughput.
-    private let fastPaceMultiplier: Int
-    /// When true and `realTimePacing` is also true, the file is played
-    /// out the device speaker alongside the analysis pump. Independent
-    /// of fast pacing, where playing the file at the analyzer's wall
-    /// clock would just produce chipmunked-up noise.
-    private let audioOutputEnabled: Bool
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var isAccessingScopedResource = false
-    private var audioPlayer: AVAudioPlayer?
 
     public init(
         fileURL: URL,
-        chunkFrames: AVAudioFrameCount = 4096,
-        realTimePacing: Bool = false,
-        fastPaceMultiplier: Int = 8,
-        audioOutputEnabled: Bool = false
+        chunkFrames: AVAudioFrameCount = 4096
     ) {
         self.fileURL = fileURL
         self.chunkFrames = chunkFrames
-        self.realTimePacing = realTimePacing
-        self.fastPaceMultiplier = fastPaceMultiplier
-        self.audioOutputEnabled = audioOutputEnabled
     }
 
     public func start() async throws -> CaptureStreams {
         // FileImporter hands us a security-scoped URL; the wrapper below
-        // ensures we can read its bytes for the duration of playback.
+        // ensures we can read its bytes for the duration of the pump.
         if fileURL.startAccessingSecurityScopedResource() {
             isAccessingScopedResource = true
         }
@@ -104,23 +65,15 @@ public actor AudioFileCapture: AudioCapture {
         }
         converter.primeMethod = .none
 
-        // Real-time keeps `.bufferingNewest(64)` — the producer is
-        // rate-limited by `Task.sleep` so the buffer rarely fills, and
-        // newest-keeps-newest is the right policy for a live mic.
-        //
-        // Fast-pace uses `.bufferingOldest(256)` PAIRED with retry-on-
-        // drop in the pump (`yieldWithBackpressure` below). With this
-        // policy, attempting to yield into a full buffer returns
-        // `.dropped(value:)` instead of overwriting the oldest entry —
-        // the pump catches that and sleeps until the consumer drains a
-        // slot. The result is true backpressure: the pump runs as fast
-        // as the consumer can keep up, never faster, no chunks lost.
-        // (An earlier `.bufferingNewest(256)` here silently dropped the
-        // oldest 99% of the file — fast-pace would only produce the
-        // final few utterances. `.unbounded` before that let the queue
-        // grow to 100s of MB and OOM'd the app.)
+        // `.bufferingOldest(N)` + retry-on-drop is the backpressure
+        // discipline. Yielding into a full queue returns `.dropped(_)`,
+        // which the pump catches with a short sleep + retry. Producer
+        // self-paces to whatever the slowest consumer (usually ASR) can
+        // sustain. N=64 ≈ 6 s of audio at 4096-frame chunks: ample
+        // headroom for the analyzer to ride out transient stalls
+        // without the pump pausing.
         let bufferingPolicy: AsyncStream<AudioChunk>.Continuation.BufferingPolicy =
-            realTimePacing ? .bufferingNewest(64) : .bufferingOldest(256)
+            .bufferingOldest(64)
         let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: bufferingPolicy)
         let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: bufferingPolicy)
         self.rawCont = rawCont
@@ -131,27 +84,13 @@ public actor AudioFileCapture: AudioCapture {
             "File capture started: \(self.fileURL.lastPathComponent, privacy: .public) (\(totalFrames, privacy: .public) frames @ \(file.processingFormat.sampleRate, privacy: .public) Hz)"
         )
 
-        // Optional speaker playback: a separate AVAudioPlayer reads the
-        // same file from disk at native rate. The analysis pump runs
-        // alongside at its own wall-clock pace; both stay roughly
-        // aligned because real-time pacing matches the file timeline.
-        // We don't tap the player's output (no feedback loop into ASR);
-        // it's purely for the user's ear.
-        if realTimePacing && audioOutputEnabled {
-            startAudioPlayback()
-        }
-
         let chunkFrames = self.chunkFrames
-        let realTimePacing = self.realTimePacing
-        let fastPaceMultiplier = self.fastPaceMultiplier
         pumpTask = Task { [weak self] in
             await self?.pump(
                 file: file,
                 converter: converter,
                 outputFormat: outputFormat,
                 chunkFrames: chunkFrames,
-                realTimePacing: realTimePacing,
-                fastPaceMultiplier: fastPaceMultiplier,
                 rawCont: rawCont,
                 processedCont: processedCont
             )
@@ -164,8 +103,6 @@ public actor AudioFileCapture: AudioCapture {
         pumpTask?.cancel()
         await pumpTask?.value
         pumpTask = nil
-        audioPlayer?.stop()
-        audioPlayer = nil
         rawCont?.finish()
         processedCont?.finish()
         rawCont = nil
@@ -189,8 +126,6 @@ public actor AudioFileCapture: AudioCapture {
         converter: AVAudioConverter,
         outputFormat: AVAudioFormat,
         chunkFrames: AVAudioFrameCount,
-        realTimePacing: Bool,
-        fastPaceMultiplier: Int,
         rawCont: AsyncStream<AudioChunk>.Continuation,
         processedCont: AsyncStream<AudioChunk>.Continuation
     ) async {
@@ -201,7 +136,6 @@ public actor AudioFileCapture: AudioCapture {
             return
         }
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
-        let chunkSecondsAtFile = Double(chunkFrames) / inputFormat.sampleRate
 
         var elapsed: TimeInterval = 0
         while !Task.isCancelled {
@@ -245,38 +179,15 @@ public actor AudioFileCapture: AudioCapture {
                 sampleRate: PipelineAudio.sampleRate,
                 timestamp: elapsed
             )
-            // Both streams emit the same content — there's no upstream EQ to
-            // diverge here, and downstream slicing/feeding code already
-            // assumes parallel timelines.
-            //
-            // In fast-pace, the bounded `.bufferingOldest(256)` policy can
-            // return `.dropped(_)` when the consumer is behind. Retry
-            // until the chunk is enqueued so no audio is lost — this is
-            // the actual backpressure mechanism, replacing the previous
-            // (broken) "let memory grow" / "drop the oldest" approaches.
-            // Real-time pace's `.bufferingNewest(64)` doesn't return
-            // `.dropped`, so the helper is a no-op there.
+            // Yield to both streams with retry-on-drop. Each call returns
+            // promptly when the consumer has space; under sustained
+            // backpressure (analyzer slow), it loops on `.dropped` with
+            // a brief sleep so no audio is lost.
             await Self.yieldWithBackpressure(chunk, to: rawCont)
             await Self.yieldWithBackpressure(chunk, to: processedCont)
 
-            elapsed += chunkSecondsAtFile
-            if realTimePacing {
-                // Match wall-clock to file timeline so volatile previews and
-                // stage animations look identical to a live recording.
-                try? await Task.sleep(nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000))
-            } else {
-                // Configurable fast-pace multiplier — see the
-                // type-level comment for the rationale. Critically,
-                // this is a *paced* fast mode rather than "as fast
-                // as possible": SpeechAnalyzer gets the same
-                // wall-clock breathing room as real-time for its
-                // stabilization timers, so segment boundaries line
-                // up with what real-time would produce, so SER
-                // labels stay stable across modes.
-                try? await Task.sleep(
-                    nanoseconds: UInt64(chunkSecondsAtFile * 1_000_000_000 / Double(fastPaceMultiplier))
-                )
-            }
+            // Advance by the actual input duration of this read.
+            elapsed += Double(inputBuffer.frameLength) / inputFormat.sampleRate
         }
 
         rawCont.finish()
@@ -284,12 +195,10 @@ public actor AudioFileCapture: AudioCapture {
     }
 
     /// Yield with retry-on-drop. Under `.bufferingOldest(N)`, attempting
-    /// to yield into a full buffer returns `.dropped(value:)` rather than
-    /// kicking out an existing element — we sleep briefly and retry until
-    /// the consumer drains a slot, giving the pump real backpressure.
-    /// Under `.bufferingNewest(N)` this is a single yield with no retry
-    /// since that policy returns `.enqueued` even when "full" (it just
-    /// silently evicts the oldest, which is what real-time mode wants).
+    /// to yield into a full buffer returns `.dropped(value:)` instead of
+    /// kicking out an existing element. Sleeping briefly and retrying
+    /// gives the consumer a chance to drain a slot, turning the queue
+    /// into real backpressure on the upstream pump.
     private static func yieldWithBackpressure(
         _ chunk: AudioChunk,
         to cont: AsyncStream<AudioChunk>.Continuation
@@ -299,9 +208,6 @@ public actor AudioFileCapture: AudioCapture {
             case .enqueued, .terminated:
                 return
             case .dropped:
-                // Short wait — long enough to let the consumer pull a
-                // few chunks, short enough that the pump stays close to
-                // consumer speed instead of pacing at fixed intervals.
                 try? await Task.sleep(nanoseconds: 5_000_000)
             @unknown default:
                 return
@@ -313,33 +219,6 @@ public actor AudioFileCapture: AudioCapture {
         if isAccessingScopedResource {
             fileURL.stopAccessingSecurityScopedResource()
             isAccessingScopedResource = false
-        }
-    }
-
-    /// Start the side-channel `AVAudioPlayer` for speaker playback.
-    /// Failures are non-fatal — the analysis pump runs regardless;
-    /// the user just doesn't hear anything.
-    private func startAudioPlayback() {
-        do {
-            #if os(iOS) || targetEnvironment(macCatalyst)
-            // The active session may have been left in `.record` mode by
-            // a prior live recording. Switch to `.playback` so the device
-            // unmutes the output route. Mode `.default` is fine — file
-            // analysis isn't a measurement context.
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
-            try session.setActive(true)
-            #endif
-            let player = try AVAudioPlayer(contentsOf: fileURL)
-            player.prepareToPlay()
-            if player.play() {
-                audioPlayer = player
-                AppLog.audio.info("audio playback started")
-            } else {
-                AppLog.audio.warning("audio playback play() returned false")
-            }
-        } catch {
-            AppLog.audio.warning("audio playback failed: \(String(describing: error), privacy: .public)")
         }
     }
 }

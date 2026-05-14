@@ -19,8 +19,8 @@ public struct DiarizedSegment: Sendable, Hashable, Codable {
 /// panels (pairwise cosine-distance heatmap + 2D PCA scatter); these
 /// reads happen at ~1 Hz so the snapshot is value-typed and self-
 /// contained rather than handing out actor-internal references.
-public struct SpeakerClusterSnapshot: Sendable {
-    public struct Speaker: Sendable {
+public struct SpeakerClusterSnapshot: Sendable, Equatable {
+    public struct Speaker: Sendable, Equatable {
         /// Display-format id (`S01`, `S02`, …) — already bridged from
         /// FluidAudio's raw numeric ids so consumers don't need to
         /// reformat.
@@ -78,6 +78,15 @@ public struct SpeakerMatch: Sendable {
 }
 
 public protocol Diarizer: Actor {
+    /// Eagerly load underlying models, fetching + compiling them if
+    /// this is a fresh install. Optional — implementations that
+    /// don't have a discrete load step can leave this as a no-op
+    /// (the default extension supplies one). Surfaced so the
+    /// pipeline pre-warm can pay the multi-second first-install
+    /// compile cost before recording starts, instead of stalling
+    /// the first ~5-6 s of analysis while diarize lazy-loads on
+    /// its first call.
+    func preload() async throws
     func diarize(_ buffer: AudioChunk) async throws -> [DiarizedSegment]
     /// Reset the diarizer's session-wide speaker database. Called at
     /// the start of each recording so speaker IDs from the previous
@@ -156,6 +165,7 @@ public protocol Diarizer: Actor {
 }
 
 public extension Diarizer {
+    func preload() async throws {}
     func resetSpeakers() async {}
     func embedding(for audio: [Float]) async throws -> [Float]? { nil }
     func findSpeaker(byEmbedding embedding: [Float]) async -> SpeakerMatch? { nil }

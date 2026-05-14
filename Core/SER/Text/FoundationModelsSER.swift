@@ -82,6 +82,11 @@ public actor FoundationModelsSER: TextSER {
                 .disgust:      Float(g.disgust),
                 .trust:        Float(g.trust),
             ])
+        } catch let error as LanguageModelSession.GenerationError {
+            if case .guardrailViolation = error {
+                throw TextSERError.guardrailViolation
+            }
+            throw TextSERError.underlying(error)
         } catch {
             throw TextSERError.underlying(error)
         }

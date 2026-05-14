@@ -11,6 +11,14 @@ public actor SwitchingTextSER: TextSER {
         case foundationModels
     }
 
+    /// Sentinel value stamped on `UtteranceEstimate.textBackend` when
+    /// Apple FoundationModels declined to score an utterance because
+    /// its safety classifier fired. Surfaces in the UI as a dedicated
+    /// "Apple FM ✕" chip — distinguishes a guardrail trip from an
+    /// utterance that simply had no text-SER run (filler / empty /
+    /// no backend), which keep `textBackend == nil`.
+    public static let foundationModelsGuardrailBackend = "foundationModels.guardrail"
+
     private var preferredBackend: Backend
     private let deberta: (any TextSER)?
     private let foundationModels: any TextSER

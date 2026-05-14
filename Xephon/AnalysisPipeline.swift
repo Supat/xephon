@@ -22,6 +22,17 @@ public struct ProcessingMetrics: Sendable, Hashable {
     public let totalDuration: TimeInterval
 }
 
+/// Outcome of a `runText` call. Distinguishes a clean score from the
+/// two skip reasons we want the UI to render differently: filler /
+/// empty / no-backend (no chip) vs. Apple FM guardrail decline
+/// (dedicated "Apple FM ✕" chip).
+struct TextSEROutcome: Sendable {
+    let score: PlutchikScore?
+    let guardrailViolation: Bool
+
+    static let empty = TextSEROutcome(score: nil, guardrailViolation: false)
+}
+
 /// Result of `autoConfigured(modelStore:)`. Carries the pipeline plus
 /// any per-modality construction errors so the UI can surface them
 /// rather than silently dropping the affected modality. An empty
@@ -60,6 +71,22 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// gracefully and rows just carry `ageGender == nil`.
     private let ageGenderSER: (any AgeGenderSER)?
     private let textSER: (any TextSER)?
+
+    /// Snapshot booleans for surfacing per-component readiness in
+    /// the UI ("Models" card) without exposing the pipeline's
+    /// private component references. All are `let` so they're safe
+    /// to access `nonisolated` — the values are fixed at
+    /// construction by `autoConfigured(modelStore:)`.
+    public nonisolated var hasDiarizer: Bool { diarizer != nil }
+    public nonisolated var hasDimensionalSER: Bool { dimensionalSER != nil }
+    public nonisolated var hasCategoricalSER: Bool { categoricalSER != nil }
+    public nonisolated var hasAgeGenderSER: Bool { ageGenderSER != nil }
+    /// True when the bundled DeBERTa-WRIME text-SER model was
+    /// successfully loaded into the pipeline's `SwitchingTextSER`.
+    /// `false` doesn't mean the pipeline can't do text SER — Apple
+    /// Foundation Models stays available as the fallback backend —
+    /// but the Japanese-tuned Plutchik head is gone.
+    public nonisolated let hasDeBERTaTextSER: Bool
     /// Mutable so the controller can swap in a `LateFusion` with
     /// fresh weights when the user adjusts the fusion-control
     /// sliders. New utterances fuse under the new weights; old
@@ -78,6 +105,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         categoricalSER: (any CategoricalAcousticSER)? = nil,
         ageGenderSER: (any AgeGenderSER)? = nil,
         textSER: (any TextSER)? = nil,
+        hasDeBERTaTextSER: Bool = false,
         fuser: any Fuser = LateFusion(),
         speakerTracker: StreamingSpeakerTracker = StreamingSpeakerTracker()
     ) {
@@ -87,6 +115,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         self.categoricalSER = categoricalSER
         self.ageGenderSER = ageGenderSER
         self.textSER = textSER
+        self.hasDeBERTaTextSER = hasDeBERTaTextSER
         self.fuser = fuser
         self.speakerTracker = speakerTracker
     }
@@ -252,14 +281,36 @@ final class AnalysisPipeline: @unchecked Sendable {
     func resolveSpeakersForRanges(
         audio: AudioChunk,
         ranges: [(start: TimeInterval, end: TimeInterval)],
-        fallback: String
+        fallback: String,
+        preserveSpeakerDatabase: Bool = false
     ) async -> [String] {
         guard !ranges.isEmpty else { return [] }
         let durationSec = Double(audio.samples.count) / audio.sampleRate
         AppLog.diarization.info(
-            "resolveSpeakersForRanges: input audio=\(audio.samples.count, privacy: .public) samples (\(durationSec, privacy: .public)s) timestamp=\(audio.timestamp, privacy: .public)s ranges=\(ranges.count, privacy: .public) fallback=\(fallback, privacy: .public)"
+            "resolveSpeakersForRanges: input audio=\(audio.samples.count, privacy: .public) samples (\(durationSec, privacy: .public)s) timestamp=\(audio.timestamp, privacy: .public)s ranges=\(ranges.count, privacy: .public) fallback=\(fallback, privacy: .public) preserveDB=\(preserveSpeakerDatabase, privacy: .public)"
         )
+        // When the caller asks us to leave the speaker database
+        // untouched (utterance-split path: we want the diarizer's
+        // verdict for the split sub-ranges, but we DON'T want each
+        // sub-range's audio EMA-blended into the speakers' centroids
+        // — that would let one wrongly-split utterance silently
+        // poison the database for the rest of the session), snapshot
+        // before the diarization run and restore after. The
+        // snapshot/restore round-trip is the same machinery used by
+        // Save/Load, so it's already exercised in production.
+        let snapshot: Data? = preserveSpeakerDatabase
+            ? await exportSpeakerDatabase()
+            : nil
         let fresh = await runDiarization(audio)
+        if let snapshot {
+            do {
+                try await importSpeakerDatabase(snapshot)
+            } catch {
+                AppLog.diarization.warning(
+                    "resolveSpeakersForRanges: speaker-DB restore failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
         AppLog.diarization.info(
             "resolveSpeakersForRanges: fresh segments count=\(fresh.count, privacy: .public)"
         )
@@ -447,12 +498,34 @@ final class AnalysisPipeline: @unchecked Sendable {
             "AnalysisPipeline ready: dimensional=\(dimensional != nil, privacy: .public), categorical=\(categorical != nil, privacy: .public), ageGender=\(ageGender != nil, privacy: .public), deberta=\(deberta != nil, privacy: .public), diarizer=\(diarizer != nil, privacy: .public)"
         )
 
+        // Eagerly load the diarizer models so the first-install
+        // compile cost (~5-6 s for wespeaker_v2 + pyannote on
+        // M-class) is paid here in the pre-warm rather than
+        // stalling the continuous-diarize loop's first call mid-
+        // recording. Without this, the first ~6 s of audio produces
+        // utterances with no cumulative-strip entries and no
+        // cluster-plot nodes (the diarizer lazy-loads on its first
+        // `diarize` call, blocking that call). On subsequent
+        // launches the models are cached and `preload` returns
+        // promptly.
+        if let diarizer {
+            do {
+                try await diarizer.preload()
+            } catch {
+                diagnostics.append("diarizer preload failed: \(String(describing: error))")
+                AppLog.diarization.warning(
+                    "diarizer preload failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+
         let pipeline = AnalysisPipeline(
             diarizer: diarizer,
             dimensionalSER: dimensional,
             categoricalSER: categorical,
             ageGenderSER: ageGender,
-            textSER: textSER
+            textSER: textSER,
+            hasDeBERTaTextSER: deberta != nil
         )
         return AutoConfiguredPipeline(pipeline: pipeline, diagnostics: diagnostics)
     }
@@ -765,8 +838,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         // resolve (they're concurrent). Text timing = wall time until plutchik
         // resolves. The two overlap in real time but are reported separately.
         let textStart = Date()
-        let txt = await plutchik
+        let textResult = await plutchik
         let textDuration = Date().timeIntervalSince(textStart)
+        let txt = textResult.score
 
         let dim = await dimensional
         let cat = await categorical
@@ -781,10 +855,9 @@ final class AnalysisPipeline: @unchecked Sendable {
             plutchik: txt
         )
         // Stamp which text backend produced `plutchik`, so the UI can badge it.
-        // Nil when text SER was skipped (filler / empty / no model).
-        let textBackend: String? = txt == nil
-            ? nil
-            : await (textSER as? SwitchingTextSER)?.currentBackend.rawValue
+        // Nil when text SER was skipped (filler / empty / no model);
+        // sentinel string when Apple FM declined via its safety guardrail.
+        let textBackend: String? = await resolveTextBackend(for: textResult)
         let estimate = baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(ageGender)
@@ -794,6 +867,14 @@ final class AnalysisPipeline: @unchecked Sendable {
             totalDuration: Date().timeIntervalSince(totalStart)
         )
         return (estimate, metrics)
+    }
+
+    private func resolveTextBackend(for result: TextSEROutcome) async -> String? {
+        if result.guardrailViolation {
+            return SwitchingTextSER.foundationModelsGuardrailBackend
+        }
+        guard result.score != nil else { return nil }
+        return await (textSER as? SwitchingTextSER)?.currentBackend.rawValue
     }
 
     /// Text-only re-analysis path for hand-edits on a session
@@ -814,10 +895,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         text: String,
         inheriting original: UtteranceEstimate
     ) async throws -> UtteranceEstimate {
-        let plutchik = await runText(text)
-        let textBackend: String? = plutchik == nil
-            ? nil
-            : await (textSER as? SwitchingTextSER)?.currentBackend.rawValue
+        let textResult = await runText(text)
+        let plutchik = textResult.score
+        let textBackend: String? = await resolveTextBackend(for: textResult)
         let asr = ASRSegment(
             text: text,
             start: original.start,
@@ -943,15 +1023,21 @@ final class AnalysisPipeline: @unchecked Sendable {
         )
     }
 
-    private func runText(_ text: String) async -> PlutchikScore? {
-        guard let textSER, !text.isEmpty else { return nil }
+    private func runText(_ text: String) async -> TextSEROutcome {
+        guard let textSER, !text.isEmpty else { return .empty }
         if Self.isFiller(text) {
             AppLog.app.debug("text SER skipped (filler): \(text, privacy: .public)")
-            return nil
+            return .empty
         }
-        do { return try await textSER.classify(text) } catch {
+        do {
+            let score = try await textSER.classify(text)
+            return TextSEROutcome(score: score, guardrailViolation: false)
+        } catch TextSERError.guardrailViolation {
+            AppLog.app.debug("text SER declined (Apple FM guardrail): \(text, privacy: .public)")
+            return TextSEROutcome(score: nil, guardrailViolation: true)
+        } catch {
             AppLog.app.debug("text SER skipped: \(String(describing: error), privacy: .public)")
-            return nil
+            return .empty
         }
     }
 

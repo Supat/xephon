@@ -532,14 +532,15 @@ struct UtteranceRow: View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(spacing: 6) {
                 if let backendBadge {
-                    Text(backendBadge)
+                    let tint: Color = backendBadge.isGuardrail ? .orange : .secondary
+                    Text(backendBadge.label)
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .overlay(
-                            Capsule().strokeBorder(.secondary.opacity(0.4), lineWidth: 0.5)
+                            Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 0.5)
                         )
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(tint)
                 }
                 Text("\(formatClock(utterance.start))–\(formatClock(utterance.end))")
                     .font(.caption.monospacedDigit())
@@ -833,8 +834,11 @@ struct UtteranceRow: View {
     }
 
     private var textBackendName: String {
-        guard let raw = utterance.textBackend,
-              let backend = SwitchingTextSER.Backend(rawValue: raw) else {
+        guard let raw = utterance.textBackend else { return "Plutchik" }
+        if raw == SwitchingTextSER.foundationModelsGuardrailBackend {
+            return String(localized: "textSER.appleFMViolation")
+        }
+        guard let backend = SwitchingTextSER.Backend(rawValue: raw) else {
             return "Plutchik"
         }
         return backend.badgeLabel
@@ -874,10 +878,16 @@ struct UtteranceRow: View {
             .sorted { $0.value > $1.value }
     }
 
-    private var backendBadge: String? {
-        guard let raw = utterance.textBackend,
-              let backend = SwitchingTextSER.Backend(rawValue: raw) else { return nil }
-        return backend.badgeLabel
+    private var backendBadge: TextBackendBadge? {
+        guard let raw = utterance.textBackend else { return nil }
+        if raw == SwitchingTextSER.foundationModelsGuardrailBackend {
+            return TextBackendBadge(
+                label: String(localized: "textSER.appleFMViolation"),
+                isGuardrail: true
+            )
+        }
+        guard let backend = SwitchingTextSER.Backend(rawValue: raw) else { return nil }
+        return TextBackendBadge(label: backend.badgeLabel, isGuardrail: false)
     }
 
     @ViewBuilder

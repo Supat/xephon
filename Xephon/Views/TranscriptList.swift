@@ -13,26 +13,6 @@ import Fusion
 /// `items` as input and the action surfaces (renaming, editing) as
 /// closures. The List's selection and the per-row mutations on the
 /// parent's @State come back through @Binding.
-/// Memo cache for `speakerMismatchedIDs`. Held as a `final class`
-/// via `@State` so internal mutation from inside the body computed
-/// property doesn't trip SwiftUI invalidation — the reference is
-/// stable across renders, only the inner fields change. Without
-/// this, scrolling a 500-row list fired O(N × 256) vote loops on
-/// every body re-eval (visibility changes invalidate body too), so
-/// every flick stutters. Key includes `utterancesVersion` (any row
-/// edit) and `timelineCount` (cumulative timeline growth) so a
-/// re-vote happens iff one of the inputs to the mismatch verdict
-/// could have changed.
-private final class MismatchMemo {
-    struct Key: Equatable {
-        let utterancesVersion: Int
-        let timelineCount: Int
-        let utteranceCount: Int
-    }
-    var key: Key?
-    var set: Set<UUID> = []
-}
-
 struct TranscriptList: View {
     let recorder: RecordingController
     let items: [(idx: Int, u: UtteranceEstimate)]
@@ -344,7 +324,7 @@ struct TranscriptList: View {
             timelineCount: recorder.diarizationTimeline.count,
             utteranceCount: recorder.utterances.count
         )
-        if mismatchMemo.key == key { return mismatchMemo.set }
+        if mismatchMemo.lastKey == key { return mismatchMemo.set }
         let timeline = recorder.diarizationTimeline
         var result: Set<UUID> = []
         if !timeline.isEmpty {
@@ -360,7 +340,7 @@ struct TranscriptList: View {
                 }
             }
         }
-        mismatchMemo.key = key
+        mismatchMemo.lastKey = key
         mismatchMemo.set = result
         return result
     }
