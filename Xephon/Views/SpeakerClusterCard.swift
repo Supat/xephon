@@ -65,15 +65,18 @@ struct SpeakerClusterCard: View {
     ) -> Void)?
     /// Set of diarizer observation `segmentId`s that have a
     /// utterance pinned to them — the values of the controller's
-    /// `utteranceObservationSegmentIDs` map. Drives the "Linked
-    /// only" toggle: when enabled, observation dots whose id
-    /// isn't in this set are hidden so the user sees only the
-    /// nodes that map back to a transcript row. Centroids are
-    /// always drawn regardless of filter state (they're
-    /// aggregates, not individual nodes). Nil disables the
-    /// toggle entirely — legacy sessions without pins have
-    /// nothing meaningful to filter on.
+    /// `utteranceObservationSegmentIDs` map. Drives the
+    /// observation-dot side of the "Linked only" toggle: when
+    /// enabled, observation dots whose id isn't in this set are
+    /// hidden. Nil leaves observations unfiltered.
     var linkedObservationIDs: Set<UUID>?
+    /// Set of speaker ids referenced by at least one utterance —
+    /// same source the roster + heatmap cards use. Drives the
+    /// centroid side of the "Linked only" toggle: when enabled,
+    /// a speaker's centroid dot is hidden if no utterance maps to
+    /// that speaker (diarizer-DB orphans, promoted-but-unclaimed
+    /// entries). Nil leaves centroids unfiltered.
+    var linkedSpeakerIDs: Set<String>?
 
     /// Cached projection from the most recent PCA fit. Empty until
     /// the first snapshot with ≥ 2 distinct points arrives. Kept on
@@ -114,7 +117,8 @@ struct SpeakerClusterCard: View {
         guard let speakerID = highlightedSpeakerID else { return nil }
         guard let p = points.first(where: {
             $0.speakerID == speakerID && $0.isCentroid
-        }) else { return nil }
+        }),
+              isPointVisible(p) else { return nil }
         return (position: project(p), color: p.color)
     }
 
@@ -140,7 +144,7 @@ struct SpeakerClusterCard: View {
                     && $0.isCentroid == false
                     && $0.observationIndex == bestIndex
               }),
-              isObservationVisible(p) else { return nil }
+              isPointVisible(p) else { return nil }
         return (position: project(p), color: p.color)
     }
 
@@ -173,18 +177,47 @@ struct SpeakerClusterCard: View {
         return bestIndex
     }
 
+    /// Would the "Linked only" filter actually hide anything under
+    /// the current snapshot? True when either an observation in the
+    /// cluster has a `segmentId` not in `linkedObservationIDs`, or a
+    /// speaker in the cluster isn't in `linkedSpeakerIDs`. Gates the
+    /// header toggle so users don't see a control that's guaranteed
+    /// to do nothing.
+    private var canFilterAnything: Bool {
+        if let speakers = linkedSpeakerIDs,
+           cluster.speakers.contains(where: { !speakers.contains($0.id) }) {
+            return true
+        }
+        if let observations = linkedObservationIDs,
+           cluster.speakers.contains(where: { spk in
+               spk.observationSegmentIDs.contains { !observations.contains($0) }
+           }) {
+            return true
+        }
+        return false
+    }
+
     /// Whether `point` should be drawn / hit-tested under the
-    /// current "Linked only" toggle state. Centroids are always
-    /// visible (aggregates aren't filtered). Observation dots
-    /// pass when the toggle is off, when the controller hasn't
-    /// supplied a linked set, or when the point's `segmentId` is
-    /// in that set. An observation with no `segmentId` (older
-    /// diarizer that doesn't expose ids) is treated as unlinked
-    /// — there's no way to prove it maps to an utterance.
-    private func isObservationVisible(_ point: Point) -> Bool {
-        if point.isCentroid { return true }
-        guard hideUnlinkedObservations,
-              let ids = linkedObservationIDs else { return true }
+    /// current "Linked only" toggle state. Splits the test by
+    /// point type:
+    ///
+    ///  - Centroid: visible unless the toggle is on AND the
+    ///    controller supplied a `linkedSpeakerIDs` set AND this
+    ///    centroid's speaker isn't in it (i.e. an orphan in the
+    ///    diarizer DB with no utterance referencing it).
+    ///  - Observation: visible unless the toggle is on AND a
+    ///    `linkedObservationIDs` set is provided AND this point's
+    ///    `segmentId` isn't in it. An observation with no
+    ///    `segmentId` (older diarizer that doesn't expose ids)
+    ///    is treated as unlinked — there's no way to prove it
+    ///    maps to an utterance.
+    private func isPointVisible(_ point: Point) -> Bool {
+        guard hideUnlinkedObservations else { return true }
+        if point.isCentroid {
+            guard let speakers = linkedSpeakerIDs else { return true }
+            return speakers.contains(point.speakerID)
+        }
+        guard let ids = linkedObservationIDs else { return true }
         guard let sid = point.observationSegmentID else { return false }
         return ids.contains(sid)
     }
@@ -215,7 +248,7 @@ struct SpeakerClusterCard: View {
         for p in points {
             // Skip the point if the filter is hiding it — tapping a
             // ghost where a dot used to be would be confusing.
-            guard isObservationVisible(p) else { continue }
+            guard isPointVisible(p) else { continue }
             let nx = (p.x - minX) / dx
             let ny = (p.y - minY) / dy
             let cx = Self.canvasInset + CGFloat(nx) * availW
@@ -327,9 +360,12 @@ struct SpeakerClusterCard: View {
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
-                // Only show the toggle when the controller has at
-                // least one pinned observation — there's nothing
-                // useful to filter to in legacy sessions.
+                // Only show the toggle when there's something to
+                // filter — either at least one pinned observation
+                // (observation-dot filtering) or at least one
+                // centroid whose speaker isn't referenced by any
+                // utterance (centroid filtering). Legacy sessions
+                // with neither signal get a hidden toggle.
                 // Rendered as a plain caption2 button instead of a
                 // native Toggle: the card's header is otherwise
                 // all-text at caption2/tertiary, and a system
@@ -337,7 +373,7 @@ struct SpeakerClusterCard: View {
                 // weight relative to the "PCA 2D" tag beside it.
                 // On-state is signalled by the filled link icon
                 // and accent tint; off-state stays secondary.
-                if let ids = linkedObservationIDs, !ids.isEmpty {
+                if canFilterAnything {
                     Button {
                         hideUnlinkedObservations.toggle()
                     } label: {
@@ -490,13 +526,15 @@ struct SpeakerClusterCard: View {
                     anchor: .topLeading
                 )
                 // Observations first so centroids stack on top.
-                // `isObservationVisible` honors the "Linked only"
-                // toggle — when on, an observation only renders if
-                // its `segmentId` is in the controller-supplied
-                // linked set. Filtering applies to draw, halo,
-                // arrow, and tap pickling so all four agree.
+                // `isPointVisible` honors the "Linked only" toggle
+                // — when on, an observation only renders if its
+                // `segmentId` is in the controller-supplied set,
+                // and a centroid only renders if its speaker is in
+                // the linked-speakers set. Filtering applies to
+                // draw, halo, arrow, and tap pickling so all four
+                // agree.
                 for p in points
-                    where !p.isCentroid && isObservationVisible(p) {
+                    where !p.isCentroid && isPointVisible(p) {
                     let r = Self.observationRadius
                     let center = project(p)
                     let rect = CGRect(
@@ -520,7 +558,7 @@ struct SpeakerClusterCard: View {
                 // OR snapshot tail-trimmed past this utterance.
                 let haloTarget = findHaloTarget(in: points, project: project)
                 let arrowTarget = findArrowTarget(in: points, project: project)
-                for p in points where p.isCentroid {
+                for p in points where p.isCentroid && isPointVisible(p) {
                     let r = Self.centroidRadius
                     let center = project(p)
                     let rect = CGRect(
