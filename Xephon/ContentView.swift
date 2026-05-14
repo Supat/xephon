@@ -730,12 +730,22 @@ struct ContentView: View {
                             },
                             linkedObservationIDs: Set(
                                 recorder.utteranceObservationSegmentIDs.values
-                            )
+                            ),
+                            linkedSpeakerIDs: linkedSpeakerIDs
                         )
                         SpeakerHeatmapCard(
                             cluster: recorder.speakerCluster,
                             highlightedSpeakerID: focusedUtteranceSpeakerID,
                             linkedSpeakerIDs: linkedSpeakerIDs
+                        )
+                        SpeakerBehaviorCard(
+                            utterances: recorder.utterances
+                        )
+                        AffectiveSynchronyCard(
+                            utterances: recorder.utterances
+                        )
+                        SynchronyArcCard(
+                            utterances: recorder.utterances
                         )
                     }
                     .frame(maxWidth: .infinity)
