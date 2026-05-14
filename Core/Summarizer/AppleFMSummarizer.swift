@@ -157,6 +157,11 @@ public actor AppleFMSummarizer: SessionSummarizer {
         one-paragraph overall mood consistent with that setting, and one
         per-speaker entry (short paragraph + dominant-mood phrase) for every
         speaker id in the input. Do not invent speakers.
+        When the speaker demographics block lists a gender, use it as the
+        canonical pronoun for that speaker throughout the summary — "she/her"
+        for female, "he/him" for male, "they/them" for child or when no gender
+        is listed. This directive is moot for languages that drop subject
+        pronouns (Japanese, Korean, etc.).
         """
 
     private static func orderedSpeakerIDs(

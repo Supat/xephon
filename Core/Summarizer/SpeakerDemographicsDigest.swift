@@ -109,7 +109,13 @@ public struct SpeakerDemographicsDigest: Sendable {
         }
         guard !rows.isEmpty else { return "" }
         var lines: [String] = []
-        lines.append("Speaker demographics (rough — W2V2 age-gender estimates; use as soft hints, not facts):")
+        // Prescriptive framing so the LLM uses gender as a pronoun
+        // guide rather than treating it as inert background context.
+        // The values come from W2V2's voice classifier; they're noisy
+        // on short clips but better than the model defaulting to "they"
+        // for every speaker. For languages that drop pronouns (JA, …)
+        // this directive is naturally moot.
+        lines.append("Speaker demographics (estimated from voice — treat as the canonical pronoun choice for each speaker):")
         lines.append(contentsOf: rows)
         return lines.joined(separator: "\n")
     }

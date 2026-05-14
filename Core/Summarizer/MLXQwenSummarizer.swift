@@ -270,6 +270,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         lines.append("  aP = acoustic 9-class softmax (angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown)")
         lines.append("  tP = text 8-class Plutchik intensity (joy, sadness, anticipation, surprise, anger, fear, disgust, trust)")
         lines.append("Use these to judge confidence and to flag modality disagreement — e.g. a row where aP says sad but tP says joy is worth calling out per-speaker; the fused label hides that signal.")
+        lines.append("When the speaker demographics block below lists a gender, use it as the canonical pronoun for that speaker throughout the summary — 'she/her' for female, 'he/him' for male, 'they/them' for child or when no gender is listed. (Moot for languages that drop pronouns, like Japanese.)")
         lines.append("Return ONLY valid JSON, no prose before or after.")
         // Pin the output language to whatever the user picked in
         // iPadOS Settings → Xephon → Language. Qwen3 has been
