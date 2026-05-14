@@ -681,7 +681,11 @@ struct ContentView: View {
                         StatisticsCard(summary: displayedSummary)
                         SERAggregateCard(
                             recorder: recorder,
-                            focusedUtteranceID: selectedUtteranceID
+                            focusedUtteranceID: selectedUtteranceID,
+                            onTapUtterance: { id in
+                                selectedUtteranceID = id
+                                scrollRequestUtteranceID = id
+                            }
                         )
                         FusionLegendCard(recorder: recorder)
                     }

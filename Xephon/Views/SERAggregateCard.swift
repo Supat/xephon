@@ -25,6 +25,12 @@ struct SERAggregateCard: View {
     /// arrow at it so the user can find that one row's V/A
     /// position among hundreds of dots.
     var focusedUtteranceID: UUID?
+    /// Called with the utterance id of the tapped V×A scatter dot.
+    /// Each dot already carries its source utterance's id, so the
+    /// callback receives an exact match — no embedding-distance
+    /// fallback like the speaker cluster card needs. Nil disables
+    /// tap-to-scroll entirely.
+    var onTapUtterance: ((UUID) -> Void)?
 
     private static let wheelHeight: CGFloat = 180
     private static let scatterHeight: CGFloat = 160
@@ -264,15 +270,63 @@ struct SERAggregateCard: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                vaScatter(points: points)
-                    .frame(height: Self.scatterHeight)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color(uiColor: .secondarySystemBackground))
-                    )
+                // GeometryReader supplies the same canvas size the
+                // Canvas draws into, so `handleScatterTap` can
+                // re-run the projection math identically and
+                // resolve a tap to its nearest dot. The Canvas
+                // already fills the bounded frame; wrapping in
+                // GeometryReader is layout-neutral.
+                GeometryReader { proxy in
+                    vaScatter(points: points)
+                        .contentShape(Rectangle())
+                        .onTapGesture(coordinateSpace: .local) { location in
+                            handleScatterTap(
+                                at: location,
+                                in: proxy.size,
+                                points: points
+                            )
+                        }
+                }
+                .frame(height: Self.scatterHeight)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(uiColor: .secondarySystemBackground))
+                )
             }
         }
+    }
+
+    /// Find the V×A scatter dot closest to `location` within a
+    /// fat-finger hit radius and forward its utterance id. Uses
+    /// the same `inset`-based projection the draw path uses so
+    /// the visible dots and the hit zones agree pixel-for-pixel.
+    /// Misses in empty space silently do nothing.
+    private func handleScatterTap(
+        at location: CGPoint,
+        in size: CGSize,
+        points: [VAPoint]
+    ) {
+        guard let onTap = onTapUtterance, !points.isEmpty else { return }
+        let inset: CGFloat = 14
+        let w = size.width - 2 * inset
+        let h = size.height - 2 * inset
+        let hitRadius: CGFloat = 18
+        let limit = hitRadius * hitRadius
+        var bestID: UUID?
+        var bestDist = limit
+        for p in points {
+            let cx = inset + CGFloat(max(0, min(1, p.valence))) * w
+            let cy = inset + (1 - CGFloat(max(0, min(1, p.arousal)))) * h
+            let dx = cx - location.x
+            let dy = cy - location.y
+            let d2 = dx * dx + dy * dy
+            if d2 < bestDist {
+                bestDist = d2
+                bestID = p.id
+            }
+        }
+        if let id = bestID { onTap(id) }
     }
 
     private struct VAPoint {
