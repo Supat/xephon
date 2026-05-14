@@ -39,6 +39,13 @@ struct AffectiveSynchronyCard: View {
         case valence, arousal
     }
 
+    /// Trailing value-column width (correlation + sample count).
+    /// Sized for the widest plausible "−0.99 · 999" rendering at
+    /// caption2 monospaced; pinning both pair rows and leadership
+    /// rows to this width keeps the bars + numbers aligned across
+    /// sections.
+    private static let valueColumnWidth: CGFloat = 64
+
     var body: some View {
         let result = AffectiveSynchrony.compute(utterances: utterances)
         let leadership = AffectiveSynchrony.leadershipScores(from: result, atLag: 1)
@@ -171,16 +178,19 @@ struct AffectiveSynchronyCard: View {
                 speakerChip(entry.pair.follower)
                 Spacer(minLength: 4)
                 correlationBar(for: value)
-                // Value + sample count are combined into one
-                // monospaced column ("+0.52 · 12") so the inline
-                // row fits the iPad portrait left-pane budget
-                // (~238pt after card chrome). Per-lag sample
-                // counts still live in the tap-popover for users
-                // who need the breakdown.
+                // Value + sample count combined into one monospaced
+                // column ("+0.52 · 12"). Fixed-width frame so the
+                // bar's right edge lines up across pair rows AND
+                // leadership rows — without it the bar sat at a
+                // floating X position because the value text's
+                // intrinsic width swings ~20pt between "+0.5 · 5"
+                // and "−0.99 · 100". Per-lag sample counts live in
+                // the tap-popover.
                 Text(formattedValueWithCount(value, entry.sampleCount))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .frame(width: Self.valueColumnWidth, alignment: .trailing)
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
@@ -427,6 +437,7 @@ struct AffectiveSynchronyCard: View {
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                        .frame(width: Self.valueColumnWidth, alignment: .trailing)
                 }
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
