@@ -117,6 +117,7 @@
 "cluster.scatter.header" = "Speaker Cluster";
 "cluster.empty" = "No speakers yet.";
 "cluster.warmingUp" = "Collecting observations…";
+"cluster.scatter.linkedOnly" = "Linked only";
 "summarizer.header" = "Summarizer";
 "roster.header" = "Speakers";
 "roster.empty" = "No speakers yet.";

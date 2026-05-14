@@ -117,6 +117,7 @@
 "cluster.scatter.header" = "話者クラスター";
 "cluster.empty" = "話者がまだ検出されていません。";
 "cluster.warmingUp" = "観測を収集中…";
+"cluster.scatter.linkedOnly" = "発話と連動のみ";
 "summarizer.header" = "要約エンジン";
 "roster.header" = "話者一覧";
 "roster.empty" = "話者がまだ登録されていません。";

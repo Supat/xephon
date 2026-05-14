@@ -232,6 +232,44 @@ final class RecordingController {
     /// retention logic that drops stale snapshot entries.
     private(set) var utteranceEmbeddings: [UUID: [Float]] = [:]
 
+    /// Per-utterance pinned diarizer observation, keyed by the
+    /// utterance id. Captured at the same site that fills
+    /// `utteranceEmbeddings`: right after computing the embedding
+    /// for a finalized row, we ask the diarizer which of its
+    /// currently-resident observations is closest to that vector
+    /// and stash its stable `RawEmbedding.segmentId`. The cluster
+    /// scatter's tap path then resolves observation → utterance by
+    /// looking up this map, instead of running a second cosine
+    /// argmin at tap time — exact for observations still in the
+    /// tail window, robust to later trimming/reorders. Nil for an
+    /// utterance means the diarizer hadn't ingested a matching
+    /// observation yet (rare; falls back to embedding-distance
+    /// matching at tap time).
+    private(set) var utteranceObservationSegmentIDs: [UUID: UUID] = [:]
+
+    /// Ask the diarizer which currently-resident observation is
+    /// closest to `embedding` for `speakerID` and stash its
+    /// `segmentId` against `utteranceID`. Called immediately after
+    /// every site that writes `utteranceEmbeddings`. No-op when
+    /// the diarizer hasn't seen any matching observation yet
+    /// (rare; the tap path falls back to embedding-distance
+    /// matching). Awaiting from a `@MainActor` context is fine —
+    /// the diarizer hop is the only suspension point and the
+    /// caller is typically already in an async flow.
+    private func pinObservationSegmentID(
+        utteranceID: UUID,
+        embedding: [Float],
+        speakerID: String
+    ) async {
+        guard let pipeline else { return }
+        if let sid = await pipeline.bestMatchingObservationID(
+            forEmbedding: embedding,
+            speakerID: speakerID
+        ) {
+            utteranceObservationSegmentIDs[utteranceID] = sid
+        }
+    }
+
     /// Cap on raw observations carried in each `speakerCluster`
     /// refresh. 50 covers ~50 s of contiguous speech per speaker
     /// at the diarizer's 1 s windowing — enough cloud density for
@@ -1809,6 +1847,24 @@ final class RecordingController {
             }
             return map.isEmpty ? nil : map
         }()
+        // Persist the per-utterance speaker embeddings so the
+        // cluster scatter's tap-to-scroll (and per-observation
+        // focus arrow) survives Save → Open. Filter to live
+        // utterance ids — a stale entry whose row has since been
+        // dropped would just bloat the file. Empty round-trips as
+        // nil so sessions that never engaged the diarizer don't
+        // grow a useless field.
+        let embeddingsForExport = utteranceEmbeddings.filter { liveIDs.contains($0.key) }
+        let embeddings = embeddingsForExport.isEmpty ? nil : embeddingsForExport
+        // Persist the pinned observation segment id per utterance
+        // so the cluster scatter's tap-to-scroll keeps doing exact
+        // id matching across Save → Open instead of falling back
+        // to embedding-distance argmin (lossier on overlapping
+        // clouds). Filtered to live utterance ids and dropped to
+        // nil when empty for the same byte-cleanliness reason as
+        // the other optional maps.
+        let segmentIDsForExport = utteranceObservationSegmentIDs.filter { liveIDs.contains($0.key) }
+        let segmentIDs = segmentIDsForExport.isEmpty ? nil : segmentIDsForExport
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -1828,7 +1884,9 @@ final class RecordingController {
                     diarizationTimeline: timelineBlob,
                     sessionSummary: summaryBlob,
                     transcriptionIssues: issuesBlob,
-                    transcriptionIssueTranscriptSnapshots: issueSnapshots
+                    transcriptionIssueTranscriptSnapshots: issueSnapshots,
+                    utteranceEmbeddings: embeddings,
+                    utteranceObservationSegmentIDs: segmentIDs
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -1848,7 +1906,9 @@ final class RecordingController {
             diarizationTimeline: timelineBlob,
             sessionSummary: summaryBlob,
             transcriptionIssues: issuesBlob,
-            transcriptionIssueTranscriptSnapshots: issueSnapshots
+            transcriptionIssueTranscriptSnapshots: issueSnapshots,
+            utteranceEmbeddings: embeddings,
+            utteranceObservationSegmentIDs: segmentIDs
         )
     }
 
@@ -1886,6 +1946,13 @@ final class RecordingController {
         // (no recording started yet).
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
+        // Drop the prior session's per-utterance embeddings before
+        // adopting the new bundle's map — leftover entries keyed by
+        // UUIDs from the previous session would either land on no
+        // row at all or, worse, collide with a freshly assigned
+        // UUID and mis-target the cluster-tap → scroll lookup.
+        utteranceEmbeddings.removeAll()
+        utteranceObservationSegmentIDs.removeAll()
         diarizationTimeline = []
         speakerCluster = SpeakerClusterSnapshot(speakers: [])
         lastKnownSpeakerIDs = []
@@ -1923,6 +1990,12 @@ final class RecordingController {
         }
         if let savedChildren = document.handEditChildren {
             handEditChildren = savedChildren
+        }
+        if let savedEmbeddings = document.utteranceEmbeddings {
+            utteranceEmbeddings = savedEmbeddings
+        }
+        if let savedSegmentIDs = document.utteranceObservationSegmentIDs {
+            utteranceObservationSegmentIDs = savedSegmentIDs
         }
         if let timelineBlob = document.diarizationTimeline,
            let restored = try? JSONDecoder().decode([DiarizedSegment].self, from: timelineBlob) {
@@ -1992,6 +2065,14 @@ final class RecordingController {
         if let blob = document.speakerDatabase, !blob.isEmpty {
             do {
                 try await ensurePipeline().importSpeakerDatabase(blob)
+                // Seed the cluster snapshot synchronously so the
+                // scatter / heatmap render with data the moment the
+                // user navigates to the cluster page. Without this,
+                // `speakerCluster` stays at the empty value set
+                // earlier in loadSession until the TabView's 1 Hz
+                // refresh task fires its first tick — up to a full
+                // second of empty state on a freshly loaded session.
+                await refreshClusterSnapshot()
             } catch {
                 AppLog.app.warning(
                     "loadSession: speaker DB restore failed: \(String(describing: error), privacy: .public)"
@@ -2239,6 +2320,11 @@ final class RecordingController {
                     audio: chunk.samples
                 ) {
                     utteranceEmbeddings[utteranceID] = embedding
+                    await pinObservationSegmentID(
+                        utteranceID: utteranceID,
+                        embedding: embedding,
+                        speakerID: speaker
+                    )
                 }
                 return
             }
@@ -2344,6 +2430,11 @@ final class RecordingController {
                 audio: chunk.samples
             ) {
                 utteranceEmbeddings[utteranceID] = embedding
+                await pinObservationSegmentID(
+                    utteranceID: utteranceID,
+                    embedding: embedding,
+                    speakerID: speaker
+                )
             }
         } catch {
             AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
@@ -2648,7 +2739,7 @@ final class RecordingController {
             pipeline: pipeline
         )
         guard !freshResults.isEmpty else { return }
-        applyHandEditSplit(utteranceID: utteranceID, sentences: freshResults)
+        await applyHandEditSplit(utteranceID: utteranceID, sentences: freshResults)
     }
 
     /// Mic-mode (no source audio) hand-edit dispatcher. Inherits
@@ -2725,7 +2816,7 @@ final class RecordingController {
             }
         }
         guard !freshResults.isEmpty else { return }
-        applyHandEditSplit(utteranceID: utteranceID, sentences: freshResults)
+        await applyHandEditSplit(utteranceID: utteranceID, sentences: freshResults)
     }
 
     /// Per-instant majority over the cumulative diarizer timeline
@@ -2866,6 +2957,11 @@ final class RecordingController {
                 audio: serChunk.samples
             ) {
                 utteranceEmbeddings[utteranceID] = embedding
+                await pinObservationSegmentID(
+                    utteranceID: utteranceID,
+                    embedding: embedding,
+                    speakerID: speaker
+                )
             }
         } catch {
             AppLog.app.error("commitHandEdit failed: \(String(describing: error), privacy: .public)")
@@ -3042,7 +3138,7 @@ final class RecordingController {
     private func applyHandEditSplit(
         utteranceID: UUID,
         sentences: [HandEditSplitResult]
-    ) {
+    ) async {
         guard !sentences.isEmpty else { return }
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
         let original = utterances[index]
@@ -3074,6 +3170,11 @@ final class RecordingController {
             // extraction) leave any existing entry untouched.
             if let embedding = result.embedding {
                 utteranceEmbeddings[rowID] = embedding
+                await pinObservationSegmentID(
+                    utteranceID: rowID,
+                    embedding: embedding,
+                    speakerID: result.estimate.speakerID
+                )
             }
         }
 
@@ -3630,6 +3731,9 @@ final class RecordingController {
         }
 
         var convError: NSError?
+        // `@unchecked Sendable` is safe: one-shot latch consumed only
+        // by the AVAudioConverter input block, which the converter
+        // calls serially on a single thread per `convert(...)` call.
         final class Once: @unchecked Sendable { var fired = false }
         let once = Once()
         let block: AVAudioConverterInputBlock = { _, status in
@@ -3684,7 +3788,7 @@ final class RecordingController {
         estimate: UtteranceEstimate,
         metrics: ProcessingMetrics,
         embedding: [Float]? = nil
-    ) {
+    ) async {
         // Stamp speech-boost state so the row badge reflects how the audio
         // was captured. Best-effort: reads the live toggle, which is fine
         // for the common case where it's not flipped mid-recording.
@@ -3693,6 +3797,11 @@ final class RecordingController {
         utterances.insert(stamped, at: index)
         if let embedding = embedding {
             utteranceEmbeddings[stamped.id] = embedding
+            await pinObservationSegmentID(
+                utteranceID: stamped.id,
+                embedding: embedding,
+                speakerID: stamped.speakerID
+            )
         }
         conversationSummary.update(with: stamped)
         // Keep the speaker-id cache current for the streaming path

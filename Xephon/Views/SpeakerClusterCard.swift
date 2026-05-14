@@ -37,6 +37,43 @@ struct SpeakerClusterCard: View {
     /// "this row's speaker's average". Nil falls back to the
     /// centroid behavior.
     var focusedEmbedding: [Float]?
+    /// Called with the tapped node's identity when the user taps
+    /// inside the scatter. The triple carries:
+    ///
+    ///  - `speakerID` so the callback can constrain its
+    ///    embedding-to-utterance fallback search to that speaker
+    ///    (overlapping clouds otherwise pull a tap on A's node
+    ///    into one of B's utterances).
+    ///  - `observationSegmentID`: the FluidAudio
+    ///    `RawEmbedding.segmentId` of the tapped observation, or
+    ///    nil if the user tapped a centroid (centroids aren't
+    ///    individual observations). When present, the callback
+    ///    can resolve observation → utterance by exact id lookup
+    ///    against `RecordingController.utteranceObservationSegmentIDs`
+    ///    instead of running an L2 argmin at tap time — robust
+    ///    against later trimming and reorderings.
+    ///  - `embedding`: the raw 256-D vector at the tapped point,
+    ///    used as the fallback signal when the id lookup misses
+    ///    (older session, observation tail-trimmed past the
+    ///    captured row, or centroid taps).
+    ///
+    /// Nil disables tap-to-scroll entirely.
+    var onTapNode: ((
+        _ speakerID: String,
+        _ observationSegmentID: UUID?,
+        _ embedding: [Float]
+    ) -> Void)?
+    /// Set of diarizer observation `segmentId`s that have a
+    /// utterance pinned to them — the values of the controller's
+    /// `utteranceObservationSegmentIDs` map. Drives the "Linked
+    /// only" toggle: when enabled, observation dots whose id
+    /// isn't in this set are hidden so the user sees only the
+    /// nodes that map back to a transcript row. Centroids are
+    /// always drawn regardless of filter state (they're
+    /// aggregates, not individual nodes). Nil disables the
+    /// toggle entirely — legacy sessions without pins have
+    /// nothing meaningful to filter on.
+    var linkedObservationIDs: Set<UUID>?
 
     /// Cached projection from the most recent PCA fit. Empty until
     /// the first snapshot with ≥ 2 distinct points arrives. Kept on
@@ -44,6 +81,13 @@ struct SpeakerClusterCard: View {
     /// happens explicitly inside `.task(id:)` when the snapshot
     /// changes.
     @State private var points: [Point] = []
+    /// Header toggle: hide observation dots whose `segmentId` isn't
+    /// in `linkedObservationIDs`. Kept here so flipping the toggle
+    /// doesn't trigger a PCA refit — the basis stays anchored to
+    /// the full point set, only the visibility filter changes,
+    /// so the visible dots don't drift around when the toggle is
+    /// flipped.
+    @State private var hideUnlinkedObservations: Bool = false
     /// Previous basis kept so the next fit can sign-stabilize
     /// against it (prevents axis flips between consecutive PCA
     /// runs on near-identical data). Empty arrays = no prior fit.
@@ -95,7 +139,8 @@ struct SpeakerClusterCard: View {
                 $0.speakerID == speakerID
                     && $0.isCentroid == false
                     && $0.observationIndex == bestIndex
-              }) else { return nil }
+              }),
+              isObservationVisible(p) else { return nil }
         return (position: project(p), color: p.color)
     }
 
@@ -127,6 +172,82 @@ struct SpeakerClusterCard: View {
         }
         return bestIndex
     }
+
+    /// Whether `point` should be drawn / hit-tested under the
+    /// current "Linked only" toggle state. Centroids are always
+    /// visible (aggregates aren't filtered). Observation dots
+    /// pass when the toggle is off, when the controller hasn't
+    /// supplied a linked set, or when the point's `segmentId` is
+    /// in that set. An observation with no `segmentId` (older
+    /// diarizer that doesn't expose ids) is treated as unlinked
+    /// — there's no way to prove it maps to an utterance.
+    private func isObservationVisible(_ point: Point) -> Bool {
+        if point.isCentroid { return true }
+        guard hideUnlinkedObservations,
+              let ids = linkedObservationIDs else { return true }
+        guard let sid = point.observationSegmentID else { return false }
+        return ids.contains(sid)
+    }
+
+    /// Tap-to-scroll hit testing. Re-runs the same projection the
+    /// Canvas draws with so screen coordinates line up with what
+    /// the user sees, picks the closest point within
+    /// `tapHitRadius`, then forwards its raw embedding to
+    /// `onTapNode`. Misses (taps in the empty area between dots)
+    /// silently do nothing — no spurious scroll if the user just
+    /// pans past the scatter.
+    private func handleTap(at location: CGPoint, in size: CGSize) {
+        guard let onTap = onTapNode, !points.isEmpty else { return }
+        var minX: Float = .infinity, maxX: Float = -.infinity
+        var minY: Float = .infinity, maxY: Float = -.infinity
+        for p in points {
+            minX = min(minX, p.x); maxX = max(maxX, p.x)
+            minY = min(minY, p.y); maxY = max(maxY, p.y)
+        }
+        let dx = max(maxX - minX, 1e-6)
+        let dy = max(maxY - minY, 1e-6)
+        let availW = size.width - 2 * Self.canvasInset
+        let availH = size.height - 2 * Self.canvasInset
+        let hitRadius = Self.tapHitRadius
+        let limit = hitRadius * hitRadius
+        var bestDist = limit
+        var bestPoint: Point?
+        for p in points {
+            // Skip the point if the filter is hiding it — tapping a
+            // ghost where a dot used to be would be confusing.
+            guard isObservationVisible(p) else { continue }
+            let nx = (p.x - minX) / dx
+            let ny = (p.y - minY) / dy
+            let cx = Self.canvasInset + CGFloat(nx) * availW
+            let cy = Self.canvasInset + (1 - CGFloat(ny)) * availH
+            let ddx = cx - location.x
+            let ddy = cy - location.y
+            let d2 = ddx * ddx + ddy * ddy
+            if d2 < bestDist {
+                bestDist = d2
+                bestPoint = p
+            }
+        }
+        guard let hit = bestPoint,
+              let speaker = cluster.speakers.first(where: { $0.id == hit.speakerID })
+        else { return }
+        let embedding: [Float]
+        if hit.isCentroid {
+            embedding = speaker.centroid
+        } else if let idx = hit.observationIndex,
+                  idx >= 0, idx < speaker.observations.count {
+            embedding = speaker.observations[idx]
+        } else {
+            return
+        }
+        onTap(hit.speakerID, hit.observationSegmentID, embedding)
+    }
+
+    /// Touch slop around each projected dot. 20pt is roughly the
+    /// minimum tappable target Apple recommends and is generous
+    /// against the 2.5pt observation radius without overlapping
+    /// adjacent clouds in dense scatters.
+    nonisolated private static let tapHitRadius: CGFloat = 20
 
     /// Short fixed-length arrow pointing at `target` from the
     /// upper-right (or whichever diagonal stays inside the canvas
@@ -206,6 +327,36 @@ struct SpeakerClusterCard: View {
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
+                // Only show the toggle when the controller has at
+                // least one pinned observation — there's nothing
+                // useful to filter to in legacy sessions.
+                // Rendered as a plain caption2 button instead of a
+                // native Toggle: the card's header is otherwise
+                // all-text at caption2/tertiary, and a system
+                // switch (even at .mini) blew out the visual
+                // weight relative to the "PCA 2D" tag beside it.
+                // On-state is signalled by the filled link icon
+                // and accent tint; off-state stays secondary.
+                if let ids = linkedObservationIDs, !ids.isEmpty {
+                    Button {
+                        hideUnlinkedObservations.toggle()
+                    } label: {
+                        Label(
+                            String(localized: "cluster.scatter.linkedOnly"),
+                            systemImage: hideUnlinkedObservations
+                                ? "link.circle.fill"
+                                : "link.circle"
+                        )
+                        .font(.caption2)
+                        .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(
+                        hideUnlinkedObservations
+                            ? AnyShapeStyle(Color.accentColor)
+                            : AnyShapeStyle(HierarchicalShapeStyle.secondary)
+                    )
+                }
                 if !cluster.speakers.isEmpty {
                     Text("PCA 2D")
                         .font(.caption2.monospaced())
@@ -243,7 +394,23 @@ struct SpeakerClusterCard: View {
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            Canvas { ctx, size in
+            // GeometryReader supplies the canvas size to the tap
+            // handler. Without it the hit-test math has nothing to
+            // project against — Canvas only exposes `size` inside
+            // its draw closure, not to outside gestures.
+            GeometryReader { proxy in
+                clusterCanvas
+                    .contentShape(Rectangle())
+                    .onTapGesture(coordinateSpace: .local) { location in
+                        handleTap(at: location, in: proxy.size)
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var clusterCanvas: some View {
+        Canvas { ctx, size in
                 // Compute the data extent once so we can scale the
                 // whole cloud into the canvas. `Point.x` and `.y` are
                 // unscaled projections; we map to canvas coords here.
@@ -323,7 +490,13 @@ struct SpeakerClusterCard: View {
                     anchor: .topLeading
                 )
                 // Observations first so centroids stack on top.
-                for p in points where !p.isCentroid {
+                // `isObservationVisible` honors the "Linked only"
+                // toggle — when on, an observation only renders if
+                // its `segmentId` is in the controller-supplied
+                // linked set. Filtering applies to draw, halo,
+                // arrow, and tap pickling so all four agree.
+                for p in points
+                    where !p.isCentroid && isObservationVisible(p) {
                     let r = Self.observationRadius
                     let center = project(p)
                     let rect = CGRect(
@@ -388,7 +561,6 @@ struct SpeakerClusterCard: View {
                         to: target.position
                     )
                 }
-            }
         }
     }
 
@@ -433,6 +605,13 @@ struct SpeakerClusterCard: View {
         /// observation when the focused-utterance embedding picks
         /// a particular one out.
         let observationIndex: Int?
+        /// Stable diarizer `RawEmbedding.segmentId` for this
+        /// observation; nil for centroids and for snapshots
+        /// produced by diarizers that don't expose stable per-
+        /// observation ids. Carried into the tap callback so the
+        /// controller can look up the emitting utterance by id
+        /// rather than running another embedding-distance search.
+        let observationSegmentID: UUID?
     }
 
     private struct ProjectionResult: Sendable {
@@ -454,6 +633,7 @@ struct SpeakerClusterCard: View {
             let speakerID: String
             let isCentroid: Bool
             let observationIndex: Int?
+            let observationSegmentID: UUID?
         }
         var rows: [Row] = []
         for spk in snapshot.speakers {
@@ -461,14 +641,21 @@ struct SpeakerClusterCard: View {
                 vec: spk.centroid,
                 speakerID: spk.id,
                 isCentroid: true,
-                observationIndex: nil
+                observationIndex: nil,
+                observationSegmentID: nil
             ))
+            // `observationSegmentIDs` is parallel to `observations`
+            // when the underlying diarizer fills it; falls back to
+            // index-aligned nils for snapshots from a diarizer
+            // that doesn't expose ids (mock / older path).
+            let ids = spk.observationSegmentIDs
             for (i, obs) in spk.observations.enumerated() {
                 rows.append(Row(
                     vec: obs,
                     speakerID: spk.id,
                     isCentroid: false,
-                    observationIndex: i
+                    observationIndex: i,
+                    observationSegmentID: i < ids.count ? ids[i] : nil
                 ))
             }
         }
@@ -568,7 +755,8 @@ struct SpeakerClusterCard: View {
                 speakerID: rows[i].speakerID,
                 color: speakerTint(for: rows[i].speakerID),
                 isCentroid: rows[i].isCentroid,
-                observationIndex: rows[i].observationIndex
+                observationIndex: rows[i].observationIndex,
+                observationSegmentID: rows[i].observationSegmentID
             ))
         }
         return ProjectionResult(points: points, v1: v1, v2: v2)

@@ -65,7 +65,7 @@ struct TranscriptionReviewSheet: View {
             }
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "review.title"))
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "summary.done"), action: onDismiss)

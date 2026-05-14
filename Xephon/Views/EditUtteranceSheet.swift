@@ -158,7 +158,7 @@ struct EditUtteranceSheet: View {
             // over arbitrary app content.
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "edit.title"))
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(String(localized: "edit.cancel")) { onCancel() }

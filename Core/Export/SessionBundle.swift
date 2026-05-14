@@ -122,6 +122,29 @@ public struct SessionDocument: Codable, Sendable {
     /// Optional for v1 compat.
     public let transcriptionIssueTranscriptSnapshots: [UUID: String]?
 
+    /// Per-utterance raw speaker embedding captured at analysis
+    /// time, keyed by utterance id. Restored on load so the
+    /// speaker-cluster scatter's tap-to-scroll (and the per-
+    /// observation focus arrow) keeps working across Save → Open
+    /// — without this, the diarizer's snapshot still contains the
+    /// same observation vectors, but the map from those vectors
+    /// back to utterance ids is gone and tapping a node does
+    /// nothing. Encoded as `[UUID: [Float]]` directly because
+    /// PropertyListEncoder handles both the dictionary and the
+    /// nested float arrays without help. Optional for v1 compat.
+    public let utteranceEmbeddings: [UUID: [Float]]?
+
+    /// Pinned diarizer observation id per utterance — the
+    /// `RawEmbedding.segmentId` of the observation closest to
+    /// each row's speaker embedding at capture time. Restored on
+    /// load so the speaker-cluster scatter's tap path resolves
+    /// observation → utterance by exact id rather than running
+    /// another L2 argmin at tap time. Optional both because v1
+    /// bundles predate the field and because not every row has a
+    /// pin (mic-mode without diarization, or a finalize where the
+    /// diarizer hadn't yet ingested a matching observation).
+    public let utteranceObservationSegmentIDs: [UUID: UUID]?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -146,7 +169,9 @@ public struct SessionDocument: Codable, Sendable {
         diarizationTimeline: Data? = nil,
         sessionSummary: Data? = nil,
         transcriptionIssues: Data? = nil,
-        transcriptionIssueTranscriptSnapshots: [UUID: String]? = nil
+        transcriptionIssueTranscriptSnapshots: [UUID: String]? = nil,
+        utteranceEmbeddings: [UUID: [Float]]? = nil,
+        utteranceObservationSegmentIDs: [UUID: UUID]? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -162,6 +187,8 @@ public struct SessionDocument: Codable, Sendable {
         self.sessionSummary = sessionSummary
         self.transcriptionIssues = transcriptionIssues
         self.transcriptionIssueTranscriptSnapshots = transcriptionIssueTranscriptSnapshots
+        self.utteranceEmbeddings = utteranceEmbeddings
+        self.utteranceObservationSegmentIDs = utteranceObservationSegmentIDs
     }
 }
 

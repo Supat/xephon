@@ -181,6 +181,24 @@ final class AnalysisPipeline: @unchecked Sendable {
         }
     }
 
+    /// Argmin cosine distance over the diarizer's currently-resident
+    /// raw observations for `speakerID`, returning the matching
+    /// observation's stable `segmentId`. Captured at utterance-
+    /// finalization time so the speaker-cluster scatter's tap-to-
+    /// scroll can resolve back from observation → utterance by id
+    /// rather than another embedding-distance pass at tap time.
+    /// Nil when the diarizer hasn't loaded, the speaker isn't in
+    /// the database yet, or the speaker has no observations.
+    func bestMatchingObservationID(
+        forEmbedding embedding: [Float],
+        speakerID: String
+    ) async -> UUID? {
+        await diarizer?.bestMatchingObservationID(
+            forEmbedding: embedding,
+            speakerID: speakerID
+        )
+    }
+
     /// Register a user-promoted speaker (id + embedding) into the
     /// diarizer's session database. Throws on diarizer failure
     /// (e.g. models not loaded and download fails).

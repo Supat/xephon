@@ -59,7 +59,7 @@ struct SessionSummarySheet: View {
             }
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "summary.title"))
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {

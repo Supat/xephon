@@ -115,6 +115,15 @@ struct SpeakerHeatmapCard: View {
         cellSize: CGFloat,
         showLabels: Bool
     ) -> some View {
+        // The grid's intrinsic width is `rowLabelWidth + n × cellSize
+        // + (n - 1) × cellSpacing`, which is usually narrower than
+        // the card's interior — cells cap at `preferredCellSide`
+        // (~22pt). The outer card uses `alignment: .leading`, so
+        // without an explicit centering frame the grid hugs the
+        // left edge and leaves an asymmetric gutter on the right.
+        // `.frame(maxWidth: .infinity, alignment: .center)` keeps
+        // the grid at its intrinsic width but centers it inside
+        // the available row.
         VStack(alignment: .leading, spacing: Self.cellSpacing) {
             // Top header row: blank corner + speaker ids across.
             // Dropped entirely when cells are too small to hold a
@@ -157,6 +166,7 @@ struct SpeakerHeatmapCard: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     /// One heat cell: filled rounded rectangle + (optionally) the

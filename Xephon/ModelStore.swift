@@ -555,6 +555,12 @@ final class ModelDownloadState {
 /// delegate. Inherits from `URLSessionDownloadDelegate` to receive
 /// the `didWriteData` callback (URLSessionTaskDelegate alone
 /// doesn't surface byte-level progress for download tasks).
+///
+/// `@unchecked Sendable` is required because `NSObject` is not
+/// Sendable. Safe in this case: every stored property is `let`
+/// (only `onProgress`, itself `@Sendable`), so there's no mutable
+/// shared state to race over. The delegate callbacks are simple
+/// pass-throughs that forward to the immutable closure.
 private final class DownloadProgressTracker: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     let onProgress: @Sendable (Int64, Int64) -> Void
 

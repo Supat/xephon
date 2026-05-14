@@ -238,6 +238,9 @@ public actor StreamingSpeechAnalyzerTranscriber: StreamingTranscriber {
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCapacity) else { return nil }
 
         var error: NSError?
+        // `@unchecked Sendable` is safe: one-shot latch consumed only
+        // by the AVAudioConverter input block, which the converter
+        // calls serially on a single thread per `convert(...)` call.
         final class Once: @unchecked Sendable { var fired = false }
         let once = Once()
         let block: AVAudioConverterInputBlock = { _, status in

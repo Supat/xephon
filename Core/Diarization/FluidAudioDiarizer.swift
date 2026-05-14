@@ -221,18 +221,64 @@ public actor FluidAudioDiarizer: Diarizer {
         }
         let raw = await manager.speakerManager.getSpeakerList()
         let speakers: [SpeakerClusterSnapshot.Speaker] = raw.map { spk in
-            let allObs = spk.rawEmbeddings.map(\.embedding)
-            let tail = maxObservationsPerSpeaker > 0
-                && allObs.count > maxObservationsPerSpeaker
-                ? Array(allObs.suffix(maxObservationsPerSpeaker))
-                : allObs
+            // Walk `rawEmbeddings` once and carry the stable
+            // `segmentId` through alongside the float vector, so
+            // the snapshot's parallel `observationSegmentIDs`
+            // array stays index-aligned with `observations` even
+            // when the tail trims older entries.
+            let allEmb = spk.rawEmbeddings
+            let tail: ArraySlice<RawEmbedding> =
+                (maxObservationsPerSpeaker > 0 && allEmb.count > maxObservationsPerSpeaker)
+                ? allEmb.suffix(maxObservationsPerSpeaker)
+                : allEmb[allEmb.startIndex..<allEmb.endIndex]
             return SpeakerClusterSnapshot.Speaker(
                 id: Self.formatGlobalID(spk.id),
                 centroid: spk.currentEmbedding,
-                observations: tail
+                observations: tail.map(\.embedding),
+                observationSegmentIDs: tail.map(\.segmentId)
             )
         }
         return SpeakerClusterSnapshot(speakers: speakers)
+    }
+
+    /// Cosine-argmin over the speaker's currently-resident raw
+    /// observations against `embedding`, returning the matching
+    /// observation's `segmentId`. Callers (RecordingController)
+    /// hold the returned UUID alongside the utterance so the
+    /// scatter's tap path can map an observation back to its
+    /// emitting utterance by exact id rather than embedding
+    /// distance — robust against later tail trimming and
+    /// reordering. Nil when models haven't loaded, the speaker
+    /// isn't in the database, or the speaker has no observations
+    /// yet. Embeddings here are already L2-normalized by FluidAudio,
+    /// so a single dot-product per candidate gives cosine similarity
+    /// without an extra sqrt.
+    public func bestMatchingObservationID(
+        forEmbedding embedding: [Float],
+        speakerID: String
+    ) async -> UUID? {
+        guard manager.isAvailable else { return nil }
+        let raw = await manager.speakerManager.getSpeakerList()
+        guard let spk = raw.first(where: { Self.formatGlobalID($0.id) == speakerID }),
+              !spk.rawEmbeddings.isEmpty else { return nil }
+        // Both `embedding` (FluidAudio `extractSpeakerEmbedding`)
+        // and every `raw.embedding` (normalized at `RawEmbedding`
+        // init) are L2-normalized, so argmax(cosine) reduces to
+        // argmax(dot product) — no extra normalization or sqrt.
+        var bestID: UUID?
+        var bestSim: Float = -.infinity
+        for raw in spk.rawEmbeddings {
+            let other = raw.embedding
+            let n = min(embedding.count, other.count)
+            guard n > 0 else { continue }
+            var dot: Float = 0
+            for i in 0..<n { dot += embedding[i] * other[i] }
+            if dot > bestSim {
+                bestSim = dot
+                bestID = raw.segmentId
+            }
+        }
+        return bestID
     }
 
     /// Forward to FluidAudio's `SpeakerManager.removeSpeaker(_:,

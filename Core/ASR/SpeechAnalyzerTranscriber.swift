@@ -150,9 +150,11 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         }
 
         var error: NSError?
-        // The AVAudioConverter input block is treated as @Sendable under Swift 6
-        // strict concurrency, so a captured `var` won't compile. Wrap the
-        // single-shot "have we fed yet?" flag in a reference type.
+        // The AVAudioConverter input block is treated as @Sendable under
+        // Swift 6 strict concurrency, so a captured `var` won't compile.
+        // `@unchecked Sendable` is safe here: one-shot latch consumed
+        // only by this input block, which the converter calls serially
+        // on a single thread per `convert(...)` invocation.
         final class Once: @unchecked Sendable { var fired = false }
         let once = Once()
         let block: AVAudioConverterInputBlock = { _, status in

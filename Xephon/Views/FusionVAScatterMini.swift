@@ -128,13 +128,13 @@ struct FusionVAScatterMini: View {
         let polarityColor: Color = Color(uiColor: .tertiaryLabel)
         // Valence axis label below the box, centered.
         ctx.draw(
-            Text("V").font(axisFont).foregroundColor(axisColor),
+            Text("V").font(axisFont).foregroundStyle(axisColor),
             at: CGPoint(x: dataRect.midX, y: canvasSize.height - 2),
             anchor: .bottom
         )
         // Arousal axis label to the left, centered.
         ctx.draw(
-            Text("A").font(axisFont).foregroundColor(axisColor),
+            Text("A").font(axisFont).foregroundStyle(axisColor),
             at: CGPoint(x: 2, y: dataRect.midY),
             anchor: .leading
         )
@@ -143,22 +143,22 @@ struct FusionVAScatterMini: View {
         // with dots that land near a corner.
         let pad: CGFloat = 1
         ctx.draw(
-            Text("−").font(polarityFont).foregroundColor(polarityColor),
+            Text("−").font(polarityFont).foregroundStyle(polarityColor),
             at: CGPoint(x: dataRect.minX, y: dataRect.maxY + pad),
             anchor: .top
         )
         ctx.draw(
-            Text("+").font(polarityFont).foregroundColor(polarityColor),
+            Text("+").font(polarityFont).foregroundStyle(polarityColor),
             at: CGPoint(x: dataRect.maxX, y: dataRect.maxY + pad),
             anchor: .top
         )
         ctx.draw(
-            Text("+").font(polarityFont).foregroundColor(polarityColor),
+            Text("+").font(polarityFont).foregroundStyle(polarityColor),
             at: CGPoint(x: dataRect.minX - pad, y: dataRect.minY),
             anchor: .trailing
         )
         ctx.draw(
-            Text("−").font(polarityFont).foregroundColor(polarityColor),
+            Text("−").font(polarityFont).foregroundStyle(polarityColor),
             at: CGPoint(x: dataRect.minX - pad, y: dataRect.maxY),
             anchor: .trailing
         )

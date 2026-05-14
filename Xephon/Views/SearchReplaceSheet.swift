@@ -54,6 +54,14 @@ struct SearchReplaceSheet: View {
     /// because the staged text's match positions no longer line up
     /// with the pre-staging ones.
     @State private var selectedMatches: [UUID: Set<Int>] = [:]
+    /// Latest computed match list. Driven by `scheduleSearch()` —
+    /// never recomputed inline because `JapaneseSearchNormalizer`
+    /// runs CFStringTokenizer per row and would block the keyboard
+    /// on every keystroke for sessions with hundreds of utterances.
+    @State private var matches: [UtteranceEstimate] = []
+    /// In-flight search task, cancelled on every keystroke so a
+    /// pile-up of normalizer passes doesn't trail behind the user.
+    @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -65,7 +73,7 @@ struct SearchReplaceSheet: View {
             }
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "searchReplace.title"))
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "summary.done"), action: onDismiss)
@@ -81,6 +89,11 @@ struct SearchReplaceSheet: View {
             .environment(\.openURL, OpenURLAction { url in
                 handleMatchURL(url)
             })
+            .onAppear { scheduleSearch() }
+            .onDisappear { searchTask?.cancel() }
+            .onChange(of: searchTerm) { _, _ in scheduleSearch() }
+            .onChange(of: recorder.utterancesVersion) { _, _ in scheduleSearch() }
+            .onChange(of: recorder.utterances.count) { _, _ in scheduleSearch() }
         }
     }
 
@@ -153,7 +166,7 @@ struct SearchReplaceSheet: View {
             emptyView
         } else {
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(matches, id: \.id) { utterance in
                         matchCard(utterance)
                     }
@@ -344,28 +357,75 @@ struct SearchReplaceSheet: View {
         searchTerm.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Utterances that match the query under the same cross-script
-    /// normalization the transcript list uses — kanji ↔ kana ↔
-    /// romaji all collapse to the same Hepburn key, so typing
-    /// "shibuya" finds 渋谷 and vice versa. Recomputed from
-    /// `recorder.utterances`, so a row that's been committed drops
-    /// out automatically once its transcript no longer matches.
-    private var matches: [UtteranceEstimate] {
+    /// Kick off a debounced, off-main search. Cancels any prior
+    /// in-flight pass so a fast typist doesn't pile up normalizer
+    /// passes behind the keyboard. The heavy filter (raw substring
+    /// + Hepburn-normalized fallback) runs on a detached task so
+    /// the main actor stays free for the TextField.
+    ///
+    /// Triggers: `searchTerm` change, plus utterance-list mutations
+    /// (`utterancesVersion`, `utterances.count`) so a commit /
+    /// re-evaluation refreshes the list without the user retyping.
+    private func scheduleSearch() {
+        searchTask?.cancel()
         let term = trimmedSearch
-        guard !term.isEmpty else { return [] }
-        let normalizedQuery = JapaneseSearchNormalizer.normalize(term)
-        guard !normalizedQuery.isEmpty else { return [] }
-        return recorder.utterances.filter { u in
-            // Raw substring is the fast path and covers the
-            // common case where the user types the same script
-            // the transcript is in. Normalized fallback covers
-            // cross-script hits.
-            if u.transcript.localizedStandardRange(of: term) != nil {
-                return true
+        guard !term.isEmpty else {
+            matches = []
+            return
+        }
+        let snapshot = recorder.utterances
+        searchTask = Task { @MainActor in
+            // Brief debounce. The sleep is cancellable, so each new
+            // keystroke cancels the prior task before its filter
+            // runs — only a real pause in typing produces work.
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+            } catch {
+                return
             }
-            return JapaneseSearchNormalizer
-                .normalize(u.transcript)
-                .contains(normalizedQuery)
+            if Task.isCancelled { return }
+            let filtered = await Self.filter(items: snapshot, term: term)
+            if Task.isCancelled { return }
+            matches = filtered
+        }
+    }
+
+    /// Off-main filter. Runs the raw-substring fast path first, then
+    /// the Hepburn-normalized cross-script fallback. Cancellation is
+    /// wired through `withTaskCancellationHandler` so when the outer
+    /// debounce task is cancelled the detached filter sees
+    /// `Task.isCancelled == true` and bails on the next chunk
+    /// boundary instead of running to completion against discarded
+    /// input.
+    private static func filter(
+        items: [UtteranceEstimate],
+        term: String
+    ) async -> [UtteranceEstimate] {
+        let detached = Task.detached(priority: .userInitiated) {
+            () -> [UtteranceEstimate] in
+            let normalizedQuery = JapaneseSearchNormalizer.normalize(term)
+            var out: [UtteranceEstimate] = []
+            for (idx, u) in items.enumerated() {
+                // Check cancellation every 32 rows — enough to keep
+                // the work cheap to abandon, infrequent enough that
+                // the check itself isn't the bottleneck.
+                if idx & 0x1F == 0, Task.isCancelled { return [] }
+                if u.transcript.localizedStandardRange(of: term) != nil {
+                    out.append(u)
+                    continue
+                }
+                if normalizedQuery.isEmpty { continue }
+                if JapaneseSearchNormalizer.normalize(u.transcript)
+                    .contains(normalizedQuery) {
+                    out.append(u)
+                }
+            }
+            return out
+        }
+        return await withTaskCancellationHandler {
+            await detached.value
+        } onCancel: {
+            detached.cancel()
         }
     }
 

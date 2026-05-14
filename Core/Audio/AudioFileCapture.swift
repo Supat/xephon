@@ -221,6 +221,9 @@ public actor AudioFileCapture: AudioCapture {
                 continue
             }
             var convError: NSError?
+            // `@unchecked Sendable` is safe: one-shot latch consumed only
+            // by the AVAudioConverter input block, which the converter
+            // calls serially on a single thread per `convert(...)` call.
             final class Once: @unchecked Sendable { var fired = false }
             let once = Once()
             let inputBlock: AVAudioConverterInputBlock = { _, status in

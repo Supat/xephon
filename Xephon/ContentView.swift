@@ -179,7 +179,6 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Xephon")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -702,7 +701,31 @@ struct ContentView: View {
                         SpeakerClusterCard(
                             cluster: recorder.speakerCluster,
                             highlightedSpeakerID: focusedUtteranceSpeakerID,
-                            focusedEmbedding: focusedUtteranceEmbedding
+                            focusedEmbedding: focusedUtteranceEmbedding,
+                            onTapNode: { speakerID, segmentID, embedding in
+                                // Prefer the exact id pin — every utterance
+                                // captured under this app version has its
+                                // emitting observation's segmentId stashed
+                                // at finalize time, so this is the right
+                                // utterance by construction. The embedding
+                                // fallback only kicks in for legacy sessions
+                                // or centroid taps.
+                                if let sid = segmentID,
+                                   let target = utterance(forSegmentID: sid) {
+                                    selectedUtteranceID = target.id
+                                    scrollRequestUtteranceID = target.id
+                                    return
+                                }
+                                guard let target = nearestUtterance(
+                                    toEmbedding: embedding,
+                                    speakerID: speakerID
+                                ) else { return }
+                                selectedUtteranceID = target.id
+                                scrollRequestUtteranceID = target.id
+                            },
+                            linkedObservationIDs: Set(
+                                recorder.utteranceObservationSegmentIDs.values
+                            )
                         )
                         SpeakerHeatmapCard(
                             cluster: recorder.speakerCluster,
@@ -873,6 +896,59 @@ struct ContentView: View {
         return utts.min {
             abs(($0.start + $0.end) / 2 - t) < abs(($1.start + $1.end) / 2 - t)
         }
+    }
+
+    /// Exact-id resolution from a diarizer observation segment id
+    /// back to its emitting utterance. Walks the pinned map the
+    /// controller fills at finalize time — when a row is present,
+    /// the answer is exact regardless of how much the cluster has
+    /// shifted since capture. Returns nil for taps that miss the
+    /// map (older sessions without pins, or centroid taps which
+    /// pass `nil` to the callback in the first place).
+    private func utterance(forSegmentID sid: UUID) -> UtteranceEstimate? {
+        guard let uid = recorder.utteranceObservationSegmentIDs.first(
+            where: { $0.value == sid }
+        )?.key else { return nil }
+        return recorder.utterances.first(where: { $0.id == uid })
+    }
+
+    /// Argmin Euclidean distance from `query` over the utterances
+    /// belonging to `speakerID`. Drives the speaker-cluster
+    /// scatter's tap-to-scroll: tapping a node maps back to the
+    /// utterance whose embedding produced it. Constraining to the
+    /// tapped speaker matters because overlapping speaker clouds
+    /// — the exact scenario the heatmap calls out — let a global
+    /// argmin land in a neighboring speaker's cloud. Returns nil
+    /// when the speaker has no utterance with a stored embedding
+    /// (older session, mic-mode where the diarizer never ran, or
+    /// a centroid for a speaker that's been auto-demoted).
+    private func nearestUtterance(
+        toEmbedding query: [Float],
+        speakerID: String
+    ) -> UtteranceEstimate? {
+        let embeddings = recorder.utteranceEmbeddings
+        guard !embeddings.isEmpty else { return nil }
+        let utterancesBySpeaker = recorder.utterances.reduce(
+            into: [UUID: String]()
+        ) { acc, u in acc[u.id] = u.speakerID }
+        var bestID: UUID?
+        var bestDist: Float = .infinity
+        for (id, e) in embeddings {
+            guard utterancesBySpeaker[id] == speakerID else { continue }
+            let n = min(query.count, e.count)
+            guard n > 0 else { continue }
+            var sum: Float = 0
+            for j in 0..<n {
+                let d = e[j] - query[j]
+                sum += d * d
+            }
+            if sum < bestDist {
+                bestDist = sum
+                bestID = id
+            }
+        }
+        guard let id = bestID else { return nil }
+        return recorder.utterances.first(where: { $0.id == id })
     }
 
     /// Conversation duration for the timeline strip's X axis.
@@ -1590,8 +1666,13 @@ struct ContentView: View {
     /// Filename suggestion for the Save Session… panel. Uses an
     /// ISO-8601-ish stamp so successive saves don't collide and so
     /// the user can scan the file list chronologically.
+    /// Locale-pinned to `en_US_POSIX` per Apple's guidance for
+    /// fixed-format strings — without it `DateFormatter` would
+    /// localize digits / separators (e.g. Arabic-Indic numerals
+    /// under ar locale) and break the filename scheme.
     private func defaultSessionFilename() -> String {
         let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd_HHmm"
         return "xephon-\(fmt.string(from: Date())).xph"
     }

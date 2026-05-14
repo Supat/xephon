@@ -31,11 +31,28 @@ public struct SpeakerClusterSnapshot: Sendable {
         /// Raw per-observation embeddings, capped to the most recent
         /// few dozen at the source so PCA over the cloud stays cheap.
         public let observations: [[Float]]
+        /// Per-observation stable identifier from the underlying
+        /// diarizer (FluidAudio's `RawEmbedding.segmentId`). Parallel
+        /// to `observations` — `observations[i]` was assigned id
+        /// `observationSegmentIDs[i]` when the diarizer registered
+        /// it. Empty when the source diarizer doesn't expose stable
+        /// per-observation ids (the mock/no-op implementation).
+        /// Enables tap-to-scroll on the scatter to look up the
+        /// emitting utterance by id rather than embedding-distance
+        /// argmin — exact for observations still in the tail window,
+        /// independent of trimming / reorders.
+        public let observationSegmentIDs: [UUID]
 
-        public init(id: String, centroid: [Float], observations: [[Float]]) {
+        public init(
+            id: String,
+            centroid: [Float],
+            observations: [[Float]],
+            observationSegmentIDs: [UUID] = []
+        ) {
             self.id = id
             self.centroid = centroid
             self.observations = observations
+            self.observationSegmentIDs = observationSegmentIDs
         }
     }
     public let speakers: [Speaker]
@@ -126,6 +143,16 @@ public protocol Diarizer: Actor {
     /// ~1 Hz; cheap enough to call inline because the implementation
     /// just hands back already-resident `[Float]` arrays.
     func clusterSnapshot(maxObservationsPerSpeaker: Int) async -> SpeakerClusterSnapshot
+    /// Argmin cosine distance over the speaker's currently-resident
+    /// raw observations against `embedding`, returning the matching
+    /// observation's stable `segmentId`. Used by the controller to
+    /// pin each utterance to the diarizer observation that most
+    /// closely produced it at capture time — the speaker-cluster
+    /// scatter's tap-to-scroll then maps observations back to
+    /// utterances by id rather than re-running an L2 search against
+    /// possibly-similar embeddings at tap time. Returns nil when
+    /// the speaker isn't in the database or has no observations.
+    func bestMatchingObservationID(forEmbedding: [Float], speakerID: String) async -> UUID?
 }
 
 public extension Diarizer {
@@ -140,4 +167,8 @@ public extension Diarizer {
     func clusterSnapshot(maxObservationsPerSpeaker: Int) async -> SpeakerClusterSnapshot {
         SpeakerClusterSnapshot(speakers: [])
     }
+    func bestMatchingObservationID(
+        forEmbedding: [Float],
+        speakerID: String
+    ) async -> UUID? { nil }
 }
