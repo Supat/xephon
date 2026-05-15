@@ -21,6 +21,30 @@ struct TextBackendBadge: Equatable {
     let isGuardrail: Bool
 }
 
+/// Live `mm:ss` readout of the wall-clock time elapsed since `start`.
+/// Uses `TimelineView(.periodic)` so the value ticks once per second
+/// without driving the rest of the view's body to re-evaluate —
+/// scoped re-renders matter inside sheets that also host LLM
+/// generation, where unnecessary `body` evaluations on the parent
+/// can stall the main thread under memory pressure.
+struct ElapsedTimeLabel: View {
+    let start: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: start, by: 1.0)) { context in
+            Text(format(elapsed: context.date.timeIntervalSince(start)))
+                .monospacedDigit()
+        }
+    }
+
+    private func format(elapsed: TimeInterval) -> String {
+        let total = max(0, Int(elapsed))
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
 }

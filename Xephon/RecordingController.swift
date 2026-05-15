@@ -88,6 +88,12 @@ final class RecordingController {
     /// True while a `summarizeSession()` call is generating tokens.
     /// Disables the "Summarize session" toolbar button mid-run.
     private(set) var summarizerInferenceRunning: Bool = false
+    /// Wall-clock instant the most recent summarization started, or
+    /// nil when nothing is in flight. Drives the live elapsed-time
+    /// readout in `SessionSummarySheet` — the sheet pairs this with
+    /// a `TimelineView(.periodic)` so the user sees how long Qwen /
+    /// Apple FM has been generating.
+    private(set) var summarizerInferenceStart: Date?
     /// Last successful summary, cached so the result sheet survives
     /// re-presentation without re-running inference. Cleared on
     /// session start.
@@ -102,6 +108,10 @@ final class RecordingController {
     /// True while a `reviewSession()` call is in flight. Disables
     /// the toolbar button + footer affordance during the LLM pass.
     private(set) var transcriptionReviewRunning: Bool = false
+    /// Wall-clock instant the most recent review started, or nil
+    /// when nothing is in flight. Same role as
+    /// `summarizerInferenceStart` for the review sheet.
+    private(set) var transcriptionReviewStart: Date?
     /// Last successful issue list, kept around so the review sheet
     /// survives re-presentation without re-running inference. Issues
     /// are removed from this list as the user edits or dismisses
@@ -209,7 +219,17 @@ final class RecordingController {
     /// timeline strip in the transcript pane. Not persisted with
     /// `makeSessionDocument` — after Open Session this stays empty
     /// until re-recording or hand-edit/reeval flows repopulate it.
-    private(set) var diarizationTimeline: [DiarizedSegment] = []
+    private(set) var diarizationTimeline: [DiarizedSegment] = [] {
+        didSet { diarizationTimelineVersion &+= 1 }
+    }
+    /// Bumps on every `diarizationTimeline` assignment. Lets the
+    /// mismatch + filter memos invalidate even when the rewrite
+    /// happens to leave the segment count unchanged — e.g. a
+    /// single covering segment replaced inline by
+    /// `rewriteTimelineRange`. Without this, two consumers that
+    /// memo against `timelineCount` could return stale (and
+    /// divergent) mismatch sets after a correction / affirmation.
+    private(set) var diarizationTimelineVersion: Int = 0
 
     /// Latest snapshot of the diarizer's speaker cluster — every
     /// known speaker's averaged centroid plus a tail window of raw
@@ -347,6 +367,12 @@ final class RecordingController {
     }
     private var pipeline: AnalysisPipeline?
     private var pipelineTask: Task<AutoConfiguredPipeline, Never>?
+    /// Most recent value seen by `setBackgroundMode(_:)`. Stored so a
+    /// pipeline built after the app has already moved into background
+    /// (rare but possible — e.g. resumed from a backgrounded scene)
+    /// can be put into the correct EP state immediately on creation
+    /// rather than waiting for the next scene-phase transition.
+    private var latestBackgroundMode: Bool = false
 
     /// Per-component readiness shims for the "Models" card. Each
     /// proxies through to the active pipeline's nonisolated snapshot
@@ -410,11 +436,12 @@ final class RecordingController {
     /// Used by the Lock Screen / Dynamic Island clock so it ticks at
     /// real time alongside the audio timeline.
     private var sessionStartedAt: Date?
-    /// True when audio time progresses at wall-clock rate, so the ASR
-    /// finalize-latency metric is physically meaningful. Always true
-    /// today (mic + real-time file analysis); kept as an explicit flag
-    /// so reintroducing a non-realtime audio source later doesn't
-    /// silently corrupt the latency stat.
+    /// True when audio time progresses at wall-clock rate, so the
+    /// ASR finalize-latency metric is physically meaningful. Set
+    /// true in mic mode (engine clock = wall clock) and false in
+    /// file mode (the buffer-pipeline pump races ahead at multiple
+    /// × real time, so "latency" relative to wall clock would
+    /// report meaningless numbers).
     private var asrLatencyMeaningful: Bool = true
     /// Bounded rolling buffer over the raw capture stream. Owns the
     /// trim-before-append cap, the deep-copy-on-snapshot discipline,
@@ -564,6 +591,7 @@ final class RecordingController {
             self.pipelineTask = nil
             applyFusionWeights(to: result.pipeline)
             await refreshTextSERState(from: result.pipeline)
+            await applyLatestBackgroundMode(to: result.pipeline)
             return result.pipeline
         }
         guard let modelStore else {
@@ -580,7 +608,17 @@ final class RecordingController {
         self.pipeline = result.pipeline
         applyFusionWeights(to: result.pipeline)
         await refreshTextSERState(from: result.pipeline)
+        await applyLatestBackgroundMode(to: result.pipeline)
         return result.pipeline
+    }
+
+    /// Re-apply the most recent scene-phase signal to a freshly-
+    /// built pipeline. Cheap no-op when `latestBackgroundMode` is
+    /// the default `false` (typical case — app launched into
+    /// foreground and ensurePipeline ran during normal startup).
+    private func applyLatestBackgroundMode(to pipeline: AnalysisPipeline) async {
+        guard latestBackgroundMode else { return }
+        await pipeline.setBackgroundMode(true)
     }
 
     /// Apply the user's current fusion-weight settings to the
@@ -1281,6 +1319,19 @@ final class RecordingController {
         await refreshTextSERState(from: pipeline)
     }
 
+    /// Forward a foreground/background lifecycle transition to the
+    /// SER pipeline so each acoustic actor can swap its ORT session
+    /// between CoreML EP (foreground) and CPU (background). Driven
+    /// by the scene-phase observer in `ContentView`. Stored locally
+    /// in `latestBackgroundMode` so a freshly-built pipeline picks
+    /// up the right state if the app happened to be backgrounded
+    /// during init.
+    func setBackgroundMode(_ inBackground: Bool) async {
+        latestBackgroundMode = inBackground
+        guard let pipeline else { return }
+        await pipeline.setBackgroundMode(inBackground)
+    }
+
     // MARK: - Session summarizer
 
     /// Convenience for the toolbar / UI: true iff the chosen
@@ -1510,8 +1561,10 @@ final class RecordingController {
         }
         let backend = AppleFMSummarizer()
         summarizerInferenceRunning = true
+        summarizerInferenceStart = Date()
         defer {
             summarizerInferenceRunning = false
+            summarizerInferenceStart = nil
             scheduleSummarizerUnloadAndPipelineRewarm()
         }
         logAvailableMemory(label: "summarize Apple FM (before respond)")
@@ -1570,8 +1623,10 @@ final class RecordingController {
         }
 
         summarizerInferenceRunning = true
+        summarizerInferenceStart = Date()
         defer {
             summarizerInferenceRunning = false
+            summarizerInferenceStart = nil
             scheduleSummarizerUnloadAndPipelineRewarm()
         }
         do {
@@ -1716,8 +1771,10 @@ final class RecordingController {
         }
         let backend = AppleFMTranscriptionReviewer()
         transcriptionReviewRunning = true
+        transcriptionReviewStart = Date()
         defer {
             transcriptionReviewRunning = false
+            transcriptionReviewStart = nil
             scheduleSummarizerUnloadAndPipelineRewarm()
         }
         logAvailableMemory(label: "review Apple FM (before respond)")
@@ -1773,8 +1830,10 @@ final class RecordingController {
         }
 
         transcriptionReviewRunning = true
+        transcriptionReviewStart = Date()
         defer {
             transcriptionReviewRunning = false
+            transcriptionReviewStart = nil
             scheduleSummarizerUnloadAndPipelineRewarm()
         }
         do {
@@ -1866,11 +1925,14 @@ final class RecordingController {
 
     // MARK: - File-backed source
 
-    /// Switch to a file-backed audio source and immediately begin streaming
-    /// it through the same pipeline used for the microphone. File analysis
-    /// always runs at the file's real-time pace — that's what keeps
-    /// SpeechAnalyzer's volatile-stabilization timing identical to a
-    /// live recording and chunk timestamps locked to the source timeline.
+    /// Switch to a file-backed audio source and immediately begin
+    /// streaming it through the same pipeline used for the microphone.
+    /// File analysis runs **non-realtime** under the buffer-pipeline
+    /// pump: chunks emit as fast as downstream consumers can swallow,
+    /// with retry-on-drop backpressure. Chunk timestamps are still
+    /// anchored to the source file's audio-time axis, so the pipeline
+    /// sees a continuous monotonic file-time clock — see
+    /// `RollingAudioBuffer`'s anchor-based mapping for the detail.
     func startFromFile(_ url: URL) async {
         guard phase == .idle else { return }
         // Acquire the playback scope synchronously, before any await
@@ -3582,6 +3644,84 @@ final class RecordingController {
             "speaker corrected: utt=\(utt.id, privacy: .public) \(utt.speakerID, privacy: .public) → \(trimmed, privacy: .public) (taught diarizer)"
         )
         commitUtteranceChanges()
+        return true
+    }
+
+    /// "Affirm": tell the diarizer that the row's currently-assigned
+    /// speaker is correct. Extracts the row's audio embedding and
+    /// folds it into the **current** speaker's centroid via EMA, the
+    /// same teaching path `correctUtteranceSpeaker` uses for a
+    /// different target — so subsequent re-eval / hand-edit on
+    /// acoustically similar audio is more likely to match this
+    /// speaker. No row reassignment, no cumulative-timeline rewrite,
+    /// no utterance mutation: the assignment is already what the
+    /// user wants; this just reinforces it in the diarizer DB.
+    ///
+    /// No-op when source audio is absent (mic mode), the row doesn't
+    /// exist, the audio slice is empty, embedding extraction is
+    /// unavailable, or the underlying diarizer call throws. Returns
+    /// true on success.
+    @discardableResult
+    func affirmUtteranceSpeaker(utteranceID: UUID) async -> Bool {
+        guard let url = playbackSourceURL else { return false }
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return false }
+        let utt = utterances[index]
+        let chunk: AudioChunk
+        do {
+            chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url,
+                    start: utt.start,
+                    end: utt.end
+                )
+            }.value
+        } catch {
+            AppLog.app.error(
+                "affirm: audio read failed: \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+        guard !chunk.samples.isEmpty else {
+            AppLog.app.warning("affirm: empty audio slice")
+            return false
+        }
+        let pipeline = await ensurePipeline()
+        guard let embedding = await pipeline.extractSpeakerEmbedding(audio: chunk.samples) else {
+            AppLog.app.warning("affirm: embedding extractor unavailable")
+            return false
+        }
+        let duration = Float(max(0, utt.end - utt.start))
+        do {
+            try await pipeline.correctSpeaker(
+                id: utt.speakerID,
+                embedding: embedding,
+                duration: duration
+            )
+        } catch {
+            AppLog.app.error(
+                "affirm: DB update failed: \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+        // Declare the affirmed speaker as authoritative over the
+        // row's audio range, the same way `correctUtteranceSpeaker`
+        // does for a different target. Without this the cumulative
+        // timeline may still hold competing observations for
+        // `[utt.start, utt.end]`, so the mismatch detector keeps
+        // flagging the row and the orange caution glyph stays put
+        // — even though the user just confirmed the assignment.
+        rewriteTimelineRange(
+            speakerID: utt.speakerID,
+            start: utt.start,
+            end: utt.end
+        )
+        AppLog.app.info(
+            "speaker affirmed: utt=\(utt.id, privacy: .public) \(utt.speakerID, privacy: .public) (reinforced diarizer, timeline range rewritten)"
+        )
+        // The timeline rewrite already bumped `diarizationTimelineVersion`
+        // via the didSet, which is what the mismatch / filter memos
+        // key on — no need for `commitUtteranceChanges()` here since
+        // utterance content is unchanged.
         return true
     }
 

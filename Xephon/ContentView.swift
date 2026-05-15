@@ -246,6 +246,15 @@ struct ContentView: View {
             // empty / partial state with the Regenerate button live,
             // which is the right resume behaviour.
             .onChange(of: scenePhase) { _, newPhase in
+                // Acoustic SER actors swap their ORT session between
+                // CoreML EP and CPU across the foreground/background
+                // boundary. `.inactive` (notification center pulled,
+                // system alert) is treated as background-ish — iOS
+                // restricts GPU work in that state too, and the swap
+                // is cheap enough that the conservative call is
+                // fine.
+                let inBackground = newPhase != .active
+                Task { await recorder.setBackgroundMode(inBackground) }
                 guard newPhase == .background else { return }
                 inflightSummarizationTask?.cancel()
                 inflightSummarizationTask = nil
@@ -1018,9 +1027,22 @@ struct ContentView: View {
         // one. Body re-fires per scroll because the per-row
         // visibility tracker writes to `visibleUtteranceIDs`, so
         // this getter runs on every flick.
+        //
+        // Expanded rows are excluded from the visible-range vote.
+        // An expansion is tall enough to push its neighbors off-
+        // screen — without this filter, `visibleUtteranceIDs`
+        // collapses to just the expanded id and the timeline
+        // highlight gets visually anchored to that one row even
+        // though the user only opened it to read its detail. With
+        // the filter, scrolling still drives the highlight; an
+        // expansion that dominates the viewport simply lets the
+        // highlight fade out (returning nil here) instead of
+        // pinning itself.
         var minStart: TimeInterval = .infinity
         var maxEnd: TimeInterval = -.infinity
-        for u in recorder.utterances where visibleUtteranceIDs.contains(u.id) {
+        for u in recorder.utterances
+            where visibleUtteranceIDs.contains(u.id)
+                && !expandedUtteranceIDs.contains(u.id) {
             if u.start < minStart { minStart = u.start }
             if u.end > maxEnd { maxEnd = u.end }
         }
@@ -1543,7 +1565,7 @@ struct ContentView: View {
     private var mismatchedUtteranceIDs: Set<UUID> {
         let key = MismatchMemo.Key(
             utterancesVersion: recorder.utterancesVersion,
-            timelineCount: recorder.diarizationTimeline.count,
+            timelineVersion: recorder.diarizationTimelineVersion,
             utteranceCount: recorder.utterances.count
         )
         if mismatchMemo.lastKey == key { return mismatchMemo.set }
@@ -1594,7 +1616,7 @@ struct ContentView: View {
             mismatchOnly: showingMismatchOnly,
             utteranceCount: recorder.utterances.count,
             utterancesVersion: recorder.utterancesVersion,
-            timelineCount: recorder.diarizationTimeline.count
+            timelineVersion: recorder.diarizationTimelineVersion
         )
         if filterMemo.lastKey == key { return }
 
@@ -1869,6 +1891,9 @@ struct ContentView: View {
             },
             onPromoteNewSpeaker: { u in
                 Task { _ = await recorder.promoteUtteranceToNewSpeaker(utteranceID: u.id) }
+            },
+            onAffirmSpeaker: { u in
+                Task { _ = await recorder.affirmUtteranceSpeaker(utteranceID: u.id) }
             },
             onCorrectSpeaker: { u, target in
                 Task {

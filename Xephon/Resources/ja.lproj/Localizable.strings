@@ -215,6 +215,7 @@
 "speaker.action.reassign.header" = "変更先";
 "speaker.action.teach" = "話者識別器に学習";
 "speaker.action.promoteNewSpeaker" = "新しい話者を確定";
+"speaker.action.affirm" = "この話者で確定";
 "speaker.action.rename" = "話者の名前を変更…";
 "edit.title" = "発話を編集";
 "edit.transcript.header" = "テキスト";

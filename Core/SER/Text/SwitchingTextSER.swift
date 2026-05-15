@@ -1,11 +1,12 @@
 import Foundation
+import SERRuntime
 import XephonLogging
 
 /// Runtime-switchable text SER. Holds both the bundled DeBERTa-WRIME
 /// (`RoBERTa-base` today, see `DeBERTaWRIME.swift`) and the Apple Foundation
 /// Models fallback, and forwards `classify(_:)` to whichever backend is
 /// currently selected. Backend changes are honored on the next call.
-public actor SwitchingTextSER: TextSER {
+public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     public enum Backend: String, Sendable, Hashable, CaseIterable, Codable {
         case deberta
         case foundationModels
@@ -114,6 +115,18 @@ public actor SwitchingTextSER: TextSER {
                 }
                 throw error
             }
+        }
+    }
+
+    /// Forward the lifecycle transition to whichever backend
+    /// implements it (DeBERTa today; Apple FoundationModels has no
+    /// user-visible EP toggle, so its conformer is a no-op).
+    public func setBackgroundMode(_ inBackground: Bool) async {
+        if let m = deberta as? any BackgroundAwareSER {
+            await m.setBackgroundMode(inBackground)
+        }
+        if let m = foundationModels as? any BackgroundAwareSER {
+            await m.setBackgroundMode(inBackground)
         }
     }
 }

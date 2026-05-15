@@ -48,7 +48,9 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         AppLog.app.info(
             "MLXQwenTranscriptionReviewer loading from \(self.modelDirectory.path, privacy: .public)"
         )
-        MLX.GPU.set(cacheLimit: 32 * 1024 * 1024)
+        // Matches MLXQwenSummarizer — see its `load()` for the
+        // 128 MB rationale (SER actors torn down before this runs).
+        MLX.GPU.set(cacheLimit: 128 * 1024 * 1024)
         do {
             let configuration = ModelConfiguration(directory: modelDirectory)
             container = try await LLMModelFactory.shared.loadContainer(
@@ -112,7 +114,9 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
                     maxTokens: Self.maxOutputTokens,
                     temperature: 0.2
                 )
-                parameters.prefillStepSize = 64
+                // Matches MLXQwenSummarizer — see its generate
+                // block for the 128-vs-64 watchdog rationale.
+                parameters.prefillStepSize = 128
                 let result = try MLXLMCommon.generate(
                     input: lmInput,
                     parameters: parameters,

@@ -24,11 +24,12 @@ struct FilterDepsKey: Equatable {
     /// the controller.
     let utteranceCount: Int
     let utterancesVersion: Int
-    /// Diarization-timeline observation count — moves the mismatch
-    /// set whenever the timeline grows or is rewritten. Doesn't
-    /// affect non-mismatch filtering but cheap to include in the
-    /// fingerprint either way.
-    let timelineCount: Int
+    /// Diarization-timeline mutation version — bumped on every
+    /// timeline assignment, including in-place rewrites that
+    /// leave the segment count unchanged. Cumulative-timeline
+    /// content drives the mismatch set, so the filter memo must
+    /// invalidate whenever the timeline shifts.
+    let timelineVersion: Int
 }
 
 /// Reference-typed memo for the filter + summary derivation in
@@ -51,7 +52,10 @@ final class FilterMemo {
 final class MismatchMemo {
     struct Key: Equatable {
         let utterancesVersion: Int
-        let timelineCount: Int
+        /// Same role as `FilterDepsKey.timelineVersion` —
+        /// invalidates on every timeline mutation, including
+        /// count-preserving rewrites.
+        let timelineVersion: Int
         let utteranceCount: Int
     }
     var lastKey: Key?

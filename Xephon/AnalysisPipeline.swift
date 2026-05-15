@@ -4,6 +4,7 @@ import Audio
 import ASR
 import Diarization
 import SERAcoustic
+import SERRuntime
 import SERText
 import Fusion
 import XephonLogging
@@ -251,6 +252,31 @@ final class AnalysisPipeline: @unchecked Sendable {
         try await diarizer?.removeSpeakerFromDB(id: id, keepIfPermanent: keepIfPermanent)
     }
 
+    /// Propagate a foreground/background lifecycle transition to
+    /// every SER actor that knows how to swap its inference backend
+    /// across the boundary. Forwarded from
+    /// `RecordingController.setBackgroundMode`, which itself is
+    /// driven by the app's scene-phase observer in `ContentView`.
+    ///
+    /// `inBackground == true` → actors rebuild on CPU before iOS
+    /// revokes ANE/GPU privileges. `false` → actors rebuild on
+    /// their preferred backend (CoreML EP if they were constructed
+    /// with it allowed).
+    func setBackgroundMode(_ inBackground: Bool) async {
+        if let m = dimensionalSER as? any BackgroundAwareSER {
+            await m.setBackgroundMode(inBackground)
+        }
+        if let m = categoricalSER as? any BackgroundAwareSER {
+            await m.setBackgroundMode(inBackground)
+        }
+        if let m = ageGenderSER as? any BackgroundAwareSER {
+            await m.setBackgroundMode(inBackground)
+        }
+        if let m = textSER as? any BackgroundAwareSER {
+            await m.setBackgroundMode(inBackground)
+        }
+    }
+
     func ingestDiarizationWindow(_ audio: AudioChunk) async {
         guard diarizer != nil, !audio.samples.isEmpty else { return }
         let diarized = await runDiarization(audio)
@@ -448,18 +474,21 @@ final class AnalysisPipeline: @unchecked Sendable {
         let ageGenderURL: URL? = await Self.tryResolveAsync("W2V2 age-gender", path: "w2v2-age-gender/model.onnx", store: modelStore, diagnostics: &diagnostics)
         let ageGender: (any AgeGenderSER)? = ageGenderURL.flatMap { url in
             Self.tryInit("W2V2 age-gender SER", diagnostics: &diagnostics) {
-                // CPU-only by design — same reasoning as DeBERTa.
-                // We already run W2V2 V/A/D and emotion2vec on the
-                // CoreML EP; adding a third CoreML session was the
-                // exact thing that triggered `IOSurface creation
-                // failed: kIOReturnNoMemory` cascades historically.
-                // Under backgrounding it's worse: three CoreML
-                // sessions all hit the "GPU not permitted from
-                // background" wall at once and rebuild concurrently
-                // under tightened memory, which takes pure-CPU
-                // DeBERTa down with it. Age-gender is small enough
-                // (~6 transformer layers) that CPU latency is
-                // comfortable under the per-segment budget.
+                // CPU-only. Tried CoreML EP after the V/A/D move to
+                // CPU eased the historical IOSurface cascade, but
+                // the age-gender `.onnx` references a separate
+                // `.data` weights file (external-data layout) and
+                // the CoreML EP's subgraph partitioner doesn't
+                // propagate `model_path` into its compilation
+                // pass — ORT crashes session-init with
+                // `!model_path.empty() was false` in
+                // `onnxruntime::Initializer::Initializer`. Fix
+                // requires re-exporting age-gender with weights
+                // inlined into a single self-contained `.onnx`,
+                // or upstream ORT patching the EP path resolution.
+                // emotion2vec uses external data too but happens
+                // to take a different ORT code path that doesn't
+                // trip this — fragile, but it works for now.
                 try W2V2AgeGenderSER(modelURL: url, useCoreML: false)
             }
         }
@@ -472,19 +501,20 @@ final class AnalysisPipeline: @unchecked Sendable {
         let deberta: (any TextSER)?
         if let model = wrimeModelURL, let dir = wrimeTokenizerDir {
             deberta = await Self.tryInitAsync("DeBERTa WRIME text SER", diagnostics: &diagnostics) {
-                // CPU-only by design: under fast-pace file analysis the
-                // two acoustic SER models on CoreML EP already saturate
-                // ANE/GPU memory (CoreML allocates IOSurface-backed
-                // tensor buffers per shape per running inference).
-                // Adding a third CoreML EP session for DeBERTa was the
-                // direct trigger of `IOSurface creation failed:
-                // kIOReturnNoMemory` cascades that culminated in a
-                // SIGABRT during AudioFileCapture's pump. DeBERTa's
-                // matmuls are small (seq 128 × hidden 768) and
-                // Accelerate handles them comfortably on CPU; the
-                // ~50 ms added latency per segment is far below ASR's
-                // per-segment budget.
-                try await DeBERTaWRIME(modelURL: model, tokenizerDirectory: dir, useCoreML: false)
+                // CoreML EP. Same historical caveat as
+                // W2V2 age-gender above: the IOSurface cascade was
+                // a 3-session phenomenon. With V/A/D now on CPU
+                // permanently, the EP user count tops out at 3
+                // (emotion2vec + age-gender + DeBERTa) — back at
+                // the historical threshold, but now mitigated by
+                // (a) the proactive foreground/background swap so
+                // EP sessions don't pile up rebuilding during
+                // backgrounding, and (b) the per-actor reactive
+                // CPU-rebuild shim that catches anything the swap
+                // misses. DeBERTa's CPU latency is small (~50 ms)
+                // so reverting to CPU here is the cheapest rollback
+                // if the cascade re-appears in practice.
+                try await DeBERTaWRIME(modelURL: model, tokenizerDirectory: dir, useCoreML: true)
             }
         } else {
             deberta = nil
@@ -969,7 +999,7 @@ final class AnalysisPipeline: @unchecked Sendable {
     ///      the dynamic-time-axis W2V2/emotion2vec graphs and caches the
     ///      result. Without binning, a long session with varied utterance
     ///      lengths grows the cache monotonically — the dominant cause of
-    ///      Jetsam-style OOM kills around the 15 min mark of fast-pace
+    ///      Jetsam-style OOM kills around the 15 min mark of non-realtime
     ///      file analysis. Three bins → at most three cached MLModels.
     ///   3. At long unique shapes the EP has occasionally crashed the ANE
     ///      compiler with EXC_BAD_ACCESS — pinning shape avoids that path.

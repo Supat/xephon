@@ -152,6 +152,10 @@ struct SessionSummarySheet: View {
                 if isGenerating {
                     ProgressView()
                         .controlSize(.small)
+                    if let start = recorder.summarizerInferenceStart {
+                        ElapsedTimeLabel(start: start)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -174,6 +178,11 @@ struct SessionSummarySheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            if let start = recorder.summarizerInferenceStart {
+                ElapsedTimeLabel(start: start)
+                    .font(.title3.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

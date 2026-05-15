@@ -418,6 +418,11 @@ struct TranscriptionReviewSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            if let start = recorder.transcriptionReviewStart {
+                ElapsedTimeLabel(start: start)
+                    .font(.title3.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -454,6 +459,10 @@ struct TranscriptionReviewSheet: View {
                 if isReviewing {
                     ProgressView()
                         .controlSize(.small)
+                    if let start = recorder.transcriptionReviewStart {
+                        ElapsedTimeLabel(start: start)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Image(systemName: "text.magnifyingglass")
                 }

@@ -107,6 +107,13 @@ struct UtteranceRow: View {
     /// in the diarizer's SpeakerManager DB under a fresh id,
     /// reassigns the row, and rewrites the cumulative timeline.
     let onPromoteNewSpeaker: () -> Void
+    /// Fires when the user taps "Affirm Speaker" — confirms the
+    /// row's current speaker assignment is correct and reinforces
+    /// it in the diarizer DB. ContentView calls
+    /// `recorder.affirmUtteranceSpeaker` which extracts the row's
+    /// audio embedding and folds it into the current speaker's
+    /// centroid via EMA. No row reassignment, no timeline rewrite.
+    let onAffirmSpeaker: () -> Void
     /// Fires when the user picks "Rename Speaker…" from the chip
     /// menu. ContentView raises the existing rename alert
     /// pre-filled with the current override.
@@ -373,6 +380,20 @@ struct UtteranceRow: View {
                     .font(.caption.bold())
                     .foregroundStyle(speakerTint(for: utterance.speakerID))
             }
+            // Affirm: teach the diarizer that the current assignment
+            // is correct. Requires source audio (mic-mode rows have
+            // nothing to slice + embed), so we hide the capsule on
+            // those — mirroring how the reassign / promote actions
+            // upstream silently no-op in mic mode.
+            if playback != .unavailable {
+                Button {
+                    onAffirmSpeaker()
+                    showingSpeakerMenu = false
+                } label: {
+                    affirmSpeakerCapsule
+                }
+                .buttonStyle(.plain)
+            }
             Text(String(localized: "speaker.action.reassign.header"))
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -523,6 +544,22 @@ struct UtteranceRow: View {
                 Text(String(localized: "speaker.action.promoteNewSpeaker"))
             } icon: {
                 Image(systemName: "person.crop.circle.badge.plus")
+            }
+        }
+    }
+
+    /// "Affirm Speaker" capsule. Green-tinted to read as a positive /
+    /// confirming action, distinct from the orange-ish reassign
+    /// capsules and the accent-blue Promote-New capsule. The
+    /// `checkmark.seal.fill` glyph mirrors Apple's house language
+    /// for "validated / confirmed" in Mail and the App Store.
+    @ViewBuilder
+    private var affirmSpeakerCapsule: some View {
+        popoverCapsule(tint: .green) {
+            Label {
+                Text(String(localized: "speaker.action.affirm"))
+            } icon: {
+                Image(systemName: "checkmark.seal.fill")
             }
         }
     }

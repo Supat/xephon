@@ -30,7 +30,7 @@ import XephonLogging
 //            attention_mask  [batch, seq]  Int64
 //   outputs: logits          [batch, 8]    Float32   regression intensities
 //                                                    in roughly [0, 3]
-public actor DeBERTaWRIME: TextSER {
+public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
     private static let LABEL_ORDER: [PlutchikScore.Label] = [
         // Canonical WRIME-ver2 ordering for the 8-emotion intensity vector.
         .joy, .sadness, .anticipation, .surprise,
@@ -39,6 +39,10 @@ public actor DeBERTaWRIME: TextSER {
 
     private var session: ORTSession
     private let modelURL: URL
+    /// User's CoreML preference, frozen at init. Distinguishes intent
+    /// from `usingCoreML` (the live session's EP, toggled by the
+    /// foreground/background observer).
+    private let coreMLAllowed: Bool
     private var usingCoreML: Bool
     private let tokenizer: any Tokenizer
     private let maxTokens: Int
@@ -53,6 +57,7 @@ public actor DeBERTaWRIME: TextSER {
     ) async throws {
         do {
             self.modelURL = modelURL
+            self.coreMLAllowed = useCoreML
             self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
             let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
             self.usingCoreML = coreMLActive
@@ -84,6 +89,30 @@ public actor DeBERTaWRIME: TextSER {
             )
         } catch {
             throw TextSERError.modelUnavailable(reason: String(describing: error))
+        }
+    }
+
+    /// Foreground/background lifecycle hook. Mirrors the acoustic
+    /// SER actors: when the app moves out of `.active`, rebuild the
+    /// ORT session on CPU so the next `classify(_:)` doesn't trip
+    /// the CoreML EP "Insufficient Permission (to submit GPU work
+    /// from background)" wall; rebuild on the user's preferred
+    /// backend on return. No-op when the actor was constructed
+    /// CPU-only (the current default in
+    /// `AnalysisPipeline.autoConfigured`).
+    public func setBackgroundMode(_ inBackground: Bool) async {
+        let targetCoreML = !inBackground && coreMLAllowed
+        guard targetCoreML != usingCoreML else { return }
+        do {
+            session = try Self.makeSession(modelURL: modelURL, useCoreML: targetCoreML)
+            usingCoreML = targetCoreML && ORTIsCoreMLExecutionProviderAvailable()
+            AppLog.serText.info(
+                "DeBERTa session → \(self.usingCoreML ? "CoreML" : "CPU", privacy: .public) (inBackground=\(inBackground, privacy: .public))"
+            )
+        } catch {
+            AppLog.serText.warning(
+                "DeBERTa session swap failed (inBackground=\(inBackground, privacy: .public)): \(String(describing: error), privacy: .public); keeping current session"
+            )
         }
     }
 
@@ -160,10 +189,13 @@ public actor DeBERTaWRIME: TextSER {
         do {
             outputs = try session.run(withInputs: inputs, outputNames: ["logits"], runOptions: nil)
         } catch {
-            // CoreML EP fails as soon as the app loses foreground privileges
-            // (Metal/Espresso refuses GPU work from background). Once it
-            // fails, it stays failing — rebuild without the EP and retry on
-            // CPU. Stays on CPU for the rest of the session.
+            // Defense in depth: the proactive `setBackgroundMode(_:)`
+            // swap should have moved the session to CPU before iOS
+            // revoked GPU access. If that swap missed (race, or its
+            // own rebuild threw and left the session on CoreML),
+            // this rebuilds on CPU and retries. The next foreground
+            // `setBackgroundMode(false)` will restore CoreML — this
+            // is not a permanent pin.
             guard usingCoreML else {
                 throw TextSERError.underlying(error)
             }

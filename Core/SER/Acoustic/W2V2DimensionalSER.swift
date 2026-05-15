@@ -13,20 +13,44 @@ import XephonLogging
 //   inputs:  signal  [1, time]   Float32   (raw 16 kHz mono)
 //   outputs: logits  [1, 3]      Float32   order = arousal, dominance, valence
 //            hidden_states [1, 1024] Float32  (unused here; useful for fusion)
-public actor W2V2DimensionalSER: DimensionalAcousticSER {
+public actor W2V2DimensionalSER: DimensionalAcousticSER, BackgroundAwareSER {
     private var session: ORTSession
     private let modelURL: URL
+    /// User's CoreML preference, frozen at init. See
+    /// `Emotion2VecCategoricalSER.coreMLAllowed` for the rationale —
+    /// distinguishes intent from the live session's EP.
+    private let coreMLAllowed: Bool
     private var usingCoreML: Bool
 
     /// Initialize from an explicit `.onnx` URL.
     public init(modelURL: URL, useCoreML: Bool = true) throws {
         self.modelURL = modelURL
+        self.coreMLAllowed = useCoreML
         self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
         let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
         self.usingCoreML = coreMLActive
         AppLog.serAcoustic.info(
             "W2V2 ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
         )
+    }
+
+    /// Same lifecycle hook as Emotion2VecCategoricalSER. No-op
+    /// when the actor was constructed CPU-only (current default in
+    /// `AnalysisPipeline.autoConfigured`).
+    public func setBackgroundMode(_ inBackground: Bool) async {
+        let targetCoreML = !inBackground && coreMLAllowed
+        guard targetCoreML != usingCoreML else { return }
+        do {
+            session = try Self.makeSession(modelURL: modelURL, useCoreML: targetCoreML)
+            usingCoreML = targetCoreML && ORTIsCoreMLExecutionProviderAvailable()
+            AppLog.serAcoustic.info(
+                "W2V2 V/A/D session → \(self.usingCoreML ? "CoreML" : "CPU", privacy: .public) (inBackground=\(inBackground, privacy: .public))"
+            )
+        } catch {
+            AppLog.serAcoustic.warning(
+                "W2V2 V/A/D session swap failed (inBackground=\(inBackground, privacy: .public)): \(String(describing: error), privacy: .public); keeping current session"
+            )
+        }
     }
 
     private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {
@@ -84,12 +108,15 @@ public actor W2V2DimensionalSER: DimensionalAcousticSER {
         )
     }
 
-    /// One-shot inference with automatic CPU fallback. The CoreML EP fails
-    /// with "Insufficient Permission (to submit GPU work from background)"
-    /// whenever the app loses foreground privileges (user tabbed away,
-    /// screen locked) — those failures are sticky for the session, so the
-    /// first failure rebuilds the session without the CoreML EP and retries
-    /// on CPU. Stays on CPU for the rest of the session.
+    /// One-shot inference with reactive CPU fallback. Defense in
+    /// depth: the proactive `setBackgroundMode(_:)` swap should
+    /// have already moved the session to CPU before iOS revokes
+    /// GPU access, but if that swap missed (race with a sudden
+    /// occlusion, or the rebuild itself threw and the session
+    /// stayed on CoreML), this catch rebuilds on CPU and retries
+    /// the call. The next foreground transition's
+    /// `setBackgroundMode(false)` will move the session back to
+    /// CoreML, so this isn't a permanent pin.
     private func runInference(samples: [Float], frameCount n: Int) throws -> [Float] {
         do {
             return try invoke(samples: samples, frameCount: n)

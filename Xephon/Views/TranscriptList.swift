@@ -41,6 +41,7 @@ struct TranscriptList: View {
     let onToggleExpansion: (UUID) -> Void
     let onRenameSpeaker: (UtteranceEstimate) -> Void
     let onPromoteNewSpeaker: (UtteranceEstimate) -> Void
+    let onAffirmSpeaker: (UtteranceEstimate) -> Void
     let onCorrectSpeaker: (UtteranceEstimate, String) -> Void
     /// Fires when the user long-presses a row's mismatch warning
     /// glyph. ContentView resolves the timeline's dominant speaker
@@ -214,6 +215,7 @@ struct TranscriptList: View {
                 onCorrectSpeaker(item.u, targetSpeakerID)
             },
             onPromoteNewSpeaker: { onPromoteNewSpeaker(item.u) },
+            onAffirmSpeaker: { onAffirmSpeaker(item.u) },
             onRenameSpeaker: { onRenameSpeaker(item.u) },
             onEditTranscript: { onEditTranscript(item.u) },
             // Tap toggles focus: re-tapping the already-focused
@@ -321,7 +323,7 @@ struct TranscriptList: View {
     private var speakerMismatchedIDs: Set<UUID> {
         let key = MismatchMemo.Key(
             utterancesVersion: recorder.utterancesVersion,
-            timelineCount: recorder.diarizationTimeline.count,
+            timelineVersion: recorder.diarizationTimelineVersion,
             utteranceCount: recorder.utterances.count
         )
         if mismatchMemo.lastKey == key { return mismatchMemo.set }

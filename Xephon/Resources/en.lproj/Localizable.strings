@@ -215,6 +215,7 @@
 "speaker.action.reassign.header" = "Reassign to";
 "speaker.action.teach" = "Teach diarizer";
 "speaker.action.promoteNewSpeaker" = "Promote New Speaker";
+"speaker.action.affirm" = "Affirm Speaker";
 "speaker.action.rename" = "Rename Speaker…";
 "edit.title" = "Edit Utterance";
 "edit.transcript.header" = "Transcript";

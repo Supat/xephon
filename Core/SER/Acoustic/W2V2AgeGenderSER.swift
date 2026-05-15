@@ -41,9 +41,12 @@ import XephonLogging
 ///                                                its example output
 ///                                                column header are
 ///                                                simply wrong.
-public actor W2V2AgeGenderSER: AgeGenderSER {
+public actor W2V2AgeGenderSER: AgeGenderSER, BackgroundAwareSER {
     private var session: ORTSession
     private let modelURL: URL
+    /// User's CoreML preference, frozen at init. See
+    /// `Emotion2VecCategoricalSER.coreMLAllowed` for the rationale.
+    private let coreMLAllowed: Bool
     private var usingCoreML: Bool
 
     /// Fixed output order of the gender softmax — must mirror the
@@ -55,12 +58,32 @@ public actor W2V2AgeGenderSER: AgeGenderSER {
 
     public init(modelURL: URL, useCoreML: Bool = true) throws {
         self.modelURL = modelURL
+        self.coreMLAllowed = useCoreML
         self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
         let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
         self.usingCoreML = coreMLActive
         AppLog.serAcoustic.info(
             "W2V2 age-gender loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
         )
+    }
+
+    /// Same lifecycle hook as the other acoustic actors. No-op when
+    /// constructed CPU-only (current default in
+    /// `AnalysisPipeline.autoConfigured`).
+    public func setBackgroundMode(_ inBackground: Bool) async {
+        let targetCoreML = !inBackground && coreMLAllowed
+        guard targetCoreML != usingCoreML else { return }
+        do {
+            session = try Self.makeSession(modelURL: modelURL, useCoreML: targetCoreML)
+            usingCoreML = targetCoreML && ORTIsCoreMLExecutionProviderAvailable()
+            AppLog.serAcoustic.info(
+                "W2V2 age-gender session → \(self.usingCoreML ? "CoreML" : "CPU", privacy: .public) (inBackground=\(inBackground, privacy: .public))"
+            )
+        } catch {
+            AppLog.serAcoustic.warning(
+                "W2V2 age-gender session swap failed (inBackground=\(inBackground, privacy: .public)): \(String(describing: error), privacy: .public); keeping current session"
+            )
+        }
     }
 
     private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {

@@ -21,7 +21,7 @@ import XephonLogging
 //   inputs:  speech         [1, samples]  Float32   (raw 16 kHz mono)
 //            speech_lengths [1]           Int32
 //   outputs: logits         [1, 9]        Float32   order = LABEL_ORDER
-public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
+public actor Emotion2VecCategoricalSER: CategoricalAcousticSER, BackgroundAwareSER {
     private static let LABEL_ORDER: [CategoricalEmotion.Label] = [
         .angry, .disgusted, .fearful, .happy, .neutral,
         .other, .sad, .surprised, .unknown
@@ -29,16 +29,49 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER {
 
     private var session: ORTSession
     private let modelURL: URL
+    /// Whether the caller wanted CoreML EP at all. Frozen at init;
+    /// distinguishes the user's intent from `usingCoreML` (the
+    /// **current** session's EP, which the foreground/background
+    /// observer toggles).
+    private let coreMLAllowed: Bool
     private var usingCoreML: Bool
 
     public init(modelURL: URL, useCoreML: Bool = true) throws {
         self.modelURL = modelURL
+        self.coreMLAllowed = useCoreML
         self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
         let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
         self.usingCoreML = coreMLActive
         AppLog.serAcoustic.info(
             "emotion2vec ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
         )
+    }
+
+    /// Swap the ORT session to CPU when the app is backgrounded and
+    /// back to CoreML EP when it foregrounds. iOS/macOS revoke
+    /// ANE/GPU access while the app isn't `.active`, so leaving the
+    /// session on the EP would trip "Insufficient Permission (to
+    /// submit GPU work from background)" at the next `score(_:)`
+    /// call. Pre-empting the swap on the lifecycle transition keeps
+    /// inference clean across the boundary; the reactive catch-shim
+    /// in `runInference` stays as defense in depth.
+    public func setBackgroundMode(_ inBackground: Bool) async {
+        let targetCoreML = !inBackground && coreMLAllowed
+        guard targetCoreML != usingCoreML else { return }
+        do {
+            session = try Self.makeSession(modelURL: modelURL, useCoreML: targetCoreML)
+            usingCoreML = targetCoreML && ORTIsCoreMLExecutionProviderAvailable()
+            AppLog.serAcoustic.info(
+                "emotion2vec session → \(self.usingCoreML ? "CoreML" : "CPU", privacy: .public) (inBackground=\(inBackground, privacy: .public))"
+            )
+        } catch {
+            // Keep the existing session on rebuild failure — if we
+            // were on CoreML and the CPU rebuild fails, we'll fall
+            // through to the runtime catch-shim on the next call.
+            AppLog.serAcoustic.warning(
+                "emotion2vec session swap failed (inBackground=\(inBackground, privacy: .public)): \(String(describing: error), privacy: .public); keeping current session"
+            )
+        }
     }
 
     private static func makeSession(modelURL: URL, useCoreML: Bool) throws -> ORTSession {

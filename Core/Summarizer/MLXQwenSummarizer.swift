@@ -69,9 +69,13 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         // The default is bounded by Metal's recommendedMaxWorking-
         // SetSize, which on a 16 GB iPad sits high enough to push
         // the process over the Jetsam ceiling once Qwen weights
-        // and the SER pipeline coexist. 32 MB is the value the
-        // mlx-swift docs recommend for LLM evaluation on iOS.
-        MLX.GPU.set(cacheLimit: 32 * 1024 * 1024)
+        // and the SER pipeline coexist. The mlx-swift docs recommend
+        // 32 MB for LLM eval on iOS, but the SER actors are torn
+        // down before `summarize` runs so we have headroom — 128 MB
+        // lets MLX keep more prefill/decode scratch buffers resident,
+        // measurably improving generation throughput without
+        // re-introducing Jetsam pressure.
+        MLX.GPU.set(cacheLimit: 128 * 1024 * 1024)
         do {
             // MLXLMCommon resolves a directory containing
             // `config.json`, `tokenizer.json`, and the safetensors
@@ -173,9 +177,13 @@ public actor MLXQwenSummarizer: SessionSummarizer {
                 // buffer was tripping the GPU watchdog
                 // (`kIOGPUCommandBufferCallbackErrorTimeout` →
                 // mlx::core::gpu::check_error SIGABRT) on real
-                // iPad hardware. 64 splits prefill into many
-                // smaller kernels well inside the timeout window.
-                parameters.prefillStepSize = 64
+                // iPad hardware. 128 sits comfortably inside the
+                // watchdog window (32 sustained-prefill kernels for
+                // a 4k-token prompt vs. 64 at the prior step size)
+                // and roughly halves prefill wall time on long
+                // sessions. Drop back to 64 if the timeout SIGABRT
+                // re-appears on any hardware revision.
+                parameters.prefillStepSize = 128
                 let result = try MLXLMCommon.generate(
                     input: lmInput,
                     parameters: parameters,

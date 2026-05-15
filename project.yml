@@ -60,12 +60,14 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIRequiredDeviceCapabilities:
           - arm64
-        # Audio background mode keeps the AVAudioSession alive and the app
-        # in a privileged execution state when the user briefly tabs away
-        # (e.g. to Xcode or another app) during a recording or file
-        # analysis. Without this, iOS revokes GPU/Metal/CoreML privileges
-        # and ORT's CoreML EP errors out with "Insufficient Permission
-        # (to submit GPU work from background)".
+        # Audio background mode keeps the AVAudioSession alive when the
+        # user briefly tabs away (e.g. to Xcode or another app) during a
+        # mic-mode recording so capture doesn't stall. This does NOT
+        # preserve GPU/Metal/CoreML privileges — iOS still revokes those
+        # for backgrounded apps regardless of background modes. CoreML EP
+        # revocation is handled separately by `BackgroundAwareSER`'s
+        # proactive foreground/background session swap, with the per-actor
+        # reactive CPU-rebuild catch-shim as defense in depth.
         UIBackgroundModes:
           - audio
         # Required entitlement for ActivityKit Live Activities. Without
