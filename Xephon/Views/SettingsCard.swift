@@ -10,29 +10,34 @@ import SwiftUI
 /// Language and Text SER share a row when there's enough horizontal
 /// space (landscape, regular iPad layout). In portrait — where the
 /// left pane shrinks to ~1/3 of screen width — they stack vertically
-/// so neither dropdown gets truncated. `ViewThatFits` picks the
-/// first variant whose horizontal extent fits the available width,
-/// falling back to the stacked layout otherwise. Speech-boost (a
-/// toggle, distinct affordance) sits below on its own line.
+/// and switch to an *inline* row layout (label on the leading edge,
+/// menu pinned to the trailing edge) so each row reads "Language →
+/// Japanese", "Text SER → DeBERTa" without truncation. `ViewThatFits`
+/// picks the first variant whose horizontal extent fits the
+/// available width, falling back to the stacked layout otherwise.
+/// The picker closures take a `PickerLayout` so the same picker body
+/// renders stacked for landscape and inline for portrait.
+/// Speech-boost (a toggle, distinct affordance) sits below on its
+/// own line.
 struct SettingsCard<
     Language: View,
     SpeechBoost: View,
     TextSER: View
 >: View {
-    @ViewBuilder let languagePicker: () -> Language
+    @ViewBuilder let languagePicker: (ContentView.PickerLayout) -> Language
     @ViewBuilder let speechBoostToggle: () -> SpeechBoost
-    @ViewBuilder let textSERPicker: () -> TextSER
+    @ViewBuilder let textSERPicker: (ContentView.PickerLayout) -> TextSER
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
-                    languagePicker()
-                    textSERPicker()
+                    languagePicker(.stacked)
+                    textSERPicker(.stacked)
                 }
-                VStack(alignment: .leading, spacing: 12) {
-                    languagePicker()
-                    textSERPicker()
+                VStack(spacing: 12) {
+                    languagePicker(.inline)
+                    textSERPicker(.inline)
                 }
             }
             speechBoostToggle()

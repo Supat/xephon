@@ -126,6 +126,18 @@
 "turntaking.col.backchannel" = "Backchannel %";
 "turntaking.footnote.interruptions" = "Rows = interrupter, columns = interrupted. Cell tints scale with the session's max count.";
 "turntaking.footnote.responseLatency" = "Rows = responder, columns = partner; median seconds. Empty = no qualifying response pair within 10 s.";
+"influence.header" = "Influence & Contagion";
+"influence.empty" = "Not enough utterances yet.";
+"influence.section.leadership" = "Leadership (V, lags 1–3)";
+"influence.section.rescue" = "Mood rescue";
+"influence.section.contagion" = "Contagion windows";
+"influence.col.rescuer" = "As rescuer";
+"influence.col.downed" = "Was rescued";
+"influence.rescue.none" = "No rescue events detected.";
+"influence.contagion.none" = "No contagion windows detected.";
+"influence.footnote.leadership" = "Rows = leader, columns = follower. Cell = mean valence correlation across lags 1–3, sample-weighted. Green = follower echoes; red = follower diverges.";
+"influence.footnote.rescue" = "Rescue: a speaker's V rose ≥ 0.10 above a partner's V < 0.40 turn within 30 s. Per-speaker tally — high \"As rescuer\" reads as emotional caretaker tendency.";
+"influence.footnote.contagion" = "A strong-valence seed (|V − 0.5| > 0.20) pulling ≥ 2 other speakers' first-in-window V within 0.20 of the seed inside a 60 s window. Arrow = direction.";
 "behavior.footnote" = "Each bar is rank-normalized within the session, so heights compare speakers to each other rather than to absolute scales. R is inverted — a taller bar means a faster responder. Tap a row for raw values.";
 "behavior.utterances.count" = "%lld utterance(s)";
 "behavior.metric.talkShare" = "Talk share";

@@ -645,9 +645,13 @@ struct ContentView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 16) {
                         SettingsCard(
-                            languagePicker: { languagePicker },
+                            languagePicker: { layout in
+                                languagePicker(layout: layout)
+                            },
                             speechBoostToggle: { speechBoostToggle },
-                            textSERPicker: { textSERPicker }
+                            textSERPicker: { layout in
+                                textSERPicker(layout: layout)
+                            }
                         )
                         PipelineCard(recorder: recorder)
                     }
@@ -730,6 +734,9 @@ struct ContentView: View {
                             utterances: recorder.utterances
                         )
                         AffectiveSynchronyCard(
+                            utterances: recorder.utterances
+                        )
+                        InfluenceContagionCard(
                             utterances: recorder.utterances
                         )
                         SynchronyArcCard(
@@ -1279,6 +1286,16 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Picker layout style. Landscape gets `.stacked` (label above
+    /// control, the original look). Portrait gets `.inline`, which
+    /// renders the row as `label · Spacer · control` so the label
+    /// hugs the leading edge of the card and the control hugs the
+    /// trailing edge — what the user reads on each row is "Language
+    /// → Japanese," "Text SER → DeBERTa."
+    enum PickerLayout {
+        case stacked, inline
+    }
+
     /// Session-language picker. Drives the ASR locale (Apple
     /// SpeechTranscriber) and the text-SER gating (DeBERTa-WRIME is
     /// Japanese-only and hides for non-Japanese sessions). Disabled
@@ -1286,55 +1303,95 @@ struct ContentView: View {
     /// is locked to its start-time locale — the user can still see
     /// which language is in effect for the running session.
     @ViewBuilder
-    private var languagePicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(String(localized: "settings.language"))
+    private func languagePicker(
+        layout: PickerLayout = .stacked
+    ) -> some View {
+        let label = Text(String(localized: "settings.language"))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        let control = Picker(
+            String(localized: "settings.language"),
+            selection: Binding(
+                get: { recorder.sessionLanguage },
+                set: { newValue in
+                    Task { await recorder.setSessionLanguage(newValue) }
+                }
+            )
+        ) {
+            ForEach(SessionLanguage.allCases, id: \.self) { lang in
+                Text("\(lang.flag) \(lang.displayName)").tag(lang)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .disabled(recorder.isRecording || recorder.isAnalyzing)
+
+        switch layout {
+        case .stacked:
+            VStack(alignment: .leading, spacing: 4) {
+                label
+                control
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .inline:
+            // Portrait: label hugs the leading edge, control sits on
+            // its own row below pinned to the trailing edge. Same
+            // label-above-control reading as landscape, but the
+            // narrow left pane forces the control onto its own line
+            // — and right-justifying it keeps the menu button next
+            // to the right edge where the other right-aligned values
+            // on this card live.
+            VStack(alignment: .leading, spacing: 4) {
+                label
+                control
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func textSERPicker(
+        layout: PickerLayout = .stacked
+    ) -> some View {
+        if recorder.availableTextSERBackends.count > 1 {
+            let label = Text(String(localized: "settings.textSER"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Picker(
-                String(localized: "settings.language"),
+            let control = Picker(
+                String(localized: "settings.textSER"),
                 selection: Binding(
-                    get: { recorder.sessionLanguage },
+                    get: { recorder.currentTextSERBackend ?? .foundationModels },
                     set: { newValue in
-                        Task { await recorder.setSessionLanguage(newValue) }
+                        Task { await recorder.setTextSERBackend(newValue) }
                     }
                 )
             ) {
-                ForEach(SessionLanguage.allCases, id: \.self) { lang in
-                    Text("\(lang.flag) \(lang.displayName)").tag(lang)
+                ForEach(recorder.availableTextSERBackends, id: \.self) { backend in
+                    Text(Self.label(for: backend)).tag(backend)
                 }
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            .disabled(recorder.isRecording || recorder.isAnalyzing)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 
-    @ViewBuilder
-    private var textSERPicker: some View {
-        if recorder.availableTextSERBackends.count > 1 {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(String(localized: "settings.textSER"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker(
-                    String(localized: "settings.textSER"),
-                    selection: Binding(
-                        get: { recorder.currentTextSERBackend ?? .foundationModels },
-                        set: { newValue in
-                            Task { await recorder.setTextSERBackend(newValue) }
-                        }
-                    )
-                ) {
-                    ForEach(recorder.availableTextSERBackends, id: \.self) { backend in
-                        Text(Self.label(for: backend)).tag(backend)
-                    }
+            switch layout {
+            case .stacked:
+                VStack(alignment: .leading, spacing: 4) {
+                    label
+                    control
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            case .inline:
+                // Match the language picker's inline layout — label
+                // on its own row at the leading edge, control below
+                // pinned to the trailing edge.
+                VStack(alignment: .leading, spacing: 4) {
+                    label
+                    control
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
