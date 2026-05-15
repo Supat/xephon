@@ -49,6 +49,54 @@ extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
 }
 
+/// `ParseableFormatStyle` that renders a `TimeInterval` audio offset
+/// via `formatClock(_:)` (adaptive M:SS.s / MM:SS.s / H:MM:SS) and
+/// parses the same shapes back. Used by `EditUtteranceSheet`'s start /
+/// end fields so the user sees `1:23:45.6` instead of `5025.60 s`
+/// while still being able to nudge by `±0.1 s` via the buttons or
+/// type a value directly.
+///
+/// Parser accepts:
+///   - Plain decimal seconds (`123.45`) — backward-compat with the
+///     prior raw-seconds field and the most natural input when
+///     someone has the exact number.
+///   - `MM:SS[.s]` (`12:34.5`)
+///   - `H:MM:SS[.s]` (`1:23:45.6`)
+///
+/// Negative values throw — clamping happens at the binding layer.
+struct ClockTimeFormatStyle: ParseableFormatStyle {
+    var parseStrategy: ClockTimeParseStrategy { ClockTimeParseStrategy() }
+    func format(_ value: TimeInterval) -> String { formatClock(value) }
+}
+
+struct ClockTimeParseStrategy: ParseStrategy {
+    enum Failure: Error { case invalid }
+
+    func parse(_ value: String) throws -> TimeInterval {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { throw Failure.invalid }
+        let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+        switch parts.count {
+        case 1:
+            guard let s = Double(parts[0]) else { throw Failure.invalid }
+            return max(0, s)
+        case 2:
+            guard let m = Double(parts[0]),
+                  let s = Double(parts[1]),
+                  m >= 0, s >= 0 else { throw Failure.invalid }
+            return m * 60 + s
+        case 3:
+            guard let h = Double(parts[0]),
+                  let m = Double(parts[1]),
+                  let s = Double(parts[2]),
+                  h >= 0, m >= 0, s >= 0 else { throw Failure.invalid }
+            return h * 3600 + m * 60 + s
+        default:
+            throw Failure.invalid
+        }
+    }
+}
+
 /// Format an audio-time offset (seconds) as a clock string. Adapts to length:
 ///   < 1 min  → `M:SS.s`     (e.g. `0:05.2`)
 ///   < 1 hour → `MM:SS.s`    (e.g. `12:34.5`)

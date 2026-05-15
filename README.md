@@ -22,6 +22,27 @@ git lfs install
 open Xephon.xcodeproj
 ```
 
+## Runtime requirements
+
+### Apple Intelligence (text SER on non-Japanese sessions)
+
+The Japanese path uses bundled DeBERTa-WRIME for text SER, so no system
+service is required. **English (and any other non-Japanese) sessions
+route text SER through Apple FoundationModels**, which means
+[Apple Intelligence](https://www.apple.com/apple-intelligence/) must be
+enabled on the device:
+
+- iPad / iPhone: **Settings → Apple Intelligence & Siri → Apple Intelligence**.
+- macOS (including "Designed for iPad" builds running on Apple Silicon
+  Macs): **System Settings → Apple Intelligence & Siri → Apple Intelligence**.
+
+When Apple Intelligence is off / not yet downloaded / the device region
+is unsupported, `SystemLanguageModel.default.isAvailable` returns
+`false`, every English utterance logs
+`text SER skipped: foundationModelsUnavailable`, and rows arrive without
+a Plutchik score or text-backend chip. Japanese rows are unaffected (they
+keep using DeBERTa).
+
 ## Repository status
 
 This repo is a freshly scaffolded project. Module stubs throw

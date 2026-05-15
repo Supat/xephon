@@ -117,6 +117,15 @@
 "cluster.scatter.linkedOnly" = "Linked only";
 "behavior.header" = "Speaker Behavior";
 "behavior.empty" = "Not enough utterances yet.";
+"turntaking.header" = "Turn-Taking";
+"turntaking.empty" = "Not enough utterances yet.";
+"turntaking.section.perSpeaker" = "Per speaker";
+"turntaking.section.interruptions" = "Interruptions";
+"turntaking.section.responseLatency" = "Response latency (s)";
+"turntaking.col.floor" = "Floor (median)";
+"turntaking.col.backchannel" = "Backchannel %";
+"turntaking.footnote.interruptions" = "Rows = interrupter, columns = interrupted. Cell tints scale with the session's max count.";
+"turntaking.footnote.responseLatency" = "Rows = responder, columns = partner; median seconds. Empty = no qualifying response pair within 10 s.";
 "behavior.footnote" = "Each bar is rank-normalized within the session, so heights compare speakers to each other rather than to absolute scales. R is inverted — a taller bar means a faster responder. Tap a row for raw values.";
 "behavior.utterances.count" = "%lld utterance(s)";
 "behavior.metric.talkShare" = "Talk share";

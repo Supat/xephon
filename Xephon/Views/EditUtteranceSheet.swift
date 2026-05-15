@@ -209,22 +209,22 @@ struct EditUtteranceSheet: View {
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
             TextField(
-                "0.00",
+                "0:00.0",
                 value: value,
-                format: .number.precision(.fractionLength(2))
+                format: ClockTimeFormatStyle()
             )
             .textFieldStyle(.plain)
-            .keyboardType(.decimalPad)
+            // `.numbersAndPunctuation` exposes `:` and `.` so a user
+            // who wants to type `1:23:45.6` directly can. The parser
+            // also accepts plain decimal seconds for backward
+            // compatibility with how this field used to behave.
+            .keyboardType(.numbersAndPunctuation)
             .multilineTextAlignment(.trailing)
             .font(.title3.monospacedDigit())
-            // Wide enough for `9999.99` (≈ 2.7 hours of audio) in
-            // .title3 monospaced. Previous 64 pt clipped anything
-            // past ~`99.99`, which the screenshot showed for a
-            // 100 s+ timestamp.
-            .frame(minWidth: 100, alignment: .trailing)
-            Text("s")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            // Wide enough for `H:MM:SS.s` (`9:59:59.9`) in
+            // .title3 monospaced — covers any realistic session
+            // length.
+            .frame(minWidth: 110, alignment: .trailing)
             stepButton(systemImage: "minus") {
                 let next = max(range.lowerBound, value.wrappedValue - 0.1)
                 value.wrappedValue = (next * 100).rounded() / 100

@@ -117,6 +117,15 @@
 "cluster.scatter.linkedOnly" = "発話と連動のみ";
 "behavior.header" = "話者の振る舞い";
 "behavior.empty" = "発話数が不足しています。";
+"turntaking.header" = "ターン交代";
+"turntaking.empty" = "発話数が不足しています。";
+"turntaking.section.perSpeaker" = "話者ごと";
+"turntaking.section.interruptions" = "割り込み";
+"turntaking.section.responseLatency" = "応答までの時間 (秒)";
+"turntaking.col.floor" = "保持時間 (中央値)";
+"turntaking.col.backchannel" = "あいづち率";
+"turntaking.footnote.interruptions" = "行=割り込んだ話者、列=割り込まれた話者。セルの濃さはセッション最大値に対する相対値。";
+"turntaking.footnote.responseLatency" = "行=応答した話者、列=直前の話者。中央値の秒数。空欄=10秒以内に応答ペアなし。";
 "behavior.footnote" = "各バーはセッション内で順位正規化されており、話者間の相対比較を示します(絶対値ではありません)。「応答」は反転表示で、バーが高いほど応答が速いことを示します。行をタップすると生の値が表示されます。";
 "behavior.utterances.count" = "発話数 %lld 件";
 "behavior.metric.talkShare" = "発話時間比率";

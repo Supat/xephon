@@ -89,7 +89,11 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     }
 
     public func classify(_ text: String) async throws -> PlutchikScore {
-        switch currentBackend {
+        let backend = currentBackend
+        AppLog.serText.debug(
+            "SwitchingTextSER.classify → \(backend.rawValue, privacy: .public) (lang=\(self.sessionLanguageCode ?? "nil", privacy: .public), debertaMatched=\(self.debertaIsLanguageMatched, privacy: .public))"
+        )
+        switch backend {
         case .deberta:
             // currentBackend already gates this — deberta is non-nil here.
             return try await deberta!.classify(text)

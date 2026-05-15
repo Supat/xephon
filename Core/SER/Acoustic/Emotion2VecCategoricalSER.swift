@@ -38,9 +38,30 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER, BackgroundAwareS
 
     public init(modelURL: URL, useCoreML: Bool = true) throws {
         self.modelURL = modelURL
-        self.coreMLAllowed = useCoreML
-        self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
-        let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
+        // Same defensive fallback as `DeBERTaWRIME.init`: macOS-via-
+        // Designed-for-iPad sometimes has the CoreML EP refuse a
+        // model, and an init-time throw would lose the whole modality.
+        // CPU is a slower-but-working alternative on those hosts.
+        let resolvedSession: ORTSession
+        let resolvedCoreMLAllowed: Bool
+        if useCoreML {
+            if let session = try? Self.makeSession(modelURL: modelURL, useCoreML: true) {
+                resolvedSession = session
+                resolvedCoreMLAllowed = true
+            } else {
+                AppLog.serAcoustic.warning(
+                    "emotion2vec CoreML EP init failed; retrying on CPU (likely macOS-via-Designed-for-iPad EP rejection)"
+                )
+                resolvedSession = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+                resolvedCoreMLAllowed = false
+            }
+        } else {
+            resolvedSession = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+            resolvedCoreMLAllowed = false
+        }
+        self.session = resolvedSession
+        self.coreMLAllowed = resolvedCoreMLAllowed
+        let coreMLActive = resolvedCoreMLAllowed && ORTIsCoreMLExecutionProviderAvailable()
         self.usingCoreML = coreMLActive
         AppLog.serAcoustic.info(
             "emotion2vec ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"

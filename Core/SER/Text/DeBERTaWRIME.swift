@@ -57,9 +57,33 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
     ) async throws {
         do {
             self.modelURL = modelURL
-            self.coreMLAllowed = useCoreML
-            self.session = try Self.makeSession(modelURL: modelURL, useCoreML: useCoreML)
-            let coreMLActive = useCoreML && ORTIsCoreMLExecutionProviderAvailable()
+            // Try the user's preferred EP first; if CoreML init throws
+            // — observed on macOS "Designed for iPad" where the EP
+            // refuses this specific FP16 WRIME export — fall back to
+            // a CPU-only session and freeze `coreMLAllowed` to false
+            // so the foreground/background swap doesn't keep re-
+            // attempting the doomed CoreML init. iPad keeps the
+            // CoreML speedup; macOS keeps a working text-SER path.
+            let resolvedSession: ORTSession
+            let resolvedCoreMLAllowed: Bool
+            if useCoreML {
+                if let session = try? Self.makeSession(modelURL: modelURL, useCoreML: true) {
+                    resolvedSession = session
+                    resolvedCoreMLAllowed = true
+                } else {
+                    AppLog.serText.warning(
+                        "DeBERTa CoreML EP init failed; retrying on CPU (likely macOS-via-Designed-for-iPad EP rejection)"
+                    )
+                    resolvedSession = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+                    resolvedCoreMLAllowed = false
+                }
+            } else {
+                resolvedSession = try Self.makeSession(modelURL: modelURL, useCoreML: false)
+                resolvedCoreMLAllowed = false
+            }
+            self.session = resolvedSession
+            self.coreMLAllowed = resolvedCoreMLAllowed
+            let coreMLActive = resolvedCoreMLAllowed && ORTIsCoreMLExecutionProviderAvailable()
             self.usingCoreML = coreMLActive
 
             let tokenizerConfigURL = tokenizerDirectory.appendingPathComponent("tokenizer_config.json")

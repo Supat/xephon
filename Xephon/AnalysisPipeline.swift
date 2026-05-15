@@ -1054,19 +1054,26 @@ final class AnalysisPipeline: @unchecked Sendable {
     }
 
     private func runText(_ text: String) async -> TextSEROutcome {
-        guard let textSER, !text.isEmpty else { return .empty }
+        guard let textSER else {
+            AppLog.serText.warning("text SER skipped: no backend wired")
+            return .empty
+        }
+        guard !text.isEmpty else { return .empty }
         if Self.isFiller(text) {
-            AppLog.app.debug("text SER skipped (filler): \(text, privacy: .public)")
+            AppLog.serText.debug("text SER skipped (filler): \(text, privacy: .public)")
             return .empty
         }
         do {
             let score = try await textSER.classify(text)
             return TextSEROutcome(score: score, guardrailViolation: false)
         } catch TextSERError.guardrailViolation {
-            AppLog.app.debug("text SER declined (Apple FM guardrail): \(text, privacy: .public)")
+            AppLog.serText.info("text SER declined (Apple FM guardrail): \(text, privacy: .public)")
             return TextSEROutcome(score: nil, guardrailViolation: true)
         } catch {
-            AppLog.app.debug("text SER skipped: \(String(describing: error), privacy: .public)")
+            // Promoted to .warning so non-guardrail failures aren't
+            // silently swallowed — debugging "text SER never runs"
+            // takes priority over log noise here.
+            AppLog.serText.warning("text SER threw: \(String(describing: error), privacy: .public) — text=\(text, privacy: .public)")
             return .empty
         }
     }

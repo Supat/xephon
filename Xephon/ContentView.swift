@@ -726,6 +726,9 @@ struct ContentView: View {
                         SpeakerBehaviorCard(
                             utterances: recorder.utterances
                         )
+                        TurnTakingCard(
+                            utterances: recorder.utterances
+                        )
                         AffectiveSynchronyCard(
                             utterances: recorder.utterances
                         )
