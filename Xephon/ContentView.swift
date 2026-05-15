@@ -739,6 +739,12 @@ struct ContentView: View {
                         InfluenceContagionCard(
                             utterances: recorder.utterances
                         )
+                        AccommodationCohesionCard(
+                            utterances: recorder.utterances
+                        )
+                        ReactivityCard(
+                            utterances: recorder.utterances
+                        )
                         SynchronyArcCard(
                             utterances: recorder.utterances
                         )

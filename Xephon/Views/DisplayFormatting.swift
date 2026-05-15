@@ -21,6 +21,17 @@ struct TextBackendBadge: Equatable {
     let isGuardrail: Bool
 }
 
+/// View-model for the modality-disagreement chip shown on rows where
+/// acoustic and text SER point at meaningfully different emotions
+/// on the shared label subspace. The label varies by strength
+/// (mixed-affect vs. opposing-poles), so the tint is folded in here
+/// rather than derived at the call site.
+struct ModalityBadge: Equatable {
+    let label: String
+    let tint: Color
+    let accessibility: String
+}
+
 /// Live `mm:ss` readout of the wall-clock time elapsed since `start`.
 /// Uses `TimelineView(.periodic)` so the value ticks once per second
 /// without driving the rest of the view's body to re-evaluate —

@@ -34,6 +34,7 @@ struct InfluenceContagionCard: View {
             from: rescues, in: utterances
         )
         let windows = InfluenceDynamics.contagionWindows(utterances: utterances)
+        let modalityTallies = ModalityDisagreement.tallies(utterances: utterances)
         let speakers = orderedSpeakerIDs(from: utterances)
 
         VStack(alignment: .leading, spacing: 14) {
@@ -49,6 +50,8 @@ struct InfluenceContagionCard: View {
                 rescueSection(tallies: rescueTallies)
                 Divider().opacity(0.4)
                 contagionSection(windows: windows)
+                Divider().opacity(0.4)
+                modalitySection(tallies: modalityTallies)
             }
         }
         .padding(12)
@@ -243,6 +246,65 @@ struct InfluenceContagionCard: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
+    }
+
+    // MARK: - #11 Modality disagreement
+
+    @ViewBuilder
+    private func modalitySection(
+        tallies: [ModalityDisagreement.SpeakerTally]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionTitle(String(localized: "influence.section.modality"))
+            if tallies.isEmpty {
+                Text(String(localized: "influence.modality.none"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: Self.speakerLabelWidth)
+                    Text(String(localized: "influence.col.flagged"))
+                        .font(.caption2.bold())
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    Text(String(localized: "influence.col.opposite"))
+                        .font(.caption2.bold())
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    Text(String(localized: "influence.col.meanTVD"))
+                        .font(.caption2.bold())
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                ForEach(tallies, id: \.speakerID) { tally in
+                    HStack(spacing: 0) {
+                        Text(tally.speakerID)
+                            .font(.caption2.bold())
+                            .foregroundStyle(speakerTint(for: tally.speakerID))
+                            .frame(width: Self.speakerLabelWidth, alignment: .leading)
+                        Text(tally.flaggedCount > 0 ? "\(tally.flaggedCount)" : "—")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(tally.flaggedCount > 0 ? .primary : .tertiary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        Text(tally.oppositeCount > 0 ? "\(tally.oppositeCount)" : "—")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(
+                                tally.oppositeCount > 0
+                                    ? AnyShapeStyle(Color.red)
+                                    : AnyShapeStyle(HierarchicalShapeStyle.tertiary)
+                            )
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        Text(tally.meanTVD.map { String(format: "%.2f", $0) } ?? "—")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                }
+            }
+            Text(String(localized: "influence.footnote.modality"))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
     }
 
     // MARK: - Shared scaffolding

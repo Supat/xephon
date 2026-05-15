@@ -579,6 +579,20 @@ struct UtteranceRow: View {
                         )
                         .foregroundStyle(tint)
                 }
+                if let modalityBadge {
+                    Text(modalityBadge.label)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .overlay(
+                            Capsule().strokeBorder(
+                                modalityBadge.tint.opacity(0.55),
+                                lineWidth: 0.5
+                            )
+                        )
+                        .foregroundStyle(modalityBadge.tint)
+                        .accessibilityLabel(modalityBadge.accessibility)
+                }
                 Text("\(formatClock(utterance.start))–\(formatClock(utterance.end))")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -925,6 +939,34 @@ struct UtteranceRow: View {
         }
         guard let backend = SwitchingTextSER.Backend(rawValue: raw) else { return nil }
         return TextBackendBadge(label: backend.badgeLabel, isGuardrail: false)
+    }
+
+    /// Chip shown when this row's acoustic 9-class and Plutchik
+    /// 8-class distributions disagree substantively on the shared
+    /// six-axis subspace. Candidate-sarcasm / mixed-affect tag — the
+    /// fused label hides the disagreement under a single emotion
+    /// name; this surfaces the underlying split. Two strengths:
+    /// `topsAreOpposites` (acoustic top and Plutchik top sit on
+    /// opposite ends of the Plutchik wheel) shows "⚡︎ Mixed" in red;
+    /// the milder "modalities split" case shows "≠ Modalities" in
+    /// orange.
+    private var modalityBadge: ModalityBadge? {
+        guard let score = ModalityDisagreement.score(
+            acoustic: utterance.acousticCategorical,
+            plutchik: utterance.plutchik
+        ), score.tvd >= ModalityDisagreement.flagThreshold else { return nil }
+        if score.topsAreOpposites {
+            return ModalityBadge(
+                label: String(localized: "modality.opposite"),
+                tint: .red,
+                accessibility: String(localized: "modality.opposite.a11y")
+            )
+        }
+        return ModalityBadge(
+            label: String(localized: "modality.split"),
+            tint: .orange,
+            accessibility: String(localized: "modality.split.a11y")
+        )
     }
 
     @ViewBuilder
