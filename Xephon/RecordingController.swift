@@ -967,8 +967,25 @@ final class RecordingController {
                 // gaps in the cumulative timeline.
                 let audioTime = self.latestCapturedFileTime
                 var fired = false
-                while lastFiredAudioTime + Self.continuousDiarizeStrideSec <= audioTime {
-                    let fireEnd = lastFiredAudioTime + Self.continuousDiarizeStrideSec
+                while true {
+                    // First fire of the session waits for
+                    // `minFirstDiarizeWindowSec` of audio rather than
+                    // the usual stride. With only 2 s of audio the
+                    // WeSpeaker embedding is too noisy to be stable,
+                    // and the SpeakerManager registers a phantom
+                    // "Speaker 1" whose centroid sits far from the
+                    // real voice's embedding — so the second fire
+                    // (with cleaner audio) crosses the new-speaker
+                    // distance threshold and spawns "Speaker 2" for
+                    // what is actually the same person. Holding off
+                    // the first fire until the window has enough
+                    // clean speech gives the initial centroid a
+                    // chance to be representative.
+                    let isFirstFire = lastFiredAudioTime == 0
+                    let fireEnd: TimeInterval = isFirstFire
+                        ? Self.minFirstDiarizeWindowSec
+                        : lastFiredAudioTime + Self.continuousDiarizeStrideSec
+                    guard fireEnd <= audioTime else { break }
                     let fireStart = max(0, fireEnd - Self.continuousDiarizeWindowSec)
                     lastFiredAudioTime = fireEnd
                     let window = self.capturedAudio.slice(start: fireStart, end: fireEnd)
@@ -4222,6 +4239,21 @@ final class RecordingController {
     /// shorter spends CPU on overlapping windows that mostly agree;
     /// going longer makes rapid turn-takes show up late.
     private static let continuousDiarizeStrideSec: TimeInterval = 2
+    /// Minimum audio-time before the FIRST continuous-diarize call
+    /// fires. Set equal to `continuousDiarizeWindowSec` so the initial
+    /// fire processes the canonical full-length window, matching what
+    /// every steady-state fire sees. A shorter first window builds a
+    /// tight WeSpeaker centroid around only the early seconds of
+    /// speech; the next overlapping fire then includes slightly later
+    /// audio that lands just beyond `clusteringThreshold × 1.2` from
+    /// that tight centroid, which FluidAudio's SpeakerManager treats
+    /// as a brand-new speaker and registers a phantom ID covering
+    /// the region. Earlier iterations tried 2 s (the stride) and 5 s
+    /// (one-stride past stride); both produced consistent phantoms
+    /// at the [stride, window] boundary. Utterances finalized before
+    /// the first fire still fall back to `dominantSpeaker`'s empty-
+    /// timeline default ID.
+    private static let minFirstDiarizeWindowSec: TimeInterval = 10
     /// Maximum audio-time gap the raw audio pump allows between
     /// `latestCapturedFileTime` and `lastDiarizedAudioTime` before
     /// blocking to let diarize catch up. Sized below
