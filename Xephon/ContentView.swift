@@ -1443,6 +1443,14 @@ struct ContentView: View {
         // toolbar layout stable across state transitions and gives
         // the user a permanent at-a-glance indicator of which input
         // would be used if recording started now.
+        // Picker label and menu check binds to `effectiveInputUID`
+        // (user's pick falling back to built-in), NOT `currentInputUID`
+        // (the OS's live currentRoute, which on iPadOS 26 flickers
+        // between built-in and USB during recording even when the
+        // engine's input bind is stable). Without this, the label
+        // would silently jump to "USB Mic" mid-session and read as
+        // "the recording switched to USB" even though it didn't.
+        let effectiveUID = recorder.effectiveInputUID
         Menu {
             if recorder.availableInputs.isEmpty {
                 Text(String(localized: "input.default"))
@@ -1451,7 +1459,7 @@ struct ContentView: View {
                     Button {
                         Task { await recorder.selectInput(uid: input.uid) }
                     } label: {
-                        if input.uid == recorder.currentInputUID {
+                        if input.uid == effectiveUID {
                             Label(input.displayName, systemImage: "checkmark")
                         } else {
                             Text(input.displayName)
@@ -1460,7 +1468,7 @@ struct ContentView: View {
                 }
             }
         } label: {
-            let current = recorder.availableInputs.first(where: { $0.uid == recorder.currentInputUID })
+            let current = recorder.availableInputs.first(where: { $0.uid == effectiveUID })
             HStack(spacing: 6) {
                 Image(systemName: Self.symbol(for: current?.kind ?? .builtInMic))
                 Text(current?.displayName ?? String(localized: "input.default"))

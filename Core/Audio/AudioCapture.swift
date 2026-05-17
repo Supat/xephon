@@ -71,11 +71,26 @@ public actor AVAudioEngineCapture: AudioCapture {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
-            if let uid = preferredInputUID,
-               let target = (session.availableInputs ?? []).first(where: { $0.uid == uid }) {
-                try session.setPreferredInput(target)
+            // Fall back to the built-in mic when the user hasn't
+            // explicitly picked anything. iPadOS otherwise auto-routes
+            // to whatever USB-C audio device happens to be plugged in,
+            // which means a user who's never touched the input picker
+            // gets silently switched to USB — surprising behavior that
+            // makes the picker feel decorative. Mirrors how Voice
+            // Memos and Ferrite handle the no-preference case.
+            let effectiveUID: String?
+            if let preferredInputUID {
+                effectiveUID = preferredInputUID
+            } else if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
+                effectiveUID = builtIn.uid
+                AppLog.audio.info("no explicit preferred input; falling back to built-in mic \(builtIn.uid, privacy: .public)")
+            } else {
+                effectiveUID = nil
             }
-            try session.setActive(true)
+            try Self.bindPreferredInput(
+                to: effectiveUID,
+                session: session
+            )
         } catch {
             throw AudioError.engineUnavailable(reason: "audio session: \(error)")
         }
@@ -415,6 +430,93 @@ public actor AVAudioEngineCapture: AudioCapture {
         #endif
     }
 
+    #if os(iOS) || targetEnvironment(macCatalyst)
+    /// Activate the session and bind the user's preferred input,
+    /// fighting iPadOS 26's tendency to silently auto-route to USB-C
+    /// audio devices regardless of the app's preference.
+    ///
+    /// The naive sequence (`setPreferredInput` → `setActive(true)`) is
+    /// documented as "most effective" but is still treated as a hint;
+    /// when a USB-C mic is plugged in the OS overrides it at
+    /// activation. Reapplying after activation usually works, but on
+    /// some sessions it doesn't either — apparently because the
+    /// active session is already bound to the USB route and the OS
+    /// won't switch on a simple hint.
+    ///
+    /// The reliable lever is a deactivate / reactivate cycle with the
+    /// preferred input set at both ends. Once the session is torn
+    /// down and brought back up with an explicit preferredInput set,
+    /// the OS treats it as a fresh activation against our preference
+    /// rather than overriding an existing route.
+    ///
+    /// Logs the route at each step so we can see which step actually
+    /// switches the route in the field.
+    private static func bindPreferredInput(
+        to preferredUID: String?,
+        session: AVAudioSession
+    ) throws {
+        func resolveTarget() -> AVAudioSessionPortDescription? {
+            guard let preferredUID else { return nil }
+            return (session.availableInputs ?? []).first { $0.uid == preferredUID }
+        }
+        func routeUID() -> String {
+            session.currentRoute.inputs.first?.uid ?? "<none>"
+        }
+        func portTypeDescription() -> String {
+            session.currentRoute.inputs.first?.portType.rawValue ?? "<none>"
+        }
+
+        let preTarget = resolveTarget()
+        if let preTarget {
+            // Best-effort pre-activation hint. Tolerated to fail —
+            // some category states refuse it before activation.
+            try? session.setPreferredInput(preTarget)
+        }
+        try session.setActive(true)
+
+        let target = resolveTarget()
+        let actualUID = routeUID()
+        let wantedUID = target?.uid
+
+        if let wantedUID, actualUID != wantedUID, let target {
+            AppLog.audio.warning("OS auto-routed to \(actualUID, privacy: .public) (\(portTypeDescription(), privacy: .public)) despite preferredInputUID=\(wantedUID, privacy: .public); attempting hint override")
+            try? session.setPreferredInput(target)
+
+            // If the hint didn't take, do a deactivate/reactivate cycle
+            // with the preferred input set at both ends. This forces
+            // the OS to bind a fresh route against our preference
+            // instead of holding the existing USB binding.
+            if routeUID() != wantedUID {
+                AppLog.audio.warning("hint override didn't switch route; cycling session deactivate/reactivate")
+                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                try? session.setPreferredInput(target)
+                try session.setActive(true)
+                try? session.setPreferredInput(target)
+                let finalUID = routeUID()
+                if finalUID != wantedUID {
+                    AppLog.audio.error("could not bind preferred input \(wantedUID, privacy: .public); session routed to \(finalUID, privacy: .public) (\(portTypeDescription(), privacy: .public))")
+                } else {
+                    AppLog.audio.info("preferred input bound after cycle: \(wantedUID, privacy: .public)")
+                }
+            } else {
+                AppLog.audio.info("preferred input bound after hint: \(wantedUID, privacy: .public)")
+            }
+        } else if let wantedUID {
+            AppLog.audio.info("preferred input honored on first activation: \(wantedUID, privacy: .public)")
+        } else if let preferredUID {
+            // We had a UID but couldn't resolve it in `availableInputs`.
+            // Either the route changed between picker render and start,
+            // or the port we stored is no longer enumerated by the OS.
+            let names = (session.availableInputs ?? [])
+                .map { "\($0.portType.rawValue):\($0.uid)" }
+                .joined(separator: ", ")
+            AppLog.audio.error("preferred input UID=\(preferredUID, privacy: .public) NOT FOUND in availableInputs=[\(names, privacy: .public)]; session bound to \(actualUID, privacy: .public)")
+        } else {
+            AppLog.audio.info("no preferred input set; session bound to \(actualUID, privacy: .public) (\(portTypeDescription(), privacy: .public))")
+        }
+    }
+    #endif
+
     public var isSpeechBoostEnabled: Bool {
         get async { speechBoostEnabled }
     }
@@ -432,12 +534,14 @@ public actor AVAudioEngineCapture: AudioCapture {
 
     public func setPreferredInput(_ uid: String?) async throws {
         preferredInputUID = uid
+        AppLog.audio.info("AudioCapture.setPreferredInput stored preferredInputUID=\(uid ?? "<nil>", privacy: .public)")
         #if os(iOS) || targetEnvironment(macCatalyst)
         let session = AVAudioSession.sharedInstance()
         configureCategoryIfNeeded(session)
         let target = uid.flatMap { id in (session.availableInputs ?? []).first(where: { $0.uid == id }) }
         do {
             try session.setPreferredInput(target)
+            AppLog.audio.info("AudioCapture.setPreferredInput: session.setPreferredInput → target=\(target?.uid ?? "<nil>", privacy: .public) route=\(session.currentRoute.inputs.first?.uid ?? "<none>", privacy: .public)")
         } catch {
             throw AudioError.engineUnavailable(reason: "setPreferredInput: \(error)")
         }

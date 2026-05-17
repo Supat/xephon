@@ -48,7 +48,19 @@ final class RecordingController {
     private(set) var utterances: [UtteranceEstimate] = []
     private(set) var inputLevel: Float = 0
     private(set) var availableInputs: [AudioInputDescription] = []
+    /// The OS's reported current-route input. Useful for diagnostics
+    /// but NOT what the picker should display — iPadOS 26 flips
+    /// `session.currentRoute.inputs.first` between built-in and USB-C
+    /// mid-session even when the engine's input bound is stable, so
+    /// binding the picker label to this would make it flicker.
     private(set) var currentInputUID: String?
+    /// What the user explicitly picked in the input menu. Nil means
+    /// no explicit choice yet; the recording path then falls back to
+    /// the built-in mic, so the picker should also display built-in
+    /// in that case. This is what the picker label binds to so the
+    /// displayed input reflects the user's intent and stays stable
+    /// while iOS shuffles routes underneath.
+    private(set) var selectedInputUID: String?
     private(set) var isSpeechBoostEnabled: Bool = true
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
@@ -1250,6 +1262,16 @@ final class RecordingController {
             asrLatencyMeaningful = true
             capture = micCapture
         }
+
+        // Re-enumerate the input list now that we're back in .idle.
+        // Route-change notifications during `capture.stop()` and the
+        // bindPreferredInput deactivate/reactivate cycle all fired
+        // with `phase != .idle`, so `refreshInputs` couldn't query
+        // authoritatively and skipped the assignment to preserve the
+        // prior list. With phase now idle we can briefly switch to
+        // .playAndRecord, enumerate all inputs, and restore — which
+        // re-enables the picker.
+        await refreshInputs()
     }
 
     // MARK: - Audio input selection
@@ -1286,13 +1308,34 @@ final class RecordingController {
         #endif
         let inputs = await capture.availableInputs()
         let current = await capture.currentInput()
-        self.availableInputs = inputs
-        self.currentInputUID = current?.uid
         #if os(iOS) || targetEnvironment(macCatalyst)
         if canReconfigure {
             try? session.setCategory(priorCategory, mode: priorMode, options: priorOptions)
         }
         #endif
+        AppLog.app.info("refreshInputs: phase=\(String(describing: self.phase), privacy: .public) canReconfigure=\(canReconfigure, privacy: .public) inputs.count=\(inputs.count, privacy: .public) current=\(current?.uid ?? "<nil>", privacy: .public)")
+        // Only commit the refreshed inputs when the query had a chance
+        // to enumerate all ports. Without `canReconfigure` we read with
+        // whatever category the session happens to be in (mid-record,
+        // mid-deactivate, etc.), and `session.availableInputs` can
+        // return a transient subset — or [] when the session was just
+        // deactivated. Overwriting `availableInputs` with that stale
+        // snapshot leaves the picker disabled (count ≤ 1) after the
+        // first recording, since route-change notifications from the
+        // bindPreferredInput deactivate/reactivate cycle all fire
+        // while phase is still .recording. Keep the prior list when
+        // we couldn't query authoritatively; the next idle refresh
+        // (or the post-stop refresh) updates it cleanly. Also keep
+        // the prior list when an idle query came back empty — that's
+        // typically a deactivation-transient (the OS hasn't re-
+        // enumerated the USB device yet) rather than a legitimate
+        // "no inputs connected" state.
+        if !inputs.isEmpty {
+            self.availableInputs = inputs
+            self.currentInputUID = current?.uid
+        } else {
+            AppLog.app.info("refreshInputs: empty query result; keeping prior list (count=\(self.availableInputs.count, privacy: .public))")
+        }
     }
 
     /// React to `AVAudioSession.routeChangeNotification`. Refreshes
@@ -1931,13 +1974,30 @@ final class RecordingController {
     }
 
     func selectInput(uid: String?) async {
+        AppLog.app.info("selectInput called with uid=\(uid ?? "<nil>", privacy: .public)")
+        // Record the user's intent immediately so the picker label
+        // reflects it even if the OS route doesn't actually switch
+        // (or flickers back). This is the picker's source of truth;
+        // `currentInputUID` is only used as diagnostic.
+        self.selectedInputUID = uid
         do {
             try await capture.setPreferredInput(uid)
             await refreshInputs()
+            AppLog.app.info("selectInput post-refresh: selectedInputUID=\(self.selectedInputUID ?? "<nil>", privacy: .public) currentInputUID=\(self.currentInputUID ?? "<nil>", privacy: .public)")
         } catch {
             errorMessage = String(describing: error)
             AppLog.app.error("setPreferredInput failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// The input that the next recording will actually use. Matches
+    /// the bindPreferredInput fallback in `AudioCapture.start()`:
+    /// explicit user pick → that UID; no pick → built-in mic UID
+    /// from the current available-inputs list. The picker label
+    /// binds to this so what the user sees is what they get.
+    var effectiveInputUID: String? {
+        if let selectedInputUID { return selectedInputUID }
+        return availableInputs.first { $0.kind == .builtInMic }?.uid
     }
 
     // MARK: - File-backed source
