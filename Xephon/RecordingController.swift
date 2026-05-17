@@ -404,6 +404,26 @@ final class RecordingController {
     private var feedTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var routeWatcherTask: Task<Void, Never>?
+    /// Hardware-level connect/disconnect notification observers.
+    /// `AVAudioSession.routeChangeNotification` only fires for active
+    /// sessions, so while the app is idle between recordings, USB-C
+    /// plug/unplug events don't reach it on iPadOS 26 — the picker
+    /// then stays stale until the user explicitly opens it. The
+    /// `AVCaptureDevice` connect/disconnect notifications fire
+    /// globally for any audio (and video) device the system sees,
+    /// regardless of session state, so we use those as the primary
+    /// signal to refresh the input list on plug/unplug.
+    private var deviceConnectedWatcherTask: Task<Void, Never>?
+    private var deviceDisconnectedWatcherTask: Task<Void, Never>?
+    /// Polling fallback for USB-C audio plug/unplug detection.
+    /// On iPadOS 26, neither `AVAudioSession.routeChangeNotification`
+    /// (silent for inactive sessions) nor `AVCaptureDevice.wasConnected
+    /// /Disconnected` fires for USB-C mic events while the app is
+    /// idle. No other documented notification covers this gap, so we
+    /// poll the input list at 2 s intervals while idle. The poll is a
+    /// metadata-only category swap + read; no audio session activation
+    /// happens, so the cost is negligible.
+    private var inputPollTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
     /// Sliding-window continuous diarization. Fires every
@@ -590,6 +610,62 @@ final class RecordingController {
             for await _ in notifications {
                 guard let self else { break }
                 await self.handleAudioRouteChange()
+            }
+        }
+        // Hardware-level connect/disconnect — fires for USB-C audio
+        // devices regardless of audio-session activation state, which
+        // is what we need to keep the picker up to date while the app
+        // is idle.
+        deviceConnectedWatcherTask = Task { @MainActor [weak self] in
+            let notifications = NotificationCenter.default.notifications(
+                named: AVCaptureDevice.wasConnectedNotification
+            )
+            for await _ in notifications {
+                guard let self else { break }
+                AppLog.app.info("AVCaptureDevice.wasConnected fired; refreshing inputs")
+                await self.refreshInputs()
+            }
+        }
+        deviceDisconnectedWatcherTask = Task { @MainActor [weak self] in
+            let notifications = NotificationCenter.default.notifications(
+                named: AVCaptureDevice.wasDisconnectedNotification
+            )
+            for await _ in notifications {
+                guard let self else { break }
+                AppLog.app.info("AVCaptureDevice.wasDisconnected fired; refreshing inputs")
+                await self.refreshInputs()
+            }
+        }
+        // Polling fallback. iPadOS 26 doesn't fire any notification
+        // we've found for USB-C audio plug/unplug while idle, so we
+        // diff the input list against its last-known state every
+        // ~2 s. Only triggers a full UI refresh when the set of
+        // available input UIDs actually changes, so steady state is
+        // a cheap array compare with no observable side effects.
+        inputPollTask = Task { @MainActor [weak self] in
+            var lastKnownUIDs: Set<String> = []
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                guard self.phase == .idle, self.playbackPlayer == nil else { continue }
+                let currentUIDs = Set(self.availableInputs.map(\.uid))
+                // Cheap probe: snapshot what session.availableInputs
+                // reports right now (no category swap) and compare to
+                // our cached UID set. Only do the full enumeration if
+                // the snapshot differs from what the picker currently
+                // shows.
+                #if os(iOS) || targetEnvironment(macCatalyst)
+                let session = AVAudioSession.sharedInstance()
+                let probeUIDs = Set((session.availableInputs ?? []).map(\.uid))
+                #else
+                let probeUIDs = currentUIDs
+                #endif
+                if probeUIDs != currentUIDs || lastKnownUIDs != probeUIDs {
+                    AppLog.app.info("input poll: detected change probe=\(probeUIDs.count, privacy: .public) cached=\(currentUIDs.count, privacy: .public); refreshing")
+                    lastKnownUIDs = probeUIDs
+                    await self.refreshInputs()
+                }
             }
         }
     }
@@ -1355,6 +1431,10 @@ final class RecordingController {
     /// output should pause / stop playback rather than silently
     /// continue through whatever the OS falls back to.
     private func handleAudioRouteChange() async {
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        let reason = (AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "<none>")
+        AppLog.app.info("handleAudioRouteChange fired; currentInput=\(reason, privacy: .public) phase=\(String(describing: self.phase), privacy: .public)")
+        #endif
         await refreshInputs()
         if playbackPlayer != nil {
             stopPlayback()

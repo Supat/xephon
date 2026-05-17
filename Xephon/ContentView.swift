@@ -1483,16 +1483,35 @@ struct ContentView: View {
             .background(.tint.opacity(0.12), in: Capsule())
         }
         .disabled(inputPickerDisabled)
+        // Force a fresh enumeration whenever the user reaches for the
+        // picker. Route-change notifications mostly cover plug/unplug
+        // events but aren't 100% reliable on iPadOS — we've observed
+        // cases where AVAudioSession.routeChangeNotification doesn't
+        // fire for USB-C audio devices, especially when the session
+        // is inactive between recordings. Refreshing on tap guarantees
+        // the menu's contents reflect what's actually connected the
+        // moment the user opens it.
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                Task { @MainActor in await recorder.refreshInputs() }
+            }
+        )
     }
 
     /// True when there's nothing actionable for the input picker:
-    /// a session is in flight, the source is a file (mic isn't
-    /// used), or there's at most one input to choose from.
+    /// a session is in flight or the source is a file (mic isn't
+    /// used). We deliberately don't disable on `availableInputs.count
+    /// <= 1` anymore — that case (only the built-in mic visible)
+    /// is exactly when the user would want to tap the picker after
+    /// plugging in a USB mic, and the tap drives the refresh that
+    /// makes the new device appear. Leaving it tappable means the
+    /// menu shows just one entry briefly, the refresh runs, and the
+    /// USB device appears on the next render.
     private var inputPickerDisabled: Bool {
         if recorder.isRecording { return true }
         if recorder.isAnalyzing { return true }
         if case .file = recorder.sourceMode { return true }
-        return recorder.availableInputs.count <= 1
+        return false
     }
 
     private static func symbol(for kind: AudioInputDescription.Kind) -> String {
