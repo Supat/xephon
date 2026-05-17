@@ -42,25 +42,25 @@ public extension AudioCapture {
 }
 
 public actor AVAudioEngineCapture: AudioCapture {
-    private let engine = AVAudioEngine()
-    private let eq: AVAudioUnitEQ
-    // Sink mixer that receives the EQ output. Tapping AVAudioUnitEQ's output
-    // bus directly is unreliable — its internal format isn't always inherited
-    // from `engine.connect(...format:)`, leading to "Failed to create tap due
-    // to format mismatch" at runtime. AVAudioMixerNode negotiates formats
-    // predictably, so we route input → eq → sink and tap the sink.
-    private let processedSink = AVAudioMixerNode()
+    // Rebuilt fresh on every `start()`. Reusing a single AVAudioEngine
+    // across stop/start cycles leaves stale hardware-format bindings
+    // behind that there's no public API to clear in place — the second
+    // session ends up reading 44.1 kHz from `inputNode.outputFormat`
+    // when the first session ended at that rate, even though the live
+    // hardware has since reverted to 48 kHz. A fresh engine sidesteps
+    // this; each `inputNode` gets to query HW from scratch.
+    private var engine: AVAudioEngine?
+    private var eq: AVAudioUnitEQ?
+    private var processedSink: AVAudioMixerNode?
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var rawConverter: AVAudioConverter?
     private var processedConverter: AVAudioConverter?
     private var preferredInputUID: String?
+    private var configChangeObserver: NSObjectProtocol?
+    private var speechBoostEnabled: Bool = true
 
-    public init() {
-        self.eq = SpeechBoost.makeEQ()
-        self.engine.attach(self.eq)
-        self.engine.attach(self.processedSink)
-    }
+    public init() {}
 
     public func start() async throws -> CaptureStreams {
         guard await Self.requestPermission() else {
@@ -80,6 +80,14 @@ public actor AVAudioEngineCapture: AudioCapture {
             throw AudioError.engineUnavailable(reason: "audio session: \(error)")
         }
         #endif
+
+        // Fresh engine + nodes per session — see the property comment.
+        let engine = AVAudioEngine()
+        let eq = SpeechBoost.makeEQ()
+        eq.bypass = !speechBoostEnabled
+        let processedSink = AVAudioMixerNode()
+        engine.attach(eq)
+        engine.attach(processedSink)
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -107,8 +115,6 @@ public actor AVAudioEngineCapture: AudioCapture {
         // BufferConverter.
         rawConverter.primeMethod = .none
         processedConverter.primeMethod = .none
-        self.rawConverter = rawConverter
-        self.processedConverter = processedConverter
 
         // input → eq → processedSink. Tap input for raw, tap processedSink for
         // the speech-boosted copy. The mixer sink avoids tapping the EQ output
@@ -118,13 +124,10 @@ public actor AVAudioEngineCapture: AudioCapture {
 
         let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
         let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
-        self.rawCont = rawCont
-        self.processedCont = processedCont
 
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
 
-        // Tap A — raw input. Captures: rawCont (Sendable), rawConverter,
-        // outputFormat (each touched only on the audio thread).
+        // Tap A — raw input.
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
                 buffer,
@@ -136,8 +139,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             )
         }
 
-        // Tap B — sink mixer (= EQ-processed audio). The same per-buffer
-        // audio after speech-band shaping.
+        // Tap B — sink mixer (= EQ-processed audio).
         processedSink.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
                 buffer,
@@ -157,22 +159,134 @@ public actor AVAudioEngineCapture: AudioCapture {
             processedSink.removeTap(onBus: 0)
             rawCont.finish()
             processedCont.finish()
-            self.rawCont = nil
-            self.processedCont = nil
-            self.rawConverter = nil
-            self.processedConverter = nil
             throw AudioError.engineUnavailable(reason: String(describing: error))
         }
 
-        AppLog.audio.info("Capture started: input=\(inputFormat.sampleRate, privacy: .public) Hz → 16 kHz mono (raw + speech-boosted)")
+        // Mid-session config changes (USB clock renegotiation, media-services
+        // restart) auto-stop the engine. Pinned to this engine instance.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { [weak self] in
+                await self?.restartEngineAfterConfigurationChange()
+            }
+        }
+
+        self.engine = engine
+        self.eq = eq
+        self.processedSink = processedSink
+        self.rawCont = rawCont
+        self.processedCont = processedCont
+        self.rawConverter = rawConverter
+        self.processedConverter = processedConverter
+
+        AppLog.audio.info("Capture started: input=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch → 16 kHz mono (raw + speech-boosted)")
         return CaptureStreams(raw: rawStream, processed: processedStream)
     }
 
-    public func stop() async {
-        engine.inputNode.removeTap(onBus: 0)
+    /// Recover from `AVAudioEngineConfigurationChange`. The engine has
+    /// been auto-stopped by the OS; the input's HW sample rate may
+    /// have renegotiated (USB-C mics commonly switch 48 ↔ 44.1 mid-session).
+    /// We tear down the taps + connections first (calling `connect()`
+    /// while old-format taps are installed trips -10868), rebuild the
+    /// graph against the live HW format, then reinstall taps.
+    private func restartEngineAfterConfigurationChange() async {
+        guard let engine, let eq, let processedSink else { return }
+        guard configChangeObserver != nil else { return }
+        guard !engine.isRunning else { return }
+
+        let input = engine.inputNode
+
+        // Old taps gone first — they reference the prior format.
+        input.removeTap(onBus: 0)
         processedSink.removeTap(onBus: 0)
-        if engine.isRunning {
-            engine.stop()
+        engine.disconnectNodeInput(eq)
+        engine.disconnectNodeInput(processedSink)
+
+        // Live HW sample rate. After the config-change notification has
+        // fired, the OS has committed the new route, so
+        // `AVAudioSession.sampleRate` is authoritative here (unlike the
+        // window right after `setActive(true)`).
+        let liveChannelCount = input.outputFormat(forBus: 0).channelCount
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        let liveSampleRate = AVAudioSession.sharedInstance().sampleRate
+        #else
+        let liveSampleRate = input.outputFormat(forBus: 0).sampleRate
+        #endif
+
+        guard liveSampleRate > 0, liveChannelCount > 0,
+              let inputFormat = AVAudioFormat(
+                standardFormatWithSampleRate: liveSampleRate,
+                channels: liveChannelCount
+              ),
+              let outputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: PipelineAudio.sampleRate,
+                channels: AVAudioChannelCount(PipelineAudio.channelCount),
+                interleaved: false
+              ),
+              let newRawConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
+              let newProcessedConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
+              let rawCont = rawCont, let processedCont = processedCont else {
+            AppLog.audio.error("capture rebuild after config change: invalid state")
+            rawCont?.finish()
+            processedCont?.finish()
+            return
+        }
+        newRawConverter.primeMethod = .none
+        newProcessedConverter.primeMethod = .none
+        rawConverter = newRawConverter
+        processedConverter = newProcessedConverter
+
+        engine.connect(input, to: eq, format: inputFormat)
+        engine.connect(eq, to: processedSink, format: inputFormat)
+
+        let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
+            Self.yieldResampled(
+                buffer,
+                time: time,
+                sampleRateRatio: sampleRateRatio,
+                outputFormat: outputFormat,
+                converter: newRawConverter,
+                continuation: rawCont
+            )
+        }
+        processedSink.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
+            Self.yieldResampled(
+                buffer,
+                time: time,
+                sampleRateRatio: sampleRateRatio,
+                outputFormat: outputFormat,
+                converter: newProcessedConverter,
+                continuation: processedCont
+            )
+        }
+
+        engine.prepare()
+        do {
+            try engine.start()
+            AppLog.audio.info("Capture engine restarted after config change: input=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
+        } catch {
+            AppLog.audio.error("capture restart after config change failed: \(String(describing: error), privacy: .public)")
+            rawCont.finish()
+            processedCont.finish()
+        }
+    }
+
+    public func stop() async {
+        if let obs = configChangeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            configChangeObserver = nil
+        }
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            processedSink?.removeTap(onBus: 0)
+            if engine.isRunning {
+                engine.stop()
+            }
         }
         rawCont?.finish()
         processedCont?.finish()
@@ -180,14 +294,15 @@ public actor AVAudioEngineCapture: AudioCapture {
         processedCont = nil
         rawConverter = nil
         processedConverter = nil
+        // Drop the engine + nodes entirely. The next `start()` builds
+        // fresh instances — see the engine property comment.
+        engine = nil
+        eq = nil
+        processedSink = nil
         #if os(iOS) || targetEnvironment(macCatalyst)
         // Deactivate the session so the `.record / .measurement /
         // [.allowBluetoothHFP]` config we set in `start()` doesn't
-        // linger as the system-wide active session. If we leave it
-        // active, subsequent code that switches to a playback-only
-        // category (e.g. per-utterance audio review) inherits the
-        // recording route and `play()` reports success while the
-        // actual output stays silent.
+        // linger as the system-wide active session.
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
@@ -301,14 +416,17 @@ public actor AVAudioEngineCapture: AudioCapture {
     }
 
     public var isSpeechBoostEnabled: Bool {
-        get async { !eq.bypass }
+        get async { speechBoostEnabled }
     }
 
     public func setSpeechBoostEnabled(_ enabled: Bool) async {
         // AVAudioUnitEffect.bypass can flip safely while the engine is running;
         // the EQ continues to forward audio so the dual-tap structure stays
-        // valid — only the spectral shaping turns off.
-        eq.bypass = !enabled
+        // valid — only the spectral shaping turns off. When the engine
+        // doesn't exist yet (toggled before the first `start()`), we just
+        // record the intent so the next `start()` honors it.
+        speechBoostEnabled = enabled
+        eq?.bypass = !enabled
         AppLog.audio.info("Speech boost \(enabled ? "ON" : "OFF", privacy: .public)")
     }
 
