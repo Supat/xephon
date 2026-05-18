@@ -35,7 +35,7 @@ final class RecordingController {
     /// being analyzed, or nil when not in file mode / before the file
     /// has been probed. Used by the status line to render a completion
     /// percentage alongside wall-time and sample count.
-    private(set) var fileTotalAudioDuration: TimeInterval?
+    var fileTotalAudioDuration: TimeInterval?
     /// Surface-level error from the controller or any of its
     /// coordinators. The Settings card binds an alert to this; nil
     /// = no pending message. Setter is internal (rather than
@@ -49,7 +49,7 @@ final class RecordingController {
     /// `expandedUtteranceIDs`, `selectedUtteranceID`, etc. The
     /// controller can't reach those bindings directly, so a token
     /// the view watches is the cleanest seam.
-    private(set) var sessionToken: UUID = UUID()
+    var sessionToken: UUID = UUID()
     /// Internal-write so hand-edit / re-evaluation extensions can
     /// replace rows in place. Views still read-only via `recorder.utterances`.
     var utterances: [UtteranceEstimate] = []
@@ -115,16 +115,16 @@ final class RecordingController {
     func removeSummarizerModel() async { await summarizer.removeModel() }
     func dismissTranscriptionIssue(id: UUID) { summarizer.dismissIssue(id: id) }
     var volatileText: String = ""
-    private(set) var lastAcousticDuration: TimeInterval?
-    private(set) var lastTextDuration: TimeInterval?
-    private(set) var lastSegmentTotal: TimeInterval?
+    var lastAcousticDuration: TimeInterval?
+    var lastTextDuration: TimeInterval?
+    var lastSegmentTotal: TimeInterval?
     /// Wall-clock delay from "speaker finished this utterance"
     /// (`sessionStartedAt + segment.end`) to "analyzer emitted the final
     /// for it" (Date() at the analysisTask receipt). Indicates how long
     /// SpeechAnalyzer's volatile-stabilization window held the segment
     /// before promoting it to a final — typical 200–800 ms on M-class.
     /// Nil until the first finalize lands.
-    private(set) var lastASRFinalizeLatency: TimeInterval?
+    var lastASRFinalizeLatency: TimeInterval?
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
     private(set) var conversationSummary: ConversationSummary = ConversationSummary()
@@ -169,7 +169,7 @@ final class RecordingController {
     /// fell out of the conversation entirely, then asks the
     /// diarizer to drop them from its DB. Reset alongside other
     /// per-session state.
-    private var lastKnownSpeakerIDs: Set<String> = []
+    var lastKnownSpeakerIDs: Set<String> = []
 
     /// Cached sorted list of distinct speaker ids in `utterances`,
     /// surfaced to the view layer via `knownSpeakerIDs()`. Without
@@ -197,7 +197,7 @@ final class RecordingController {
     /// id stays canonical — diarizer matching, JSON identity, and
     /// per-speaker tint keying all keep operating on the original
     /// `S01`-style key.
-    private(set) var speakerNameOverrides: [String: String] = [:]
+    var speakerNameOverrides: [String: String] = [:]
     private var playbackPlayer: AVAudioPlayer?
     private var playbackStopTask: Task<Void, Never>?
     /// Latest snapshot of the cumulative diarizer timeline.
@@ -206,7 +206,7 @@ final class RecordingController {
     /// timeline strip in the transcript pane. Not persisted with
     /// `makeSessionDocument` — after Open Session this stays empty
     /// until re-recording or hand-edit/reeval flows repopulate it.
-    private(set) var diarizationTimeline: [DiarizedSegment] = [] {
+    var diarizationTimeline: [DiarizedSegment] = [] {
         didSet { diarizationTimelineVersion &+= 1 }
     }
     /// Bumps on every `diarizationTimeline` assignment. Lets the
@@ -224,7 +224,7 @@ final class RecordingController {
     /// Refreshed on every continuous-diarize tick and on demand via
     /// `refreshClusterSnapshot()` (the panel kicks a 1 Hz loop while
     /// visible so the views stay live even when not recording).
-    private(set) var speakerCluster: SpeakerClusterSnapshot =
+    var speakerCluster: SpeakerClusterSnapshot =
         SpeakerClusterSnapshot(speakers: [])
 
     /// Per-utterance speaker embedding, captured at the moment the
@@ -250,7 +250,7 @@ final class RecordingController {
     /// utterance means the diarizer hadn't ingested a matching
     /// observation yet (rare; falls back to embedding-distance
     /// matching at tap time).
-    private(set) var utteranceObservationSegmentIDs: [UUID: UUID] = [:]
+    var utteranceObservationSegmentIDs: [UUID: UUID] = [:]
 
     /// Ask the diarizer which currently-resident observation is
     /// closest to `embedding` for `speakerID` and stash its
@@ -329,12 +329,12 @@ final class RecordingController {
     /// cumulative — the row's job is to show what the diarizer just
     /// did, not the running total. 0 before any segment has been
     /// processed and resets each `start()`.
-    private(set) var lastChunkSpeakerCount: Int = 0
+    var lastChunkSpeakerCount: Int = 0
     /// Sentence count of the most recently-finalized ASR segment —
     /// the number of sub-segments `splitIntoSentences` produced
     /// from it. Surfaces in the pipeline visualization's ASR row.
     /// 0 before the first segment finalizes; reset each `start()`.
-    private(set) var lastChunkSentenceCount: Int = 0
+    var lastChunkSentenceCount: Int = 0
 
     /// MainActor-confined progress mirror the SetupView observes during
     /// first-launch model hydration.
@@ -352,10 +352,10 @@ final class RecordingController {
     /// loaded cleanly.
     private(set) var pipelineDiagnostics: [String] = []
 
-    private var capture: any AudioCapture
-    private let micCapture: any AudioCapture
+    var capture: any AudioCapture
+    let micCapture: any AudioCapture
     private var streamingTranscriber: any StreamingTranscriber
-    private(set) var sourceMode: SourceMode = .microphone
+    var sourceMode: SourceMode = .microphone
 
     enum SourceMode: Equatable {
         case microphone
@@ -1688,313 +1688,6 @@ final class RecordingController {
         await refreshInputs()
     }
 
-    // MARK: - Session save / load
-
-    /// Build a `SessionDocument` snapshot for the current state. For
-    /// file-mode sessions, embeds the source audio bytes inline so
-    /// playback round-trips after import; mic-mode sessions skip
-    /// the audio block per the schema's no-playback-for-mic contract.
-    ///
-    /// Throws when the audio file can't be read (e.g. the picker's
-    /// scope expired). Callers should ensure `playbackSourceURL` is
-    /// fresh before calling — `togglePlayback`-tested URLs are good.
-    func makeSessionDocument() async throws -> SessionDocument {
-        let utts = utterances
-        let names = speakerNameOverrides.isEmpty ? nil : speakerNameOverrides
-        // Snapshot the diarizer's SpeakerManager so re-diarization
-        // after Open Session lands on the same session-stable IDs
-        // the original recording assigned. Nil when the diarizer
-        // wasn't engaged (mic mode with no speech) or hasn't loaded
-        // its models yet — both are normal and don't surface to the
-        // user. Awaiting the pipeline here is what forced this
-        // function to become async; callers run it from a Task.
-        let speakerDB = await pipelineForExport()?.exportSpeakerDatabase()
-        // Carry the pre-edit revert state alongside the utterances
-        // so a long-press revert on a row that was hand-edited or
-        // re-evaluated keeps working after Save → Open. Filter
-        // snapshots whose target is no longer in `utterances` —
-        // those would be orphans and the revert path would no-op
-        // for them anyway. Empty maps round-trip as nil so v1-shaped
-        // bundles (no revert state) stay byte-identical on save.
-        let liveIDs = Set(utts.map(\.id))
-        let snapshotsForExport = preReevaluationSnapshots.filter { liveIDs.contains($0.key) }
-        let childrenForExport = handEditChildren.filter { liveIDs.contains($0.key) }
-        let snapshots = snapshotsForExport.isEmpty ? nil : snapshotsForExport
-        let children = childrenForExport.isEmpty ? nil : childrenForExport
-        // Serialize the diarizer timeline so the per-session
-        // visualization strip in the transcript pane survives
-        // Save → Open. JSON-encoded so the Export layer doesn't
-        // need to import the Diarization module's segment type.
-        // Nil when no diarization ran (mic-mode pre-roll on a save
-        // with no audio, or an analysis path that never engaged
-        // the diarizer).
-        let timelineBlob: Data? = {
-            guard !diarizationTimeline.isEmpty else { return nil }
-            return try? JSONEncoder().encode(diarizationTimeline)
-        }()
-        // Persist the last LLM summary alongside the utterances so
-        // reopening a `.xph` shows the cached result without
-        // re-running the multi-second LLM pass. JSON-encoded so the
-        // Export layer doesn't need to depend on Summarizer (which
-        // would drag MLX into a module that has no business with
-        // it). Nil when no summary has been produced this session.
-        let summaryBlob: Data? = {
-            guard let summary = lastSessionSummary else { return nil }
-            return try? JSONEncoder().encode(summary)
-        }()
-        // Persist the LLM's transcription review issues alongside
-        // the utterances so reopening a `.xph` shows the same
-        // flagged rows without re-running the multi-second review
-        // pass. Pair them with a per-utterance transcript snapshot
-        // so a stale issue (target row was edited since save) can
-        // be filtered out on load. Snapshot only the utterances
-        // that have an active issue — no point recording text for
-        // rows that aren't flagged.
-        let issuesBlob: Data? = {
-            guard !transcriptionIssues.isEmpty else { return nil }
-            return try? JSONEncoder().encode(transcriptionIssues)
-        }()
-        let issueSnapshots: [UUID: String]? = {
-            guard !transcriptionIssues.isEmpty else { return nil }
-            let flagged = Set(transcriptionIssues.map(\.utteranceID))
-            let map = utts.reduce(into: [UUID: String]()) { acc, u in
-                if flagged.contains(u.id) { acc[u.id] = u.transcript }
-            }
-            return map.isEmpty ? nil : map
-        }()
-        // Persist the per-utterance speaker embeddings so the
-        // cluster scatter's tap-to-scroll (and per-observation
-        // focus arrow) survives Save → Open. Filter to live
-        // utterance ids — a stale entry whose row has since been
-        // dropped would just bloat the file. Empty round-trips as
-        // nil so sessions that never engaged the diarizer don't
-        // grow a useless field.
-        let embeddingsForExport = utteranceEmbeddings.filter { liveIDs.contains($0.key) }
-        let embeddings = embeddingsForExport.isEmpty ? nil : embeddingsForExport
-        // Persist the pinned observation segment id per utterance
-        // so the cluster scatter's tap-to-scroll keeps doing exact
-        // id matching across Save → Open instead of falling back
-        // to embedding-distance argmin (lossier on overlapping
-        // clouds). Filtered to live utterance ids and dropped to
-        // nil when empty for the same byte-cleanliness reason as
-        // the other optional maps.
-        let segmentIDsForExport = utteranceObservationSegmentIDs.filter { liveIDs.contains($0.key) }
-        let segmentIDs = segmentIDsForExport.isEmpty ? nil : segmentIDsForExport
-        if let url = playbackSourceURL {
-            let stillScoped = url.startAccessingSecurityScopedResource()
-            defer {
-                if stillScoped { url.stopAccessingSecurityScopedResource() }
-            }
-            do {
-                let audioData = try Data(contentsOf: url)
-                return SessionDocument(
-                    sourceKind: .file,
-                    audioFilename: url.lastPathComponent,
-                    audio: audioData,
-                    utterances: utts,
-                    speakerNames: names,
-                    speakerDatabase: speakerDB,
-                    originalSnapshots: snapshots,
-                    handEditChildren: children,
-                    diarizationTimeline: timelineBlob,
-                    sessionSummary: summaryBlob,
-                    transcriptionIssues: issuesBlob,
-                    transcriptionIssueTranscriptSnapshots: issueSnapshots,
-                    utteranceEmbeddings: embeddings,
-                    utteranceObservationSegmentIDs: segmentIDs
-                )
-            } catch {
-                throw SessionBundle.BundleError.ioFailure(
-                    "audio read failed: \(error.localizedDescription)"
-                )
-            }
-        }
-        return SessionDocument(
-            sourceKind: .microphone,
-            audioFilename: nil,
-            audio: nil,
-            utterances: utts,
-            speakerNames: names,
-            speakerDatabase: speakerDB,
-            originalSnapshots: snapshots,
-            handEditChildren: children,
-            diarizationTimeline: timelineBlob,
-            sessionSummary: summaryBlob,
-            transcriptionIssues: issuesBlob,
-            transcriptionIssueTranscriptSnapshots: issueSnapshots,
-            utteranceEmbeddings: embeddings,
-            utteranceObservationSegmentIDs: segmentIDs
-        )
-    }
-
-    /// Read-only access to the existing pipeline, without forcing
-    /// initialization. `makeSessionDocument` uses it to skip the
-    /// diarizer DB snapshot when no pipeline ever spun up (e.g.
-    /// saving an imported session that was never re-analyzed).
-    private func pipelineForExport() -> AnalysisPipeline? {
-        pipeline
-    }
-
-    /// Replace the current session state with the contents of a
-    /// previously-saved bundle. No-op when not idle so we never
-    /// clobber an in-flight recording. Extracts the bundle's audio
-    /// (if any) to a sandboxed temp file and wires it as the new
-    /// playback source.
-    func loadSession(_ document: SessionDocument) async throws {
-        guard phase == .idle else { return }
-        stopPlayback()
-        // Bump the session token so ContentView's `@State` keyed
-        // by UUID (`visibleUtteranceIDs`, `expandedUtteranceIDs`,
-        // `selectedUtteranceID`, `scrollRequestUtteranceID`,
-        // `normalizedTranscriptCache`) is dropped before the new
-        // utterance list takes over. Without this, stale view
-        // state from the previous file leaks into the loaded one
-        // and timeline strips (which mix `recorder.utterances`
-        // with the view-side visibility set) can render wrong.
-        sessionToken = UUID()
-        utterances = document.utterances
-        // Restore the pre-edit revert state from the bundle so a
-        // long-press on a row's Edited / completed marker after
-        // Open Session still rolls the row back to its original
-        // streaming-pass record. `removeAll` first to drop any
-        // leftover state from a prior session that wasn't cleared
-        // (no recording started yet).
-        preReevaluationSnapshots.removeAll()
-        handEditChildren.removeAll()
-        // Drop the prior session's per-utterance embeddings before
-        // adopting the new bundle's map — leftover entries keyed by
-        // UUIDs from the previous session would either land on no
-        // row at all or, worse, collide with a freshly assigned
-        // UUID and mis-target the cluster-tap → scroll lookup.
-        utteranceEmbeddings.removeAll()
-        utteranceObservationSegmentIDs.removeAll()
-        diarizationTimeline = []
-        speakerCluster = SpeakerClusterSnapshot(speakers: [])
-        lastKnownSpeakerIDs = []
-        // The cached summary was generated against the previous
-        // session's utterances. Default to clearing; restore below
-        // if the loaded `.xph` carries a persisted one.
-        let restoredSummary: SessionSummary? = document.sessionSummary
-            .flatMap { try? JSONDecoder().decode(SessionSummary.self, from: $0) }
-        summarizer.restore(summary: restoredSummary)
-        // Restore LLM-flagged issues, filtering against the saved
-        // transcript snapshots so a row edited between save and
-        // re-open doesn't surface a flag pointing at text that no
-        // longer exists. Bundles without the issue blob (v1 / no
-        // review run) reset to empty.
-        let restoredIssues: [TranscriptionIssue]
-        if let blob = document.transcriptionIssues,
-           let candidates = try? JSONDecoder().decode([TranscriptionIssue].self, from: blob) {
-            let snapshots = document.transcriptionIssueTranscriptSnapshots ?? [:]
-            let liveByID = Dictionary(
-                uniqueKeysWithValues: document.utterances.map { ($0.id, $0) }
-            )
-            restoredIssues = candidates.filter { issue in
-                guard let live = liveByID[issue.utteranceID] else { return false }
-                // No snapshot means we can't prove staleness; keep
-                // the issue rather than silently dropping it.
-                guard let snapshot = snapshots[issue.utteranceID] else { return true }
-                return snapshot == live.transcript
-            }
-        } else {
-            restoredIssues = []
-        }
-        summarizer.restore(issues: restoredIssues)
-        if let saved = document.originalSnapshots {
-            preReevaluationSnapshots = saved
-        }
-        if let savedChildren = document.handEditChildren {
-            handEditChildren = savedChildren
-        }
-        if let savedEmbeddings = document.utteranceEmbeddings {
-            utteranceEmbeddings = savedEmbeddings
-        }
-        if let savedSegmentIDs = document.utteranceObservationSegmentIDs {
-            utteranceObservationSegmentIDs = savedSegmentIDs
-        }
-        if let timelineBlob = document.diarizationTimeline,
-           let restored = try? JSONDecoder().decode([DiarizedSegment].self, from: timelineBlob) {
-            diarizationTimeline = restored
-        }
-        speakerNameOverrides = document.speakerNames ?? [:]
-        // Same-length imports would otherwise hit the filter memo;
-        // bump defensively so the cache rebuilds for any load.
-        commitUtteranceChanges()
-        lastChunkSpeakerCount = 0
-        lastChunkSentenceCount = 0
-        lastAcousticDuration = nil
-        lastTextDuration = nil
-        lastSegmentTotal = nil
-        lastASRFinalizeLatency = nil
-        // Imported sessions act like a finished file analysis: in
-        // the .microphone source mode (so Record starts fresh) with
-        // a playback URL pointing at the extracted audio (so the
-        // per-row play button works).
-        sourceMode = .microphone
-        capture = micCapture
-        if let audioData = document.audio, !audioData.isEmpty {
-            let filename = document.audioFilename ?? "audio"
-            let tempDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent(
-                    "xephon-session-\(UUID().uuidString)",
-                    isDirectory: true
-                )
-            do {
-                try FileManager.default.createDirectory(
-                    at: tempDir,
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                throw SessionBundle.BundleError.ioFailure(
-                    "temp dir create failed: \(error.localizedDescription)"
-                )
-            }
-            let destination = tempDir.appendingPathComponent(filename)
-            do {
-                try audioData.write(to: destination, options: .atomic)
-            } catch {
-                throw SessionBundle.BundleError.ioFailure(
-                    "audio extract failed: \(error.localizedDescription)"
-                )
-            }
-            setPlaybackSourceURL(destination)
-            fileTotalAudioDuration = {
-                guard let f = try? AVAudioFile(forReading: destination) else { return nil }
-                let rate = f.processingFormat.sampleRate
-                guard rate > 0, f.length > 0 else { return nil }
-                return TimeInterval(Double(f.length) / rate)
-            }()
-        } else {
-            setPlaybackSourceURL(nil)
-            fileTotalAudioDuration = nil
-        }
-        // Restore the FluidAudio speaker DB when the saved bundle
-        // carries one. Without this, a re-diarize on a hand-edited
-        // slice would cluster against an empty SpeakerManager and
-        // assign brand-new IDs that don't correspond to the
-        // utterance rows' speaker labels. We swallow throws — a
-        // stale blob (e.g. FluidAudio's `Speaker` schema changed
-        // across versions) shouldn't prevent the user from opening
-        // their session; they just lose the diarizer-restore
-        // benefit and re-diarize starts from scratch.
-        if let blob = document.speakerDatabase, !blob.isEmpty {
-            do {
-                try await ensurePipeline().importSpeakerDatabase(blob)
-                // Seed the cluster snapshot synchronously so the
-                // scatter / heatmap render with data the moment the
-                // user navigates to the cluster page. Without this,
-                // `speakerCluster` stays at the empty value set
-                // earlier in loadSession until the TabView's 1 Hz
-                // refresh task fires its first tick — up to a full
-                // second of empty state on a freshly loaded session.
-                await refreshClusterSnapshot()
-            } catch {
-                AppLog.app.warning(
-                    "loadSession: speaker DB restore failed: \(String(describing: error), privacy: .public)"
-                )
-            }
-        }
-    }
 
     // MARK: - Per-utterance playback
 
@@ -2006,7 +1699,7 @@ final class RecordingController {
     /// for the duration that the URL is exposed for playback. The
     /// `start` can fail for already-accessible URLs (e.g. in tests),
     /// which is fine — we just don't stash a stop counterpart.
-    private func setPlaybackSourceURL(_ newURL: URL?) {
+    func setPlaybackSourceURL(_ newURL: URL?) {
         if let scoped = scopedPlaybackURL {
             scoped.stopAccessingSecurityScopedResource()
             scopedPlaybackURL = nil
