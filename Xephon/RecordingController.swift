@@ -696,10 +696,8 @@ final class RecordingController {
             self.pipeline = result.pipeline
             self.pipelineDiagnostics = result.diagnostics
             self.pipelineTask = nil
-            applyFusionWeights(to: result.pipeline)
-            await result.pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
+            await applyConfiguration(to: result.pipeline)
             await refreshTextSERState(from: result.pipeline)
-            await applyLatestBackgroundMode(to: result.pipeline)
             return result.pipeline
         }
         guard let modelStore else {
@@ -714,10 +712,8 @@ final class RecordingController {
         let result = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
         self.pipelineDiagnostics = result.diagnostics
         self.pipeline = result.pipeline
-        applyFusionWeights(to: result.pipeline)
-        await result.pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
+        await applyConfiguration(to: result.pipeline)
         await refreshTextSERState(from: result.pipeline)
-        await applyLatestBackgroundMode(to: result.pipeline)
         return result.pipeline
     }
 
@@ -739,6 +735,19 @@ final class RecordingController {
             acousticWeight: fusionAcousticWeight,
             textWeightFloor: fusionTextWeightFloor
         )
+    }
+
+    /// Push every persisted setting into a freshly-built pipeline:
+    /// fusion weights, diarizer sensitivity, and the latest
+    /// background-mode snapshot. Centralizes the "what does this
+    /// pipeline need to know" list so adding a new setting later
+    /// is a one-line edit instead of N call-site edits.
+    /// `refreshTextSERState` is intentionally separate — it reads
+    /// state *out of* the pipeline rather than pushing into it.
+    private func applyConfiguration(to pipeline: AnalysisPipeline) async {
+        applyFusionWeights(to: pipeline)
+        await pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
+        await applyLatestBackgroundMode(to: pipeline)
     }
 
     /// Run model hydration → pipeline warm → text-SER state refresh.
@@ -768,8 +777,7 @@ final class RecordingController {
         self.pipeline = result.pipeline
         self.pipelineDiagnostics = result.diagnostics
         self.pipelineTask = nil
-        applyFusionWeights(to: result.pipeline)
-        await result.pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
+        await applyConfiguration(to: result.pipeline)
         await self.refreshTextSERState(from: result.pipeline)
     }
 
