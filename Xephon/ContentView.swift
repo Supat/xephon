@@ -522,12 +522,7 @@ struct ContentView: View {
                 systemImage: "text.book.closed"
             )
         }
-        .disabled(
-            recorder.utterances.isEmpty
-                || recorder.isRecording
-                || recorder.isAnalyzing
-                || recorder.summarizerInferenceRunning
-        )
+        .disabled(!recorder.isIdleWithTranscript || recorder.summarizerInferenceRunning)
     }
 
     @ViewBuilder
@@ -549,9 +544,7 @@ struct ContentView: View {
             )
         }
         .disabled(
-            recorder.utterances.isEmpty
-                || recorder.isRecording
-                || recorder.isAnalyzing
+            !recorder.isIdleWithTranscript
                 || recorder.transcriptionReviewRunning
                 || recorder.summarizerInferenceRunning
         )
@@ -570,11 +563,7 @@ struct ContentView: View {
         // Disable during recording / analysis: commitHandEdit requires
         // the controller to be idle, and surfacing the sheet earlier
         // would let the user queue work that silently fails.
-        .disabled(
-            recorder.utterances.isEmpty
-                || recorder.isRecording
-                || recorder.isAnalyzing
-        )
+        .disabled(!recorder.isIdleWithTranscript)
     }
 
     @ViewBuilder
@@ -591,11 +580,7 @@ struct ContentView: View {
                 systemImage: "square.and.arrow.up"
             )
         }
-        .disabled(
-            recorder.utterances.isEmpty
-                || recorder.isRecording
-                || recorder.isAnalyzing
-        )
+        .disabled(!recorder.isIdleWithTranscript)
     }
 
     // MARK: - Left pane (1/3): controls
@@ -708,12 +693,12 @@ struct ContentView: View {
                                 // fallback only kicks in for legacy sessions
                                 // or centroid taps.
                                 if let sid = segmentID,
-                                   let target = utterance(forSegmentID: sid) {
+                                   let target = recorder.utterance(forSegmentID: sid) {
                                     selectedUtteranceID = target.id
                                     scrollRequestUtteranceID = target.id
                                     return
                                 }
-                                guard let target = nearestUtterance(
+                                guard let target = recorder.nearestUtterance(
                                     toEmbedding: embedding,
                                     speakerID: speakerID
                                 ) else { return }
@@ -836,7 +821,7 @@ struct ContentView: View {
                 totalDuration: total,
                 selectedRange: selectedUtteranceRange,
                 onTapAtTime: { t in
-                    guard let target = nearestUtterance(toTime: t) else { return }
+                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
                     scrollRequestUtteranceID = target.id
                 }
@@ -862,7 +847,7 @@ struct ContentView: View {
                 totalDuration: total,
                 selectedRange: selectedUtteranceRange,
                 onTapAtTime: { t in
-                    guard let target = nearestUtterance(toTime: t) else { return }
+                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
                     scrollRequestUtteranceID = target.id
                 }
@@ -895,7 +880,7 @@ struct ContentView: View {
                 textWeightFloor: recorder.fusionTextWeightFloor,
                 selectedRange: selectedUtteranceRange,
                 onTapAtTime: { t in
-                    guard let target = nearestUtterance(toTime: t) else { return }
+                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
                     scrollRequestUtteranceID = target.id
                 }
@@ -909,69 +894,6 @@ struct ContentView: View {
     /// row whose `[start, end]` contains the time, fall back to
     /// the row whose midpoint is closest. Returns nil only when
     /// `utterances` is empty.
-    private func nearestUtterance(toTime t: TimeInterval) -> UtteranceEstimate? {
-        let utts = recorder.utterances
-        if let containing = utts.first(where: { $0.start <= t && t < $0.end }) {
-            return containing
-        }
-        return utts.min {
-            abs(($0.start + $0.end) / 2 - t) < abs(($1.start + $1.end) / 2 - t)
-        }
-    }
-
-    /// Exact-id resolution from a diarizer observation segment id
-    /// back to its emitting utterance. Walks the pinned map the
-    /// controller fills at finalize time — when a row is present,
-    /// the answer is exact regardless of how much the cluster has
-    /// shifted since capture. Returns nil for taps that miss the
-    /// map (older sessions without pins, or centroid taps which
-    /// pass `nil` to the callback in the first place).
-    private func utterance(forSegmentID sid: UUID) -> UtteranceEstimate? {
-        guard let uid = recorder.utteranceObservationSegmentIDs.first(
-            where: { $0.value == sid }
-        )?.key else { return nil }
-        return recorder.utterances.first(where: { $0.id == uid })
-    }
-
-    /// Argmin Euclidean distance from `query` over the utterances
-    /// belonging to `speakerID`. Drives the speaker-cluster
-    /// scatter's tap-to-scroll: tapping a node maps back to the
-    /// utterance whose embedding produced it. Constraining to the
-    /// tapped speaker matters because overlapping speaker clouds
-    /// — the exact scenario the heatmap calls out — let a global
-    /// argmin land in a neighboring speaker's cloud. Returns nil
-    /// when the speaker has no utterance with a stored embedding
-    /// (older session, mic-mode where the diarizer never ran, or
-    /// a centroid for a speaker that's been auto-demoted).
-    private func nearestUtterance(
-        toEmbedding query: [Float],
-        speakerID: String
-    ) -> UtteranceEstimate? {
-        let embeddings = recorder.utteranceEmbeddings
-        guard !embeddings.isEmpty else { return nil }
-        let utterancesBySpeaker = recorder.utterances.reduce(
-            into: [UUID: String]()
-        ) { acc, u in acc[u.id] = u.speakerID }
-        var bestID: UUID?
-        var bestDist: Float = .infinity
-        for (id, e) in embeddings {
-            guard utterancesBySpeaker[id] == speakerID else { continue }
-            let n = min(query.count, e.count)
-            guard n > 0 else { continue }
-            var sum: Float = 0
-            for j in 0..<n {
-                let d = e[j] - query[j]
-                sum += d * d
-            }
-            if sum < bestDist {
-                bestDist = sum
-                bestID = id
-            }
-        }
-        guard let id = bestID else { return nil }
-        return recorder.utterances.first(where: { $0.id == id })
-    }
-
     /// Conversation duration for the timeline strip's X axis.
     /// Always derived from the latest processed timestamp — the
     /// max of any finalized utterance's end and the diarizer's

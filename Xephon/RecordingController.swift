@@ -329,6 +329,13 @@ final class RecordingController {
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
+    /// True iff a recorded transcript exists and we're idle enough
+    /// to run actions over it (summarize / review / search /
+    /// export). Each toolbar button starts from this and adds its
+    /// own per-action busy flag.
+    var isIdleWithTranscript: Bool {
+        !utterances.isEmpty && !isRecording && !isAnalyzing
+    }
     var isWarmingUp: Bool { phase == .warmingUp }
     var elapsedSeconds: Double {
         Double(samplesCaptured) / PipelineAudio.sampleRate
@@ -3837,6 +3844,64 @@ final class RecordingController {
     /// `TranscriptList.row(for:)` per visible row per render.
     func knownSpeakerIDs() -> [String] {
         cachedKnownSpeakerIDs
+    }
+
+    /// Utterance whose `[start, end)` contains `t`, or the one
+    /// whose midpoint is closest if no row contains `t`. Used by
+    /// the timeline strips' tap-to-scroll.
+    func nearestUtterance(toTime t: TimeInterval) -> UtteranceEstimate? {
+        if let containing = utterances.first(where: { $0.start <= t && t < $0.end }) {
+            return containing
+        }
+        return utterances.min {
+            abs(($0.start + $0.end) / 2 - t) < abs(($1.start + $1.end) / 2 - t)
+        }
+    }
+
+    /// Exact-id resolution from a diarizer observation segment id
+    /// back to its emitting utterance. Nil for sessions that
+    /// pre-date observation pinning, and for centroid taps which
+    /// pass `nil` as the segment id by convention.
+    func utterance(forSegmentID sid: UUID) -> UtteranceEstimate? {
+        guard let uid = utteranceObservationSegmentIDs.first(
+            where: { $0.value == sid }
+        )?.key else { return nil }
+        return utterances.first(where: { $0.id == uid })
+    }
+
+    /// Argmin Euclidean distance from `query` over utterances
+    /// belonging to `speakerID`. Constraining to one speaker
+    /// matters because overlapping clouds in the cluster scatter
+    /// otherwise let a global argmin land in a neighbor's cloud.
+    /// Nil when the speaker has no utterance with a stored
+    /// embedding (older session, mic-mode without diarizer, or
+    /// auto-demoted centroid).
+    func nearestUtterance(
+        toEmbedding query: [Float],
+        speakerID: String
+    ) -> UtteranceEstimate? {
+        guard !utteranceEmbeddings.isEmpty else { return nil }
+        let speakerByID = utterances.reduce(into: [UUID: String]()) {
+            $0[$1.id] = $1.speakerID
+        }
+        var bestID: UUID?
+        var bestDist: Float = .infinity
+        for (id, e) in utteranceEmbeddings {
+            guard speakerByID[id] == speakerID else { continue }
+            let n = min(query.count, e.count)
+            guard n > 0 else { continue }
+            var sum: Float = 0
+            for j in 0..<n {
+                let d = e[j] - query[j]
+                sum += d * d
+            }
+            if sum < bestDist {
+                bestDist = sum
+                bestID = id
+            }
+        }
+        guard let id = bestID else { return nil }
+        return utterances.first(where: { $0.id == id })
     }
 
     /// Corrective reassignment: extract the row's audio embedding
