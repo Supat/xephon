@@ -665,7 +665,7 @@ final class RecordingController {
         inputPollTask = Task { @MainActor [weak self] in
             var lastKnownUIDs: Set<String> = []
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(for: .seconds(Self.inputPollIntervalSec))
                 if Task.isCancelled { return }
                 guard let self else { return }
                 guard self.phase == .idle, self.playbackPlayer == nil else { continue }
@@ -698,7 +698,7 @@ final class RecordingController {
             self.pipelineDiagnostics = result.diagnostics
             self.pipelineTask = nil
             await applyConfiguration(to: result.pipeline)
-            await refreshTextSERState(from: result.pipeline)
+            await syncTextSERStateFromPipeline(from: result.pipeline)
             return result.pipeline
         }
         guard let modelStore else {
@@ -714,7 +714,7 @@ final class RecordingController {
         self.pipelineDiagnostics = result.diagnostics
         self.pipeline = result.pipeline
         await applyConfiguration(to: result.pipeline)
-        await refreshTextSERState(from: result.pipeline)
+        await syncTextSERStateFromPipeline(from: result.pipeline)
         return result.pipeline
     }
 
@@ -743,7 +743,7 @@ final class RecordingController {
     /// background-mode snapshot. Centralizes the "what does this
     /// pipeline need to know" list so adding a new setting later
     /// is a one-line edit instead of N call-site edits.
-    /// `refreshTextSERState` is intentionally separate — it reads
+    /// `syncTextSERStateFromPipeline` is intentionally separate — it reads
     /// state *out of* the pipeline rather than pushing into it.
     private func applyConfiguration(to pipeline: AnalysisPipeline) async {
         applyFusionWeights(to: pipeline)
@@ -779,7 +779,7 @@ final class RecordingController {
         self.pipelineDiagnostics = result.diagnostics
         self.pipelineTask = nil
         await applyConfiguration(to: result.pipeline)
-        await self.refreshTextSERState(from: result.pipeline)
+        await self.syncTextSERStateFromPipeline(from: result.pipeline)
     }
 
     /// Called from SetupView when the user taps Retry after a download
@@ -795,7 +795,7 @@ final class RecordingController {
         await hydrateAndWarm()
     }
 
-    private func refreshTextSERState(from pipeline: AnalysisPipeline) async {
+    private func syncTextSERStateFromPipeline(from pipeline: AnalysisPipeline) async {
         // Apply the persisted session language to the freshly-warmed
         // pipeline before reading its text-SER state. `autoConfigured`
         // builds its offline transcriber against the default Japanese
@@ -814,7 +814,7 @@ final class RecordingController {
         // runs, and we don't want the Settings card to render
         // "Not installed" on first launch when the files are
         // actually present from a previous session.
-        refreshSummarizerInstallState()
+        syncSummarizerInstallState()
     }
 
     func toggle() async {
@@ -993,7 +993,7 @@ final class RecordingController {
                     rebasedChunk.timestamp + Double(rebasedChunk.samples.count) / rebasedChunk.sampleRate
                 while !Task.isCancelled,
                       chunkEndFileTime - self.lastDiarizedAudioTime > Self.maxDiarizeLagSeconds {
-                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    try? await Task.sleep(for: .seconds(Self.diarizeBackpressurePollSec))
                 }
                 // The trim-before-append cap and origin advance
                 // both live inside RollingAudioBuffer. See its
@@ -1058,7 +1058,7 @@ final class RecordingController {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.volatileText = await self.streamingTranscriber.volatileText
-                try? await Task.sleep(nanoseconds: 200_000_000)
+                try? await Task.sleep(for: .seconds(Self.volatilePumpIntervalSec))
             }
         }
     }
@@ -1095,7 +1095,7 @@ final class RecordingController {
             // designed, regardless of how fast audio is arriving.
             var lastFiredAudioTime: TimeInterval = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                try? await Task.sleep(for: .seconds(Self.continuousDiarizeTickSec))
                 if Task.isCancelled { return }
                 guard self.isRecording else { continue }
                 // File-time cursor — same timeline `slice`,
@@ -1213,7 +1213,7 @@ final class RecordingController {
                         self.lastASRFinalizeLatency = max(0, latency)
                     }
                     while self.inflightSegments >= Self.maxConcurrentSegments {
-                        try? await Task.sleep(nanoseconds: 5_000_000)
+                        try? await Task.sleep(for: .seconds(Self.serSlotWaitSec))
                     }
                     let segmentBuffer = self.sliceForSegment(segment)
                     // Order matters here: slice → trim → snapshot.
@@ -1343,7 +1343,7 @@ final class RecordingController {
         let diarizeDeadline = Date().addingTimeInterval(30)
         while lastDiarizedAudioTime + Self.continuousDiarizeStrideSec < latestCapturedFileTime,
               Date() < diarizeDeadline {
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(for: .seconds(Self.diarizeDrainPollSec))
         }
 
         continuousDiarizeTask?.cancel()
@@ -1509,7 +1509,7 @@ final class RecordingController {
     func setTextSERBackend(_ backend: SwitchingTextSER.Backend) async {
         let pipeline = await ensurePipeline()
         await pipeline.setTextSERBackend(backend)
-        await refreshTextSERState(from: pipeline)
+        await syncTextSERStateFromPipeline(from: pipeline)
     }
 
     /// Forward a foreground/background lifecycle transition to the
@@ -1560,8 +1560,8 @@ final class RecordingController {
             summarizerActor = nil
             return
         }
-        refreshAppleFMAvailability()
-        refreshSummarizerInstallState()
+        syncAppleFMAvailability()
+        syncSummarizerInstallState()
         if summarizerBackend == .qwen,
            !summarizerModelInstalled,
            !summarizerDownloading {
@@ -1671,10 +1671,10 @@ final class RecordingController {
             await summarizerActor?.unload()
             summarizerActor = nil
         }
-        refreshAppleFMAvailability()
+        syncAppleFMAvailability()
     }
 
-    private func refreshAppleFMAvailability() {
+    private func syncAppleFMAvailability() {
         summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
     }
 
@@ -1689,7 +1689,7 @@ final class RecordingController {
         defer { summarizerDownloading = false }
         do {
             try await modelStore.ensureOptional(id: ModelManifest.summarizerID)
-            refreshSummarizerInstallState()
+            syncSummarizerInstallState()
         } catch {
             errorMessage = String(describing: error)
             AppLog.app.error(
@@ -1702,7 +1702,7 @@ final class RecordingController {
     /// Cheap — just an existence check per declared file. Called
     /// after enable / download / remove and on session reset, so
     /// the UI reflects whatever's actually on disk.
-    private func refreshSummarizerInstallState() {
+    private func syncSummarizerInstallState() {
         guard let modelStore else {
             summarizerModelInstalled = false
             return
@@ -1960,7 +1960,7 @@ final class RecordingController {
                 "removeOptional failed: \(String(describing: error), privacy: .public)"
             )
         }
-        refreshSummarizerInstallState()
+        syncSummarizerInstallState()
     }
 
     // MARK: - Transcription review
@@ -2132,7 +2132,7 @@ final class RecordingController {
         }
         let pipeline = await ensurePipeline()
         await pipeline.setLocale(language.locale, languageLabel: language.label)
-        await refreshTextSERState(from: pipeline)
+        await syncTextSERStateFromPipeline(from: pipeline)
         AppLog.app.info(
             "session language → \(language.rawValue, privacy: .public)"
         )
@@ -2611,7 +2611,7 @@ final class RecordingController {
             AppLog.app.info("togglePlayback: playingUtteranceID set to \(utterance.id, privacy: .public)")
             let duration = max(0, utterance.end - utterance.start)
             playbackStopTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(duration))
                 guard !Task.isCancelled else { return }
                 self?.stopPlayback()
             }
@@ -2632,6 +2632,29 @@ final class RecordingController {
     /// sentence-aware trim in `AnalysisPipeline.reevaluate` drops
     /// anything past the last terminator anyway.
     private static let reevaluationPaddingSec: TimeInterval = 0.5
+
+    /// USB-C audio plug/unplug polling cadence while idle — there's
+    /// no public notification for it, so we diff `availableInputs`
+    /// at this rate. 2 s is comfortably below human reaction time
+    /// for a "plug it in, tap record" workflow.
+    private static let inputPollIntervalSec: TimeInterval = 2.0
+    /// Continuous-diarize outer-loop tick. Diarize fires on every
+    /// stride boundary; this is just the polling cadence between
+    /// checks, so it can be much finer than the stride itself.
+    private static let continuousDiarizeTickSec: TimeInterval = 0.1
+    /// Wait when the ASR pump is ahead of the diarize cursor by
+    /// more than `maxDiarizeLagSeconds`. Sleeping a beat here lets
+    /// diarize catch up instead of growing the buffer unbounded.
+    private static let diarizeBackpressurePollSec: TimeInterval = 0.1
+    /// `volatileText` UI poll cadence — 5 Hz reads fluid without
+    /// taxing the analyzer actor.
+    private static let volatilePumpIntervalSec: TimeInterval = 0.2
+    /// Drain wait while `stop()` waits for the continuous-diarize
+    /// task to cover the final captured audio.
+    private static let diarizeDrainPollSec: TimeInterval = 0.2
+    /// Slot-availability poll for the bounded concurrent-SER pool.
+    /// Tiny because SER tasks complete in tens of ms typically.
+    private static let serSlotWaitSec: TimeInterval = 0.005
 
     /// Below this duration, the original streaming utterance is
     /// probably an incomplete fragment (the volatile-stabilization
@@ -3709,7 +3732,7 @@ final class RecordingController {
             playingUtteranceID = owner
             let duration = max(0, end - start)
             playbackStopTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(duration))
                 guard !Task.isCancelled else { return }
                 self?.stopPlayback()
             }

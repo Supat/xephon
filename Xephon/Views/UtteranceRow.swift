@@ -18,6 +18,17 @@ extension VerticalAlignment {
     static let utteranceRowMainContent = VerticalAlignment(UtteranceRowMainContent.self)
 }
 
+/// Named opacities for the row's small chrome elements — hoisted
+/// so the values read as roles, and so two callers using the same
+/// number stay in lockstep when the visual gets retuned.
+fileprivate enum BadgeChrome {
+    static let glassTint: Double = 0.35     // Boost / hand-edit pills
+    static let strokeBorder: Double = 0.45  // Plutchik badge border
+    static let strongFill: Double = 0.55    // Modality-cluster gradient stop, selected-row stroke
+    static let subtleFill: Double = 0.18    // Plutchik badge, orange capsule, FM-violation pill
+    static let selectedFill: Double = 0.12  // Selected-row capsule fill
+}
+
 struct UtteranceRow: View {
     /// Playback availability for this row's audio. Driven by the
     /// recorder's source mode + analysis state — the row itself
@@ -318,7 +329,7 @@ struct UtteranceRow: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .foregroundStyle(.orange)
-                        .glassEffect(.regular.tint(.orange.opacity(0.35)), in: Capsule())
+                        .glassEffect(.regular.tint(.orange.opacity(BadgeChrome.glassTint)), in: Capsule())
                 }
                 // Hand-edit marker: appears immediately after Boost
                 // when the row's transcript/range was committed via
@@ -337,7 +348,7 @@ struct UtteranceRow: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .foregroundStyle(.blue)
-                        .glassEffect(.regular.tint(.blue.opacity(0.35)), in: Capsule())
+                        .glassEffect(.regular.tint(.blue.opacity(BadgeChrome.glassTint)), in: Capsule())
                         .onLongPressGesture(minimumDuration: Self.revertLongPressSec) {
                             AppLog.app.info("edit badge long-press → revert")
                             UISounds.playRevert()
@@ -576,7 +587,7 @@ struct UtteranceRow: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .overlay(
-                            Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 0.5)
+                            Capsule().strokeBorder(tint.opacity(BadgeChrome.strokeBorder), lineWidth: 0.5)
                         )
                         .foregroundStyle(tint)
                 }
@@ -587,7 +598,7 @@ struct UtteranceRow: View {
                         .padding(.vertical, 1)
                         .overlay(
                             Capsule().strokeBorder(
-                                modalityBadge.tint.opacity(0.55),
+                                modalityBadge.tint.opacity(BadgeChrome.strongFill),
                                 lineWidth: 0.5
                             )
                         )
@@ -605,7 +616,7 @@ struct UtteranceRow: View {
                         .font(.caption)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(tint.opacity(0.18), in: Capsule())
+                        .background(tint.opacity(BadgeChrome.subtleFill), in: Capsule())
                         .foregroundStyle(tint)
                         // Tap-to-expand. `contentShape(Capsule())`
                         // pins the hit area to the visible badge so
@@ -831,7 +842,7 @@ struct UtteranceRow: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
-                Capsule().fill(Color.orange.opacity(0.18))
+                Capsule().fill(Color.orange.opacity(BadgeChrome.subtleFill))
             )
     }
 
@@ -1120,9 +1131,9 @@ private struct ProbabilityBar: View {
                 .frame(width: 80, alignment: .leading)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(tint.opacity(0.12))
+                    Capsule().fill(tint.opacity(BadgeChrome.selectedFill))
                     Capsule()
-                        .fill(tint.opacity(0.55))
+                        .fill(tint.opacity(BadgeChrome.strongFill))
                         .frame(width: geo.size.width * fraction)
                 }
             }
