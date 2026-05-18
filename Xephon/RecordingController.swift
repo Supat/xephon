@@ -2692,6 +2692,19 @@ final class RecordingController {
     /// side brings most slices comfortably above the 10 s window.
     private static let rediarizePadSec: TimeInterval = 4.0
 
+    /// Per-call invariants shared by the long/short paths and the
+    /// finalize step. Bundled so each helper takes one context
+    /// argument instead of seven matching positional params.
+    private struct ReevaluationContext {
+        let utteranceID: UUID
+        let pipeline: AnalysisPipeline
+        let url: URL
+        let originalStart: TimeInterval
+        let originalEnd: TimeInterval
+        let speakerID: String
+        let volatileHandler: @Sendable @MainActor (String) -> Void
+    }
+
     /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
     /// on each side) to offline ASR, then run SER + fusion on the new
     /// result and replace the utterance in `utterances` in place. The
@@ -2709,9 +2722,6 @@ final class RecordingController {
         guard let url = playbackSourceURL else { return }
 
         reevaluatingUtteranceID = utterance.id
-        // Reset any leftover preview from a prior recording. The
-        // defer below ensures we also clear on every exit path,
-        // including the early returns inside the do-block.
         volatileText = ""
         defer {
             reevaluatingUtteranceID = nil
@@ -2721,197 +2731,180 @@ final class RecordingController {
         // Anchor padding to the *truly-original* utterance bounds —
         // the pre-first-reeval snapshot when one exists, otherwise
         // the current row's start/end (which on the first pass *is*
-        // the original).
-        //
-        // Why: each re-evaluation produces a corrected start/end
-        // that may differ from the original (the sentence-aware
-        // trim landed on per-token anchors). If a subsequent
-        // re-evaluation anchored its padding to the corrected
-        // values, retrying on the same row would compound the shift
-        // — pad of 500 ms before a slightly-earlier start, plus
-        // 1 s after a slightly-later end, on each retry — and the
-        // utterance's duration would grow without bound. Sourcing
-        // anchors from the snapshot keeps re-evaluation idempotent.
+        // the original). Each re-evaluation produces a corrected
+        // start/end; sourcing padding anchors from the snapshot
+        // keeps re-evaluation idempotent (without this, a retry
+        // anchored to the corrected values would compound the shift
+        // and grow the utterance's duration without bound).
         let snapshot = preReevaluationSnapshots[utterance.id]
-        let originalStart = snapshot?.start ?? utterance.start
-        let originalEnd = snapshot?.end ?? utterance.end
-        let extendedStart = max(0, originalStart - Self.reevaluationPaddingSec)
-        let speakerID = utterance.speakerID
-        let originalDuration = originalEnd - originalStart
-        let utteranceID = utterance.id
-
-        let pipeline = await ensurePipeline()
-        let volatileHandler: @Sendable @MainActor (String) -> Void = { [weak self] text in
-            // Stream the offline ASR's rolling hypothesis into the
-            // same `volatileText` slot the live ASR uses, so the
-            // pipeline panel's preview animates during a
-            // re-evaluation the same way it does during recording.
-            // Awaited inside the transcriber, so no callbacks race
-            // the defer's final clear.
-            self?.volatileText = text
-        }
+        let ctx = ReevaluationContext(
+            utteranceID: utterance.id,
+            pipeline: await ensurePipeline(),
+            url: url,
+            originalStart: snapshot?.start ?? utterance.start,
+            originalEnd: snapshot?.end ?? utterance.end,
+            speakerID: utterance.speakerID,
+            volatileHandler: { [weak self] text in
+                // Stream the offline ASR's rolling hypothesis into
+                // the same `volatileText` slot the live ASR uses so
+                // the pipeline panel's preview animates the same way
+                // during a re-evaluation as during recording.
+                self?.volatileText = text
+            }
+        )
+        let originalDuration = ctx.originalEnd - ctx.originalStart
 
         do {
-            // Long-utterance path: single read, single ASR call, done.
+            let result: (fresh: UtteranceEstimate, chunk: AudioChunk)?
             if originalDuration >= Self.shortUtteranceThresholdSec {
-                let chunk = try await Task.detached(priority: .userInitiated) {
-                    try Self.readAudioChunkForReevaluation(
-                        fileURL: url,
-                        start: extendedStart,
-                        end: originalEnd
-                    )
-                }.value
-                guard !chunk.samples.isEmpty else {
-                    AppLog.app.warning("reevaluate: extended audio range was empty")
-                    return
-                }
-                guard let (fresh, _) = try await pipeline.reevaluate(
-                    audio: chunk,
-                    originalStart: originalStart,
-                    originalEnd: originalEnd,
-                    speakerID: speakerID,
-                    onVolatileText: volatileHandler
-                ) else {
-                    AppLog.app.warning("reevaluate: offline ASR returned no transcript")
-                    return
-                }
-                let speaker = await rediarizedSpeaker(
-                    url: url,
-                    pipeline: pipeline,
-                    correctedStart: fresh.start,
-                    correctedEnd: fresh.end,
-                    fallback: speakerID
-                )
-                applyReevaluation(
-                    utteranceID: utteranceID,
-                    fresh: fresh.withSpeakerID(speaker)
-                )
-                // Refresh the per-utterance embedding so the cluster
-                // scatter's focus arrow lands on the post-reeval
-                // observation, not whatever observation matched
-                // before the audio range was corrected.
-                if let embedding = await pipeline.extractSpeakerEmbedding(
-                    audio: chunk.samples
-                ) {
-                    utteranceEmbeddings[utteranceID] = embedding
-                    await pinObservationSegmentID(
-                        utteranceID: utteranceID,
-                        embedding: embedding,
-                        speakerID: speaker
-                    )
-                }
-                return
-            }
-
-            // Short-utterance path: streaming likely cut mid-sentence.
-            // Grow back-padding in steps and rerun offline ASR until
-            // the transcript contains a sentence terminator (or the
-            // pad cap is reached, or the file is exhausted).
-            //
-            // No front pad on this path: when the original is shorter
-            // than 1 s the streaming pass usually finalized late
-            // (volatile-stabilization caught it mid-sentence), so
-            // `utterance.start` already sits well inside the sentence
-            // rather than at its true beginning. Adding 500 ms of
-            // lead-in then drags in the *previous* sentence's tail,
-            // and that tail's own terminator confuses the
-            // `segmentsContainFullSentence` check — the loop sees a
-            // terminator on iteration 1 from the prior sentence and
-            // commits to a result that doesn't actually cover the
-            // utterance we wanted to refresh.
-            AppLog.app.info(
-                "reevaluate: short utterance (\(originalDuration, privacy: .public)s) — entering back-pad retry loop"
-            )
-            var backPad: TimeInterval = Self.reevaluationBackPadStepSec
-            var previousSampleCount = -1
-            var matchedSegments: [ASRSegment]?
-            var matchedAudio: AudioChunk?
-
-            while backPad <= Self.reevaluationMaxBackPadSec {
-                let currentEnd = originalEnd + backPad
-                let chunk = try await Task.detached(priority: .userInitiated) {
-                    try Self.readAudioChunkForReevaluation(
-                        fileURL: url,
-                        start: originalStart,
-                        end: currentEnd
-                    )
-                }.value
-                if chunk.samples.isEmpty {
-                    AppLog.app.warning("reevaluate: empty read at backPad=\(backPad, privacy: .public)s")
-                    break
-                }
-                if chunk.samples.count == previousSampleCount {
-                    // File-end clamping returned the same audio as
-                    // the previous iteration. No point in growing
-                    // the pad further; offline ASR will produce the
-                    // same output again.
-                    AppLog.app.info(
-                        "reevaluate: file exhausted at backPad=\(backPad, privacy: .public)s; stopping retry"
-                    )
-                    break
-                }
-                previousSampleCount = chunk.samples.count
-
-                let segments = try await pipeline.transcribeForReevaluation(
-                    audio: chunk,
-                    onVolatileText: volatileHandler
-                )
-                if AnalysisPipeline.segmentsContainFullSentence(segments) {
-                    AppLog.app.info(
-                        "reevaluate: found full sentence at backPad=\(backPad, privacy: .public)s"
-                    )
-                    matchedSegments = segments
-                    matchedAudio = chunk
-                    break
-                }
+                result = try await reevaluateLong(ctx: ctx)
+            } else {
                 AppLog.app.info(
-                    "reevaluate: no terminator at backPad=\(backPad, privacy: .public)s; growing"
+                    "reevaluate: short utterance (\(originalDuration, privacy: .public)s) — entering back-pad retry loop"
                 )
-                backPad += Self.reevaluationBackPadStepSec
+                result = try await reevaluateShortWithRetry(ctx: ctx)
             }
-
-            guard let segments = matchedSegments, let chunk = matchedAudio else {
-                AppLog.app.warning(
-                    "reevaluate: no full sentence found within \(Self.reevaluationMaxBackPadSec, privacy: .public)s of back pad; preserving original"
-                )
-                return
-            }
-            guard let (fresh, _) = try await pipeline.reevaluateFromSegments(
-                segments: segments,
-                audio: chunk,
-                originalStart: originalStart,
-                originalEnd: originalEnd,
-                speakerID: speakerID
-            ) else {
-                AppLog.app.warning("reevaluate: pipeline rejected segments after retry")
-                return
-            }
-            let speaker = await rediarizedSpeaker(
-                url: url,
-                pipeline: pipeline,
-                correctedStart: fresh.start,
-                correctedEnd: fresh.end,
-                fallback: speakerID
-            )
-            applyReevaluation(
-                utteranceID: utteranceID,
-                fresh: fresh.withSpeakerID(speaker)
-            )
-            // Same embedding refresh as the no-retry path — the
-            // short-utterance retry loop may have rebuilt the
-            // audio window, so re-extract from the final `chunk`.
-            if let embedding = await pipeline.extractSpeakerEmbedding(
-                audio: chunk.samples
-            ) {
-                utteranceEmbeddings[utteranceID] = embedding
-                await pinObservationSegmentID(
-                    utteranceID: utteranceID,
-                    embedding: embedding,
-                    speakerID: speaker
-                )
-            }
+            guard let (fresh, chunk) = result else { return }
+            await finalizeReevaluation(fresh: fresh, chunk: chunk, ctx: ctx)
         } catch {
             AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Long-path body: single read of `[extendedStart, originalEnd]`,
+    /// single `pipeline.reevaluate` call. Returns nil on empty audio
+    /// or no-transcript.
+    private func reevaluateLong(
+        ctx: ReevaluationContext
+    ) async throws -> (fresh: UtteranceEstimate, chunk: AudioChunk)? {
+        let extendedStart = max(0, ctx.originalStart - Self.reevaluationPaddingSec)
+        let url = ctx.url
+        let chunk = try await Task.detached(priority: .userInitiated) {
+            try Self.readAudioChunkForReevaluation(
+                fileURL: url, start: extendedStart, end: ctx.originalEnd
+            )
+        }.value
+        guard !chunk.samples.isEmpty else {
+            AppLog.app.warning("reevaluate: extended audio range was empty")
+            return nil
+        }
+        guard let (fresh, _) = try await ctx.pipeline.reevaluate(
+            audio: chunk,
+            originalStart: ctx.originalStart,
+            originalEnd: ctx.originalEnd,
+            speakerID: ctx.speakerID,
+            onVolatileText: ctx.volatileHandler
+        ) else {
+            AppLog.app.warning("reevaluate: offline ASR returned no transcript")
+            return nil
+        }
+        return (fresh, chunk)
+    }
+
+    /// Short-path body: grow back-padding in steps and rerun offline
+    /// ASR until the transcript contains a sentence terminator (or
+    /// the pad cap is reached, or the file is exhausted). No front
+    /// pad on this path — when the original is shorter than 1 s the
+    /// streaming pass usually finalized late so `start` already sits
+    /// well inside the sentence; adding lead-in drags in the
+    /// previous sentence's tail and its terminator would fool the
+    /// `segmentsContainFullSentence` check.
+    private func reevaluateShortWithRetry(
+        ctx: ReevaluationContext
+    ) async throws -> (fresh: UtteranceEstimate, chunk: AudioChunk)? {
+        var backPad: TimeInterval = Self.reevaluationBackPadStepSec
+        var previousSampleCount = -1
+        var matchedSegments: [ASRSegment]?
+        var matchedAudio: AudioChunk?
+
+        while backPad <= Self.reevaluationMaxBackPadSec {
+            let currentEnd = ctx.originalEnd + backPad
+            let url = ctx.url
+            let originalStart = ctx.originalStart
+            let chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url, start: originalStart, end: currentEnd
+                )
+            }.value
+            if chunk.samples.isEmpty {
+                AppLog.app.warning("reevaluate: empty read at backPad=\(backPad, privacy: .public)s")
+                break
+            }
+            if chunk.samples.count == previousSampleCount {
+                // File-end clamping returned the same audio as the
+                // previous iteration; growing further just repeats.
+                AppLog.app.info(
+                    "reevaluate: file exhausted at backPad=\(backPad, privacy: .public)s; stopping retry"
+                )
+                break
+            }
+            previousSampleCount = chunk.samples.count
+
+            let segments = try await ctx.pipeline.transcribeForReevaluation(
+                audio: chunk, onVolatileText: ctx.volatileHandler
+            )
+            if AnalysisPipeline.segmentsContainFullSentence(segments) {
+                AppLog.app.info(
+                    "reevaluate: found full sentence at backPad=\(backPad, privacy: .public)s"
+                )
+                matchedSegments = segments
+                matchedAudio = chunk
+                break
+            }
+            AppLog.app.info(
+                "reevaluate: no terminator at backPad=\(backPad, privacy: .public)s; growing"
+            )
+            backPad += Self.reevaluationBackPadStepSec
+        }
+
+        guard let segments = matchedSegments, let chunk = matchedAudio else {
+            AppLog.app.warning(
+                "reevaluate: no full sentence found within \(Self.reevaluationMaxBackPadSec, privacy: .public)s of back pad; preserving original"
+            )
+            return nil
+        }
+        guard let (fresh, _) = try await ctx.pipeline.reevaluateFromSegments(
+            segments: segments,
+            audio: chunk,
+            originalStart: ctx.originalStart,
+            originalEnd: ctx.originalEnd,
+            speakerID: ctx.speakerID
+        ) else {
+            AppLog.app.warning("reevaluate: pipeline rejected segments after retry")
+            return nil
+        }
+        return (fresh, chunk)
+    }
+
+    /// Shared post-processing: re-resolve the speaker over the
+    /// corrected window, apply the fresh estimate to `utterances`,
+    /// then refresh the per-utterance embedding so the cluster
+    /// scatter's focus arrow lands on the post-reeval observation.
+    private func finalizeReevaluation(
+        fresh: UtteranceEstimate,
+        chunk: AudioChunk,
+        ctx: ReevaluationContext
+    ) async {
+        let speaker = await rediarizedSpeaker(
+            url: ctx.url,
+            pipeline: ctx.pipeline,
+            correctedStart: fresh.start,
+            correctedEnd: fresh.end,
+            fallback: ctx.speakerID
+        )
+        applyReevaluation(
+            utteranceID: ctx.utteranceID,
+            fresh: fresh.withSpeakerID(speaker)
+        )
+        if let embedding = await ctx.pipeline.extractSpeakerEmbedding(
+            audio: chunk.samples
+        ) {
+            utteranceEmbeddings[ctx.utteranceID] = embedding
+            await pinObservationSegmentID(
+                utteranceID: ctx.utteranceID,
+                embedding: embedding,
+                speakerID: speaker
+            )
         }
     }
 
