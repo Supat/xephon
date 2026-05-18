@@ -455,48 +455,48 @@ final class AnalysisPipeline: @unchecked Sendable {
 
         let diarizer: (any Diarizer)? = enableDiarization ? FluidAudioDiarizer() : nil
 
-        let w2v2URL: URL? = await Self.tryResolveAsync("W2V2", path: "w2v2-msp-dim/model.onnx", store: modelStore, diagnostics: &diagnostics)
-        let dimensional: (any DimensionalAcousticSER)? = w2v2URL.flatMap { url in
-            Self.tryInit("W2V2 dimensional SER", diagnostics: &diagnostics) {
-                // CPU-only at construction. The post-FP16 graph
-                // CoreML EP previously consumed worked fine, but the
-                // dynamo-re-exported FP32 graph trips the EP with
-                // "broken/unsupported model (error code: -1)" on
-                // every first call — the per-instance fallback in
-                // `runInference` already rebuilds on CPU, but skipping
-                // the doomed first attempt avoids the noisy log line
-                // and the wasted session-init at every app launch.
-                try W2V2DimensionalSER(modelURL: url, useCoreML: false)
-            }
+        let dimensional: (any DimensionalAcousticSER)? = await Self.loadModel(
+            name: "W2V2",
+            path: "w2v2-msp-dim/model.onnx",
+            store: modelStore,
+            diagnostics: &diagnostics
+        ) { url in
+            // CPU-only at construction. The dynamo-re-exported FP32
+            // graph trips the CoreML EP with "broken/unsupported
+            // model (error code: -1)" on every first call — the
+            // per-instance fallback in `runInference` already
+            // rebuilds on CPU, but skipping the doomed first
+            // attempt avoids the noisy log line and the wasted
+            // session-init at every app launch.
+            try W2V2DimensionalSER(modelURL: url, useCoreML: false)
         }
 
-        let emotion2vecURL: URL? = await Self.tryResolveAsync("emotion2vec", path: "emotion2vec_onnx/model.onnx", store: modelStore, diagnostics: &diagnostics)
-        let categorical: (any CategoricalAcousticSER)? = emotion2vecURL.flatMap { url in
-            Self.tryInit("emotion2vec categorical SER", diagnostics: &diagnostics) {
-                try Emotion2VecCategoricalSER(modelURL: url)
-            }
+        let categorical: (any CategoricalAcousticSER)? = await Self.loadModel(
+            name: "emotion2vec",
+            path: "emotion2vec_onnx/model.onnx",
+            store: modelStore,
+            diagnostics: &diagnostics
+        ) { url in
+            try Emotion2VecCategoricalSER(modelURL: url)
         }
 
-        let ageGenderURL: URL? = await Self.tryResolveAsync("W2V2 age-gender", path: "w2v2-age-gender/model.onnx", store: modelStore, diagnostics: &diagnostics)
-        let ageGender: (any AgeGenderSER)? = ageGenderURL.flatMap { url in
-            Self.tryInit("W2V2 age-gender SER", diagnostics: &diagnostics) {
-                // CPU-only. Tried CoreML EP after the V/A/D move to
-                // CPU eased the historical IOSurface cascade, but
-                // the age-gender `.onnx` references a separate
-                // `.data` weights file (external-data layout) and
-                // the CoreML EP's subgraph partitioner doesn't
-                // propagate `model_path` into its compilation
-                // pass — ORT crashes session-init with
-                // `!model_path.empty() was false` in
-                // `onnxruntime::Initializer::Initializer`. Fix
-                // requires re-exporting age-gender with weights
-                // inlined into a single self-contained `.onnx`,
-                // or upstream ORT patching the EP path resolution.
-                // emotion2vec uses external data too but happens
-                // to take a different ORT code path that doesn't
-                // trip this — fragile, but it works for now.
-                try W2V2AgeGenderSER(modelURL: url, useCoreML: false)
-            }
+        let ageGender: (any AgeGenderSER)? = await Self.loadModel(
+            name: "W2V2 age-gender",
+            path: "w2v2-age-gender/model.onnx",
+            store: modelStore,
+            diagnostics: &diagnostics
+        ) { url in
+            // CPU-only. The age-gender `.onnx` references a separate
+            // `.data` weights file (external-data layout) and the
+            // CoreML EP's subgraph partitioner doesn't propagate
+            // `model_path` into its compilation pass — ORT crashes
+            // session-init with `!model_path.empty() was false` in
+            // `onnxruntime::Initializer::Initializer`. Fix requires
+            // re-exporting age-gender with weights inlined, or
+            // upstream ORT patching the EP path resolution.
+            // emotion2vec uses external data too but takes a
+            // different ORT code path that doesn't trip this.
+            try W2V2AgeGenderSER(modelURL: url, useCoreML: false)
         }
 
         // wrime needs both an ONNX file and a tokenizer directory. Resolve
@@ -611,6 +611,26 @@ final class AnalysisPipeline: @unchecked Sendable {
             diagnostics.append(detail)
             return nil
         }
+    }
+
+    /// Resolve `path` against `store` and pass the URL into
+    /// `initialize` — both steps logged via the existing
+    /// per-name diagnostics. Single-file SER loaders (W2V2,
+    /// emotion2vec, age-gender) all collapse to one call to this;
+    /// DeBERTa stays inline because it needs two resolves.
+    private static func loadModel<T>(
+        name: String,
+        path: String,
+        store: ModelStore,
+        diagnostics: inout [String],
+        initialize: (URL) throws -> T
+    ) async -> T? {
+        guard let url = await tryResolveAsync(
+            name, path: path, store: store, diagnostics: &diagnostics
+        ) else {
+            return nil
+        }
+        return tryInit(name, diagnostics: &diagnostics) { try initialize(url) }
     }
 
     // MARK: - Text SER backend control (forwards to SwitchingTextSER if present)
