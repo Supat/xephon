@@ -133,7 +133,7 @@ targets:
       # path above) and this extension. ActivityKit identifies the
       # attributes type by name + Codable shape, so two compiled copies
       # interoperate fine.
-      - path: Xephon/XephonActivityAttributes.swift
+      - path: Xephon/Live/XephonActivityAttributes.swift
         type: file
     info:
       path: XephonWidget/Info.plist
