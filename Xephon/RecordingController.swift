@@ -47,6 +47,13 @@ final class RecordingController {
     private(set) var sessionToken: UUID = UUID()
     private(set) var utterances: [UtteranceEstimate] = []
     private(set) var inputLevel: Float = 0
+    /// Per-source-channel perceptual level (0…1), one entry per
+    /// channel the input device delivers. Drives the multi-bar level
+    /// meter so a stereo USB mic surfaces L/R balance instead of a
+    /// single mixed-down bar. Empty when no audio has been captured
+    /// yet. `inputLevel` is kept around as the max-of-channels for
+    /// the existing PipelineCard binding.
+    private(set) var inputChannelLevels: [Float] = []
     private(set) var availableInputs: [AudioInputDescription] = []
     /// The OS's reported current-route input. Useful for diagnostics
     /// but NOT what the picker should display — iPadOS 26 flips
@@ -978,12 +985,34 @@ final class RecordingController {
                 // absorbed by the diarizer's own segmentation.
                 self.latestCapturedFileTime =
                     rebasedChunk.timestamp + Double(rebasedChunk.samples.count) / rebasedChunk.sampleRate
-                self.inputLevel = Self.smoothLevel(
-                    previous: self.inputLevel,
-                    current: Self.perceptualLevel(buffer.samples)
-                )
+                // Per-channel smoothing. AudioCapture attaches one
+                // level per source channel (before the mono downmix);
+                // we smooth each channel against its prior value so a
+                // stereo mic shows independent L/R movement instead of
+                // a single mixed bar. If the channel count changes
+                // mid-session (e.g. USB renegotiates), we reset the
+                // smoothing state to match.
+                if !buffer.channelLevels.isEmpty {
+                    if self.inputChannelLevels.count != buffer.channelLevels.count {
+                        self.inputChannelLevels = buffer.channelLevels
+                    } else {
+                        self.inputChannelLevels = zip(self.inputChannelLevels, buffer.channelLevels).map {
+                            Self.smoothLevel(previous: $0.0, current: $0.1)
+                        }
+                    }
+                    self.inputLevel = self.inputChannelLevels.max() ?? 0
+                } else {
+                    // File capture / no per-channel data: fall back to
+                    // the mono samples for backward compatibility.
+                    self.inputLevel = Self.smoothLevel(
+                        previous: self.inputLevel,
+                        current: Self.perceptualLevel(buffer.samples)
+                    )
+                    self.inputChannelLevels = [self.inputLevel]
+                }
             }
             self.inputLevel = 0
+            self.inputChannelLevels = []
         }
     }
 

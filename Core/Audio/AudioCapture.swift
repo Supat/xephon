@@ -382,11 +382,48 @@ public actor AVAudioEngineCapture: AudioCapture {
             ? Double(time.sampleTime) / time.sampleRate
             : 0
 
+        // Per-source-channel perceptual levels for the multi-bar
+        // meter. Read from the PRE-downmix input buffer so a stereo
+        // mic shows L/R separately — the mono `samples` array we
+        // just produced has the channels averaged together.
+        let channelLevels = computeChannelLevels(buffer)
+
         continuation.yield(AudioChunk(
             samples: samples,
             sampleRate: PipelineAudio.sampleRate,
-            timestamp: timestamp
+            timestamp: timestamp,
+            channelLevels: channelLevels
         ))
+    }
+
+    /// Per-channel perceptual level (0…1) for the raw input buffer,
+    /// matching the dB-normalization the UI's existing single-bar
+    /// meter uses (`(20·log10(rms) + 60) / 60` clamped). Runs on the
+    /// audio thread; pulls directly from `floatChannelData` so it
+    /// works for arbitrary channel counts without allocating per-
+    /// channel sample arrays.
+    private static func computeChannelLevels(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        guard let channelData = buffer.floatChannelData else { return [] }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else {
+            return Array(repeating: 0, count: channelCount)
+        }
+        var levels: [Float] = []
+        levels.reserveCapacity(channelCount)
+        for ch in 0..<channelCount {
+            let chan = channelData[ch]
+            var sum: Float = 0
+            for i in 0..<frameLength {
+                let s = chan[i]
+                sum += s * s
+            }
+            let rms = (sum / Float(frameLength)).squareRoot()
+            let db = 20 * log10(max(rms, 1e-6))
+            let normalized = (db + 60) / 60
+            levels.append(min(1, max(0, normalized)))
+        }
+        return levels
     }
 
     // MARK: - Input selection

@@ -614,7 +614,7 @@ struct ContentView: View {
             }
 
             if recorder.isRecording {
-                LevelMeterView(level: recorder.inputLevel)
+                LevelMeterView(channelLevels: recorder.inputChannelLevels)
                     .frame(maxWidth: 280)
             }
 
