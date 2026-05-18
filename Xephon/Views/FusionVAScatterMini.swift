@@ -1,4 +1,5 @@
 import SwiftUI
+import XephonUtilities
 
 /// Per-utterance mini-scatter showing how late fusion pulled the
 /// V/A point into its final position. Three dots — acoustic (blue),
@@ -99,9 +100,9 @@ struct FusionVAScatterMini: View {
     }
 
     private func project(_ point: (v: Float, a: Float), in rect: CGRect) -> CGPoint {
-        let x = rect.minX + CGFloat(max(0, min(1, point.v))) * rect.width
+        let x = rect.minX + CGFloat(point.v.clamped(to: 0...1)) * rect.width
         // Higher arousal = lower y in screen space.
-        let y = rect.minY + (1 - CGFloat(max(0, min(1, point.a)))) * rect.height
+        let y = rect.minY + (1 - CGFloat(point.a.clamped(to: 0...1))) * rect.height
         return CGPoint(x: x, y: y)
     }
 

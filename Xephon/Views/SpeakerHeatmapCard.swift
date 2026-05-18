@@ -1,5 +1,6 @@
 import SwiftUI
 import Diarization
+import XephonUtilities
 
 /// Pairwise speaker-similarity heatmap, rendered as a small N×N grid
 /// of cosine distances between every pair of speakers' averaged
@@ -336,7 +337,7 @@ struct SpeakerHeatmapCard: View {
         guard n > 0, available > 0 else { return maxCellSize }
         let usable = available - rowLabelWidth - cellSpacing * (n + 1)
         let raw = usable / n
-        return max(minCellSize, min(maxCellSize, raw))
+        return raw.clamped(to: minCellSize...maxCellSize)
     }
 
     /// Total grid height for `count` speakers at the size the grid
@@ -364,7 +365,7 @@ struct SpeakerHeatmapCard: View {
         guard n > 0 else { return 1 }
         var dot: Float = 0
         for i in 0..<n { dot += a[i] * b[i] }
-        return max(0, min(1, 1 - dot))
+        return (1 - dot).clamped(to: 0...1)
     }
 
     /// Three-stop gradient: short distance (potential collision) →
@@ -373,7 +374,7 @@ struct SpeakerHeatmapCard: View {
     /// — a red cell off the diagonal means the diarizer might be
     /// merging two real speakers.
     static func heatColor(distance: Float) -> Color {
-        let clamped = Double(max(0, min(distance, 1)))
+        let clamped = Double(distance.clamped(to: 0...1))
         if clamped < 0.4 {
             let t = clamped / 0.4
             return Color(

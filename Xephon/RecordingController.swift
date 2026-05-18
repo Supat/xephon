@@ -11,6 +11,7 @@ import FoundationModels
 import SERText
 import Summarizer
 import XephonLogging
+import XephonUtilities
 
 @MainActor
 @Observable
@@ -1578,7 +1579,7 @@ final class RecordingController {
     /// `LateFusion.vaFusionShare`/`labelFusionShare` re-renders
     /// against the new value.
     func setFusionAcousticWeight(_ value: Float) {
-        let clamped = max(0, min(2, value))
+        let clamped = value.clamped(to: 0...2)
         guard clamped != fusionAcousticWeight else { return }
         fusionAcousticWeight = clamped
         UserDefaults.standard.set(clamped, forKey: Self.fusionAcousticWeightKey)
@@ -1592,7 +1593,7 @@ final class RecordingController {
     /// Set the text-modality weight floor. Same persistence +
     /// pipeline-push semantics as `setFusionAcousticWeight`.
     func setFusionTextWeightFloor(_ value: Float) {
-        let clamped = max(0, min(1, value))
+        let clamped = value.clamped(to: 0...1)
         guard clamped != fusionTextWeightFloor else { return }
         fusionTextWeightFloor = clamped
         UserDefaults.standard.set(clamped, forKey: Self.fusionTextWeightFloorKey)
@@ -1607,8 +1608,7 @@ final class RecordingController {
     /// observations keep their assignment — re-running the session
     /// re-clusters them.
     func setDiarizerClusteringThreshold(_ value: Float) async {
-        let bounds = FluidAudioDiarizer.clusteringThresholdRange
-        let clamped = min(max(value, bounds.lowerBound), bounds.upperBound)
+        let clamped = value.clamped(to: FluidAudioDiarizer.clusteringThresholdRange)
         // Epsilon, not `!=`: a slider re-emitting the same logical
         // value after a Float round-trip can still differ by 1 ULP,
         // which would defeat the early-return and re-write
@@ -4213,8 +4213,8 @@ final class RecordingController {
             )
         }
         let totalDuration = TimeInterval(Double(file.length) / inputRate)
-        let clampedStart = max(0, min(start, totalDuration))
-        let clampedEnd = max(clampedStart, min(end, totalDuration))
+        let clampedStart = start.clamped(to: 0...totalDuration)
+        let clampedEnd = end.clamped(to: clampedStart...totalDuration)
         let startFrame = AVAudioFramePosition(clampedStart * inputRate)
         let endFrame = AVAudioFramePosition(clampedEnd * inputRate)
         let inputFrames = AVAudioFrameCount(max(0, endFrame - startFrame))
@@ -4511,7 +4511,7 @@ final class RecordingController {
         for s in samples { sumSquares += s * s }
         let rms = (sumSquares / Float(samples.count)).squareRoot()
         let db = 20 * log10f(max(rms, 1e-7))
-        return max(0, min(1, (db + 60) / 60))
+        return ((db + 60) / 60).clamped(to: 0...1)
     }
 
     /// Fast attack, slow release — the classic VU-meter feel.

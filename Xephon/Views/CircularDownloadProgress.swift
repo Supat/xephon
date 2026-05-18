@@ -1,4 +1,5 @@
 import SwiftUI
+import XephonUtilities
 
 /// Compact circular fill indicator for the Settings card's
 /// summarizer-download row. Renders a thin grey track with an
@@ -19,7 +20,7 @@ struct CircularDownloadProgress: View {
 
     var body: some View {
         if total > 0 {
-            let fraction = max(0, min(1, Double(downloaded) / Double(total)))
+            let fraction = (Double(downloaded) / Double(total)).clamped(to: 0...1)
             ZStack {
                 Circle()
                     .stroke(

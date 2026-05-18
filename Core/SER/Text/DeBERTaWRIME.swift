@@ -4,6 +4,7 @@ import Tokenizers
 import Hub
 import SERRuntime
 import XephonLogging
+import XephonUtilities
 
 // On-device WRIME text-emotion classifier. Despite the type name (kept for
 // historical continuity), the bundled artifact today is a fine-tuned
@@ -250,7 +251,7 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
         for i in 0..<count {
             // The model is a regression head trained on WRIME intensities in
             // [0, 3]. Normalize to [0, 1] for our PlutchikScore convention.
-            let normalized = max(0, min(1, raw[i] / intensityScale))
+            let normalized = (raw[i] / intensityScale).clamped(to: 0...1)
             dict[Self.LABEL_ORDER[i]] = normalized
         }
         return PlutchikScore(probabilities: dict)

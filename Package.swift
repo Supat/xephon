@@ -25,6 +25,7 @@ let package = Package(
             name: "XephonCore",
             targets: [
                 "XephonLogging",
+                "XephonUtilities",
                 "Audio",
                 "ASR",
                 "Diarization",
@@ -36,16 +37,17 @@ let package = Package(
                 "Summarizer",
             ]
         ),
-        .library(name: "Audio",         targets: ["Audio"]),
-        .library(name: "ASR",           targets: ["ASR"]),
-        .library(name: "Diarization",   targets: ["Diarization"]),
-        .library(name: "SERRuntime",    targets: ["SERRuntime"]),
-        .library(name: "SERAcoustic",   targets: ["SERAcoustic"]),
-        .library(name: "SERText",       targets: ["SERText"]),
-        .library(name: "Fusion",        targets: ["Fusion"]),
-        .library(name: "Export",        targets: ["Export"]),
-        .library(name: "Summarizer",    targets: ["Summarizer"]),
-        .library(name: "XephonLogging", targets: ["XephonLogging"]),
+        .library(name: "Audio",            targets: ["Audio"]),
+        .library(name: "ASR",              targets: ["ASR"]),
+        .library(name: "Diarization",      targets: ["Diarization"]),
+        .library(name: "SERRuntime",       targets: ["SERRuntime"]),
+        .library(name: "SERAcoustic",      targets: ["SERAcoustic"]),
+        .library(name: "SERText",          targets: ["SERText"]),
+        .library(name: "Fusion",           targets: ["Fusion"]),
+        .library(name: "Export",           targets: ["Export"]),
+        .library(name: "Summarizer",       targets: ["Summarizer"]),
+        .library(name: "XephonLogging",    targets: ["XephonLogging"]),
+        .library(name: "XephonUtilities",  targets: ["XephonUtilities"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.5.0"),
@@ -70,8 +72,12 @@ let package = Package(
             path: "Core/Logging"
         ),
         .target(
+            name: "XephonUtilities",
+            path: "Core/Utilities"
+        ),
+        .target(
             name: "Audio",
-            dependencies: ["XephonLogging"],
+            dependencies: ["XephonLogging", "XephonUtilities"],
             path: "Core/Audio"
         ),
         .target(
@@ -87,6 +93,7 @@ let package = Package(
             name: "Diarization",
             dependencies: [
                 "XephonLogging",
+                "XephonUtilities",
                 "Audio",
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
@@ -113,6 +120,7 @@ let package = Package(
             name: "SERText",
             dependencies: [
                 "XephonLogging",
+                "XephonUtilities",
                 "SERRuntime",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
@@ -123,6 +131,7 @@ let package = Package(
             name: "Fusion",
             dependencies: [
                 "XephonLogging",
+                "XephonUtilities",
                 "ASR",
                 "SERAcoustic",
                 "SERText",

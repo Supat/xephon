@@ -2,6 +2,7 @@ import SwiftUI
 import Fusion
 import SERAcoustic
 import SERText
+import XephonUtilities
 
 /// Session-wide aggregate of the per-modality SER outputs:
 ///
@@ -141,7 +142,7 @@ struct SERAggregateCard: View {
             // Wedges + labels.
             for (i, label) in labels.enumerated() {
                 let mean = means[label] ?? 0
-                let normalized = max(0, min(1, mean * scale))
+                let normalized = (mean * scale).clamped(to: 0...1)
                 let r = maxR * CGFloat(normalized)
                 // Anchor wedge 0 at the top, going clockwise.
                 let startAngle = Double(i) * step - .pi / 2
@@ -247,7 +248,7 @@ struct SERAggregateCard: View {
                     Capsule().fill(tint.opacity(0.12))
                     Capsule()
                         .fill(tint.opacity(0.55))
-                        .frame(width: geo.size.width * CGFloat(max(0, min(1, value))))
+                        .frame(width: geo.size.width * CGFloat(value.clamped(to: 0...1)))
                 }
             }
             .frame(height: 5)
@@ -316,8 +317,8 @@ struct SERAggregateCard: View {
         var bestID: UUID?
         var bestDist = limit
         for p in points {
-            let cx = inset + CGFloat(max(0, min(1, p.valence))) * w
-            let cy = inset + (1 - CGFloat(max(0, min(1, p.arousal)))) * h
+            let cx = inset + CGFloat(p.valence.clamped(to: 0...1)) * w
+            let cy = inset + (1 - CGFloat(p.arousal.clamped(to: 0...1))) * h
             let dx = cx - location.x
             let dy = cy - location.y
             let d2 = dx * dx + dy * dy
@@ -382,8 +383,8 @@ struct SERAggregateCard: View {
             // session without an explicit arrow — the halo is
             // direction enough at this density.
             for p in points {
-                let cx = inset + CGFloat(max(0, min(1, p.valence))) * w
-                let cy = inset + (1 - CGFloat(max(0, min(1, p.arousal)))) * h
+                let cx = inset + CGFloat(p.valence.clamped(to: 0...1)) * w
+                let cy = inset + (1 - CGFloat(p.arousal.clamped(to: 0...1))) * h
                 let tint = speakerTint(for: p.speakerID)
                 let isFocused = (p.id == focusedUtteranceID)
                 let r: CGFloat = isFocused ? 5.5 : 3.5

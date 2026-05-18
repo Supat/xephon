@@ -1,5 +1,6 @@
 import SwiftUI
 import Fusion
+import XephonUtilities
 
 /// Per-utterance horizontal bar showing how much each modality
 /// contributed to the fused-label argmax for that row. Each row's
@@ -96,8 +97,8 @@ struct FusionContributionStrip: View {
             // line up at the focused row's audio range.
             .overlay(alignment: .leading) {
                 if let sel = selectedRange, totalDuration > 0 {
-                    let clampedStart = max(0, min(sel.start, totalDuration))
-                    let clampedEnd = max(clampedStart, min(sel.end, totalDuration))
+                    let clampedStart = sel.start.clamped(to: 0...totalDuration)
+                    let clampedEnd = sel.end.clamped(to: clampedStart...totalDuration)
                     let x = geo.size.width * CGFloat(clampedStart / totalDuration)
                     let w = geo.size.width * CGFloat((clampedEnd - clampedStart) / totalDuration)
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -111,7 +112,7 @@ struct FusionContributionStrip: View {
             .onTapGesture(coordinateSpace: .local) { location in
                 guard let onTapAtTime, totalDuration > 0, geo.size.width > 0 else { return }
                 let t = totalDuration * Double(location.x / geo.size.width)
-                onTapAtTime(max(0, min(t, totalDuration)))
+                onTapAtTime(t.clamped(to: 0...totalDuration))
             }
         }
         .frame(height: Self.height)

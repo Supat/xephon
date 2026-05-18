@@ -3,6 +3,7 @@ import CoreML
 import FluidAudio
 import Audio
 import XephonLogging
+import XephonUtilities
 
 // FluidAudio Sortformer (≤4 speakers, very stable) or LS-EEND (≤10, lighter), ANE-targeted.
 // Models are downloaded by FluidAudio on first use into its cache directory.
@@ -76,8 +77,7 @@ public actor FluidAudioDiarizer: Diarizer {
     /// `embeddingThreshold = ×0.8`) so the live thresholds stay in
     /// lockstep with what a fresh manager would compute.
     public func setClusteringThreshold(_ value: Float) async {
-        let bounds = FluidAudioDiarizer.clusteringThresholdRange
-        let clamped = min(max(value, bounds.lowerBound), bounds.upperBound)
+        let clamped = value.clamped(to: FluidAudioDiarizer.clusteringThresholdRange)
         let speaker = clamped * 1.2
         let embedding = clamped * 0.8
         await manager.speakerManager.setSpeakerThreshold(speaker)

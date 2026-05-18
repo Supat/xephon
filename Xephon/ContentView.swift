@@ -7,6 +7,7 @@ import Fusion
 import SERText
 import Summarizer
 import XephonLogging
+import XephonUtilities
 
 struct ContentView: View {
     @Environment(MenuCommands.self) private var menuCommands
@@ -1453,11 +1454,11 @@ struct ContentView: View {
                 // Clamp into the displayed band in case a stored
                 // value sits outside it (older builds, manual
                 // UserDefaults edits).
-                let clamped = min(max(current, lower), upper)
+                let clamped = current.clamped(to: lower...upper)
                 return Double(1.0 - (clamped - lower) / (upper - lower))
             },
             set: { newValue in
-                let clampedSensitivity = Float(min(max(newValue, 0.0), 1.0))
+                let clampedSensitivity = Float(newValue.clamped(to: 0.0...1.0))
                 let newThreshold = upper - clampedSensitivity * (upper - lower)
                 Task { await recorder.setDiarizerClusteringThreshold(newThreshold) }
             }

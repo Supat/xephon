@@ -1,6 +1,7 @@
 import Foundation
 @preconcurrency import AVFoundation
 import XephonLogging
+import XephonUtilities
 
 /// Short UI feedback cues, played via a freshly-constructed
 /// `AVAudioPlayer` per call from `/System/Library/Audio/UISounds/`
@@ -177,7 +178,7 @@ enum UISounds {
             let t = Double(i) / Double(sampleRate)
             let envelope = exp(-t * 6.0)
             let value = sin(twoPiF * t) * envelope * 0.7
-            samples[i] = Int16(max(-1.0, min(1.0, value)) * 32767)
+            samples[i] = Int16(value.clamped(to: -1.0...1.0) * 32767)
         }
 
         let bitsPerSample: UInt16 = 16

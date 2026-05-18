@@ -1,4 +1,5 @@
 import Foundation
+import XephonUtilities
 
 /// Bounded rolling buffer over a 16 kHz mono Float32 capture stream.
 /// Encapsulates the trim-before-append, deep-copy-on-snapshot, and
@@ -127,7 +128,7 @@ public struct RollingAudioBuffer: Sendable {
     public mutating func trimProcessed(below boundary: TimeInterval) {
         let cutoff = boundary - contextSeconds
         let cutoffIndex = indexForFileTime(cutoff)
-        let frames = min(max(cutoffIndex, 0), samples.count)
+        let frames = cutoffIndex.clamped(to: 0...samples.count)
         guard frames > 0 else { return }
         dropHead(frames)
     }
@@ -146,8 +147,8 @@ public struct RollingAudioBuffer: Sendable {
         guard !samples.isEmpty else {
             return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: start)
         }
-        let startIdx = min(max(indexForFileTime(start), 0), samples.count)
-        let endIdx = min(max(indexForFileTime(end), startIdx), samples.count)
+        let startIdx = indexForFileTime(start).clamped(to: 0...samples.count)
+        let endIdx = indexForFileTime(end).clamped(to: startIdx...samples.count)
         guard startIdx < endIdx else {
             return AudioChunk(samples: [], sampleRate: sampleRate, timestamp: start)
         }

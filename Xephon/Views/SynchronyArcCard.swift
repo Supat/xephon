@@ -1,5 +1,6 @@
 import SwiftUI
 import Fusion
+import XephonUtilities
 
 /// Time-binned session-arc visualization: per-speaker mean V (or A)
 /// drawn as one line per speaker over the session timeline, with
@@ -164,7 +165,7 @@ struct SynchronyArcCard: View {
             inset + w * CGFloat(binIndex) / CGFloat(binCount - 1)
         }
         func yFor(_ value: Double) -> CGFloat {
-            let clamped = max(0.0, min(1.0, value))
+            let clamped = value.clamped(to: 0.0...1.0)
             return inset + (1 - CGFloat(clamped)) * h
         }
         func selectPer(_ bin: AffectiveSynchrony.ArcBin, spk: String) -> Double? {

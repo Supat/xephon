@@ -3,6 +3,7 @@ import Fusion
 import SERAcoustic
 import SERText
 import XephonLogging
+import XephonUtilities
 
 /// Custom vertical alignment that anchors the playback button to the
 /// center of the row's main content only — independent of whether the
@@ -1103,7 +1104,7 @@ private struct ProbabilityBar: View {
 
     var body: some View {
         let tint = emotionTint(for: label)
-        let fraction = Double(max(0, min(1, value)))
+        let fraction = Double(value.clamped(to: 0...1))
         HStack(spacing: 8) {
             // Fixed-width column with tail truncation so a long
             // outlier like "Anticipation" (12 chars) gets clipped

@@ -1,5 +1,6 @@
 import SwiftUI
 import Fusion
+import XephonUtilities
 
 /// Surfaces backlog items #12–#14 — how each speaker reacts to the
 /// session around them. Three sections stacked vertically:
@@ -210,7 +211,7 @@ struct ReactivityCard: View {
             let half = geo.size.width * 0.5
             // Clamp display to ±0.30 so a normal range fills most
             // of the bar without saturating on a single outlier.
-            let clamped = max(-0.30, min(0.30, delta))
+            let clamped = delta.clamped(to: -0.30...0.30)
             let magnitude = abs(clamped) / 0.30
             let barWidth = half * CGFloat(magnitude)
             let tint: Color = delta < 0 ? .red : .green

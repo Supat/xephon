@@ -8,6 +8,7 @@ import SERRuntime
 import SERText
 import Fusion
 import XephonLogging
+import XephonUtilities
 
 // App-level orchestrator: capture buffer → ASR → SER (acoustic + text) → late fusion.
 //
@@ -1302,8 +1303,8 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// `sliceRelative` which respects the buffer's timeline origin.
     static func slice(_ buffer: AudioChunk, start: TimeInterval, end: TimeInterval) -> AudioChunk {
         let total = Double(buffer.samples.count)
-        let startIndex = max(0, min(Int(start * buffer.sampleRate), buffer.samples.count))
-        let endIndex = max(startIndex, min(Int(end * buffer.sampleRate), buffer.samples.count))
+        let startIndex = Int(start * buffer.sampleRate).clamped(to: 0...buffer.samples.count)
+        let endIndex = Int(end * buffer.sampleRate).clamped(to: startIndex...buffer.samples.count)
         guard startIndex < endIndex, total > 0 else { return buffer }
         let slice = Array(buffer.samples[startIndex..<endIndex])
         return AudioChunk(samples: slice, sampleRate: buffer.sampleRate, timestamp: start)

@@ -1,5 +1,6 @@
 import SwiftUI
 import Fusion
+import XephonUtilities
 
 /// Per-speaker behavioral fingerprint card. Each speaker row shows
 /// five rank-normalized mini bars under a single header row of
@@ -150,7 +151,7 @@ struct SpeakerBehaviorCard: View {
                 .fill(Color(uiColor: .tertiarySystemFill))
                 .frame(width: Self.barWidth, height: Self.barHeight)
             if let v = value {
-                let clamped = max(0, min(1, v))
+                let clamped = v.clamped(to: 0...1)
                 RoundedRectangle(cornerRadius: 1, style: .continuous)
                     .fill(tint)
                     .frame(

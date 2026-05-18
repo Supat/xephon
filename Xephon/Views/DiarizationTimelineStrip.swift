@@ -1,6 +1,7 @@
 import SwiftUI
 import Diarization
 import Fusion
+import XephonUtilities
 
 /// Per-session diarizer timeline — a thin horizontal strip showing
 /// which speaker the diarizer thinks is talking across the whole
@@ -86,8 +87,8 @@ struct DiarizationTimelineStrip: View {
             // colored speaker runs underneath.
             .overlay(alignment: .leading) {
                 if let sel = selectedRange, totalDuration > 0 {
-                    let clampedStart = max(0, min(sel.start, totalDuration))
-                    let clampedEnd = max(clampedStart, min(sel.end, totalDuration))
+                    let clampedStart = sel.start.clamped(to: 0...totalDuration)
+                    let clampedEnd = sel.end.clamped(to: clampedStart...totalDuration)
                     let x = geo.size.width * CGFloat(clampedStart / totalDuration)
                     let w = geo.size.width * CGFloat((clampedEnd - clampedStart) / totalDuration)
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -110,7 +111,7 @@ struct DiarizationTimelineStrip: View {
             .onTapGesture(coordinateSpace: .local) { location in
                 guard let onTapAtTime, totalDuration > 0, geo.size.width > 0 else { return }
                 let t = totalDuration * Double(location.x / geo.size.width)
-                onTapAtTime(max(0, min(t, totalDuration)))
+                onTapAtTime(t.clamped(to: 0...totalDuration))
             }
         }
         .frame(height: Self.height)

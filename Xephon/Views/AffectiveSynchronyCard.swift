@@ -1,6 +1,7 @@
 import SwiftUI
 import Fusion
 import SERText
+import XephonUtilities
 
 /// Pairwise affective-synchrony view stacked into three sections:
 ///
@@ -240,7 +241,7 @@ struct AffectiveSynchronyCard: View {
                 .fill(Color(uiColor: .separator))
                 .frame(width: 1, height: height + 2)
             if let v = value {
-                let clamped = max(-1.0, min(1.0, v))
+                let clamped = v.clamped(to: -1.0...1.0)
                 let magnitude = CGFloat(abs(clamped)) * halfWidth
                 Capsule()
                     .fill(clamped >= 0 ? Color.green : Color.red)
@@ -337,7 +338,7 @@ struct AffectiveSynchronyCard: View {
                     hasLastPoint = false
                     continue
                 }
-                let clamped = max(-1.0, min(1.0, v))
+                let clamped = v.clamped(to: -1.0...1.0)
                 let y = mid - CGFloat(clamped) * (height / 2 - 2)
                 let pt = CGPoint(x: x, y: y)
                 if hasLastPoint {

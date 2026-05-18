@@ -1,5 +1,6 @@
 import Foundation
 import XephonLogging
+import XephonUtilities
 import ASR
 import SERAcoustic
 import SERText
@@ -286,7 +287,7 @@ public actor LateFusion: Fuser {
                 + (p.probabilities[.anger] ?? 0) * 0.7
         let raw = pos - neg
         // Map [-2, +2] → [0, 1] with a soft clamp.
-        return max(0, min(1, 0.5 + raw * 0.25))
+        return (0.5 + raw * 0.25).clamped(to: 0...1)
     }
 
     public static func plutchikToArousal(_ p: PlutchikScore) -> Float {
@@ -298,7 +299,7 @@ public actor LateFusion: Fuser {
         let low  = (p.probabilities[.sadness] ?? 0)
                  + (p.probabilities[.trust] ?? 0) * 0.5
         let raw = high - low
-        return max(0, min(1, 0.5 + raw * 0.3))
+        return (0.5 + raw * 0.3).clamped(to: 0...1)
     }
 
     /// Argmax over the per-label score combining acoustic-categorical
