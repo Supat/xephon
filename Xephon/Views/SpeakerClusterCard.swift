@@ -112,7 +112,7 @@ struct SpeakerClusterCard: View {
     /// we have a specific observation to pin down.
     private func findHaloTarget(
         in points: [Point],
-        project: (Point) -> CGPoint
+        project: Projector
     ) -> (position: CGPoint, color: Color)? {
         guard let speakerID = highlightedSpeakerID else { return nil }
         guard let p = points.first(where: {
@@ -132,7 +132,7 @@ struct SpeakerClusterCard: View {
     /// emphasis on the same point.
     private func findArrowTarget(
         in points: [Point],
-        project: (Point) -> CGPoint
+        project: Projector
     ) -> (position: CGPoint, color: Color)? {
         guard let speakerID = highlightedSpeakerID,
               let embedding = focusedEmbedding,
@@ -230,31 +230,16 @@ struct SpeakerClusterCard: View {
     /// silently do nothing — no spurious scroll if the user just
     /// pans past the scatter.
     private func handleTap(at location: CGPoint, in size: CGSize) {
-        guard let onTap = onTapNode, !points.isEmpty else { return }
-        var minX: Float = .infinity, maxX: Float = -.infinity
-        var minY: Float = .infinity, maxY: Float = -.infinity
-        for p in points {
-            minX = min(minX, p.x); maxX = max(maxX, p.x)
-            minY = min(minY, p.y); maxY = max(maxY, p.y)
-        }
-        let dx = max(maxX - minX, 1e-6)
-        let dy = max(maxY - minY, 1e-6)
-        let availW = size.width - 2 * Self.canvasInset
-        let availH = size.height - 2 * Self.canvasInset
-        let hitRadius = Self.tapHitRadius
-        let limit = hitRadius * hitRadius
+        guard let onTap = onTapNode,
+              let project = Projector(points: points, in: size, inset: Self.canvasInset)
+        else { return }
+        let limit = Self.tapHitRadius * Self.tapHitRadius
         var bestDist = limit
         var bestPoint: Point?
-        for p in points {
-            // Skip the point if the filter is hiding it — tapping a
-            // ghost where a dot used to be would be confusing.
-            guard isPointVisible(p) else { continue }
-            let nx = (p.x - minX) / dx
-            let ny = (p.y - minY) / dy
-            let cx = Self.canvasInset + CGFloat(nx) * availW
-            let cy = Self.canvasInset + (1 - CGFloat(ny)) * availH
-            let ddx = cx - location.x
-            let ddy = cy - location.y
+        for p in points where isPointVisible(p) {
+            let c = project(p)
+            let ddx = c.x - location.x
+            let ddy = c.y - location.y
             let d2 = ddx * ddx + ddy * ddy
             if d2 < bestDist {
                 bestDist = d2
@@ -281,6 +266,47 @@ struct SpeakerClusterCard: View {
     /// against the 2.5pt observation radius without overlapping
     /// adjacent clouds in dense scatters.
     nonisolated private static let tapHitRadius: CGFloat = 20
+
+    /// Maps unscaled `Point.x`/`y` (PCA-projected) into canvas
+    /// coordinates. Bundles the data-extent + inset math so the
+    /// Canvas body and `handleTap` share one source of truth —
+    /// previously each computed the bounds and projection inline,
+    /// which let the two drift if either was edited in isolation.
+    fileprivate struct Projector {
+        let minX: Float
+        let minY: Float
+        let dx: Float
+        let dy: Float
+        let availW: CGFloat
+        let availH: CGFloat
+        let inset: CGFloat
+
+        init?(points: [Point], in size: CGSize, inset: CGFloat) {
+            guard !points.isEmpty else { return nil }
+            var minX: Float = .infinity, maxX: Float = -.infinity
+            var minY: Float = .infinity, maxY: Float = -.infinity
+            for p in points {
+                minX = min(minX, p.x); maxX = max(maxX, p.x)
+                minY = min(minY, p.y); maxY = max(maxY, p.y)
+            }
+            self.minX = minX
+            self.minY = minY
+            self.dx = max(maxX - minX, 1e-6)
+            self.dy = max(maxY - minY, 1e-6)
+            self.availW = size.width - 2 * inset
+            self.availH = size.height - 2 * inset
+            self.inset = inset
+        }
+
+        func callAsFunction(_ p: Point) -> CGPoint {
+            let nx = (p.x - minX) / dx
+            let ny = (p.y - minY) / dy
+            return CGPoint(
+                x: inset + CGFloat(nx) * availW,
+                y: inset + (1 - CGFloat(ny)) * availH
+            )
+        }
+    }
 
     /// Short fixed-length arrow pointing at `target` from the
     /// upper-right (or whichever diagonal stays inside the canvas
@@ -450,29 +476,15 @@ struct SpeakerClusterCard: View {
     @ViewBuilder
     private var clusterCanvas: some View {
         Canvas { ctx, size in
-                // Compute the data extent once so we can scale the
-                // whole cloud into the canvas. `Point.x` and `.y` are
-                // unscaled projections; we map to canvas coords here.
-                var minX: Float = .infinity
-                var maxX: Float = -.infinity
-                var minY: Float = .infinity
-                var maxY: Float = -.infinity
-                for p in points {
-                    minX = min(minX, p.x); maxX = max(maxX, p.x)
-                    minY = min(minY, p.y); maxY = max(maxY, p.y)
-                }
-                let dx = max(maxX - minX, 1e-6)
-                let dy = max(maxY - minY, 1e-6)
-                let availW = size.width - 2 * Self.canvasInset
-                let availH = size.height - 2 * Self.canvasInset
-                func project(_ p: Point) -> CGPoint {
-                    let nx = (p.x - minX) / dx
-                    let ny = (p.y - minY) / dy
-                    return CGPoint(
-                        x: Self.canvasInset + CGFloat(nx) * availW,
-                        y: Self.canvasInset + (1 - CGFloat(ny)) * availH
-                    )
-                }
+                guard let project = Projector(
+                    points: points, in: size, inset: Self.canvasInset
+                ) else { return }
+                let minX = project.minX
+                let minY = project.minY
+                let dx = project.dx
+                let dy = project.dy
+                let availW = project.availW
+                let availH = project.availH
                 // PCA mean-centers the data so projected (0, 0) is
                 // the data centroid. Drawing axis lines through it
                 // gives the user a reference for "which side of
