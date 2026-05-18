@@ -162,6 +162,11 @@ public protocol Diarizer: Actor {
     /// possibly-similar embeddings at tap time. Returns nil when
     /// the speaker isn't in the database or has no observations.
     func bestMatchingObservationID(forEmbedding: [Float], speakerID: String) async -> UUID?
+    /// Update the diarizer's clustering threshold. Lower = stricter
+    /// matching (more distinct speakers); higher = looser. Takes
+    /// effect on the next diarize call; already-assigned
+    /// observations keep their id.
+    func setClusteringThreshold(_ value: Float) async
 }
 
 public extension Diarizer {
@@ -181,4 +186,5 @@ public extension Diarizer {
         forEmbedding: [Float],
         speakerID: String
     ) async -> UUID? { nil }
+    func setClusteringThreshold(_ value: Float) async {}
 }

@@ -1,6 +1,10 @@
 "input.default" = "デフォルト入力";
 "settings.language" = "言語";
 "settings.speechBoost" = "音声強調 (ASRのみ)";
+"settings.diarizerSensitivity" = "話者分離の感度";
+"settings.diarizerSensitivity.min" = "統合";
+"settings.diarizerSensitivity.max" = "分離";
+"settings.diarizerSensitivity.hint" = "高いほど話者を細かく区別します。ラベルをダブルタップでリセット。";
 "settings.textSER" = "テキスト SER";
 "settings.textSER.deberta" = "DeBERTa";
 "settings.textSER.foundationModels" = "Apple FM";

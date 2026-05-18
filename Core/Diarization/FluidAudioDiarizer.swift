@@ -18,6 +18,21 @@ public actor FluidAudioDiarizer: Diarizer {
     // inside an actor and call its async methods.
     private nonisolated(unsafe) let manager: DiarizerManager
 
+    /// Shared between `conversationalConfig` and the UI's reset
+    /// path so they agree on "default sensitivity."
+    public static let defaultClusteringThreshold: Float = 0.6
+
+    /// Valid persistence range. Wider than the UI band so a future
+    /// caller (tests, manual UserDefaults edits) can push values
+    /// outside the slider without the actor refusing them.
+    public static let clusteringThresholdRange: ClosedRange<Float> = 0.3...1.0
+
+    /// Useful operating band exposed by the Settings slider.
+    /// Tighter than `clusteringThresholdRange` because values at
+    /// the extremes degrade quickly — the UI surfaces only what's
+    /// musically useful for conversational audio.
+    public static let displayClusteringThresholdRange: ClosedRange<Float> = 0.5...0.9
+
     /// Default config tuned for conversational speech. The two
     /// values that differ from `DiarizerConfig.default` are:
     ///
@@ -31,7 +46,8 @@ public actor FluidAudioDiarizer: Diarizer {
     ///   noise. The mode-vote in `dominantSpeaker` (per-instant
     ///   majority across overlapping observations) absorbs the
     ///   noise; what we get back is real speakers that the looser
-    ///   thresholds were merging into one ID.
+    ///   thresholds were merging into one ID. Tunable at runtime
+    ///   via `setClusteringThreshold`.
     ///
     /// - `minSpeechDuration = 0.5` s (FluidAudio default 1.0). Lets
     ///   a real new speaker who only says a short turn (a brief
@@ -43,7 +59,7 @@ public actor FluidAudioDiarizer: Diarizer {
     ///
     /// Other fields stay at FluidAudio's defaults.
     public static let conversationalConfig = DiarizerConfig(
-        clusteringThreshold: 0.6,
+        clusteringThreshold: FluidAudioDiarizer.defaultClusteringThreshold,
         minSpeechDuration: 0.5
     )
 
@@ -53,6 +69,22 @@ public actor FluidAudioDiarizer: Diarizer {
     ) {
         self.kind = kind
         self.manager = DiarizerManager(config: config)
+    }
+
+    /// Mirrors the multipliers `DiarizerManager.init` derives at
+    /// construction (`speakerThreshold = ×1.2`,
+    /// `embeddingThreshold = ×0.8`) so the live thresholds stay in
+    /// lockstep with what a fresh manager would compute.
+    public func setClusteringThreshold(_ value: Float) async {
+        let bounds = FluidAudioDiarizer.clusteringThresholdRange
+        let clamped = min(max(value, bounds.lowerBound), bounds.upperBound)
+        let speaker = clamped * 1.2
+        let embedding = clamped * 0.8
+        await manager.speakerManager.setSpeakerThreshold(speaker)
+        await manager.speakerManager.setEmbeddingThreshold(embedding)
+        AppLog.diarization.info(
+            "diarizer clusteringThreshold → \(clamped, privacy: .public) (speaker=\(speaker, privacy: .public), embedding=\(embedding, privacy: .public))"
+        )
     }
 
     public func diarize(_ buffer: AudioChunk) async throws -> [DiarizedSegment] {

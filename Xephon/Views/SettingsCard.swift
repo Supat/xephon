@@ -18,15 +18,18 @@ import SwiftUI
 /// The picker closures take a `PickerLayout` so the same picker body
 /// renders stacked for landscape and inline for portrait.
 /// Speech-boost (a toggle, distinct affordance) sits below on its
-/// own line.
+/// own line, followed by the diarizer-sensitivity slider — both are
+/// full-width controls that don't share a row with the pickers.
 struct SettingsCard<
     Language: View,
     SpeechBoost: View,
-    TextSER: View
+    TextSER: View,
+    DiarizerSensitivity: View
 >: View {
     @ViewBuilder let languagePicker: (ContentView.PickerLayout) -> Language
     @ViewBuilder let speechBoostToggle: () -> SpeechBoost
     @ViewBuilder let textSERPicker: (ContentView.PickerLayout) -> TextSER
+    @ViewBuilder let diarizerSensitivitySlider: () -> DiarizerSensitivity
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -41,6 +44,7 @@ struct SettingsCard<
                 }
             }
             speechBoostToggle()
+            diarizerSensitivitySlider()
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -150,6 +150,11 @@ final class AnalysisPipeline: @unchecked Sendable {
         )
     }
 
+    /// No-op when diarization isn't configured.
+    func setDiarizerClusteringThreshold(_ value: Float) async {
+        await diarizer?.setClusteringThreshold(value)
+    }
+
     /// Run the diarizer on a window of audio and merge the result
     /// into the cumulative speaker timeline via `speakerTracker`.
     /// Called by the continuous-diarization side task in

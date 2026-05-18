@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Audio
+import Diarization
 import Export
 import Fusion
 import SERText
@@ -651,7 +652,8 @@ struct ContentView: View {
                             speechBoostToggle: { speechBoostToggle },
                             textSERPicker: { layout in
                                 textSERPicker(layout: layout)
-                            }
+                            },
+                            diarizerSensitivitySlider: { diarizerSensitivitySlider }
                         )
                         PipelineCard(recorder: recorder)
                     }
@@ -1433,6 +1435,70 @@ struct ContentView: View {
         }
         .toggleStyle(.switch)
         .padding(.horizontal)
+    }
+
+    /// "Sensitivity" inverts the underlying clustering threshold
+    /// (lower threshold = more distinct speakers) so dragging right
+    /// reads as "more speakers." Double-tap the label to restore
+    /// the default. `step:` discretizes the drag so a smooth gesture
+    /// doesn't queue a Task per frame against the diarizer actor.
+    @ViewBuilder
+    private var diarizerSensitivitySlider: some View {
+        let bounds = FluidAudioDiarizer.displayClusteringThresholdRange
+        let lower = bounds.lowerBound
+        let upper = bounds.upperBound
+        let current = recorder.diarizerClusteringThreshold
+        let sensitivityBinding = Binding<Double>(
+            get: {
+                // Clamp into the displayed band in case a stored
+                // value sits outside it (older builds, manual
+                // UserDefaults edits).
+                let clamped = min(max(current, lower), upper)
+                return Double(1.0 - (clamped - lower) / (upper - lower))
+            },
+            set: { newValue in
+                let clampedSensitivity = Float(min(max(newValue, 0.0), 1.0))
+                let newThreshold = upper - clampedSensitivity * (upper - lower)
+                Task { await recorder.setDiarizerClusteringThreshold(newThreshold) }
+            }
+        )
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Label(
+                    String(localized: "settings.diarizerSensitivity"),
+                    systemImage: "person.2.wave.2"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(String(format: "%.2f", current))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: sensitivityBinding,
+                in: 0.0...1.0,
+                step: 0.025
+            ) {
+                Text(String(localized: "settings.diarizerSensitivity"))
+            } minimumValueLabel: {
+                Text(String(localized: "settings.diarizerSensitivity.min"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } maximumValueLabel: {
+                Text(String(localized: "settings.diarizerSensitivity.max"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(String(localized: "settings.diarizerSensitivity.hint"))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            Task { await recorder.resetDiarizerClusteringThreshold() }
+        }
     }
 
     @ViewBuilder

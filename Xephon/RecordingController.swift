@@ -508,6 +508,7 @@ final class RecordingController {
     private static let summarizerBackendKey = "xephon.summarizerBackend"
     private static let fusionAcousticWeightKey = "xephon.fusionAcousticWeight"
     private static let fusionTextWeightFloorKey = "xephon.fusionTextWeightFloor"
+    private static let diarizerClusteringThresholdKey = "xephon.diarizerClusteringThreshold"
 
 
     /// Current weight applied to the acoustic modality during late
@@ -524,6 +525,12 @@ final class RecordingController {
     /// `max(floor, asrConfidence)`). Drives the same call sites
     /// as `fusionAcousticWeight`.
     private(set) var fusionTextWeightFloor: Float
+
+    /// FluidAudio clustering threshold. Lower = stricter (more
+    /// distinct speakers); higher = looser (merge similar voices).
+    /// Persists via UserDefaults; pushed into the live pipeline on
+    /// every bring-up.
+    private(set) var diarizerClusteringThreshold: Float
 
     /// Shared "Teach diarizer" toggle state across every row's
     /// speaker popover. Flipping the switch in one row's popover
@@ -563,6 +570,11 @@ final class RecordingController {
             self.fusionTextWeightFloor = UserDefaults.standard.float(forKey: Self.fusionTextWeightFloorKey)
         } else {
             self.fusionTextWeightFloor = LateFusion.defaultTextWeightFloor
+        }
+        if UserDefaults.standard.object(forKey: Self.diarizerClusteringThresholdKey) != nil {
+            self.diarizerClusteringThreshold = UserDefaults.standard.float(forKey: Self.diarizerClusteringThresholdKey)
+        } else {
+            self.diarizerClusteringThreshold = FluidAudioDiarizer.defaultClusteringThreshold
         }
         self.summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
@@ -685,6 +697,7 @@ final class RecordingController {
             self.pipelineDiagnostics = result.diagnostics
             self.pipelineTask = nil
             applyFusionWeights(to: result.pipeline)
+            await result.pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
             await refreshTextSERState(from: result.pipeline)
             await applyLatestBackgroundMode(to: result.pipeline)
             return result.pipeline
@@ -702,6 +715,7 @@ final class RecordingController {
         self.pipelineDiagnostics = result.diagnostics
         self.pipeline = result.pipeline
         applyFusionWeights(to: result.pipeline)
+        await result.pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
         await refreshTextSERState(from: result.pipeline)
         await applyLatestBackgroundMode(to: result.pipeline)
         return result.pipeline
@@ -755,6 +769,7 @@ final class RecordingController {
         self.pipelineDiagnostics = result.diagnostics
         self.pipelineTask = nil
         applyFusionWeights(to: result.pipeline)
+        await result.pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
         await self.refreshTextSERState(from: result.pipeline)
     }
 
@@ -1578,6 +1593,39 @@ final class RecordingController {
         AppLog.app.info(
             "fusion.textWeightFloor → \(clamped, privacy: .public)"
         )
+    }
+
+    /// Takes effect on the next diarize call; already-clustered
+    /// observations keep their assignment — re-running the session
+    /// re-clusters them.
+    func setDiarizerClusteringThreshold(_ value: Float) async {
+        let bounds = FluidAudioDiarizer.clusteringThresholdRange
+        let clamped = min(max(value, bounds.lowerBound), bounds.upperBound)
+        // Epsilon, not `!=`: a slider re-emitting the same logical
+        // value after a Float round-trip can still differ by 1 ULP,
+        // which would defeat the early-return and re-write
+        // UserDefaults on every drag tick.
+        guard abs(clamped - diarizerClusteringThreshold) > .ulpOfOne else { return }
+        diarizerClusteringThreshold = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.diarizerClusteringThresholdKey)
+        if let pipeline {
+            await pipeline.setDiarizerClusteringThreshold(clamped)
+        }
+        AppLog.app.info(
+            "diarizer.clusteringThreshold → \(clamped, privacy: .public)"
+        )
+    }
+
+    /// Restore the default threshold and clear the persisted
+    /// override.
+    func resetDiarizerClusteringThreshold() async {
+        let defaultValue = FluidAudioDiarizer.defaultClusteringThreshold
+        diarizerClusteringThreshold = defaultValue
+        UserDefaults.standard.removeObject(forKey: Self.diarizerClusteringThresholdKey)
+        if let pipeline {
+            await pipeline.setDiarizerClusteringThreshold(defaultValue)
+        }
+        AppLog.app.info("diarizer clustering threshold reset to default")
     }
 
     /// Restore both fusion weights to LateFusion's compiled-in

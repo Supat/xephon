@@ -1,6 +1,10 @@
 "input.default" = "Default Input";
 "settings.language" = "Language";
 "settings.speechBoost" = "Speech Boost (ASR Only)";
+"settings.diarizerSensitivity" = "Speaker Sensitivity";
+"settings.diarizerSensitivity.min" = "Merge";
+"settings.diarizerSensitivity.max" = "Split";
+"settings.diarizerSensitivity.hint" = "Higher = more distinct speakers. Double-tap label to reset.";
 "settings.textSER" = "Text SER";
 "settings.textSER.deberta" = "DeBERTa";
 "settings.textSER.foundationModels" = "Apple FM";
