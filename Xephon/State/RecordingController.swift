@@ -7,7 +7,6 @@ import ASR
 import Diarization
 import Fusion
 import Export
-import FoundationModels
 import SERText
 import Summarizer
 import XephonLogging
@@ -37,7 +36,12 @@ final class RecordingController {
     /// has been probed. Used by the status line to render a completion
     /// percentage alongside wall-time and sample count.
     private(set) var fileTotalAudioDuration: TimeInterval?
-    private(set) var errorMessage: String?
+    /// Surface-level error from the controller or any of its
+    /// coordinators. The Settings card binds an alert to this; nil
+    /// = no pending message. Setter is internal (rather than
+    /// `private(set)`) so sibling coordinators in this target can
+    /// report their own errors here.
+    var errorMessage: String?
     /// Rotates every time the session-level utterance list changes
     /// identity (new recording, new file analysis, imported `.xph`).
     /// Views observe this to flush transient `@State` keyed by the
@@ -81,77 +85,33 @@ final class RecordingController {
     /// Persists across launches via UserDefaults.
     private(set) var sessionLanguage: SessionLanguage
 
-    /// Whether the on-device session summarizer (Qwen2.5-7B 4-bit
-    /// MLX) is opted-in. Flipping this on triggers the ~4 GB model
-    /// download via `ModelStore.ensureOptional`; flipping it off
-    /// unloads the resident weights but leaves the on-disk files
-    /// alone (the user can free them via "Remove summarizer model").
-    /// Persists in UserDefaults so the choice survives launch.
-    private(set) var summarizerEnabled: Bool
-    /// User's chosen summarizer backend. Apple FM is the default
-    /// — system-managed, no model download, lighter on memory.
-    /// Qwen is the higher-quality opt-in (requires ~4.3 GB
-    /// install). Persisted via UserDefaults so the choice
-    /// survives launch.
-    private(set) var summarizerBackend: SummarizerBackend
-    /// Whether Apple's `SystemLanguageModel.default` is available
-    /// on this device. Refreshed at init and on backend change.
-    /// Folded into `summarizerReady` for the toolbar button gate.
-    private(set) var summarizerAppleFMAvailable: Bool = false
-    /// True iff every file declared by the summarizer's optional
-    /// manifest entry is present on disk. Doesn't re-hash on every
-    /// read — fast enough for the Settings card to bind to.
-    private(set) var summarizerModelInstalled: Bool = false
-    /// True while `ModelStore.ensureOptional` is in flight. Drives
-    /// the inline progress chrome next to the Settings toggle.
-    private(set) var summarizerDownloading: Bool = false
-    /// True while a `summarizeSession()` call is generating tokens.
-    /// Disables the "Summarize session" toolbar button mid-run.
-    private(set) var summarizerInferenceRunning: Bool = false
-    /// Wall-clock instant the most recent summarization started, or
-    /// nil when nothing is in flight. Drives the live elapsed-time
-    /// readout in `SessionSummarySheet` — the sheet pairs this with
-    /// a `TimelineView(.periodic)` so the user sees how long Qwen /
-    /// Apple FM has been generating.
-    private(set) var summarizerInferenceStart: Date?
-    /// Last successful summary, cached so the result sheet survives
-    /// re-presentation without re-running inference. Cleared on
-    /// session start.
-    private(set) var lastSessionSummary: SessionSummary?
+    /// Owns the entire on-device summarization + transcription-review
+    /// flow. The properties + methods below are thin forwarders so
+    /// existing view-layer reads (`recorder.summarizerEnabled`,
+    /// `recorder.lastSessionSummary`, `recorder.transcriptionIssues`,
+    /// …) keep working without a rename pass. The coordinator's
+    /// `@Observable` state propagates through these computed reads,
+    /// so view tracking stays correct.
+    private(set) var summarizer: SummarizerCoordinator!
+    var summarizerEnabled: Bool { summarizer.enabled }
+    var summarizerBackend: SummarizerBackend { summarizer.backend }
+    var summarizerAppleFMAvailable: Bool { summarizer.appleFMAvailable }
+    var summarizerModelInstalled: Bool { summarizer.modelInstalled }
+    var summarizerDownloading: Bool { summarizer.downloading }
+    var summarizerInferenceRunning: Bool { summarizer.inferenceRunning }
+    var summarizerInferenceStart: Date? { summarizer.inferenceStart }
+    var summarizerReady: Bool { summarizer.ready }
+    var lastSessionSummary: SessionSummary? { summarizer.lastSessionSummary }
+    var transcriptionReviewRunning: Bool { summarizer.reviewRunning }
+    var transcriptionReviewStart: Date? { summarizer.reviewStart }
+    var transcriptionIssues: [TranscriptionIssue] { summarizer.issues }
 
-    /// The actor that owns the loaded MLX weights once they're in
-    /// memory. Lazy-created on first `summarizeSession()` call and
-    /// dropped when the user disables the summarizer or starts a
-    /// new session, so the ~4 GB working set doesn't linger.
-    private var summarizerActor: MLXQwenSummarizer?
-
-    /// True while a `reviewSession()` call is in flight. Disables
-    /// the toolbar button + footer affordance during the LLM pass.
-    private(set) var transcriptionReviewRunning: Bool = false
-    /// Wall-clock instant the most recent review started, or nil
-    /// when nothing is in flight. Same role as
-    /// `summarizerInferenceStart` for the review sheet.
-    private(set) var transcriptionReviewStart: Date?
-    /// Last successful issue list, kept around so the review sheet
-    /// survives re-presentation without re-running inference. Issues
-    /// are removed from this list as the user edits or dismisses
-    /// them. Cleared on session start.
-    private(set) var transcriptionIssues: [TranscriptionIssue] = []
-    /// The Qwen reviewer's actor — separate from `summarizerActor`
-    /// because each owns its own `ModelContainer`. The controller
-    /// is responsible for ensuring only one of the two is loaded
-    /// at a time (loading both = ~9 GB resident, well over the
-    /// per-app ceiling); the helpers below unload the sibling
-    /// before invoking.
-    private var reviewerActor: MLXQwenTranscriptionReviewer?
-
-    /// Snapshot of the FluidAudio diarizer's speaker database
-    /// taken right before the analysis pipeline is released for
-    /// summarization. The blob rides through the pipeline rebuild
-    /// and gets imported back into the freshly-warmed diarizer
-    /// so embedding-based speaker matching survives a summarize
-    /// pass. Nil outside the summarize window.
-    private var summarizerSavedSpeakerDB: Data?
+    func setSummarizerEnabled(_ enabled: Bool) async { await summarizer.setEnabled(enabled) }
+    func setSummarizerBackend(_ backend: SummarizerBackend) async { await summarizer.setBackend(backend) }
+    func summarizeSession() async -> SessionSummary? { await summarizer.summarize() }
+    func reviewSession() async -> [TranscriptionIssue]? { await summarizer.review() }
+    func removeSummarizerModel() async { await summarizer.removeModel() }
+    func dismissTranscriptionIssue(id: UUID) { summarizer.dismissIssue(id: id) }
     private(set) var volatileText: String = ""
     private(set) var lastAcousticDuration: TimeInterval?
     private(set) var lastTextDuration: TimeInterval?
@@ -375,7 +335,9 @@ final class RecordingController {
     /// Optional because `ModelStore.init` can throw if Application Support
     /// is inaccessible (sandbox edge cases). Nil here surfaces immediately
     /// as a hydration failure instead of crashing in the controller's init.
-    private let modelStore: ModelStore?
+    /// Visible to sibling coordinators (e.g. `SummarizerCoordinator`)
+    /// for their own model-hydration calls.
+    let modelStore: ModelStore?
     /// Per-modality construction failures captured during pipeline
     /// pre-warm. Surfaced in the main UI as a small banner so the user
     /// knows when, e.g., the DeBERTa text SER silently dropped out
@@ -392,8 +354,11 @@ final class RecordingController {
         case microphone
         case file(URL)
     }
-    private var pipeline: AnalysisPipeline?
-    private var pipelineTask: Task<AutoConfiguredPipeline, Never>?
+    /// Internal access (not `private`) so sibling coordinators can
+    /// release/reload the pipeline for memory orchestration around
+    /// large-LLM inference.
+    var pipeline: AnalysisPipeline?
+    var pipelineTask: Task<AutoConfiguredPipeline, Never>?
     /// Most recent value seen by `setBackgroundMode(_:)`. Stored so a
     /// pipeline built after the app has already moved into background
     /// (rare but possible — e.g. resumed from a backgrounded scene)
@@ -512,8 +477,6 @@ final class RecordingController {
     /// silently replacing it with a real Apple transcriber.
     private let canRecreateStreamingTranscriber: Bool
 
-    private static let summarizerEnabledKey = "xephon.summarizerEnabled"
-    private static let summarizerBackendKey = "xephon.summarizerBackend"
     private static let fusionAcousticWeightKey = "xephon.fusionAcousticWeight"
     private static let fusionTextWeightFloorKey = "xephon.fusionTextWeightFloor"
     private static let diarizerClusteringThresholdKey = "xephon.diarizerClusteringThreshold"
@@ -559,9 +522,6 @@ final class RecordingController {
         self.micCapture = capture
         let initialLanguage = SessionLanguage.loadFromDefaults()
         self.sessionLanguage = initialLanguage
-        self.summarizerEnabled = UserDefaults.standard.bool(forKey: Self.summarizerEnabledKey)
-        let rawBackend = UserDefaults.standard.string(forKey: Self.summarizerBackendKey) ?? ""
-        self.summarizerBackend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
         // Restore fusion weights from UserDefaults if the user has
         // touched the sliders before; otherwise inherit LateFusion's
         // compiled-in defaults. The `0` sentinel covers the
@@ -584,7 +544,6 @@ final class RecordingController {
         } else {
             self.diarizerClusteringThreshold = FluidAudioDiarizer.defaultClusteringThreshold
         }
-        self.summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
         self.streamingTranscriber = streamingTranscriber
             ?? StreamingSpeechAnalyzerTranscriber(locale: initialLanguage.locale)
@@ -613,6 +572,10 @@ final class RecordingController {
         if pipeline != nil {
             self.modelsReady = true
         }
+        // Now that every stored property is set, build the coordinator.
+        // Holds an unowned ref back to self, so init must finish here
+        // before it's safe to construct.
+        self.summarizer = SummarizerCoordinator(parent: self)
         // Pre-warm the pipeline in the background at first construction so heavy
         // SER constructors (W2V2 ONNX ~631 MB) and the SpeechAnalyzer asset
         // install can complete before the user finishes their first sentence.
@@ -697,7 +660,9 @@ final class RecordingController {
         }
     }
 
-    private func ensurePipeline() async -> AnalysisPipeline {
+    /// Internal access (not `private`) so sibling coordinators can
+    /// rewarm the pipeline after a memory-orchestrated release.
+    func ensurePipeline() async -> AnalysisPipeline {
         if let pipeline { return pipeline }
         if let task = pipelineTask {
             let result = await task.value
@@ -743,6 +708,86 @@ final class RecordingController {
             acousticWeight: fusionAcousticWeight,
             textWeightFloor: fusionTextWeightFloor
         )
+    }
+
+    /// Set the acoustic-modality weight applied during late
+    /// fusion. Persists across launches and is pushed into the
+    /// live pipeline so subsequent utterances fuse under the new
+    /// value. Existing utterances keep their cached fused V/A/D —
+    /// re-evaluate a row to apply the new weight to it.
+    /// `utterancesVersion &+=` flips the filter-memo invalidation
+    /// counter so any view computing contribution shares from
+    /// `LateFusion.vaFusionShare`/`labelFusionShare` re-renders
+    /// against the new value.
+    func setFusionAcousticWeight(_ value: Float) {
+        let clamped = value.clamped(to: 0...2)
+        guard clamped != fusionAcousticWeight else { return }
+        fusionAcousticWeight = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.fusionAcousticWeightKey)
+        if let pipeline { applyFusionWeights(to: pipeline) }
+        utterancesVersion &+= 1
+        AppLog.app.info(
+            "fusion.acousticWeight → \(clamped, privacy: .public)"
+        )
+    }
+
+    /// Set the text-modality weight floor. Same persistence +
+    /// pipeline-push semantics as `setFusionAcousticWeight`.
+    func setFusionTextWeightFloor(_ value: Float) {
+        let clamped = value.clamped(to: 0...1)
+        guard clamped != fusionTextWeightFloor else { return }
+        fusionTextWeightFloor = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.fusionTextWeightFloorKey)
+        if let pipeline { applyFusionWeights(to: pipeline) }
+        utterancesVersion &+= 1
+        AppLog.app.info(
+            "fusion.textWeightFloor → \(clamped, privacy: .public)"
+        )
+    }
+
+    /// Restore both fusion weights to LateFusion's compiled-in
+    /// defaults. Clears the persisted values so a future launch
+    /// also inherits the defaults.
+    func resetFusionWeights() {
+        fusionAcousticWeight = LateFusion.defaultAcousticWeight
+        fusionTextWeightFloor = LateFusion.defaultTextWeightFloor
+        UserDefaults.standard.removeObject(forKey: Self.fusionAcousticWeightKey)
+        UserDefaults.standard.removeObject(forKey: Self.fusionTextWeightFloorKey)
+        if let pipeline { applyFusionWeights(to: pipeline) }
+        utterancesVersion &+= 1
+        AppLog.app.info("fusion weights reset to defaults")
+    }
+
+    /// Takes effect on the next diarize call; already-clustered
+    /// observations keep their assignment — re-running the session
+    /// re-clusters them.
+    func setDiarizerClusteringThreshold(_ value: Float) async {
+        let clamped = value.clamped(to: FluidAudioDiarizer.clusteringThresholdRange)
+        // Epsilon, not `!=`: a slider re-emitting the same logical
+        // value after a Float round-trip can still differ by 1 ULP,
+        // which would defeat the early-return and re-write
+        // UserDefaults on every drag tick.
+        guard abs(clamped - diarizerClusteringThreshold) > .ulpOfOne else { return }
+        diarizerClusteringThreshold = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.diarizerClusteringThresholdKey)
+        if let pipeline {
+            await pipeline.setDiarizerClusteringThreshold(clamped)
+        }
+        AppLog.app.info(
+            "diarizer.clusteringThreshold → \(clamped, privacy: .public)"
+        )
+    }
+
+    /// Restore the default threshold and clear the persisted
+    /// override.
+    func resetDiarizerClusteringThreshold() async {
+        let defaultValue = FluidAudioDiarizer.defaultClusteringThreshold
+        diarizerClusteringThreshold = defaultValue
+        UserDefaults.standard.removeObject(forKey: Self.diarizerClusteringThresholdKey)
+        if let pipeline {
+            await pipeline.setDiarizerClusteringThreshold(defaultValue)
+        }
+        AppLog.app.info("diarizer clustering threshold reset to default")
     }
 
     /// Push every persisted setting into a freshly-built pipeline:
@@ -821,7 +866,7 @@ final class RecordingController {
         // runs, and we don't want the Settings card to render
         // "Not installed" on first launch when the files are
         // actually present from a previous session.
-        syncSummarizerInstallState()
+        summarizer.syncInstallState()
     }
 
     func toggle() async {
@@ -902,13 +947,10 @@ final class RecordingController {
         speakerCluster = SpeakerClusterSnapshot(speakers: [])
         lastKnownSpeakerIDs = []
         cachedKnownSpeakerIDs = []
-        // New session invalidates the previous summary — the
-        // utterance list it was generated against is gone.
-        lastSessionSummary = nil
-        // Same goes for any pending transcription issues: they
-        // pointed at utterance IDs that no longer exist in this
-        // fresh session.
-        transcriptionIssues = []
+        // New session invalidates the previous summary + pending
+        // issues — both pointed at utterances that are gone.
+        summarizer.clearLastSummary()
+        summarizer.clearIssues()
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0
@@ -1532,591 +1574,6 @@ final class RecordingController {
         await pipeline.setBackgroundMode(inBackground)
     }
 
-    // MARK: - Session summarizer
-
-    /// Convenience for the toolbar / UI: true iff the chosen
-    /// backend is ready to summarize. Apple FM is "ready" when
-    /// the system model is available on this device; Qwen is
-    /// "ready" when its 4.3 GB on-disk install is complete.
-    var summarizerReady: Bool {
-        switch summarizerBackend {
-        case .appleFM: return summarizerAppleFMAvailable
-        case .qwen:    return summarizerModelInstalled
-        }
-    }
-
-    /// Flip the summarizer's enabled flag. When turning on:
-    /// persist the choice, refresh backend-specific readiness,
-    /// and (only for the Qwen backend) kick off the on-demand
-    /// model download if the weights aren't on disk yet. When
-    /// turning off: persist the choice and unload the resident
-    /// Qwen weights (Apple FM is system-managed; nothing to
-    /// unload there). All paths are idle-safe — flipping the
-    /// toggle during recording / analysis is permitted because
-    /// the download / unload doesn't touch the active capture
-    /// pipeline.
-    func setSummarizerEnabled(_ enabled: Bool) async {
-        guard summarizerEnabled != enabled else { return }
-        summarizerEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.summarizerEnabledKey)
-        AppLog.app.info(
-            "summarizer enabled → \(enabled, privacy: .public)"
-        )
-        if !enabled {
-            await summarizerActor?.unload()
-            summarizerActor = nil
-            return
-        }
-        syncAppleFMAvailability()
-        syncSummarizerInstallState()
-        if summarizerBackend == .qwen,
-           !summarizerModelInstalled,
-           !summarizerDownloading {
-            await triggerSummarizerDownload()
-        }
-    }
-
-    /// Set the acoustic-modality weight applied during late
-    /// fusion. Persists across launches and is pushed into the
-    /// live pipeline so subsequent utterances fuse under the new
-    /// value. Existing utterances keep their cached fused V/A/D
-    /// — re-evaluate a row to apply the new weight to it.
-    /// `bumpUtterancesVersion` flips the filter-memo invalidation
-    /// counter so any view computing contribution shares from
-    /// `LateFusion.vaFusionShare`/`labelFusionShare` re-renders
-    /// against the new value.
-    func setFusionAcousticWeight(_ value: Float) {
-        let clamped = value.clamped(to: 0...2)
-        guard clamped != fusionAcousticWeight else { return }
-        fusionAcousticWeight = clamped
-        UserDefaults.standard.set(clamped, forKey: Self.fusionAcousticWeightKey)
-        if let pipeline { applyFusionWeights(to: pipeline) }
-        utterancesVersion &+= 1
-        AppLog.app.info(
-            "fusion.acousticWeight → \(clamped, privacy: .public)"
-        )
-    }
-
-    /// Set the text-modality weight floor. Same persistence +
-    /// pipeline-push semantics as `setFusionAcousticWeight`.
-    func setFusionTextWeightFloor(_ value: Float) {
-        let clamped = value.clamped(to: 0...1)
-        guard clamped != fusionTextWeightFloor else { return }
-        fusionTextWeightFloor = clamped
-        UserDefaults.standard.set(clamped, forKey: Self.fusionTextWeightFloorKey)
-        if let pipeline { applyFusionWeights(to: pipeline) }
-        utterancesVersion &+= 1
-        AppLog.app.info(
-            "fusion.textWeightFloor → \(clamped, privacy: .public)"
-        )
-    }
-
-    /// Takes effect on the next diarize call; already-clustered
-    /// observations keep their assignment — re-running the session
-    /// re-clusters them.
-    func setDiarizerClusteringThreshold(_ value: Float) async {
-        let clamped = value.clamped(to: FluidAudioDiarizer.clusteringThresholdRange)
-        // Epsilon, not `!=`: a slider re-emitting the same logical
-        // value after a Float round-trip can still differ by 1 ULP,
-        // which would defeat the early-return and re-write
-        // UserDefaults on every drag tick.
-        guard abs(clamped - diarizerClusteringThreshold) > .ulpOfOne else { return }
-        diarizerClusteringThreshold = clamped
-        UserDefaults.standard.set(clamped, forKey: Self.diarizerClusteringThresholdKey)
-        if let pipeline {
-            await pipeline.setDiarizerClusteringThreshold(clamped)
-        }
-        AppLog.app.info(
-            "diarizer.clusteringThreshold → \(clamped, privacy: .public)"
-        )
-    }
-
-    /// Restore the default threshold and clear the persisted
-    /// override.
-    func resetDiarizerClusteringThreshold() async {
-        let defaultValue = FluidAudioDiarizer.defaultClusteringThreshold
-        diarizerClusteringThreshold = defaultValue
-        UserDefaults.standard.removeObject(forKey: Self.diarizerClusteringThresholdKey)
-        if let pipeline {
-            await pipeline.setDiarizerClusteringThreshold(defaultValue)
-        }
-        AppLog.app.info("diarizer clustering threshold reset to default")
-    }
-
-    /// Restore both fusion weights to LateFusion's compiled-in
-    /// defaults. Clears the persisted values so a future launch
-    /// also inherits the defaults.
-    func resetFusionWeights() {
-        fusionAcousticWeight = LateFusion.defaultAcousticWeight
-        fusionTextWeightFloor = LateFusion.defaultTextWeightFloor
-        UserDefaults.standard.removeObject(forKey: Self.fusionAcousticWeightKey)
-        UserDefaults.standard.removeObject(forKey: Self.fusionTextWeightFloorKey)
-        if let pipeline { applyFusionWeights(to: pipeline) }
-        utterancesVersion &+= 1
-        AppLog.app.info("fusion weights reset to defaults")
-    }
-
-    /// Switch the summarizer backend. Apple FM has no
-    /// install step (the system model is in-process via
-    /// FoundationModelsSER); selecting Qwen kicks off the
-    /// download if the weights aren't on disk yet.
-    func setSummarizerBackend(_ backend: SummarizerBackend) async {
-        guard summarizerBackend != backend else { return }
-        summarizerBackend = backend
-        UserDefaults.standard.set(backend.rawValue, forKey: Self.summarizerBackendKey)
-        AppLog.app.info(
-            "summarizer backend → \(backend.rawValue, privacy: .public)"
-        )
-        if backend == .qwen,
-           summarizerEnabled,
-           !summarizerModelInstalled,
-           !summarizerDownloading {
-            await triggerSummarizerDownload()
-        }
-        if backend == .appleFM {
-            // Reclaim Qwen's RAM if it was loaded.
-            await summarizerActor?.unload()
-            summarizerActor = nil
-        }
-        syncAppleFMAvailability()
-    }
-
-    private func syncAppleFMAvailability() {
-        summarizerAppleFMAvailable = SystemLanguageModel.default.isAvailable
-    }
-
-    /// Drive the on-demand download via `ModelStore.ensureOptional`.
-    /// Wraps the call in `summarizerDownloading` so the Settings
-    /// card can render an inline progress indicator. Errors surface
-    /// on `errorMessage` and the toggle stays on (so the user can
-    /// see they tried) — re-enabling retries.
-    private func triggerSummarizerDownload() async {
-        guard let modelStore else { return }
-        summarizerDownloading = true
-        defer { summarizerDownloading = false }
-        do {
-            try await modelStore.ensureOptional(id: ModelManifest.summarizerID)
-            syncSummarizerInstallState()
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "Summarizer download failed: \(String(describing: error), privacy: .public)"
-            )
-        }
-    }
-
-    /// Refresh `summarizerModelInstalled` from the filesystem.
-    /// Cheap — just an existence check per declared file. Called
-    /// after enable / download / remove and on session reset, so
-    /// the UI reflects whatever's actually on disk.
-    private func syncSummarizerInstallState() {
-        guard let modelStore else {
-            summarizerModelInstalled = false
-            return
-        }
-        Task {
-            let installed = await modelStore.isOptionalInstalled(
-                id: ModelManifest.summarizerID
-            )
-            await MainActor.run {
-                self.summarizerModelInstalled = installed
-            }
-        }
-    }
-
-    /// Run the summarizer over the current session. Returns nil
-    /// when the model isn't installed, the session is empty, or
-    /// inference is already in flight. Side-effect: stamps
-    /// `lastSessionSummary` so the result sheet can re-present
-    /// without re-running.
-    ///
-    /// Memory orchestration: the 4.3 GB Qwen weights plus the
-    /// AnalysisPipeline's already-loaded inference actors (W2V2 ~
-    /// 600 MB, emotion2vec ~330 MB, DeBERTa-WRIME ~250 MB, plus
-    /// the FluidAudio diarizer's Core ML models) consistently
-    /// trip iOS Jetsam on a 16 GB iPad once Qwen prefill kicks
-    /// off. We release the analysis pipeline before engaging the
-    /// summarizer, then unload Qwen and re-warm the pipeline in
-    /// the background after the user has their result. The
-    /// in-memory pipeline state we lose this way (speaker tracker
-    /// cumulative history, FluidAudio SpeakerManager DB) is
-    /// per-session-recording state — for the typical "record →
-    /// summarize" flow there's no live recording to lose state
-    /// in, and the speaker DB is persisted into the `.xph`
-    /// anyway. Re-loading on next use takes ~2–5 s.
-    func summarizeSession() async -> SessionSummary? {
-        guard !summarizerInferenceRunning else { return nil }
-        guard !utterances.isEmpty else { return nil }
-        // Both backends benefit from releasing the analysis
-        // pipeline before invoking — even Apple FM, which is
-        // light on RAM in our process, can trip Jetsam when the
-        // device is already under pressure (2-3 GB of resident
-        // ONNX models + a fat speaker DB + a long utterance list
-        // before we even allocate anything for the summary). The
-        // pipeline lazy-rewarms in the deferred cleanup.
-        logAvailableMemory(label: "summarize start (before pipeline release)")
-        await releasePipelineForSummarization()
-        logAvailableMemory(label: "summarize start (after pipeline release)")
-        switch summarizerBackend {
-        case .appleFM:
-            return await summarizeWithAppleFM()
-        case .qwen:
-            return await summarizeWithQwen()
-        }
-    }
-
-    /// Log how much memory the process can still allocate before
-    /// iOS Jetsam will start culling. `os_proc_available_memory()`
-    /// is the canonical sentinel — when it drops near zero, a
-    /// SIGKILL is imminent. Surfaced around the summarize call so
-    /// we can see exactly how much headroom we have at each stage
-    /// when a crash report goes missing.
-    private func logAvailableMemory(label: String) {
-        let bytes = os_proc_available_memory()
-        let mb = bytes / (1024 * 1024)
-        AppLog.app.info(
-            "memory available [\(label, privacy: .public)]: \(mb, privacy: .public) MB"
-        )
-    }
-
-    /// Apple FM path. The system model itself is system-managed,
-    /// but the path goes through a `LanguageModelSession` which
-    /// allocates per-call buffers in our process; combined with
-    /// the still-resident analysis pipeline this can OOM even
-    /// though FM is "lightweight on paper." We rely on
-    /// `summarizeSession` having already released the pipeline.
-    private func summarizeWithAppleFM() async -> SessionSummary? {
-        guard SystemLanguageModel.default.isAvailable else {
-            errorMessage = String(describing: SummarizerError.modelNotInstalled)
-            scheduleSummarizerUnloadAndPipelineRewarm()
-            return nil
-        }
-        let backend = AppleFMSummarizer()
-        summarizerInferenceRunning = true
-        summarizerInferenceStart = Date()
-        defer {
-            summarizerInferenceRunning = false
-            summarizerInferenceStart = nil
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        logAvailableMemory(label: "summarize Apple FM (before respond)")
-        do {
-            let summary = try await backend.summarize(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides
-            )
-            logAvailableMemory(label: "summarize Apple FM (after respond)")
-            lastSessionSummary = summary
-            return summary
-        } catch is CancellationError {
-            // User dismissed the sheet mid-generation. Silent —
-            // this isn't an error condition from their POV.
-            AppLog.app.info("summarizeWithAppleFM cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "summarizeWithAppleFM failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
-        }
-    }
-
-    /// Qwen path — releases the analysis pipeline before loading
-    /// the 4.3 GB weights to fit under iOS's per-app memory
-    /// ceiling, runs inference, then unloads Qwen and re-warms
-    /// the pipeline (with the speaker DB restored). See the
-    /// helpers below for the orchestration detail.
-    private func summarizeWithQwen() async -> SessionSummary? {
-        guard let modelStore else {
-            scheduleSummarizerUnloadAndPipelineRewarm()
-            return nil
-        }
-        guard let directory = await modelStore.optionalDirectory(
-            id: ModelManifest.summarizerID
-        ) else {
-            errorMessage = String(describing: SummarizerError.modelNotInstalled)
-            scheduleSummarizerUnloadAndPipelineRewarm()
-            return nil
-        }
-
-        // Pipeline release happens up in `summarizeSession`
-        // before this dispatch, so we don't repeat it here.
-
-        let actor: MLXQwenSummarizer
-        if let existing = summarizerActor {
-            actor = existing
-        } else {
-            actor = MLXQwenSummarizer(
-                modelIdentifier: ModelManifest.summarizerID,
-                modelDirectory: directory
-            )
-            summarizerActor = actor
-        }
-
-        summarizerInferenceRunning = true
-        summarizerInferenceStart = Date()
-        defer {
-            summarizerInferenceRunning = false
-            summarizerInferenceStart = nil
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        do {
-            let summary = try await actor.summarize(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides
-            )
-            lastSessionSummary = summary
-            return summary
-        } catch is CancellationError {
-            AppLog.app.info("summarizeWithQwen cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "summarizeWithQwen failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
-        }
-    }
-
-    /// Drop strong references to the analysis pipeline so ARC can
-    /// reclaim the ~1.5 GB of resident ONNX session memory before
-    /// Qwen claims its 4.3 GB. Yields cooperatively after nilling
-    /// so the runtime gets a tick to release before MLX starts
-    /// allocating prefill memory.
-    ///
-    /// Before nilling, we snapshot the FluidAudio diarizer's
-    /// speaker database so embedding-based matching survives the
-    /// rebuild — without this, a re-evaluation after summarize
-    /// would no longer recognize the existing rows' voices and
-    /// could reassign them to fresh IDs. The blob is restored
-    /// in `scheduleSummarizerUnloadAndPipelineRewarm`.
-    private func releasePipelineForSummarization() async {
-        AppLog.app.info(
-            "releasing analysis pipeline before summarization (free ~1.5 GB)"
-        )
-        if let pipeline {
-            summarizerSavedSpeakerDB = await pipeline.exportSpeakerDatabase()
-            if let blob = summarizerSavedSpeakerDB {
-                AppLog.app.info(
-                    "snapshotted speaker DB before summarize (\(blob.count, privacy: .public) bytes)"
-                )
-            }
-        }
-        pipelineTask?.cancel()
-        pipelineTask = nil
-        pipeline = nil
-        await Task.yield()
-    }
-
-    /// Unload Qwen and re-warm the analysis pipeline in the
-    /// background. Runs in `defer` so it fires whether
-    /// summarization succeeded or failed. The user is now reading
-    /// their summary (or seeing an error), so the few seconds of
-    /// background re-load aren't user-visible. Restores the
-    /// pre-summarize speaker DB snapshot after the fresh diarizer
-    /// is warm, so post-summarize re-evaluations / hand-edits
-    /// still match the established speaker IDs.
-    private func scheduleSummarizerUnloadAndPipelineRewarm() {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            // Unload BOTH Qwen actors. Only one is loaded at a time
-            // by construction, but the cleanup path is shared between
-            // summarize and review flows, and a stale reference here
-            // would keep ~4.6 GB of weights resident across the
-            // pipeline rewarm.
-            await self.summarizerActor?.unload()
-            self.summarizerActor = nil
-            await self.reviewerActor?.unload()
-            self.reviewerActor = nil
-            AppLog.app.info("Qwen unloaded; re-warming analysis pipeline")
-            let pipeline = await self.ensurePipeline()
-            if let saved = self.summarizerSavedSpeakerDB {
-                do {
-                    try await pipeline.importSpeakerDatabase(saved)
-                    AppLog.app.info(
-                        "restored speaker DB after pipeline re-warm"
-                    )
-                } catch {
-                    AppLog.app.warning(
-                        "speaker DB restore after summarize failed: \(String(describing: error), privacy: .public)"
-                    )
-                }
-                self.summarizerSavedSpeakerDB = nil
-            }
-        }
-    }
-
-    /// Remove the summarizer model from disk. Called by the
-    /// "Remove model" action in Settings — the toggle stays on or
-    /// off according to the user's preference, but the ~4 GB
-    /// weights blob goes away.
-    func removeSummarizerModel() async {
-        await summarizerActor?.unload()
-        summarizerActor = nil
-        // The reviewer shares the same weights — drop its handle too
-        // so the freshly-deleted model can't be lazily reloaded by a
-        // stale actor reference.
-        await reviewerActor?.unload()
-        reviewerActor = nil
-        do {
-            try await modelStore?.removeOptional(id: ModelManifest.summarizerID)
-        } catch {
-            AppLog.app.warning(
-                "removeOptional failed: \(String(describing: error), privacy: .public)"
-            )
-        }
-        syncSummarizerInstallState()
-    }
-
-    // MARK: - Transcription review
-
-    /// Walk the current utterance list through the on-device LLM and
-    /// collect transcription issues. Same orchestration as
-    /// `summarizeSession`: release the analysis pipeline, run the
-    /// reviewer, unload + rewarm. Issues are cached in
-    /// `transcriptionIssues` so the review sheet can re-present
-    /// without re-running inference; the caller is expected to
-    /// guard repeated entries via that field.
-    func reviewSession() async -> [TranscriptionIssue]? {
-        guard !transcriptionReviewRunning else { return nil }
-        guard !summarizerInferenceRunning else { return nil }
-        guard !utterances.isEmpty else { return nil }
-
-        logAvailableMemory(label: "review start (before pipeline release)")
-        await releasePipelineForSummarization()
-        logAvailableMemory(label: "review start (after pipeline release)")
-        switch summarizerBackend {
-        case .appleFM:
-            return await reviewWithAppleFM()
-        case .qwen:
-            return await reviewWithQwen()
-        }
-    }
-
-    private func reviewWithAppleFM() async -> [TranscriptionIssue]? {
-        guard SystemLanguageModel.default.isAvailable else {
-            errorMessage = String(describing: TranscriptionReviewError.modelNotInstalled)
-            scheduleSummarizerUnloadAndPipelineRewarm()
-            return nil
-        }
-        let backend = AppleFMTranscriptionReviewer()
-        transcriptionReviewRunning = true
-        transcriptionReviewStart = Date()
-        defer {
-            transcriptionReviewRunning = false
-            transcriptionReviewStart = nil
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        logAvailableMemory(label: "review Apple FM (before respond)")
-        do {
-            let issues = try await backend.review(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides,
-                language: reviewLanguage()
-            )
-            logAvailableMemory(label: "review Apple FM (after respond)")
-            transcriptionIssues = issues
-            return issues
-        } catch is CancellationError {
-            AppLog.app.info("reviewWithAppleFM cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "reviewWithAppleFM failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
-        }
-    }
-
-    private func reviewWithQwen() async -> [TranscriptionIssue]? {
-        guard let modelStore else {
-            scheduleSummarizerUnloadAndPipelineRewarm()
-            return nil
-        }
-        guard let directory = await modelStore.optionalDirectory(
-            id: ModelManifest.summarizerID
-        ) else {
-            errorMessage = String(describing: TranscriptionReviewError.modelNotInstalled)
-            scheduleSummarizerUnloadAndPipelineRewarm()
-            return nil
-        }
-
-        // Belt-and-braces: drop the summarizer actor before bringing
-        // up the reviewer. Both share Qwen3-8B's 4.6 GB weights;
-        // holding both = ~9 GB resident and a guaranteed Jetsam.
-        await summarizerActor?.unload()
-        summarizerActor = nil
-
-        let actor: MLXQwenTranscriptionReviewer
-        if let existing = reviewerActor {
-            actor = existing
-        } else {
-            actor = MLXQwenTranscriptionReviewer(
-                modelIdentifier: ModelManifest.summarizerID,
-                modelDirectory: directory
-            )
-            reviewerActor = actor
-        }
-
-        transcriptionReviewRunning = true
-        transcriptionReviewStart = Date()
-        defer {
-            transcriptionReviewRunning = false
-            transcriptionReviewStart = nil
-            scheduleSummarizerUnloadAndPipelineRewarm()
-        }
-        do {
-            let issues = try await actor.review(
-                utterances: utterances,
-                speakerNames: speakerNameOverrides,
-                language: reviewLanguage()
-            )
-            transcriptionIssues = issues
-            return issues
-        } catch is CancellationError {
-            AppLog.app.info("reviewWithQwen cancelled by user")
-            return nil
-        } catch {
-            errorMessage = String(describing: error)
-            AppLog.app.error(
-                "reviewWithQwen failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
-        }
-    }
-
-    /// Map the controller's `SessionLanguage` onto the Summarizer
-    /// module's `ReviewLanguage`. Lives here (not on
-    /// `SessionLanguage`) so the latter type doesn't grow a
-    /// dependency on Summarizer just for one bridge.
-    private func reviewLanguage() -> ReviewLanguage {
-        switch sessionLanguage {
-        case .japanese: return .japanese
-        case .english:  return .english
-        }
-    }
-
-    /// Drop an issue without acting on it. Called from the review
-    /// sheet's per-row Dismiss button and after a successful
-    /// hand-edit commit (the row's been touched, so the flag is
-    /// stale regardless of whether the user actually changed the
-    /// text).
-    func dismissTranscriptionIssue(id: UUID) {
-        transcriptionIssues.removeAll { $0.id == id }
-    }
-
-    /// Drop every cached issue. Used when the user explicitly
-    /// clears the review state or when they re-run a review (the
-    /// fresh pass replaces the list wholesale, but the regenerate
-    /// path benefits from clearing first so the empty state is
-    /// distinguishable from a no-op result).
-    func clearTranscriptionIssues() {
-        transcriptionIssues = []
-    }
-
     /// Switch the session language. Re-creates the streaming
     /// transcriber against the new locale (unless the streaming
     /// transcriber was externally injected by tests), forwards the
@@ -2408,34 +1865,34 @@ final class RecordingController {
         speakerCluster = SpeakerClusterSnapshot(speakers: [])
         lastKnownSpeakerIDs = []
         // The cached summary was generated against the previous
-        // session's utterances. Default to clearing it; restore
-        // below if the loaded `.xph` carries a persisted one.
-        lastSessionSummary = nil
-        if let blob = document.sessionSummary,
-           let restored = try? JSONDecoder().decode(SessionSummary.self, from: blob) {
-            lastSessionSummary = restored
-        }
-        // Restore the LLM-flagged transcription issues if the
-        // bundle carries them, filtering against the saved
-        // transcript snapshots so a row that was edited between
-        // save and re-open doesn't surface a flag pointing at
-        // text that no longer exists. Bundles without the issue
-        // blob (v1 / no review run) reset to empty.
-        transcriptionIssues = []
+        // session's utterances. Default to clearing; restore below
+        // if the loaded `.xph` carries a persisted one.
+        let restoredSummary: SessionSummary? = document.sessionSummary
+            .flatMap { try? JSONDecoder().decode(SessionSummary.self, from: $0) }
+        summarizer.restore(summary: restoredSummary)
+        // Restore LLM-flagged issues, filtering against the saved
+        // transcript snapshots so a row edited between save and
+        // re-open doesn't surface a flag pointing at text that no
+        // longer exists. Bundles without the issue blob (v1 / no
+        // review run) reset to empty.
+        let restoredIssues: [TranscriptionIssue]
         if let blob = document.transcriptionIssues,
-           let restored = try? JSONDecoder().decode([TranscriptionIssue].self, from: blob) {
+           let candidates = try? JSONDecoder().decode([TranscriptionIssue].self, from: blob) {
             let snapshots = document.transcriptionIssueTranscriptSnapshots ?? [:]
             let liveByID = Dictionary(
                 uniqueKeysWithValues: document.utterances.map { ($0.id, $0) }
             )
-            transcriptionIssues = restored.filter { issue in
+            restoredIssues = candidates.filter { issue in
                 guard let live = liveByID[issue.utteranceID] else { return false }
                 // No snapshot means we can't prove staleness; keep
                 // the issue rather than silently dropping it.
                 guard let snapshot = snapshots[issue.utteranceID] else { return true }
                 return snapshot == live.transcript
             }
+        } else {
+            restoredIssues = []
         }
+        summarizer.restore(issues: restoredIssues)
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }
