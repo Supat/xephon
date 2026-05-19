@@ -58,6 +58,9 @@ struct TranscriptionReviewSheet: View {
                         recorder.playRange(start: start, end: end)
                     },
                     onStopRange: { recorder.stopPlayback() },
+                    onTranscribeRange: { start, end in
+                        await recorder.transcribeRange(start: start, end: end)
+                    },
                     isPreviewPlaying: recorder.isPreviewPlaying,
                     onCommit: { newText, newStart, newEnd in
                         coord.commitRangeEdit(

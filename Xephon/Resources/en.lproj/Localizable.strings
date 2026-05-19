@@ -281,6 +281,7 @@
 "edit.range.header" = "Audio Range";
 "edit.range.start" = "Start (s)";
 "edit.range.end" = "End (s)";
+"edit.transcribe" = "Transcribe";
 "edit.commit" = "Commit";
 "edit.cancel" = "Cancel";
 "edit.badge" = "Edited";

@@ -17,7 +17,42 @@ import XephonUtilities
 // controller this is an acceptable encapsulation cost.
 extension RecordingController {
 
-
+    /// Re-transcribe an arbitrary audio range from the source file
+    /// and return the offline-ASR text. Used by the Edit Utterance
+    /// sheet's Transcribe button to refill the transcript field
+    /// from the current `[start, end]` range — no SER, no fusion,
+    /// no commit. The caller decides what to do with the returned
+    /// text (typically: assign it to its bound TextEditor state).
+    ///
+    /// Returns nil when there's no source audio, the range is
+    /// empty / non-positive, offline ASR finds nothing, or the I/O
+    /// + transcribe throws. All failure modes log; the sheet just
+    /// keeps the user's current text on nil.
+    func transcribeRange(
+        start: TimeInterval,
+        end: TimeInterval
+    ) async -> String? {
+        guard let url = playbackSourceURL else { return nil }
+        guard end > start else { return nil }
+        let pipeline = await ensurePipeline()
+        do {
+            let chunk = try await Task.detached(priority: .userInitiated) {
+                try Self.readAudioChunkForReevaluation(
+                    fileURL: url, start: start, end: end
+                )
+            }.value
+            guard !chunk.samples.isEmpty else { return nil }
+            let segments = try await pipeline.transcribeForReevaluation(audio: chunk)
+            let combined = segments.map(\.text).joined()
+            let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : combined
+        } catch {
+            AppLog.app.error(
+                "transcribeRange failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
 
     /// Commit a hand-edited utterance: new transcript text and new
     /// time range, with SER + fusion re-run on the audio slice

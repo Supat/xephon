@@ -281,6 +281,7 @@
 "edit.range.header" = "音声範囲";
 "edit.range.start" = "開始 (秒)";
 "edit.range.end" = "終了 (秒)";
+"edit.transcribe" = "文字起こし";
 "edit.commit" = "確定";
 "edit.cancel" = "キャンセル";
 "edit.badge" = "編集済み";
