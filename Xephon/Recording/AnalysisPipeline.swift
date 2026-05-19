@@ -30,6 +30,13 @@ public struct ProcessingMetrics: Sendable, Hashable {
 /// (dedicated "Apple FM ✕" chip).
 struct TextSEROutcome: Sendable {
     let score: PlutchikScore?
+    /// Pre-bias score exactly as the backend produced it. Nil on
+    /// the same paths `score` is nil; equal to `score` when no
+    /// glossary entry matched. Stamped onto the row so the
+    /// reapply path (Custom Glossary sheet → Done) can replay
+    /// the bias against the new lexicon without re-running the
+    /// model.
+    let rawScore: PlutchikScore?
     let guardrailViolation: Bool
     /// Glossary terms that matched this row's transcript and biased
     /// the score. `[]` for the empty / guardrail / no-match paths;
@@ -37,7 +44,7 @@ struct TextSEROutcome: Sendable {
     let matchedTerms: [String]
 
     static let empty = TextSEROutcome(
-        score: nil, guardrailViolation: false, matchedTerms: []
+        score: nil, rawScore: nil, guardrailViolation: false, matchedTerms: []
     )
 }
 
@@ -710,6 +717,82 @@ final class AnalysisPipeline: @unchecked Sendable {
         await (textSER as? SwitchingTextSER)?.setLexicon(lexicon)
     }
 
+    /// Snapshot the live lexicon. `LexiconBias.init()` fallback
+    /// when the active backend isn't `SwitchingTextSER` keeps the
+    /// reapply caller's loop honest (it'll see "no entries" and
+    /// rebias every row to its raw distribution).
+    func lexiconSnapshot() async -> LexiconBias {
+        await (textSER as? SwitchingTextSER)?.lexiconSnapshot() ?? .init()
+    }
+
+    /// Replay the active glossary against `utterance`'s pre-bias
+    /// Plutchik and re-run late fusion, returning a fresh estimate
+    /// with updated `plutchik`, `lexiconBiasMatched`, and fused
+    /// V/A/D/top label. All other fields are preserved.
+    ///
+    /// Returns nil when the row can't safely be rebiased:
+    ///   - text SER never ran (`plutchik == nil`)
+    ///   - row predates the `plutchikRaw` field AND already had a
+    ///     prior bias stamped (`lexiconBiasMatched != nil`), which
+    ///     would mean we'd be biasing on top of bias
+    ///
+    /// For legacy rows with `plutchikRaw == nil` and no prior bias,
+    /// the current `plutchik` is treated as raw (correct for any
+    /// row classified before this feature existed without glossary
+    /// matches — i.e. essentially every legacy row).
+    func rebiasAndFuse(
+        _ utterance: UtteranceEstimate
+    ) async -> UtteranceEstimate? {
+        guard let storedPlutchik = utterance.plutchik else { return nil }
+        let raw: PlutchikScore
+        if let stored = utterance.plutchikRaw {
+            raw = stored
+        } else if utterance.lexiconBiasMatched == nil {
+            raw = storedPlutchik
+        } else {
+            return nil
+        }
+        let lexicon = await lexiconSnapshot()
+        let (biased, matched) = lexicon.apply(raw, to: utterance.transcript)
+        let asr = ASRSegment(
+            text: utterance.transcript,
+            start: utterance.start,
+            end: utterance.end,
+            confidence: utterance.asrConfidence,
+            tokens: []
+        )
+        let fused: UtteranceEstimate
+        do {
+            fused = try await fuser.fuse(
+                asr: asr,
+                speakerID: utterance.speakerID,
+                dimensional: utterance.dimensional,
+                acousticCategorical: utterance.acousticCategorical,
+                plutchik: biased
+            )
+        } catch {
+            AppLog.serText.warning(
+                "rebiasAndFuse fuse failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+        var next = utterance.withRebiased(
+            plutchik: biased,
+            matched: matched,
+            fusedValence: fused.fusedValence,
+            fusedArousal: fused.fusedArousal,
+            fusedDominance: fused.fusedDominance,
+            fusedTopLabel: fused.fusedTopLabel
+        )
+        // Stamp raw when the row didn't carry one (legacy
+        // promotion); subsequent re-applies will short-circuit
+        // through the `utterance.plutchikRaw` branch above.
+        if utterance.plutchikRaw == nil {
+            next = next.withPlutchikRaw(raw)
+        }
+        return next
+    }
+
     /// Re-target the pipeline at a new session language. Swaps in a
     /// fresh offline `SpeechAnalyzerTranscriber` for the new locale
     /// (the streaming transcriber lives on `RecordingController`
@@ -975,9 +1058,24 @@ final class AnalysisPipeline: @unchecked Sendable {
         }
         let serAudio = trim?.audio ?? segmentAudio
 
-        async let dimensional = runDimensional(serAudio)
-        async let categorical = runCategorical(serAudio)
-        async let demographics = runAgeGender(serAudio)
+        // Skip the acoustic models entirely when the slice is
+        // empty. This happens when ASR finalizes an utterance
+        // after the audio source has been exhausted (e.g. file
+        // pump end-of-file with in-flight ASR finalize) — the
+        // captured-audio buffer has nothing for that time range,
+        // so `sliceForSegment` returns a zero-sample chunk. ORT
+        // would otherwise throw "empty audio" on each model; the
+        // text path still runs since transcript is independent
+        // of audio availability at this stage.
+        let serAudioIsEmpty = serAudio.samples.isEmpty
+        if serAudioIsEmpty {
+            AppLog.app.debug(
+                "acoustic SER skipped (empty slice) at t=\(asr.start, privacy: .public)–\(asr.end, privacy: .public)s"
+            )
+        }
+        async let dimensional = serAudioIsEmpty ? nil : runDimensional(serAudio)
+        async let categorical = serAudioIsEmpty ? nil : runCategorical(serAudio)
+        async let demographics = serAudioIsEmpty ? nil : runAgeGender(serAudio)
         async let plutchik = runText(asr.text)
 
         // Acoustic timing = wall time until both dimensional + categorical
@@ -1007,6 +1105,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         var estimate = baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(ageGender)
+            .withPlutchikRaw(textResult.rawScore)
             .withLexiconBiasMatched(textResult.matchedTerms)
         // Propagate the trim to the utterance entry's bounds so the
         // row, the timeline strip, and any downstream re-eval all
@@ -1203,6 +1302,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         return baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(original.ageGender)
+            .withPlutchikRaw(textResult.rawScore)
             .withLexiconBiasMatched(textResult.matchedTerms)
     }
 
@@ -1222,7 +1322,13 @@ final class AnalysisPipeline: @unchecked Sendable {
         guard let dimensionalSER else { return nil }
         let capped = Self.capForSER(buffer)
         do { return try await dimensionalSER.score(capped) } catch {
-            AppLog.app.debug("dimensional SER skipped: \(String(describing: error), privacy: .public)")
+            // Promoted from .debug to .warning while we hunt down
+            // why isolated rows come back with no acoustic. Include
+            // the input shape so a degenerate post-trim slice
+            // (the leading hypothesis) is obvious in the log.
+            AppLog.app.warning(
+                "dimensional SER skipped (samples=\(capped.samples.count, privacy: .public), sr=\(capped.sampleRate, privacy: .public), t=\(capped.timestamp, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
     }
@@ -1231,7 +1337,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         guard let categoricalSER else { return nil }
         let capped = Self.capForSER(buffer)
         do { return try await categoricalSER.score(capped) } catch {
-            AppLog.app.debug("categorical SER skipped: \(String(describing: error), privacy: .public)")
+            AppLog.app.warning(
+                "categorical SER skipped (samples=\(capped.samples.count, privacy: .public), sr=\(capped.sampleRate, privacy: .public), t=\(capped.timestamp, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
     }
@@ -1240,7 +1348,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         guard let ageGenderSER else { return nil }
         let capped = Self.capForSER(buffer)
         do { return try await ageGenderSER.estimate(capped) } catch {
-            AppLog.app.debug("age-gender SER skipped: \(String(describing: error), privacy: .public)")
+            AppLog.app.warning(
+                "age-gender SER skipped (samples=\(capped.samples.count, privacy: .public), sr=\(capped.sampleRate, privacy: .public), t=\(capped.timestamp, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
     }
@@ -1327,18 +1437,22 @@ final class AnalysisPipeline: @unchecked Sendable {
                 let result = try await switching.classifyBiased(text)
                 return TextSEROutcome(
                     score: result.score,
+                    rawScore: result.rawScore,
                     guardrailViolation: false,
                     matchedTerms: result.matchedTerms
                 )
             }
             let score = try await textSER.classify(text)
             return TextSEROutcome(
-                score: score, guardrailViolation: false, matchedTerms: []
+                score: score,
+                rawScore: score,
+                guardrailViolation: false,
+                matchedTerms: []
             )
         } catch TextSERError.guardrailViolation {
             AppLog.serText.info("text SER declined (Apple FM guardrail): \(text, privacy: .public)")
             return TextSEROutcome(
-                score: nil, guardrailViolation: true, matchedTerms: []
+                score: nil, rawScore: nil, guardrailViolation: true, matchedTerms: []
             )
         } catch {
             // Promoted to .warning so non-guardrail failures aren't

@@ -54,7 +54,10 @@ struct SettingsCard: View {
         .sheet(isPresented: $showingGlossary) {
             CustomGlossarySheet(
                 store: recorder.glossary,
-                onDismiss: { showingGlossary = false }
+                onDismiss: {
+                    showingGlossary = false
+                    Task { await recorder.reapplyGlossaryBias() }
+                }
             )
         }
     }

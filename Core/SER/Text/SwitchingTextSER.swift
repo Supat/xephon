@@ -109,18 +109,25 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
         try await classifyBiased(text).score
     }
 
-    /// Same as `classify` plus the deduplicated list of glossary
-    /// term strings that matched the input — exposed so the caller
-    /// can stamp the matched terms onto the utterance row's badge
-    /// without running the lexicon against the transcript twice.
-    /// When the lexicon is empty or no terms match, `matchedTerms`
-    /// comes back `[]`.
+    /// Same as `classify` plus (a) the pre-bias `rawScore` exactly
+    /// as the backend produced it, and (b) the deduplicated list of
+    /// glossary term strings that matched the input. Both are
+    /// stamped onto `UtteranceEstimate` so a later glossary edit
+    /// can replay `lexicon.apply(rawScore, to: text)` without
+    /// re-running DeBERTa / Apple FM.
     public func classifyBiased(
         _ text: String
-    ) async throws -> (score: PlutchikScore, matchedTerms: [String]) {
+    ) async throws -> (score: PlutchikScore, rawScore: PlutchikScore, matchedTerms: [String]) {
         let raw = try await classifyRaw(text)
         let result = lexicon.apply(raw, to: text)
-        return (result.biased, result.matched)
+        return (result.biased, raw, result.matched)
+    }
+
+    /// Snapshot the current lexicon for the reapply path. Returned
+    /// by value so the controller can iterate utterances without
+    /// holding the actor for the duration of the loop.
+    public func lexiconSnapshot() -> LexiconBias {
+        lexicon
     }
 
     private func classifyRaw(_ text: String) async throws -> PlutchikScore {

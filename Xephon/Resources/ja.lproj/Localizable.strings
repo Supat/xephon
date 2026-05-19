@@ -290,10 +290,13 @@
 "glossary.enable.hint" = "オン時、各発話のテキストSERスコアを一致した語の感情へ偏らせてから融合します。";
 "glossary.entries" = "登録語";
 "glossary.add" = "語を追加";
-"glossary.empty.hint" = "登録語はまだありません。「語を追加」をタップするか、上のメニューから辞書JSONを取り込んでください。";
+"glossary.empty.title" = "登録語はまだありません。";
+"glossary.empty.hint" = "上のメニューから追加するか、辞書JSONを取り込んでください。";
 "glossary.weight.hint" = "重み 0.0 = 無視、1.0 = この語の感情へ強く傾ける。部分一致・大文字小文字を区別しません。";
 "glossary.entry.term.placeholder" = "語（例: 残業）";
 "glossary.entry.label" = "感情";
+"glossary.entry.weight" = "重み";
+"glossary.delete" = "削除";
 "glossary.import" = "読み込み…";
 "glossary.export" = "書き出し…";
 "glossary.done" = "完了";

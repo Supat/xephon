@@ -1301,7 +1301,7 @@ final class RecordingController {
                     while self.inflightSegments >= Self.maxConcurrentSegments {
                         try? await Task.sleep(for: .seconds(Self.serSlotWaitSec))
                     }
-                    let segmentBuffer = self.sliceForSegment(segment)
+                    let segmentBuffer = await self.sliceForSegment(segment)
                     // Order matters here: slice → trim → snapshot.
                     //
                     // Slicing first reads the segment's range out of
@@ -1514,6 +1514,40 @@ final class RecordingController {
         await syncTextSERStateFromPipeline(from: pipeline)
     }
 
+    /// Replay the active glossary against every utterance with a
+    /// stored pre-bias `plutchikRaw` and re-run late fusion, then
+    /// write the refreshed rows back in place. Called when the
+    /// user dismisses the Custom Glossary sheet — edits made in
+    /// the sheet have already pushed via `glossary.onChange`, so
+    /// the pipeline's lexicon snapshot is current by the time
+    /// `rebiasAndFuse` reads it.
+    ///
+    /// Rows that can't be safely rebiased (text SER never ran, or
+    /// a legacy row whose previous bias would compound) are left
+    /// untouched. The single-pass overwrite preserves selection,
+    /// utterance ids, and scroll position — list-diff equality
+    /// holds because only the affect fields move.
+    func reapplyGlossaryBias() async {
+        guard !utterances.isEmpty else { return }
+        let pipeline = await ensurePipeline()
+        var next = utterances
+        var rebiasedCount = 0
+        for index in next.indices {
+            guard let rebiased = await pipeline.rebiasAndFuse(next[index]) else {
+                continue
+            }
+            next[index] = rebiased
+            rebiasedCount += 1
+        }
+        if rebiasedCount > 0 {
+            utterances = next
+            commitUtteranceChanges()
+            AppLog.serText.info(
+                "reapplyGlossaryBias updated \(rebiasedCount, privacy: .public)/\(self.utterances.count, privacy: .public) rows"
+            )
+        }
+    }
+
     /// Forward a foreground/background lifecycle transition to the
     /// SER pipeline so each acoustic actor can swap its ORT session
     /// between CoreML EP (foreground) and CPU (background). Driven
@@ -1647,8 +1681,46 @@ final class RecordingController {
         lastChunkSentenceCount = count
     }
 
-    private func sliceForSegment(_ asr: ASRSegment) -> AudioChunk {
-        capturedAudio.slice(start: asr.start, end: asr.end)
+    /// Slice the audio for a finalized ASR segment.
+    ///
+    /// In file mode we always read directly from the source file
+    /// rather than the rolling capture buffer. The buffer is
+    /// authoritative only as long as it hasn't been trimmed past
+    /// the segment's range — and the continuous-diarize task's
+    /// self-trim can race ahead of ASR finalization, wiping audio
+    /// that a later finalize still needs (this manifested as
+    /// "samples=0" empty-audio ORT failures on every utterance
+    /// whose finalize landed after diarize had progressed past
+    /// its time range). The source file is on disk, authoritative,
+    /// and re-reads are cheap relative to the SER cost downstream,
+    /// so file mode trades a small per-segment I/O hit for
+    /// bulletproof acoustic coverage.
+    ///
+    /// Mic mode has no source file to fall back on, so it still
+    /// uses the rolling buffer. The same trim-race exposure
+    /// exists there; the buffer's hard `maxSeconds` cap is the
+    /// only safety net.
+    private func sliceForSegment(_ asr: ASRSegment) async -> AudioChunk {
+        if case .file = sourceMode, let url = playbackSourceURL {
+            do {
+                return try await Task.detached(priority: .userInitiated) {
+                    try Self.readAudioChunkForReevaluation(
+                        fileURL: url,
+                        start: asr.start,
+                        end: asr.end
+                    )
+                }.value
+            } catch {
+                AppLog.app.warning(
+                    "sliceForSegment file read failed (\(asr.start, privacy: .public)–\(asr.end, privacy: .public)s): \(String(describing: error), privacy: .public); falling back to rolling buffer"
+                )
+                // Fall through to the buffer slice below as a
+                // last-ditch safety net; the empty-slice guard in
+                // `processSegment` handles the still-empty case
+                // without crashing.
+            }
+        }
+        return capturedAudio.slice(start: asr.start, end: asr.end)
     }
 
     /// Cap on concurrent SER+fusion tasks. Fast-pace file analysis can

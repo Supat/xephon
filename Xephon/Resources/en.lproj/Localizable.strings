@@ -290,10 +290,13 @@
 "glossary.enable.hint" = "When on, each utterance's text-SER score is biased toward the matched term's emotion before fusion.";
 "glossary.entries" = "Entries";
 "glossary.add" = "Add Entry";
-"glossary.empty.hint" = "No entries yet. Tap Add Entry, or import a glossary JSON via the menu above.";
+"glossary.empty.title" = "No glossary entries yet.";
+"glossary.empty.hint" = "Add an entry via the menu above, or import a glossary JSON.";
 "glossary.weight.hint" = "Weight 0.0 = ignore; 1.0 = strong tilt toward this term's emotion. Substring match, case-insensitive.";
 "glossary.entry.term.placeholder" = "Term (e.g. 残業)";
 "glossary.entry.label" = "Emotion";
+"glossary.entry.weight" = "Weight";
+"glossary.delete" = "Delete";
 "glossary.import" = "Import…";
 "glossary.export" = "Export…";
 "glossary.done" = "Done";

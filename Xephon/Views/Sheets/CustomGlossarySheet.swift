@@ -5,21 +5,25 @@ import SERText
 /// Modal sheet for managing the user's custom glossary — the
 /// per-term emotion bias the text-SER stage applies to each
 /// utterance's Plutchik distribution. Raised from `SettingsCard`'s
-/// "Custom Glossary…" row.
+/// "Custom Glossary" row.
 ///
-/// Layout:
-///   1. Global enable toggle. Off = the lexicon is bypassed
-///      entirely; entries stay parked for later.
-///   2. List of entries, one per row: term TextField, emotion
-///      picker, weight stepper. Swipe-to-delete removes a row.
-///   3. "Add entry" button below the list.
-///   4. Toolbar Import / Export buttons surface JSON file I/O
-///      via `.fileImporter` / `.fileExporter`.
+/// Layout mirrors `TranscriptionReviewSheet`:
+///   1. Content area (ScrollView of entry cards, or an empty
+///      state when no entries are configured yet).
+///   2. Divider.
+///   3. Action bar with the global "Apply Bias" toggle.
+///
+/// Toolbar carries Done plus an overflow Menu hosting Add /
+/// Import / Export — same three-dot disclosure pattern as the
+/// other sheets.
 ///
 /// All edits write back to the bound `GlossaryStore` immediately;
 /// the store persists on every mutation and pings its `onChange`
 /// hook so the controller can push the new lexicon snapshot to
-/// the text-SER actor without a sheet-dismiss.
+/// the text-SER actor without a sheet-dismiss. On dismiss, the
+/// controller also replays the active lexicon against the
+/// stored utterances so weight tweaks become visible without
+/// re-running text SER.
 struct CustomGlossarySheet: View {
     @Bindable var store: GlossaryStore
     let onDismiss: () -> Void
@@ -31,53 +35,23 @@ struct CustomGlossarySheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Toggle(isOn: $store.isEnabled) {
-                        Label(
-                            String(localized: "glossary.enable"),
-                            systemImage: "book.closed"
-                        )
-                    }
-                } footer: {
-                    Text(String(localized: "glossary.enable.hint"))
-                }
-
-                Section {
-                    ForEach($store.entries) { $entry in
-                        entryRow(entry: $entry)
-                    }
-                    .onDelete { offsets in
-                        store.remove(at: offsets)
-                    }
-                    Button {
-                        store.add(
-                            LexiconBiasEntry(
-                                term: "",
-                                label: .joy,
-                                weight: 0.5
-                            )
-                        )
-                    } label: {
-                        Label(
-                            String(localized: "glossary.add"),
-                            systemImage: "plus.circle.fill"
-                        )
-                    }
-                } header: {
-                    Text(String(localized: "glossary.entries"))
-                } footer: {
-                    if store.entries.isEmpty {
-                        Text(String(localized: "glossary.empty.hint"))
-                    } else {
-                        Text(String(localized: "glossary.weight.hint"))
-                    }
-                }
+            VStack(spacing: 0) {
+                applyBiasHeader
+                Divider()
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                Divider()
+                actionBar
             }
+            // Opaque sheet backdrop — same reason as
+            // `EditUtteranceSheet`: without this, the inner
+            // `.glassEffect` cards sample whatever's underneath
+            // the sheet and refract its colors through.
+            .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "glossary.title"))
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "glossary.done"), action: onDismiss)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -101,6 +75,7 @@ struct CustomGlossarySheet: View {
                                 systemImage: "square.and.arrow.up"
                             )
                         }
+                        .disabled(store.entries.isEmpty)
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -141,13 +116,68 @@ struct CustomGlossarySheet: View {
     }
 
     @ViewBuilder
-    private func entryRow(entry: Binding<LexiconBiasEntry>) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var content: some View {
+        if store.entries.isEmpty {
+            emptyView
+        } else {
+            entryList
+        }
+    }
+
+    @ViewBuilder
+    private var entryList: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach($store.entries) { $entry in
+                    entryCard(entry: $entry)
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private func entryCard(entry: Binding<LexiconBiasEntry>) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                labelChip(entry.wrappedValue.label)
+                Spacer(minLength: 4)
+                Button(role: .destructive) {
+                    // Defer the mutation past the current
+                    // view-body cycle. Removing from
+                    // `store.entries` synchronously while the
+                    // ForEach is still holding a Binding into
+                    // the deleted element crashes on the next
+                    // binding read with an out-of-range index —
+                    // a well-known SwiftUI gotcha. Capturing the
+                    // id, hopping to the next MainActor tick,
+                    // and removing there gives the ForEach a
+                    // chance to drop the row's view first.
+                    let id = entry.wrappedValue.id
+                    Task { @MainActor in
+                        store.entries.removeAll { $0.id == id }
+                    }
+                } label: {
+                    Label(
+                        String(localized: "glossary.delete"),
+                        systemImage: "trash"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
             TextField(
                 String(localized: "glossary.entry.term.placeholder"),
                 text: entry.term
             )
-            .textFieldStyle(.roundedBorder)
+            .font(.body)
+            .scrollContentBackground(.hidden)
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
 
@@ -162,9 +192,18 @@ struct CustomGlossarySheet: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+                // Size the menu button to its longest possible
+                // selection ("Anticipation") so the trailing
+                // weight controls can't compress it into wrapping
+                // when that label is currently picked.
+                .fixedSize(horizontal: true, vertical: false)
 
                 Spacer(minLength: 0)
 
+                Text(String(localized: "glossary.entry.weight"))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
                 Text(String(format: "%.1f", entry.wrappedValue.weight))
                     .font(.body.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -178,7 +217,92 @@ struct CustomGlossarySheet: View {
                 .labelsHidden()
             }
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// Per-entry emotion chip — same tint family used elsewhere
+    /// for Plutchik labels. Tints chosen to map roughly onto
+    /// Plutchik wheel quadrants so a glance at the chip reads
+    /// "happy bucket" / "anger bucket" / etc. without naming.
+    @ViewBuilder
+    private func labelChip(_ label: PlutchikScore.Label) -> some View {
+        Text(Self.localizedLabel(label))
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                Capsule().fill(Self.tint(for: label).opacity(0.18))
+            )
+            .foregroundStyle(Self.tint(for: label))
+    }
+
+    @ViewBuilder
+    private var emptyView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "book.closed")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text(String(localized: "glossary.empty.title"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text(String(localized: "glossary.empty.hint"))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Top header carrying the global "Apply Bias" toggle. Lives
+    /// above the entry list so it reads as a setting that
+    /// governs everything below it, with the hint footer making
+    /// the off-vs-on semantics explicit.
+    @ViewBuilder
+    private var applyBiasHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: $store.isEnabled) {
+                Label(
+                    String(localized: "glossary.enable"),
+                    systemImage: "book.closed"
+                )
+            }
+            .toggleStyle(.switch)
+            Text(String(localized: "glossary.enable.hint"))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    /// Bottom action bar carrying the Add Entry button —
+    /// equivalent placement to the review sheet's Review /
+    /// Re-review button: the primary forward action on the
+    /// sheet, full-width, separated by a Divider.
+    @ViewBuilder
+    private var actionBar: some View {
+        Button {
+            store.add(
+                LexiconBiasEntry(
+                    term: "",
+                    label: .joy,
+                    weight: 0.5
+                )
+            )
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                Text(String(localized: "glossary.add"))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
     }
 
     private func handleImport(result: Result<URL, any Error>) {
@@ -223,6 +347,23 @@ struct CustomGlossarySheet: View {
         case .fear:         return String(localized: "plutchik.fear")
         case .disgust:      return String(localized: "plutchik.disgust")
         case .trust:        return String(localized: "plutchik.trust")
+        }
+    }
+
+    /// Plutchik-wheel-inspired chip tints. Aligned with the
+    /// existing modality-disagreement chip palette (orange / red
+    /// for negatives; blue / green for positives) so glossary
+    /// chips don't clash visually with other badges on the row.
+    static func tint(for label: PlutchikScore.Label) -> Color {
+        switch label {
+        case .joy:          return .yellow
+        case .sadness:      return .blue
+        case .anticipation: return .orange
+        case .surprise:     return .cyan
+        case .anger:        return .red
+        case .fear:         return .purple
+        case .disgust:      return .green
+        case .trust:        return .mint
         }
     }
 }

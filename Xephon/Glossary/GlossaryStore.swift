@@ -143,18 +143,33 @@ public final class GlossaryStore {
     // MARK: - Internal
 
     private func didMutate() {
-        do {
-            try persist()
-        } catch {
-            // Persist failures shouldn't block UI mutations —
-            // log + carry on. A retry on the next mutation will
-            // usually succeed; if not, the user sees nothing
-            // broken until app restart.
-            AppLog.app.warning(
-                "GlossaryStore persist failed: \(String(describing: error), privacy: .public)"
-            )
+        // Defer past the current modify-access scope. `@Observable`
+        // synthesizes a `_modify` accessor pattern where `didSet`
+        // runs *inside* the exclusive-access region for the
+        // property being set — so reading `entries` / `isEnabled`
+        // again from within `didSet` (which we do via
+        // `exportDocument()` in `persist`, and again via
+        // `currentLexicon` inside the controller's `onChange`
+        // hook) trips Swift's runtime exclusivity check and
+        // crashes with "Simultaneous accesses ... modification
+        // requires exclusive access." Hopping to the next
+        // MainActor tick lets the set complete (modify access
+        // released) before persist + observer notification run.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try self.persist()
+            } catch {
+                // Persist failures shouldn't block UI mutations —
+                // log + carry on. A retry on the next mutation
+                // will usually succeed; if not, the user sees
+                // nothing broken until app restart.
+                AppLog.app.warning(
+                    "GlossaryStore persist failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+            self.onChange?()
         }
-        onChange?()
     }
 
     private func persist() throws {

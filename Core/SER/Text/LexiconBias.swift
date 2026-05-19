@@ -41,6 +41,20 @@ public struct LexiconBias: Sendable, Hashable, Codable {
     /// dictates the *shape* of the distribution; user weights tilt
     /// the leaderboard.
     public static let logitScale: Float = 2.0
+    /// Logit assigned to labels whose backend probability came
+    /// back as 0. We can't take `log(0) = -inf`, but skipping
+    /// the label entirely (a) drops it from the post-bias
+    /// dictionary so the per-utterance UI shows a missing bar
+    /// instead of a 0% bar, and (b) makes glossary weights
+    /// powerless to rescue a label the backend zeroed out — even
+    /// when the user explicitly tagged a matching term for it.
+    /// Picking a finite floor (about p ≈ 1.8 %) lets a
+    /// max-weight glossary hit lift such a label to a meaningful
+    /// share of the renormalized distribution while leaving
+    /// unbiased zero-prob labels at roughly that 1–2 % baseline,
+    /// which is invisible next to any label the model gave real
+    /// mass to but keeps the chart consistent.
+    public static let zeroLogitFloor: Float = -4.0
 
     public init(entries: [LexiconBiasEntry] = []) {
         self.entries = entries
@@ -84,17 +98,23 @@ public struct LexiconBias: Sendable, Hashable, Codable {
         guard !matched.isEmpty else { return (score, []) }
         // Logit-space bias + softmax. Convert each probability to
         // a logit (ln p), add the per-label bias, exponentiate,
-        // and renormalize. Probabilities at 0 stay at 0 (their
-        // logit is -inf; no finite bias can rescue them) — that's
-        // intentional: the backend said "this class is impossible
-        // here" and we don't want a glossary entry to wholesale
-        // override that judgment.
+        // and renormalize. Labels the backend gave probability 0
+        // get the `zeroLogitFloor` (≈ ln 0.018) instead of -inf
+        // so that (a) they survive into the post-bias dictionary
+        // — preserving the 8-label chart shape on the UI side —
+        // and (b) a glossary entry tagged for one of them can
+        // still lift it to a meaningful share of the
+        // distribution. Without the floor, a "this term means
+        // joy" glossary entry against a row the backend zeroed
+        // out for joy would silently drop joy from the output
+        // entirely.
         var logits: [PlutchikScore.Label: Float] = [:]
         for label in PlutchikScore.Label.allCases {
             let p = score.probabilities[label] ?? 0
-            guard p > 0 else { continue }
-            logits[label] = Float(Foundation.log(Double(p)))
-                + (perLabelBias[label] ?? 0)
+            let baseLogit: Float = p > 0
+                ? Float(Foundation.log(Double(p)))
+                : Self.zeroLogitFloor
+            logits[label] = baseLogit + (perLabelBias[label] ?? 0)
         }
         guard !logits.isEmpty else { return (score, matched) }
         let maxLogit = logits.values.max() ?? 0
