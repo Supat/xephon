@@ -8,13 +8,15 @@ import Fusion
 /// the list itself plus its `.onChange`/`.onKeyPress`/`.overlay`
 /// modifiers were ~180 lines that crowded everything else.
 ///
-/// Filter state lives on the parent because `displayedSummary` on
-/// the left pane reads it too; we take the resolved/filtered
-/// `items` as input and the action surfaces (renaming, editing) as
-/// closures. The List's selection and the per-row mutations on the
-/// parent's @State come back through @Binding.
+/// Filter state lives on the shared `TranscriptFilterModel` so the
+/// left-pane summary card and this list read the same memoized
+/// slice. We take the already-resolved `items` as input (rather
+/// than re-deriving) and route the per-row action surfaces back
+/// through closures. The List's selection and the per-row
+/// mutations on ContentView's @State come back through @Binding.
 struct TranscriptList: View {
     let recorder: RecordingController
+    @Bindable var filterModel: TranscriptFilterModel
     let items: [(idx: Int, u: UtteranceEstimate)]
 
     @Binding var selectedUtteranceID: UUID?
@@ -28,16 +30,10 @@ struct TranscriptList: View {
     @Binding var expandedUtteranceIDs: Set<UUID>
     @Binding var visibleUtteranceIDs: Set<UUID>
     @Binding var hasUnreadUtterance: Bool
-    @Binding var normalizedTranscriptCache: [UUID: String]
-    @Binding var searchText: String
-    @Binding var selectedLabelFilter: String?
-    @Binding var selectedSpeakerFilter: String?
     /// Bound through so a tap on dead list space can drop search
     /// focus without TranscriptList owning the field itself.
     var searchFieldFocused: FocusState<Bool>.Binding
 
-    let playbackAvailability: (UtteranceEstimate) -> UtteranceRow.PlaybackAvailability
-    let reevaluateAvailability: (UtteranceEstimate) -> UtteranceRow.ReevaluateAvailability
     let onToggleExpansion: (UUID) -> Void
     let onRenameSpeaker: (UtteranceEstimate) -> Void
     let onPromoteNewSpeaker: (UtteranceEstimate) -> Void
@@ -50,7 +46,6 @@ struct TranscriptList: View {
     /// the diarizer has been collectively observing.
     let onCorrectMismatch: (UtteranceEstimate) -> Void
     let onEditTranscript: (UtteranceEstimate) -> Void
-    let refreshSearchCache: () -> Void
 
     @State private var mismatchMemo = MismatchMemo()
 
@@ -145,19 +140,17 @@ struct TranscriptList: View {
                 if isEmpty {
                     hasUnreadUtterance = false
                     selectedUtteranceID = nil
-                    normalizedTranscriptCache.removeAll(keepingCapacity: true)
+                    filterModel.resetForNewSession()
                     // New session (mic record or file analysis) just
                     // cleared the utterance list — reset the filter
                     // controls so the empty list isn't shown through
                     // a stale filter the user no longer remembers
                     // setting.
-                    searchText = ""
-                    selectedLabelFilter = nil
-                    selectedSpeakerFilter = nil
+                    filterModel.clearFilters()
                 }
             }
             .onChange(of: recorder.utterances.count, initial: true) { _, _ in
-                refreshSearchCache()
+                filterModel.refreshSearchCache(for: recorder.utterances)
             }
             .onChange(of: isLastUtteranceVisible) { _, visible in
                 if visible { hasUnreadUtterance = false }
@@ -192,9 +185,9 @@ struct TranscriptList: View {
             utterance: item.u,
             isExpanded: expandedUtteranceIDs.contains(item.u.id),
             onToggleExpanded: { onToggleExpansion(item.u.id) },
-            playback: playbackAvailability(item.u),
+            playback: .resolve(for: item.u, recorder: recorder),
             onPlaybackToggle: { recorder.togglePlayback(for: item.u) },
-            reevaluate: reevaluateAvailability(item.u),
+            reevaluate: .resolve(for: item.u, recorder: recorder),
             onReevaluate: {
                 Task { await recorder.reevaluate(item.u) }
             },
