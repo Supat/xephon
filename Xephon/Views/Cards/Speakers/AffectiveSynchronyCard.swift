@@ -23,22 +23,11 @@ import XephonUtilities
 struct AffectiveSynchronyCard: View {
     let utterances: [UtteranceEstimate]
 
-    /// Which axis the pair rows render — fused valence or fused
-    /// arousal. Drives both the headline correlation column and the
-    /// sparkline data.
-    @State private var axis: Axis = .valence
-    /// Pair whose inspector popover is currently open, if any.
-    /// Tapping a pair row toggles it; the popover surfaces the
-    /// full lag profile for both V and A — content that used to
-    /// sit inline as a sparkline but overflowed the iPad portrait
-    /// row budget. Mirrors `SpeakerBehaviorCard`'s tap-popover
-    /// pattern so the affordance is consistent across cluster
-    /// diagnostics cards.
-    @State private var inspectedPair: AffectiveSynchrony.DirectedPair?
-
-    enum Axis: Hashable {
-        case valence, arousal
-    }
+    /// Axis toggle + inspected-pair state + the
+    /// `rankedPairs(from:)` helper. View binds via `$model.axis` /
+    /// `$model.inspectedPair`; methods that derive sort order from
+    /// the current axis live on the model.
+    @State private var model = AffectiveSynchronyViewModel()
 
     /// Trailing value-column width (correlation + sample count).
     /// Sized for the widest plausible "−0.99 · 999" rendering at
@@ -92,10 +81,10 @@ struct AffectiveSynchronyCard: View {
             Spacer(minLength: 4)
             if pairCount > 0 {
                 Button {
-                    axis = (axis == .valence) ? .arousal : .valence
+                    model.toggleAxis()
                 } label: {
                     Label(
-                        axisLabel,
+                        synchronyAxisLabel(model.axis),
                         systemImage: "slider.horizontal.3"
                     )
                     .font(.caption2)
@@ -113,13 +102,6 @@ struct AffectiveSynchronyCard: View {
         }
     }
 
-    private var axisLabel: String {
-        switch axis {
-        case .valence: return String(localized: "synchrony.metric.valence")
-        case .arousal: return String(localized: "synchrony.metric.arousal")
-        }
-    }
-
     // MARK: - Pair rows
 
     @ViewBuilder
@@ -127,33 +109,9 @@ struct AffectiveSynchronyCard: View {
         result: AffectiveSynchrony.Result
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(rankedPairs(from: result), id: \.pair) { entry in
+            ForEach(model.rankedPairs(from: result), id: \.pair) { entry in
                 pairRow(for: entry, maxLag: result.maxLag)
             }
-        }
-    }
-
-    private func rankedPairs(
-        from result: AffectiveSynchrony.Result
-    ) -> [AffectiveSynchrony.PairResult] {
-        result.pairs.sorted { lhs, rhs in
-            let lhsValue = axisValue(lhs)
-            let rhsValue = axisValue(rhs)
-            switch (lhsValue, rhsValue) {
-            case let (l?, r?): return abs(l) > abs(r)
-            case (.some, .none): return true
-            case (.none, .some): return false
-            case (.none, .none): return false
-            }
-        }
-    }
-
-    private func axisValue(
-        _ entry: AffectiveSynchrony.PairResult
-    ) -> Double? {
-        switch axis {
-        case .valence: return entry.valenceCorrelation
-        case .arousal: return entry.arousalCorrelation
         }
     }
 
@@ -166,9 +124,9 @@ struct AffectiveSynchronyCard: View {
         // (~280pt). Inline width is tight on purpose — anything
         // richer (lag-profile sparkline, per-lag sample counts)
         // lives in the tap-popover.
-        let value = axisValue(entry)
+        let value = entry.correlation(on: model.axis)
         Button {
-            inspectedPair = (inspectedPair == entry.pair)
+            model.inspectedPair = (model.inspectedPair == entry.pair)
                 ? nil : entry.pair
         } label: {
             HStack(spacing: 6) {
@@ -200,9 +158,9 @@ struct AffectiveSynchronyCard: View {
         .buttonStyle(.plain)
         .popover(
             isPresented: Binding(
-                get: { inspectedPair == entry.pair },
+                get: { model.inspectedPair == entry.pair },
                 set: { isPresented in
-                    if !isPresented { inspectedPair = nil }
+                    if !isPresented { model.inspectedPair = nil }
                 }
             ),
             arrowEdge: .top
@@ -427,7 +385,7 @@ struct AffectiveSynchronyCard: View {
                     .foregroundStyle(.tertiary)
             }
             ForEach(scores, id: \.speakerID) { score in
-                let value: Double? = (axis == .valence)
+                let value: Double? = (model.axis == .valence)
                     ? score.valenceLeadership
                     : score.arousalLeadership
                 HStack(spacing: 6) {

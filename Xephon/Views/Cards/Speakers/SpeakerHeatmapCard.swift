@@ -54,27 +54,6 @@ struct SpeakerHeatmapCard: View {
         var id: String { "\(rowSpeaker)|\(columnSpeaker)" }
     }
 
-    /// Preferred side length of each grid cell when there's room.
-    /// The grid auto-shrinks each cell below this when the available
-    /// width can't fit N at full size, with a hard floor so cells
-    /// remain visually distinguishable.
-    private static let maxCellSize: CGFloat = 22
-    /// Floor for the per-cell side length. Below ~10 pt the numeric
-    /// label drops out and the cells become pure color samples; at
-    /// 6 pt they're still readable as a heatmap on iPad.
-    private static let minCellSize: CGFloat = 6
-    /// Threshold below which the numeric "0.85" label is dropped
-    /// because the glyph won't fit. The grid stays informative as
-    /// a pure color matrix.
-    private static let labelDropCellSize: CGFloat = 14
-    /// Gap between cells so each one reads as a separate sample;
-    /// without this the grid looks like a continuous heat surface
-    /// and the per-pair quantization is lost.
-    private static let cellSpacing: CGFloat = 2
-    /// Width of the leftmost column (speaker-id labels). Wide enough
-    /// for "S10".
-    private static let rowLabelWidth: CGFloat = 28
-
     var body: some View {
         let speakers = visibleSpeakers
         VStack(alignment: .leading, spacing: 8) {
@@ -151,11 +130,11 @@ struct SpeakerHeatmapCard: View {
         // out vertically).
         let n = CGFloat(max(speakers.count, 1))
         GeometryReader { proxy in
-            let cellSize = Self.cellSide(available: proxy.size.width, n: n)
-            let showLabels = cellSize >= Self.labelDropCellSize
+            let cellSize = HeatmapGrid.cellSide(available: proxy.size.width, n: n)
+            let showLabels = cellSize >= HeatmapGrid.labelDropCellSize
             grid(speakers: speakers, cellSize: cellSize, showLabels: showLabels)
         }
-        .frame(height: Self.gridHeight(forSpeakerCount: speakers.count))
+        .frame(height: HeatmapGrid.gridHeight(forSpeakerCount: speakers.count))
     }
 
     @ViewBuilder
@@ -173,16 +152,16 @@ struct SpeakerHeatmapCard: View {
         // `.frame(maxWidth: .infinity, alignment: .center)` keeps
         // the grid at its intrinsic width but centers it inside
         // the available row.
-        VStack(alignment: .leading, spacing: Self.cellSpacing) {
+        VStack(alignment: .leading, spacing: HeatmapGrid.cellSpacing) {
             // Top header row: blank corner + speaker ids across.
             // Dropped entirely when cells are too small to hold a
             // legible speaker-id; the row labels on the left edge
             // still convey column order because the matrix is
             // symmetric (col k = row k along the diagonal).
             if showLabels {
-                HStack(spacing: Self.cellSpacing) {
+                HStack(spacing: HeatmapGrid.cellSpacing) {
                     Color.clear
-                        .frame(width: Self.rowLabelWidth, height: cellSize)
+                        .frame(width: HeatmapGrid.rowLabelWidth, height: cellSize)
                     ForEach(speakers, id: \.id) { spk in
                         Text(spk.id)
                             .font(.caption2.monospaced())
@@ -194,14 +173,14 @@ struct SpeakerHeatmapCard: View {
                 }
             }
             ForEach(speakers, id: \.id) { rowSpk in
-                HStack(spacing: Self.cellSpacing) {
+                HStack(spacing: HeatmapGrid.cellSpacing) {
                     Text(rowSpk.id)
                         .font(.caption2.monospaced())
                         .foregroundStyle(speakerTint(for: rowSpk.id))
-                        .frame(width: Self.rowLabelWidth, height: cellSize, alignment: .leading)
+                        .frame(width: HeatmapGrid.rowLabelWidth, height: cellSize, alignment: .leading)
                         .lineLimit(1)
                     ForEach(speakers, id: \.id) { colSpk in
-                        let d = Self.cosineDistance(rowSpk.centroid, colSpk.centroid)
+                        let d = HeatmapGrid.cosineDistance(rowSpk.centroid, colSpk.centroid)
                         cell(
                             rowSpk: rowSpk,
                             colSpk: colSpk,
@@ -238,7 +217,7 @@ struct SpeakerHeatmapCard: View {
         )
         ZStack {
             RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(Self.heatColor(distance: d))
+                .fill(HeatmapGrid.heatColor(distance: d))
             if showLabel {
                 Text(String(format: "%.2f", d))
                     .font(.system(size: 8, weight: .semibold))
@@ -291,13 +270,13 @@ struct SpeakerHeatmapCard: View {
             }
             HStack(spacing: 6) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Self.heatColor(distance: sel.distance))
+                    .fill(HeatmapGrid.heatColor(distance: sel.distance))
                     .frame(width: 14, height: 14)
                 Text(String(format: "distance: %.3f", sel.distance))
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.primary)
             }
-            Text(distanceInterpretation(sel.distance))
+            Text(HeatmapGrid.distanceInterpretation(sel.distance))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -315,82 +294,4 @@ struct SpeakerHeatmapCard: View {
             .background(speakerTint(for: id).opacity(0.15), in: Capsule())
     }
 
-    /// One-liner reading of where the distance falls on the heat
-    /// scale, mirroring the same thresholds used by `heatColor`.
-    /// Helps users back-project the number to "is this concerning?"
-    /// without having to remember the gradient stops.
-    private func distanceInterpretation(_ d: Float) -> String {
-        if d < 0.4 {
-            return String(localized: "cluster.heatmap.tip.close")
-        } else if d < 0.7 {
-            return String(localized: "cluster.heatmap.tip.mid")
-        } else {
-            return String(localized: "cluster.heatmap.tip.far")
-        }
-    }
-
-    /// Per-cell side length that fits N cells + the row-label
-    /// gutter inside `available` width. Clamped to `[minCellSize,
-    /// maxCellSize]` so small sessions don't waste space and huge
-    /// sessions don't disappear into single-pixel cells.
-    private static func cellSide(available: CGFloat, n: CGFloat) -> CGFloat {
-        guard n > 0, available > 0 else { return maxCellSize }
-        let usable = available - rowLabelWidth - cellSpacing * (n + 1)
-        let raw = usable / n
-        return raw.clamped(to: minCellSize...maxCellSize)
-    }
-
-    /// Total grid height for `count` speakers at the size the grid
-    /// will pick after measuring. Used to give the GeometryReader a
-    /// concrete height so it doesn't expand to fill the parent.
-    /// Computed assuming the worst case (`maxCellSize`) since that's
-    /// always an upper bound — the actual rendered grid will be at
-    /// most this tall.
-    private static func gridHeight(forSpeakerCount count: Int) -> CGFloat {
-        // count + 1 row (header + N data rows), spaced.
-        let rows = CGFloat(count + 1)
-        return rows * maxCellSize + (rows - 1) * cellSpacing
-    }
-
-    /// Cosine distance for two L2-normalized vectors (the FluidAudio
-    /// extractor's invariant). For unit-norm `a` and `b`,
-    /// `cos_sim = a·b` and `cos_dist = 1 − cos_sim`. We clamp the
-    /// result into `[0, 1]` even though the theoretical range is
-    /// `[0, 2]` — FluidAudio's embeddings cluster tightly enough that
-    /// negative similarities don't show up in practice and the
-    /// extended range would only waste color budget on cells we
-    /// never see.
-    static func cosineDistance(_ a: [Float], _ b: [Float]) -> Float {
-        let n = min(a.count, b.count)
-        guard n > 0 else { return 1 }
-        var dot: Float = 0
-        for i in 0..<n { dot += a[i] * b[i] }
-        return (1 - dot).clamped(to: 0...1)
-    }
-
-    /// Three-stop gradient: short distance (potential collision) →
-    /// warm red, mid → orange/yellow, long distance (clean
-    /// separation) → green. Matches the mental model "red is bad"
-    /// — a red cell off the diagonal means the diarizer might be
-    /// merging two real speakers.
-    static func heatColor(distance: Float) -> Color {
-        let clamped = Double(distance.clamped(to: 0...1))
-        if clamped < 0.4 {
-            let t = clamped / 0.4
-            return Color(
-                red: 0.86,
-                green: 0.20 + 0.50 * t,
-                blue: 0.22
-            )
-        } else if clamped < 0.7 {
-            let t = (clamped - 0.4) / 0.3
-            return Color(
-                red: 0.86 - 0.50 * t,
-                green: 0.70,
-                blue: 0.22 + 0.30 * t
-            )
-        } else {
-            return Color(red: 0.36, green: 0.70, blue: 0.52)
-        }
-    }
 }

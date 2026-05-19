@@ -145,13 +145,15 @@ struct AccommodationCohesionCard: View {
         }
         guard valid.count >= 2 else { return }
         let maxDist = valid.map(\.1).max() ?? 1
-        let yScale = maxDist > 0 ? Double(size.height - 6) / maxDist : 0
-        let span = max(sessionEnd - sessionStart, 1.0)
+        let projector = TimeSeriesProjector(
+            sessionStart: sessionStart, sessionEnd: sessionEnd, canvasSize: size
+        )
         var path = Path()
         for (idx, p) in valid.enumerated() {
-            let x = CGFloat((p.0 - sessionStart) / span) * size.width
-            let y = size.height - 3 - CGFloat(p.1 * yScale)
-            let pt = CGPoint(x: x, y: y)
+            let pt = CGPoint(
+                x: projector.x(at: p.0),
+                y: projector.yFromBottom(p.1, maxValue: maxDist)
+            )
             if idx == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
         }
         ctx.stroke(path, with: .color(.accentColor), lineWidth: 1.5)
@@ -198,14 +200,14 @@ struct AccommodationCohesionCard: View {
         guard valid.count >= 2 else { return }
         let maxVar = valid.map(\.1).max() ?? 0
         guard maxVar > 0 else { return }
-        let yScale = Double(size.height - 6) / maxVar
-        let span = max(sessionEnd - sessionStart, 1.0)
+        let projector = TimeSeriesProjector(
+            sessionStart: sessionStart, sessionEnd: sessionEnd, canvasSize: size
+        )
         var line = Path()
         var fill = Path()
         for (idx, p) in valid.enumerated() {
-            let x = CGFloat((p.0 - sessionStart) / span) * size.width
-            let y = size.height - 3 - CGFloat(p.1 * yScale)
-            let pt = CGPoint(x: x, y: y)
+            let x = projector.x(at: p.0)
+            let pt = CGPoint(x: x, y: projector.yFromBottom(p.1, maxValue: maxVar))
             if idx == 0 {
                 line.move(to: pt)
                 fill.move(to: CGPoint(x: x, y: size.height))
@@ -289,7 +291,9 @@ struct AccommodationCohesionCard: View {
                 if abs(v) > maxAbs { maxAbs = abs(v) }
             }
         }
-        let span = max(sessionEnd - sessionStart, 1.0)
+        let projector = TimeSeriesProjector(
+            sessionStart: sessionStart, sessionEnd: sessionEnd, canvasSize: size
+        )
         let midY = size.height * 0.5
         // Center reference line at zero deviation.
         var zero = Path()
@@ -306,9 +310,10 @@ struct AccommodationCohesionCard: View {
             var started = false
             for p in points {
                 guard let v = p.perSpeakerValenceDeviation[spk] else { continue }
-                let x = CGFloat((p.midTime - sessionStart) / span) * size.width
-                let y = midY - CGFloat(v / maxAbs) * (midY - 3)
-                let pt = CGPoint(x: x, y: y)
+                let pt = CGPoint(
+                    x: projector.x(at: p.midTime),
+                    y: projector.yCenteredFromZero(v, maxAbs: maxAbs)
+                )
                 if !started {
                     path.move(to: pt)
                     started = true

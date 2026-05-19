@@ -174,7 +174,7 @@ public enum TurnTakingDynamics {
         var backchannelCounts: [String: Int] = [:]
         var totalCounts: [String: Int] = [:]
         // (#4) latency samples per directed pair.
-        var latenciesByPair: [PairKey: [Double]] = [:]
+        var latenciesByPair: [SpeakerPairKey: [Double]] = [:]
 
         for (i, u) in sorted.enumerated() {
             totalCounts[u.speakerID, default: 0] += 1
@@ -199,10 +199,7 @@ public enum TurnTakingDynamics {
                     } else if !overlaps, gap >= 0, gap <= Self.maxResponseWindowSec {
                         // (#4) Response latency — A speaks within a
                         // window of B finishing.
-                        let key = PairKey(
-                            responder: u.speakerID,
-                            partner: prev.speakerID
-                        )
+                        let key = SpeakerPairKey(u.speakerID, prev.speakerID)
                         latenciesByPair[key, default: []].append(gap)
                     }
                 }
@@ -265,8 +262,8 @@ public enum TurnTakingDynamics {
 
         let responseLatencies = latenciesByPair.map { key, lats in
             PairLatency(
-                responder: key.responder,
-                partner: key.partner,
+                responder: key.row,
+                partner: key.col,
                 medianSeconds: Self.median(lats),
                 sampleCount: lats.count
             )
@@ -283,11 +280,6 @@ public enum TurnTakingDynamics {
     private struct InterruptionKey: Hashable {
         let interrupter: String
         let victim: String
-    }
-
-    private struct PairKey: Hashable {
-        let responder: String
-        let partner: String
     }
 
     private static func median(_ values: [Double]) -> Double {

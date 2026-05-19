@@ -18,11 +18,7 @@ struct SynchronyArcCard: View {
     /// V/A toggle mirroring the sister card so the user reads
     /// "synchrony on V" or "synchrony on A" consistently across
     /// both views.
-    @State private var axis: Axis = .valence
-
-    enum Axis: Hashable {
-        case valence, arousal
-    }
+    @State private var axis: SynchronyAxis = .valence
 
     private static let canvasHeight: CGFloat = 140
     private static let canvasInset: CGFloat = 12
@@ -75,7 +71,7 @@ struct SynchronyArcCard: View {
                     axis = (axis == .valence) ? .arousal : .valence
                 } label: {
                     Label(
-                        axisLabel,
+                        synchronyAxisLabel(axis),
                         systemImage: "slider.horizontal.3"
                     )
                     .font(.caption2)
@@ -87,13 +83,6 @@ struct SynchronyArcCard: View {
                     AnyShapeStyle(HierarchicalShapeStyle.secondary)
                 )
             }
-        }
-    }
-
-    private var axisLabel: String {
-        switch axis {
-        case .valence: return String(localized: "synchrony.metric.valence")
-        case .arousal: return String(localized: "synchrony.metric.arousal")
         }
     }
 
@@ -169,16 +158,10 @@ struct SynchronyArcCard: View {
             return inset + (1 - CGFloat(clamped)) * h
         }
         func selectPer(_ bin: AffectiveSynchrony.ArcBin, spk: String) -> Double? {
-            switch axis {
-            case .valence: return bin.perSpeakerValence[spk]
-            case .arousal: return bin.perSpeakerArousal[spk]
-            }
+            bin.perSpeaker(on: axis)[spk]
         }
         func selectSession(_ bin: AffectiveSynchrony.ArcBin) -> Double? {
-            switch axis {
-            case .valence: return bin.sessionMeanValence
-            case .arousal: return bin.sessionMeanArousal
-            }
+            bin.sessionMean(on: axis)
         }
 
         // Per-speaker lines first so the session aggregate draws

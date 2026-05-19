@@ -24,7 +24,9 @@ struct TurnTakingCard: View {
 
     var body: some View {
         let profile = TurnTakingDynamics.compute(utterances: utterances)
-        let speakers = orderedSpeakerIDs(from: utterances)
+        let speakers = utterances
+            .sorted(by: { $0.start < $1.start })
+            .orderedSpeakerIDs
         VStack(alignment: .leading, spacing: 14) {
             header(speakerCount: speakers.count)
             if utterances.isEmpty || speakers.isEmpty {
@@ -124,13 +126,18 @@ struct TurnTakingCard: View {
     ) -> some View {
         let map = Dictionary(
             uniqueKeysWithValues: pairs.map {
-                (PairKey($0.interrupter, $0.victim), $0.count)
+                (SpeakerPairKey($0.interrupter, $0.victim), $0.count)
             }
         )
         let maxCount = pairs.map(\.count).max() ?? 0
         VStack(alignment: .leading, spacing: 4) {
             sectionTitle(String(localized: "turntaking.section.interruptions"))
-            matrixGrid(speakers: speakers) { interrupter, victim in
+            SpeakerMatrixGrid(
+                speakers: speakers,
+                cellSize: Self.cellSize,
+                cellSpacing: Self.cellSpacing,
+                labelWidth: Self.speakerLabelWidth
+            ) { interrupter, victim in
                 interruptionCell(
                     interrupter: interrupter,
                     victim: victim,
@@ -148,7 +155,7 @@ struct TurnTakingCard: View {
     private func interruptionCell(
         interrupter: String,
         victim: String,
-        map: [PairKey: Int],
+        map: [SpeakerPairKey: Int],
         maxCount: Int
     ) -> some View {
         if interrupter == victim {
@@ -157,7 +164,7 @@ struct TurnTakingCard: View {
                 .foregroundStyle(.tertiary)
                 .frame(width: Self.cellSize, height: Self.cellSize)
         } else {
-            let count = map[PairKey(interrupter, victim)] ?? 0
+            let count = map[SpeakerPairKey(interrupter, victim)] ?? 0
             let intensity = maxCount > 0 ? Double(count) / Double(maxCount) : 0
             ZStack {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -180,7 +187,7 @@ struct TurnTakingCard: View {
     ) -> some View {
         let map = Dictionary(
             uniqueKeysWithValues: pairs.map {
-                (PairKey($0.responder, $0.partner), $0)
+                (SpeakerPairKey($0.responder, $0.partner), $0)
             }
         )
         let validLatencies = pairs.map(\.medianSeconds).filter { $0.isFinite }
@@ -188,7 +195,12 @@ struct TurnTakingCard: View {
         let maxLatency = validLatencies.max() ?? 0
         VStack(alignment: .leading, spacing: 4) {
             sectionTitle(String(localized: "turntaking.section.responseLatency"))
-            matrixGrid(speakers: speakers) { responder, partner in
+            SpeakerMatrixGrid(
+                speakers: speakers,
+                cellSize: Self.cellSize,
+                cellSpacing: Self.cellSpacing,
+                labelWidth: Self.speakerLabelWidth
+            ) { responder, partner in
                 latencyCell(
                     responder: responder,
                     partner: partner,
@@ -207,7 +219,7 @@ struct TurnTakingCard: View {
     private func latencyCell(
         responder: String,
         partner: String,
-        map: [PairKey: TurnTakingDynamics.PairLatency],
+        map: [SpeakerPairKey: TurnTakingDynamics.PairLatency],
         minLatency: Double,
         maxLatency: Double
     ) -> some View {
@@ -216,7 +228,7 @@ struct TurnTakingCard: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: Self.cellSize, height: Self.cellSize)
-        } else if let entry = map[PairKey(responder, partner)] {
+        } else if let entry = map[SpeakerPairKey(responder, partner)] {
             // Faster response = greener (lower latency = warmer
             // social proximity). Span the actual session's range
             // so the gradient is meaningful even when all latencies
@@ -248,37 +260,6 @@ struct TurnTakingCard: View {
         }
     }
 
-    /// Shared grid scaffold: column header row of speaker chips +
-    /// per-row leading speaker label + cells from the supplied
-    /// builder. Horizontally scrollable when a session has more
-    /// speakers than fit on screen.
-    @ViewBuilder
-    private func matrixGrid<Cell: View>(
-        speakers: [String],
-        @ViewBuilder cell: @escaping (_ row: String, _ col: String) -> Cell
-    ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: Self.cellSpacing) {
-                HStack(spacing: Self.cellSpacing) {
-                    Color.clear.frame(width: Self.speakerLabelWidth)
-                    ForEach(speakers, id: \.self) { col in
-                        speakerChip(col)
-                            .frame(width: Self.cellSize, alignment: .center)
-                    }
-                }
-                ForEach(speakers, id: \.self) { row in
-                    HStack(spacing: Self.cellSpacing) {
-                        speakerChip(row)
-                            .frame(width: Self.speakerLabelWidth, alignment: .leading)
-                        ForEach(speakers, id: \.self) { col in
-                            cell(row, col)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     @ViewBuilder
     private func sectionTitle(_ text: String) -> some View {
         Text(text)
@@ -294,27 +275,5 @@ struct TurnTakingCard: View {
             .foregroundStyle(speakerTint(for: id))
             .lineLimit(1)
             .minimumScaleFactor(0.7)
-    }
-
-    /// First-appearance ordering matches the chip-bar so the matrices
-    /// read in the same order the user is already scanning above.
-    private func orderedSpeakerIDs(from utts: [UtteranceEstimate]) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utts.sorted(by: { $0.start < $1.start })
-            where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
-    }
-
-    private struct PairKey: Hashable {
-        let row: String
-        let col: String
-        init(_ row: String, _ col: String) {
-            self.row = row
-            self.col = col
-        }
     }
 }

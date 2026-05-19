@@ -64,7 +64,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
             truncatedFrom = nil
         }
 
-        let speakers = Self.orderedSpeakerIDs(from: promptUtterances)
+        let speakers = promptUtterances.orderedSpeakerIDs
         let utteranceLines = promptUtterances
             .map { Self.compactLine(for: $0, speakerNames: speakerNames) }
             .joined(separator: "\n")
@@ -163,18 +163,6 @@ public actor AppleFMSummarizer: SessionSummarizer {
         is listed. This directive is moot for languages that drop subject
         pronouns (Japanese, Korean, etc.).
         """
-
-    private static func orderedSpeakerIDs(
-        from utterances: [UtteranceEstimate]
-    ) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utterances where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
-    }
 
     /// Tight per-utterance line tuned for the 4k context.
     /// Drops dominance (least-used affect axis) and the

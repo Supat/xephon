@@ -580,7 +580,7 @@ struct UtteranceRow: View {
     private var mainContentRight: some View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(spacing: 6) {
-                if let backendBadge {
+                if let backendBadge = badges.textBackend {
                     let tint: Color = backendBadge.isGuardrail ? .orange : .secondary
                     Text(backendBadge.label)
                         .font(.caption2)
@@ -591,7 +591,7 @@ struct UtteranceRow: View {
                         )
                         .foregroundStyle(tint)
                 }
-                if let modalityBadge {
+                if let modalityBadge = badges.modality {
                     Text(modalityBadge.label)
                         .font(.caption2)
                         .padding(.horizontal, 5)
@@ -638,6 +638,11 @@ struct UtteranceRow: View {
 
     @ViewBuilder
     private var detailSection: some View {
+        let report = UtteranceFusionReport(
+            utterance: utterance,
+            acousticWeight: fusionAcousticWeight,
+            textWeightFloor: fusionTextWeightFloor
+        )
         VStack(alignment: .leading, spacing: 6) {
             Divider()
             // Two rows: meta numbers up top, fusion attribution +
@@ -657,18 +662,18 @@ struct UtteranceRow: View {
                         )
                     )
                 }
-                if let fused = fusedVADSummary {
+                if let fused = report.fusedVADSummary {
                     metaLine("Fused V/A/D", fused)
                 }
             }
             HStack(spacing: 12) {
-                if let weightText = fusionWeightSummary {
+                if let weightText = report.fusionWeightSummary {
                     metaLine("Fusion V/A", weightText)
                 }
-                if let labelText = labelFusionSummary {
+                if let labelText = report.labelFusionSummary {
                     metaLine("Fusion label", labelText)
                 }
-                if disagreesAcrossModalities {
+                if report.disagreesAcrossModalities {
                     disagreementBadge
                 }
             }
@@ -695,7 +700,7 @@ struct UtteranceRow: View {
             // scatter only shows when both modalities contributed
             // — without two pulls the geometry is degenerate.
             HStack(alignment: .top, spacing: 16) {
-                if let candidates = topFusedLabels, !candidates.isEmpty {
+                if let candidates = report.topFusedLabels, !candidates.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
                         sectionHeader("Top fused labels")
                         ForEach(candidates, id: \.label) { entry in
@@ -707,7 +712,7 @@ struct UtteranceRow: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let scatter = fusionScatterInputs {
+                if let scatter = report.scatterInputs {
                     VStack(alignment: .leading, spacing: 3) {
                         sectionHeader("V/A pulls")
                         FusionVAScatterMini(
@@ -733,7 +738,7 @@ struct UtteranceRow: View {
 
                 if let pl = utterance.plutchik, !pl.probabilities.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
-                        sectionHeader("Text SER (\(textBackendName))")
+                        sectionHeader("Text SER (\(badges.textBackendName))")
                         ForEach(plutchikEntries(pl.probabilities), id: \.label) { entry in
                             ProbabilityBar(label: entry.label, value: entry.value)
                         }
@@ -744,93 +749,11 @@ struct UtteranceRow: View {
         }
     }
 
-    /// Inputs to the V/A three-pull mini-scatter, or nil when there
-    /// isn't a meaningful geometry to render. We gate on BOTH
-    /// modalities contributing — single-modality rows have a fused
-    /// point coincident with the source and the scatter would draw
-    /// one dot on top of another with no arrows, which is uglier
-    /// than just omitting the view.
-    private var fusionScatterInputs: (
-        acoustic: (v: Float, a: Float)?,
-        text: (v: Float, a: Float)?,
-        fused: (v: Float, a: Float)?
-    )? {
-        guard let dim = utterance.dimensional,
-              let plutchik = utterance.plutchik else { return nil }
-        let fusedV = utterance.fusedValence
-        let fusedA = utterance.fusedArousal
-        guard let v = fusedV, let a = fusedA else { return nil }
-        let textV = LateFusion.plutchikToValence(plutchik)
-        let textA = LateFusion.plutchikToArousal(plutchik)
-        return (
-            acoustic: (v: dim.valence, a: dim.arousal),
-            text: (v: textV, a: textA),
-            fused: (v: v, a: a)
-        )
-    }
-
-    /// Top 3 normalized fused-label candidates so the user can see
-    /// not just *which* label won but *how confidently* — a 0.42 vs
-    /// 0.39 runner-up reads very differently from 0.85 vs 0.05.
-    /// Nil when neither modality contributed score (no top label
-    /// to attribute anyway).
-    private var topFusedLabels: [(label: String, score: Float)]? {
-        guard let scored = LateFusion.labelFusionScores(
-            acoustic: utterance.acousticCategorical,
-            plutchik: utterance.plutchik,
-            asrConfidence: utterance.asrConfidence ?? 0.5,
-            acousticWeight: fusionAcousticWeight,
-            textWeightFloor: fusionTextWeightFloor
-        ), !scored.isEmpty else { return nil }
-        return Array(scored.prefix(3))
-    }
-
-    /// Compact "0.62 · 0.48 · 0.55" rendering of the fused V/A/D
-    /// numbers. Returned nil only when none of the three components
-    /// fused — in which case the row's fusion summary is also nil
-    /// and there's nothing to attribute.
-    private var fusedVADSummary: String? {
-        let v = utterance.fusedValence
-        let a = utterance.fusedArousal
-        let d = utterance.fusedDominance
-        guard v != nil || a != nil || d != nil else { return nil }
-        func fmt(_ x: Float?) -> String {
-            x.map { String(format: "%.2f", $0) } ?? "—"
-        }
-        return "\(fmt(v)) · \(fmt(a)) · \(fmt(d))"
-    }
-
-    /// True when the top acoustic class (mapped through
-    /// `plutchikToAcousticLabelMapping`) and the top Plutchik class
-    /// (also mapped through the same table for comparability) name
-    /// different acoustic-label buckets. Used to flag rows where
-    /// the two modalities openly disagree — the fused label hides
-    /// this signal; the inspector should not.
-    ///
-    /// Excludes acoustic "other"/"unknown" buckets (those are sink
-    /// classes — disagreement there is uninformative) and only
-    /// counts text classes that have a mapping (trust /
-    /// anticipation route to "other" too, see LateFusion's
-    /// mapping doc).
-    private var disagreesAcrossModalities: Bool {
-        guard let acoustic = utterance.acousticCategorical?.probabilities,
-              let plutchik = utterance.plutchik?.probabilities else {
-            return false
-        }
-        let validAcoustic = acoustic
-            .filter { $0.key != .unknown && $0.key != .other }
-        guard let topAcoustic = validAcoustic.max(by: { $0.value < $1.value })?.key else {
-            return false
-        }
-        let mappedText: [(label: String, value: Float)] = plutchik.compactMap { entry in
-            guard let mapped = LateFusion.plutchikToAcousticLabelMapping[entry.key],
-                  mapped != "other" else { return nil }
-            return (label: mapped, value: entry.value)
-        }
-        guard let topText = mappedText.max(by: { $0.value < $1.value })?.label else {
-            return false
-        }
-        return topText != topAcoustic.rawValue
+    /// Resolved badge + text-backend-name bundle, computed once
+    /// per render. Internal to the view because the badge models
+    /// carry SwiftUI `Color` values.
+    private var badges: UtteranceBadges {
+        UtteranceBadges(utterance: utterance)
     }
 
     @ViewBuilder
@@ -844,67 +767,6 @@ struct UtteranceRow: View {
             .background(
                 Capsule().fill(Color.orange.opacity(BadgeChrome.subtleFill))
             )
-    }
-
-    /// Compact summary of how V/A fusion weighted the two sides for
-    /// this utterance. Nil when neither modality contributed (the
-    /// fused V/A would be nil too, so there's nothing to attribute).
-    /// When only one modality was present, reports that side as 100%
-    /// so the user can see which side carried the result.
-    private var fusionWeightSummary: String? {
-        let hasAcoustic = utterance.dimensional != nil
-        let hasText = utterance.plutchik != nil
-        switch (hasAcoustic, hasText) {
-        case (false, false):
-            return nil
-        case (true, false):
-            return "Acoustic 100% (no text)"
-        case (false, true):
-            return "Text 100% (no acoustic)"
-        case (true, true):
-            let share = LateFusion.vaFusionShare(
-                asrConfidence: utterance.asrConfidence ?? 0.5,
-                acousticWeight: fusionAcousticWeight,
-                textWeightFloor: fusionTextWeightFloor
-            )
-            return String(
-                format: "Acoustic %.0f%% · Text %.0f%%",
-                share.acoustic * 100,
-                share.text * 100
-            )
-        }
-    }
-
-    /// Compact summary of each modality's overall influence on the
-    /// fused-label argmax. Nil when there's no top label or when
-    /// neither modality contributed any score (defensive — a
-    /// well-formed estimate should always have at least one side
-    /// of input).
-    private var labelFusionSummary: String? {
-        guard utterance.fusedTopLabel != nil else { return nil }
-        guard let share = LateFusion.labelFusionShare(
-            acoustic: utterance.acousticCategorical,
-            plutchik: utterance.plutchik,
-            asrConfidence: utterance.asrConfidence ?? 0.5,
-            acousticWeight: fusionAcousticWeight,
-            textWeightFloor: fusionTextWeightFloor
-        ) else { return nil }
-        return String(
-            format: "Acoustic %.0f%% · Text %.0f%%",
-            share.acoustic * 100,
-            share.text * 100
-        )
-    }
-
-    private var textBackendName: String {
-        guard let raw = utterance.textBackend else { return "Plutchik" }
-        if raw == SwitchingTextSER.foundationModelsGuardrailBackend {
-            return String(localized: "textSER.appleFMViolation")
-        }
-        guard let backend = SwitchingTextSER.Backend(rawValue: raw) else {
-            return "Plutchik"
-        }
-        return backend.badgeLabel
     }
 
     private func metaLine(_ key: String, _ value: String) -> some View {
@@ -939,46 +801,6 @@ struct UtteranceRow: View {
         probs
             .map { (label: $0.key.rawValue, value: $0.value) }
             .sorted { $0.value > $1.value }
-    }
-
-    private var backendBadge: TextBackendBadge? {
-        guard let raw = utterance.textBackend else { return nil }
-        if raw == SwitchingTextSER.foundationModelsGuardrailBackend {
-            return TextBackendBadge(
-                label: String(localized: "textSER.appleFMViolation"),
-                isGuardrail: true
-            )
-        }
-        guard let backend = SwitchingTextSER.Backend(rawValue: raw) else { return nil }
-        return TextBackendBadge(label: backend.badgeLabel, isGuardrail: false)
-    }
-
-    /// Chip shown when this row's acoustic 9-class and Plutchik
-    /// 8-class distributions disagree substantively on the shared
-    /// six-axis subspace. Candidate-sarcasm / mixed-affect tag — the
-    /// fused label hides the disagreement under a single emotion
-    /// name; this surfaces the underlying split. Two strengths:
-    /// `topsAreOpposites` (acoustic top and Plutchik top sit on
-    /// opposite ends of the Plutchik wheel) shows "⚡︎ Mixed" in red;
-    /// the milder "modalities split" case shows "≠ Modalities" in
-    /// orange.
-    private var modalityBadge: ModalityBadge? {
-        guard let score = ModalityDisagreement.score(
-            acoustic: utterance.acousticCategorical,
-            plutchik: utterance.plutchik
-        ), score.tvd >= ModalityDisagreement.flagThreshold else { return nil }
-        if score.topsAreOpposites {
-            return ModalityBadge(
-                label: String(localized: "modality.opposite"),
-                tint: .red,
-                accessibility: String(localized: "modality.opposite.a11y")
-            )
-        }
-        return ModalityBadge(
-            label: String(localized: "modality.split"),
-            tint: .orange,
-            accessibility: String(localized: "modality.split.a11y")
-        )
     }
 
     @ViewBuilder

@@ -233,22 +233,6 @@ public actor MLXQwenSummarizer: SessionSummarizer {
 
     // MARK: - Prompt + parser
 
-    /// Order distinct speaker ids in their first-appearance order,
-    /// matching the chip-bar ordering in the UI so the LLM's
-    /// per-speaker arc reads in the same order the user is reading
-    /// the rows in.
-    private static func orderedSpeakerIDs(
-        from utterances: [UtteranceEstimate]
-    ) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utterances where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
-    }
-
     /// Build the chat-style prompt the model sees. Compact JSON-ish
     /// per-utterance lines keep the token budget bounded — every
     /// numerical score is preserved (the whole point of going
@@ -264,7 +248,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         speakerNames: [String: String],
         truncatedFromTotal: Int?
     ) -> String {
-        let speakers = orderedSpeakerIDs(from: utterances)
+        let speakers = utterances.orderedSpeakerIDs
         var lines: [String] = []
         lines.reserveCapacity(utterances.count + 12)
         lines.append("You are an analyst summarizing a multi-speaker conversation.")

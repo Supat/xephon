@@ -35,7 +35,9 @@ struct InfluenceContagionCard: View {
         )
         let windows = InfluenceDynamics.contagionWindows(utterances: utterances)
         let modalityTallies = ModalityDisagreement.tallies(utterances: utterances)
-        let speakers = orderedSpeakerIDs(from: utterances)
+        let speakers = utterances
+            .sorted(by: { $0.start < $1.start })
+            .orderedSpeakerIDs
 
         VStack(alignment: .leading, spacing: 14) {
             header(speakerCount: speakers.count)
@@ -83,12 +85,17 @@ struct InfluenceContagionCard: View {
     ) -> some View {
         let map = Dictionary(
             uniqueKeysWithValues: pairs.map {
-                (PairKey($0.leader, $0.follower), $0)
+                (SpeakerPairKey($0.leader, $0.follower), $0)
             }
         )
         VStack(alignment: .leading, spacing: 4) {
             sectionTitle(String(localized: "influence.section.leadership"))
-            matrixGrid(speakers: speakers) { leader, follower in
+            SpeakerMatrixGrid(
+                speakers: speakers,
+                cellSize: Self.cellSize,
+                cellSpacing: Self.cellSpacing,
+                labelWidth: Self.speakerLabelWidth
+            ) { leader, follower in
                 leadershipCell(
                     leader: leader,
                     follower: follower,
@@ -105,14 +112,14 @@ struct InfluenceContagionCard: View {
     private func leadershipCell(
         leader: String,
         follower: String,
-        map: [PairKey: InfluenceDynamics.DirectedLeadership]
+        map: [SpeakerPairKey: InfluenceDynamics.DirectedLeadership]
     ) -> some View {
         if leader == follower {
             Text("—")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: Self.cellSize, height: Self.cellSize)
-        } else if let entry = map[PairKey(leader, follower)],
+        } else if let entry = map[SpeakerPairKey(leader, follower)],
                   let v = entry.valenceLeadership {
             // Bipolar tint: green = follower echoes leader (V > 0),
             // red = follower diverges (V < 0). Magnitude → opacity.
@@ -151,38 +158,36 @@ struct InfluenceContagionCard: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: Self.speakerLabelWidth)
-                    Text(String(localized: "influence.col.rescuer"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Text(String(localized: "influence.col.downed"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-                ForEach(tallies, id: \.speakerID) { tally in
-                    HStack(spacing: 0) {
-                        Text(tally.speakerID)
-                            .font(.caption2.bold())
-                            .foregroundStyle(speakerTint(for: tally.speakerID))
-                            .frame(width: Self.speakerLabelWidth, alignment: .leading)
-                        Text(tally.asRescuer > 0 ? "\(tally.asRescuer)" : "—")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(tally.asRescuer > 0 ? .primary : .tertiary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        Text(tally.asDowned > 0 ? "\(tally.asDowned)" : "—")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(tally.asDowned > 0 ? .primary : .tertiary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                }
+                SpeakerTallyTable(
+                    rows: tallies,
+                    rowID: \.speakerID,
+                    speakerID: { $0.speakerID },
+                    columnHeaders: [
+                        String(localized: "influence.col.rescuer"),
+                        String(localized: "influence.col.downed"),
+                    ],
+                    cells: { tally in
+                        tallyCount(tally.asRescuer)
+                        tallyCount(tally.asDowned)
+                    },
+                    labelWidth: Self.speakerLabelWidth
+                )
             }
             Text(String(localized: "influence.footnote.rescue"))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    /// Centered cell: monospaced int or em-dash for zero, with the
+    /// dash rendered in tertiary so the eye reads "nothing here"
+    /// without re-checking the number.
+    @ViewBuilder
+    private func tallyCount(_ value: Int) -> some View {
+        Text(value > 0 ? "\(value)" : "—")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(value > 0 ? .primary : .tertiary)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     // MARK: - #7 Contagion windows
@@ -261,31 +266,21 @@ struct InfluenceContagionCard: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: Self.speakerLabelWidth)
-                    Text(String(localized: "influence.col.flagged"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Text(String(localized: "influence.col.opposite"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Text(String(localized: "influence.col.meanTVD"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-                ForEach(tallies, id: \.speakerID) { tally in
-                    HStack(spacing: 0) {
-                        Text(tally.speakerID)
-                            .font(.caption2.bold())
-                            .foregroundStyle(speakerTint(for: tally.speakerID))
-                            .frame(width: Self.speakerLabelWidth, alignment: .leading)
-                        Text(tally.flaggedCount > 0 ? "\(tally.flaggedCount)" : "—")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(tally.flaggedCount > 0 ? .primary : .tertiary)
-                            .frame(maxWidth: .infinity, alignment: .center)
+                SpeakerTallyTable(
+                    rows: tallies,
+                    rowID: \.speakerID,
+                    speakerID: { $0.speakerID },
+                    columnHeaders: [
+                        String(localized: "influence.col.flagged"),
+                        String(localized: "influence.col.opposite"),
+                        String(localized: "influence.col.meanTVD"),
+                    ],
+                    cells: { tally in
+                        tallyCount(tally.flaggedCount)
+                        // Opposite-modality count is tinted red
+                        // even at zero — the count of contradictory
+                        // top labels is the alarming signal here,
+                        // not a neutral metric.
                         Text(tally.oppositeCount > 0 ? "\(tally.oppositeCount)" : "—")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(
@@ -298,47 +293,13 @@ struct InfluenceContagionCard: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.primary)
                             .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                }
+                    },
+                    labelWidth: Self.speakerLabelWidth
+                )
             }
             Text(String(localized: "influence.footnote.modality"))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-        }
-    }
-
-    // MARK: - Shared scaffolding
-
-    @ViewBuilder
-    private func matrixGrid<Cell: View>(
-        speakers: [String],
-        @ViewBuilder cell: @escaping (_ row: String, _ col: String) -> Cell
-    ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: Self.cellSpacing) {
-                HStack(spacing: Self.cellSpacing) {
-                    Color.clear.frame(width: Self.speakerLabelWidth)
-                    ForEach(speakers, id: \.self) { col in
-                        Text(col)
-                            .font(.caption2.bold())
-                            .foregroundStyle(speakerTint(for: col))
-                            .frame(width: Self.cellSize, alignment: .center)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    }
-                }
-                ForEach(speakers, id: \.self) { row in
-                    HStack(spacing: Self.cellSpacing) {
-                        Text(row)
-                            .font(.caption2.bold())
-                            .foregroundStyle(speakerTint(for: row))
-                            .frame(width: Self.speakerLabelWidth, alignment: .leading)
-                        ForEach(speakers, id: \.self) { col in
-                            cell(row, col)
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -348,25 +309,5 @@ struct InfluenceContagionCard: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
-    }
-
-    private func orderedSpeakerIDs(from utts: [UtteranceEstimate]) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utts.sorted(by: { $0.start < $1.start })
-            where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
-    }
-
-    private struct PairKey: Hashable {
-        let row: String
-        let col: String
-        init(_ row: String, _ col: String) {
-            self.row = row
-            self.col = col
-        }
     }
 }

@@ -123,27 +123,16 @@ struct ReactivityCard: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: Self.speakerLabelWidth)
-                    Text(String(localized: "reactivity.col.median"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Text(String(localized: "reactivity.col.recovered"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Text(String(localized: "reactivity.col.unresolved"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-                ForEach(tallies, id: \.speakerID) { tally in
-                    HStack(spacing: 0) {
-                        Text(tally.speakerID)
-                            .font(.caption2.bold())
-                            .foregroundStyle(speakerTint(for: tally.speakerID))
-                            .frame(width: Self.speakerLabelWidth, alignment: .leading)
+                SpeakerTallyTable(
+                    rows: tallies,
+                    rowID: \.speakerID,
+                    speakerID: { $0.speakerID },
+                    columnHeaders: [
+                        String(localized: "reactivity.col.median"),
+                        String(localized: "reactivity.col.recovered"),
+                        String(localized: "reactivity.col.unresolved"),
+                    ],
+                    cells: { tally in
                         Text(tally.medianRecoverySec.map { formatClock($0) } ?? "—")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.primary)
@@ -160,8 +149,9 @@ struct ReactivityCard: View {
                                     : AnyShapeStyle(HierarchicalShapeStyle.tertiary)
                             )
                             .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                }
+                    },
+                    labelWidth: Self.speakerLabelWidth
+                )
             }
             Text(String(localized: "reactivity.footnote.recovery"))
                 .font(.caption2)

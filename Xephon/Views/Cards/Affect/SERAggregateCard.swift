@@ -33,6 +33,8 @@ struct SERAggregateCard: View {
     /// tap-to-scroll entirely.
     var onTapUtterance: ((UUID) -> Void)?
 
+    @State private var model = SERAggregateModel()
+
     private static let wheelHeight: CGFloat = 180
     private static let scatterHeight: CGFloat = 160
 
@@ -62,6 +64,9 @@ struct SERAggregateCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: recorder.utterancesVersion) {
+            model.recompute(from: recorder.utterances)
+        }
     }
 
     // MARK: - Plutchik wheel
@@ -70,39 +75,16 @@ struct SERAggregateCard: View {
     private var plutchikSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader(String(localized: "ser.aggregate.plutchik"))
-            let means = plutchikMeans
-            if means.values.allSatisfy({ $0 == 0 }) {
+            if !model.hasAnyPlutchik {
                 Text(String(localized: "ser.aggregate.plutchik.empty"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                plutchikWheel(means: means)
+                plutchikWheel(means: model.plutchikMeans)
                     .frame(height: Self.wheelHeight)
                     .frame(maxWidth: .infinity)
             }
         }
-    }
-
-    /// Mean intensity per Plutchik label across utterances that
-    /// produced a text-SER vector. Labels missing from a row count
-    /// as zero contribution (matches the per-utterance schema —
-    /// missing-label-means-zero, not "missing"-as-NaN).
-    private var plutchikMeans: [PlutchikScore.Label: Float] {
-        var sums: [PlutchikScore.Label: Float] = [:]
-        var count: Int = 0
-        for utt in recorder.utterances {
-            guard let probs = utt.plutchik?.probabilities else { continue }
-            count += 1
-            for label in PlutchikScore.Label.allCases {
-                sums[label, default: 0] += probs[label] ?? 0
-            }
-        }
-        guard count > 0 else { return [:] }
-        var out: [PlutchikScore.Label: Float] = [:]
-        for label in PlutchikScore.Label.allCases {
-            out[label] = (sums[label] ?? 0) / Float(count)
-        }
-        return out
     }
 
     @ViewBuilder
@@ -191,8 +173,7 @@ struct SERAggregateCard: View {
     private var acousticSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader(String(localized: "ser.aggregate.acoustic"))
-            let means = acousticMeans
-            if means.values.allSatisfy({ $0 == 0 }) {
+            if !model.hasAnyAcoustic {
                 Text(String(localized: "ser.aggregate.acoustic.empty"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -202,32 +183,11 @@ struct SERAggregateCard: View {
                         CategoricalEmotion.Label.allCases,
                         id: \.self
                     ) { label in
-                        acousticBar(label: label, value: means[label] ?? 0)
+                        acousticBar(label: label, value: model.acousticMeans[label] ?? 0)
                     }
                 }
             }
         }
-    }
-
-    /// Mean per-class probability across utterances that produced
-    /// an acoustic-categorical softmax. Same missing-as-zero rule
-    /// as `plutchikMeans`.
-    private var acousticMeans: [CategoricalEmotion.Label: Float] {
-        var sums: [CategoricalEmotion.Label: Float] = [:]
-        var count: Int = 0
-        for utt in recorder.utterances {
-            guard let probs = utt.acousticCategorical?.probabilities else { continue }
-            count += 1
-            for label in CategoricalEmotion.Label.allCases {
-                sums[label, default: 0] += probs[label] ?? 0
-            }
-        }
-        guard count > 0 else { return [:] }
-        var out: [CategoricalEmotion.Label: Float] = [:]
-        for label in CategoricalEmotion.Label.allCases {
-            out[label] = (sums[label] ?? 0) / Float(count)
-        }
-        return out
     }
 
     @ViewBuilder
@@ -265,7 +225,7 @@ struct SERAggregateCard: View {
     private var vaScatterSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader(String(localized: "ser.aggregate.va"))
-            let points = vaPoints
+            let points = model.vaPoints
             if points.isEmpty {
                 Text(String(localized: "ser.aggregate.va.empty"))
                     .font(.caption)
@@ -306,7 +266,7 @@ struct SERAggregateCard: View {
     private func handleScatterTap(
         at location: CGPoint,
         in size: CGSize,
-        points: [VAPoint]
+        points: [SERAggregateModel.VAPoint]
     ) {
         guard let onTap = onTapUtterance, !points.isEmpty else { return }
         let inset: CGFloat = 14
@@ -330,34 +290,8 @@ struct SERAggregateCard: View {
         if let id = bestID { onTap(id) }
     }
 
-    private struct VAPoint {
-        let id: UUID
-        let valence: Float
-        let arousal: Float
-        let speakerID: String
-    }
-
-    /// One dot per utterance with both fused V and fused A present.
-    /// Rows missing either coordinate are dropped — there's no
-    /// meaningful position to plot otherwise. The V/A space is
-    /// canonically 0..1 in this codebase; we don't clamp here so
-    /// out-of-range values would render at the canvas edges and
-    /// flag the anomaly visually.
-    private var vaPoints: [VAPoint] {
-        recorder.utterances.compactMap { utt in
-            guard let v = utt.fusedValence,
-                  let a = utt.fusedArousal else { return nil }
-            return VAPoint(
-                id: utt.id,
-                valence: v,
-                arousal: a,
-                speakerID: utt.speakerID
-            )
-        }
-    }
-
     @ViewBuilder
-    private func vaScatter(points: [VAPoint]) -> some View {
+    private func vaScatter(points: [SERAggregateModel.VAPoint]) -> some View {
         Canvas { ctx, size in
             let inset: CGFloat = 14
             let w = size.width - 2 * inset

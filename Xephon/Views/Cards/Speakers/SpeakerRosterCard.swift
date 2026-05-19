@@ -36,6 +36,8 @@ struct SpeakerRosterCard: View {
     @State private var hideUnreferencedSpeakers: Bool = false
 
     var body: some View {
+        let digest = SpeakerRosterDigest(recorder: recorder, cluster: cluster)
+        let visibleIDs = visibleSpeakerIDs(digest: digest)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(String(localized: "roster.header"))
@@ -49,7 +51,7 @@ struct SpeakerRosterCard: View {
                 // unreferenced speaker the toggle would actually
                 // hide — otherwise it'd be a no-op control.
                 if let linked = linkedSpeakerIDs,
-                   allSpeakerIDs.contains(where: { !linked.contains($0) }) {
+                   digest.allSpeakerIDs.contains(where: { !linked.contains($0) }) {
                     Button {
                         hideUnreferencedSpeakers.toggle()
                     } label: {
@@ -70,21 +72,21 @@ struct SpeakerRosterCard: View {
                             : AnyShapeStyle(HierarchicalShapeStyle.secondary)
                     )
                 }
-                if !speakerIDs.isEmpty {
-                    Text("\(speakerIDs.count)")
+                if !visibleIDs.isEmpty {
+                    Text("\(visibleIDs.count)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
             }
-            if speakerIDs.isEmpty {
+            if visibleIDs.isEmpty {
                 Text(String(localized: "roster.empty"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(speakerIDs, id: \.self) { id in
-                        row(for: id)
+                    ForEach(visibleIDs, id: \.self) { id in
+                        row(for: id, digest: digest)
                     }
                 }
             }
@@ -94,36 +96,18 @@ struct SpeakerRosterCard: View {
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// Sorted union of utterance-roster ids and cluster-DB ids,
-    /// before any "Linked only" filtering. Sort is alphabetical,
-    /// which for `S0N` ids is also numeric; no point overthinking
-    /// ordering when the keys are zero-padded 2-digit suffixes.
-    /// The header's toggle-visibility check reads this so it can
-    /// decide whether anything would actually get hidden.
-    private var allSpeakerIDs: [String] {
-        var seen: Set<String> = []
-        var ids: [String] = []
-        for id in recorder.knownSpeakerIDs() where seen.insert(id).inserted {
-            ids.append(id)
-        }
-        for spk in cluster.speakers where seen.insert(spk.id).inserted {
-            ids.append(spk.id)
-        }
-        return ids.sorted()
-    }
-
-    /// What the body actually renders. Applies the "Linked only"
-    /// filter when the toggle is on and the controller has supplied
-    /// a referenced-id set; otherwise hands back the full union.
-    private var speakerIDs: [String] {
+    /// Apply the "Linked only" filter when the toggle is on and the
+    /// controller has supplied a referenced-id set; otherwise hand
+    /// back the full union.
+    private func visibleSpeakerIDs(digest: SpeakerRosterDigest) -> [String] {
         guard hideUnreferencedSpeakers,
-              let linked = linkedSpeakerIDs else { return allSpeakerIDs }
-        return allSpeakerIDs.filter { linked.contains($0) }
+              let linked = linkedSpeakerIDs else { return digest.allSpeakerIDs }
+        return digest.allSpeakerIDs.filter { linked.contains($0) }
     }
 
     @ViewBuilder
-    private func row(for id: String) -> some View {
-        let demo = demographics[id]
+    private func row(for id: String, digest: SpeakerRosterDigest) -> some View {
+        let demo = digest.demographics[id]
         let isHighlighted = highlightedSpeakerID == id
         HStack(spacing: 8) {
             Text(id)
@@ -157,7 +141,7 @@ struct SpeakerRosterCard: View {
             // are in the diarizer DB but haven't been claimed by a
             // row yet — useful diagnostic before the user decides
             // whether to prune them.
-            Text("\(utteranceCounts[id, default: 0])")
+            Text("\(digest.utteranceCounts[id, default: 0])")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
         }
@@ -176,64 +160,6 @@ struct SpeakerRosterCard: View {
                         : Color.clear
                 )
         )
-    }
-
-    /// Utterance count per speaker id, computed once per render
-    /// from `recorder.utterances`. Speakers not present in any
-    /// utterance read as 0 — useful for spotting diarizer-DB
-    /// orphans that the user can prune.
-    private var utteranceCounts: [String: Int] {
-        var counts: [String: Int] = [:]
-        for utt in recorder.utterances {
-            counts[utt.speakerID, default: 0] += 1
-        }
-        return counts
-    }
-
-    /// Per-row demographics from the W2V2 age-gender model. Built
-    /// once per render by walking `recorder.utterances`. Speakers
-    /// with no age-gender data (model not loaded, or only too-short
-    /// clips) are absent from the map — the row falls back to id +
-    /// name only.
-    private var demographics: [String: SpeakerDemographics] {
-        var votes: [String: [AgeGenderEstimate.Gender: Int]] = [:]
-        var ages: [String: (min: Float, max: Float)] = [:]
-        for utt in recorder.utterances {
-            guard let ag = utt.ageGender else { continue }
-            let speaker = utt.speakerID
-            if let top = ag.topGender {
-                votes[speaker, default: [:]][top, default: 0] += 1
-            }
-            let years = ag.ageYears
-            if let existing = ages[speaker] {
-                ages[speaker] = (
-                    min: min(existing.min, years),
-                    max: max(existing.max, years)
-                )
-            } else {
-                ages[speaker] = (min: years, max: years)
-            }
-        }
-        var out: [String: SpeakerDemographics] = [:]
-        let allSpeakers = Set(votes.keys).union(ages.keys)
-        for speaker in allSpeakers {
-            // Plurality vote, with CaseIterable order as the
-            // deterministic tiebreaker so the chip doesn't flicker
-            // between re-renders when two classes share the lead.
-            let majority = votes[speaker].flatMap { tally in
-                AgeGenderEstimate.Gender.allCases.max { a, b in
-                    (tally[a] ?? 0) < (tally[b] ?? 0)
-                }.flatMap { winner in
-                    (tally[winner] ?? 0) > 0 ? winner : nil
-                }
-            }
-            let range: ClosedRange<Float>? = ages[speaker].map { $0.min ... $0.max }
-            out[speaker] = SpeakerDemographics(
-                majorityGender: majority,
-                ageRangeYears: range
-            )
-        }
-        return out
     }
 
     /// "32" if min==max (single observation or zero spread), else
@@ -292,7 +218,3 @@ struct SpeakerRosterCard: View {
     }
 }
 
-private struct SpeakerDemographics {
-    let majorityGender: AgeGenderEstimate.Gender?
-    let ageRangeYears: ClosedRange<Float>?
-}

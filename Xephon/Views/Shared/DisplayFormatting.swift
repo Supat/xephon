@@ -12,6 +12,17 @@ extension SwitchingTextSER.Backend {
     }
 }
 
+/// Localized display label for the V/A toggle shared by every
+/// synchrony view. Lives view-side because the strings file
+/// (`synchrony.metric.valence` / `…arousal`) is in the Xephon
+/// target's bundle, not the Fusion package.
+func synchronyAxisLabel(_ axis: SynchronyAxis) -> String {
+    switch axis {
+    case .valence: return String(localized: "synchrony.metric.valence")
+    case .arousal: return String(localized: "synchrony.metric.arousal")
+    }
+}
+
 /// Lightweight view-model for the text-SER badge rendered on each
 /// `UtteranceRow`. Carries the chip label plus a flag for the Apple
 /// FoundationModels guardrail-decline state, which is rendered in

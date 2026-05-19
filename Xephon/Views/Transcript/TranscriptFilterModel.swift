@@ -96,13 +96,7 @@ final class TranscriptFilterModel {
     /// speaker is appended at the end instead of reshuffling
     /// existing chips.
     func availableSpeakers(in utterances: [UtteranceEstimate]) -> [String] {
-        var seen: Set<String> = []
-        var ordered: [String] = []
-        for u in utterances where !seen.contains(u.speakerID) {
-            seen.insert(u.speakerID)
-            ordered.append(u.speakerID)
-        }
-        return ordered
+        utterances.orderedSpeakerIDs
     }
 
     /// Utterance IDs whose stored `speakerID` disagrees with the

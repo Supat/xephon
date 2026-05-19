@@ -40,7 +40,7 @@ targets:
       # ML model weights (W2V2, emotion2vec, WRIME RoBERTa) are NOT
       # bundled — they ship via a GitHub Release attached to the
       # `models-v1` tag and download on first launch. See
-      # `Xephon/ModelStore.swift` and `scripts/upload_models_to_github_release.sh`.
+      # `Xephon/Models/ModelStore.swift` and `scripts/upload_models_to_github_release.sh`.
     info:
       path: Xephon/Info.plist
       properties:
