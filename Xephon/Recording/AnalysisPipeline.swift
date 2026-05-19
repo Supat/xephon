@@ -99,20 +99,34 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// by time-overlap matching. Reset between sessions via
     /// `resetSpeakerTracking()`.
     private let speakerTracker: StreamingSpeakerTracker
+    /// Standalone voice-activity detector. Runs alongside the
+    /// diarizer on the same continuous-tick window and feeds
+    /// `vadTracker`. Optional because the FluidAudio VAD model is
+    /// downloaded lazily on first use and a model-load failure
+    /// shouldn't block the rest of the pipeline.
+    private let vadDetector: FluidAudioVAD?
+    /// Cumulative speech timeline. Read by `trimToSpeakerActive`
+    /// and AND-ed with the diarizer's per-speaker regions to catch
+    /// intra-utterance silences the diarizer absorbs into its
+    /// speaker tracks.
+    private let vadTracker: StreamingVADTracker
 
     init(
         transcriber: any Transcriber = SpeechAnalyzerTranscriber(),
         diarizer: (any Diarizer)? = nil,
+        vadDetector: FluidAudioVAD? = nil,
         dimensionalSER: (any DimensionalAcousticSER)? = nil,
         categoricalSER: (any CategoricalAcousticSER)? = nil,
         ageGenderSER: (any AgeGenderSER)? = nil,
         textSER: (any TextSER)? = nil,
         hasDeBERTaTextSER: Bool = false,
         fuser: any Fuser = LateFusion(),
-        speakerTracker: StreamingSpeakerTracker = StreamingSpeakerTracker()
+        speakerTracker: StreamingSpeakerTracker = StreamingSpeakerTracker(),
+        vadTracker: StreamingVADTracker = StreamingVADTracker()
     ) {
         self.transcriber = transcriber
         self.diarizer = diarizer
+        self.vadDetector = vadDetector
         self.dimensionalSER = dimensionalSER
         self.categoricalSER = categoricalSER
         self.ageGenderSER = ageGenderSER
@@ -120,6 +134,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         self.hasDeBERTaTextSER = hasDeBERTaTextSER
         self.fuser = fuser
         self.speakerTracker = speakerTracker
+        self.vadTracker = vadTracker
     }
 
     /// Clear cumulative speaker history so the next session starts at S01.
@@ -127,6 +142,7 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// without this the speaker numbering would carry over.
     func resetSpeakerTracking() async {
         await speakerTracker.reset()
+        await vadTracker.reset()
         // FluidAudio's SpeakerManager has its own embedding-based
         // database that's independent of `speakerTracker.cumulative`.
         // Without this reset, an earlier session's centroid for "S01"
@@ -288,6 +304,32 @@ final class AnalysisPipeline: @unchecked Sendable {
         let diarized = await runDiarization(audio)
         guard !diarized.isEmpty else { return }
         _ = await speakerTracker.ingest(diarized)
+    }
+
+    /// Mirror of `ingestDiarizationWindow` for VAD. Called from the
+    /// continuous-tick task on the same 10 s sliding window so the
+    /// VAD timeline stays in lockstep with the diarizer timeline —
+    /// the two are AND-ed at trim time.
+    func ingestVADWindow(_ audio: AudioChunk) async {
+        guard let vad = vadDetector, !audio.samples.isEmpty else { return }
+        do {
+            let speech = try await vad.segment(audio)
+            guard !speech.isEmpty else { return }
+            _ = await vadTracker.ingest(speech)
+        } catch {
+            // Swallow — VAD failures degrade trim quality (we fall
+            // back to diarizer-only intervals) but shouldn't block
+            // the rest of the pipeline.
+            AppLog.diarization.debug(
+                "VAD window skipped: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Snapshot the cumulative VAD speech timeline. Used by
+    /// `processSegment` when `applyDiarizerTrim` is on.
+    func vadTimelineSnapshot() async -> [SpeechSegment] {
+        await vadTracker.cumulativeSnapshot()
     }
 
     /// Run the diarizer on `audio` in isolation and resolve a
@@ -454,6 +496,13 @@ final class AnalysisPipeline: @unchecked Sendable {
         var diagnostics: [String] = []
 
         let diarizer: (any Diarizer)? = enableDiarization ? FluidAudioDiarizer() : nil
+        // VAD lives alongside the diarizer — same FluidAudio package,
+        // same lifecycle, same continuous-tick cadence. Always
+        // constructed; the model itself downloads lazily on first
+        // `segment` call (~1.5 MB Silero unified), and a
+        // missing/broken model degrades to "no trim" rather than
+        // blocking the pipeline (see `ingestVADWindow`).
+        let vadDetector = FluidAudioVAD()
 
         let dimensional: (any DimensionalAcousticSER)? = await Self.loadModel(
             name: "W2V2",
@@ -557,6 +606,7 @@ final class AnalysisPipeline: @unchecked Sendable {
 
         let pipeline = AnalysisPipeline(
             diarizer: diarizer,
+            vadDetector: vadDetector,
             dimensionalSER: dimensional,
             categoricalSER: categorical,
             ageGenderSER: ageGender,
@@ -899,11 +949,13 @@ final class AnalysisPipeline: @unchecked Sendable {
         let trim: SpeakerActiveTrim?
         if applyDiarizerTrim {
             let timeline = await speakerTracker.cumulativeSnapshot()
+            let vadTimeline = await vadTracker.cumulativeSnapshot()
             trim = Self.trimToSpeakerActive(
                 segmentAudio: segmentAudio,
                 asr: asr,
                 speakerID: fallbackSpeakerID,
-                timeline: timeline
+                timeline: timeline,
+                vadTimeline: vadTimeline
             )
         } else {
             trim = nil
@@ -1005,7 +1057,8 @@ final class AnalysisPipeline: @unchecked Sendable {
         segmentAudio: AudioChunk,
         asr: ASRSegment,
         speakerID: String,
-        timeline: [DiarizedSegment]
+        timeline: [DiarizedSegment],
+        vadTimeline: [SpeechSegment]
     ) -> SpeakerActiveTrim? {
         // Filter to the row's speaker, clip to the window, drop empties.
         var clipped: [(start: TimeInterval, end: TimeInterval)] = []
@@ -1028,6 +1081,36 @@ final class AnalysisPipeline: @unchecked Sendable {
             } else {
                 merged.append(c)
             }
+        }
+        // AND with the VAD timeline so intra-utterance silences the
+        // diarizer absorbs into its speaker tracks get cut. When the
+        // VAD timeline is empty (model still loading, or VAD failed
+        // for this window), skip the intersection and let the
+        // diarizer-only result through — same predictable-fallback
+        // policy as everywhere else in this helper.
+        if !vadTimeline.isEmpty {
+            var intersected: [(start: TimeInterval, end: TimeInterval)] = []
+            // Both lists sorted by start; walk together. Speech-side
+            // index moves forward only — once a speech segment ends
+            // before the current speaker segment starts, no later
+            // speaker segment can intersect it.
+            var j = 0
+            for run in merged {
+                // Advance speech pointer past segments that end
+                // before the current run starts.
+                while j < vadTimeline.count && vadTimeline[j].end <= run.start {
+                    j += 1
+                }
+                var k = j
+                while k < vadTimeline.count && vadTimeline[k].start < run.end {
+                    let s = max(vadTimeline[k].start, run.start)
+                    let e = min(vadTimeline[k].end, run.end)
+                    if e > s { intersected.append((s, e)) }
+                    k += 1
+                }
+            }
+            guard !intersected.isEmpty else { return nil }
+            merged = intersected
         }
         // Concatenate audio samples for the kept intervals.
         // segmentAudio.timestamp is the absolute file-time of its

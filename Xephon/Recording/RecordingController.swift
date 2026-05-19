@@ -1188,6 +1188,17 @@ final class RecordingController {
                     let window = self.capturedAudio.slice(start: fireStart, end: fireEnd)
                     guard !window.samples.isEmpty else { continue }
                     await pipeline.ingestDiarizationWindow(window)
+                    // VAD on the same window. Cheap (~10–30 ms on
+                    // M-class for 10 s of audio); produces the
+                    // speech-vs-silence signal that
+                    // `trimToSpeakerActive` AND-s with the diarizer's
+                    // per-speaker regions in live mode. Run
+                    // sequentially after diarize rather than in
+                    // parallel because both touch the same audio
+                    // buffer + the same FluidAudio download queue on
+                    // first call; sequencing keeps the ordering
+                    // predictable and the model-load cost serial.
+                    await pipeline.ingestVADWindow(window)
                     // Publish progress so `trimProcessedAudio` can
                     // hold the buffer back if ASR races ahead.
                     self.lastDiarizedAudioTime = fireEnd
