@@ -1292,6 +1292,17 @@ final class RecordingController {
                     // = ~3.8 MB regardless of how far ASR is behind.
                     self.trimProcessedAudio(below: segment.end)
                     self.beginSegmentInflight()
+                    // Live-recording acoustic-SER trim opt-in. Captured
+                    // outside the addTask body because `self` is weak
+                    // inside; we want the trim decision pinned at the
+                    // time the segment was scheduled, not re-checked
+                    // later. File mode keeps the whole-window SER input
+                    // for bit-exact reproducibility across re-runs.
+                    let isLiveSource: Bool
+                    switch self.sourceMode {
+                    case .microphone: isLiveSource = true
+                    case .file:       isLiveSource = false
+                    }
                     group.addTask { [weak self] in
                         // Sentence-level split (pause + punctuation),
                         // then per-sentence speaker assignment from the
@@ -1315,7 +1326,8 @@ final class RecordingController {
                                 let (estimate, metrics) = try await pipeline.processSegment(
                                     asr: split.asr,
                                     segmentAudio: split.audio,
-                                    fallbackSpeakerID: split.speaker
+                                    fallbackSpeakerID: split.speaker,
+                                    applyDiarizerTrim: isLiveSource
                                 )
                                 // Stamp the per-utterance speaker
                                 // embedding so the cluster scatter

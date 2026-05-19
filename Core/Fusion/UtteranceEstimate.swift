@@ -112,6 +112,37 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.fusedTopLabel = fusedTopLabel
     }
 
+    /// Replace the utterance's `[start, end]` bounds. Used by the
+    /// live-mode acoustic-SER trim path to tighten the row to the
+    /// portion the diarizer placed this speaker in — only that path
+    /// has authority to narrow the bounds. The new range must be
+    /// inside the prior one (caller's responsibility; not clamped
+    /// here because a non-subset would silently swallow audio
+    /// outside the captured slice on re-evaluation).
+    public func withBounds(start newStart: TimeInterval, end newEnd: TimeInterval) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: newStart,
+            end: newEnd,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
+            plutchik: plutchik,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
     /// Return a copy with `transcript` replaced. Used by the
     /// transcription-review sheet to hand the in-progress inline
     /// edit off to the full Edit Utterance panel without losing

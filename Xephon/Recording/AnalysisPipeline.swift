@@ -881,13 +881,38 @@ final class AnalysisPipeline: @unchecked Sendable {
     func processSegment(
         asr: ASRSegment,
         segmentAudio: AudioChunk,
-        fallbackSpeakerID: String = "S01"
+        fallbackSpeakerID: String = "S01",
+        applyDiarizerTrim: Bool = false
     ) async throws -> (UtteranceEstimate, ProcessingMetrics) {
         let totalStart = Date()
         let acousticStart = Date()
-        async let dimensional = runDimensional(segmentAudio)
-        async let categorical = runCategorical(segmentAudio)
-        async let demographics = runAgeGender(segmentAudio)
+
+        // Live-recording acoustic-SER trim. When the caller opts in
+        // (microphone source only — file mode keeps bit-exact
+        // reproducibility), trim `segmentAudio` to the portions the
+        // cumulative diarizer placed at `fallbackSpeakerID` inside
+        // `[asr.start, asr.end]`, repeat-padding up to a 2 s minimum
+        // so capForSER's smallest bin always gets real signal. If the
+        // filter returns nothing (over-clustering: diarizer minted a
+        // phantom ID for this row's speaker), fall back to the full
+        // segment audio — predictable degradation.
+        let trim: SpeakerActiveTrim?
+        if applyDiarizerTrim {
+            let timeline = await speakerTracker.cumulativeSnapshot()
+            trim = Self.trimToSpeakerActive(
+                segmentAudio: segmentAudio,
+                asr: asr,
+                speakerID: fallbackSpeakerID,
+                timeline: timeline
+            )
+        } else {
+            trim = nil
+        }
+        let serAudio = trim?.audio ?? segmentAudio
+
+        async let dimensional = runDimensional(serAudio)
+        async let categorical = runCategorical(serAudio)
+        async let demographics = runAgeGender(serAudio)
         async let plutchik = runText(asr.text)
 
         // Acoustic timing = wall time until both dimensional + categorical
@@ -914,15 +939,133 @@ final class AnalysisPipeline: @unchecked Sendable {
         // Nil when text SER was skipped (filler / empty / no model);
         // sentinel string when Apple FM declined via its safety guardrail.
         let textBackend: String? = await resolveTextBackend(for: textResult)
-        let estimate = baseEstimate
+        var estimate = baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(ageGender)
+        // Propagate the trim to the utterance entry's bounds so the
+        // row, the timeline strip, and any downstream re-eval all
+        // see the actual voicing range. Clamped to the original ASR
+        // window so a future change to the trim helper can never
+        // widen the utterance.
+        if let trim = trim {
+            let newStart = max(asr.start, trim.start)
+            let newEnd = min(asr.end, trim.end)
+            if newStart < newEnd {
+                estimate = estimate.withBounds(start: newStart, end: newEnd)
+            }
+        }
         let metrics = ProcessingMetrics(
             acousticDuration: dim != nil || cat != nil ? acousticDuration : nil,
             textDuration: txt != nil ? textDuration : nil,
             totalDuration: Date().timeIntervalSince(totalStart)
         )
         return (estimate, metrics)
+    }
+
+    /// Output bundle from `trimToSpeakerActive`: the concatenated
+    /// audio of the speaker-active intervals (repeat-padded to 2 s
+    /// minimum) plus the outer bounds of the kept intervals.
+    struct SpeakerActiveTrim {
+        let audio: AudioChunk
+        let start: TimeInterval
+        let end: TimeInterval
+    }
+
+    /// Trim `segmentAudio` to the portions of `[asr.start, asr.end]`
+    /// where the cumulative diarizer timeline places `speakerID`.
+    ///
+    /// Returns:
+    ///   - `audio`: concatenated samples from every kept interval,
+    ///     repeat-padded to a 2 s minimum so `capForSER`'s smallest
+    ///     bin always gets real signal (zero-pad would re-introduce
+    ///     the silence bias that `capForSER` was rewritten to avoid:
+    ///     W2V2 → `A≈0.61, V≈0.39`; emotion2vec → `sad≈99%`).
+    ///   - `start`/`end`: outer edges of the kept intervals. Caller
+    ///     uses these to tighten `utterance.start/end` so the row
+    ///     reflects actual voicing — inter-word pauses inside the
+    ///     speech run stay inside the range; only head/tail silence
+    ///     that the diarizer didn't tag as this speaker gets cut.
+    ///
+    /// Returns `nil` when no diarizer segment for `speakerID`
+    /// overlaps the window — caller should fall back to scoring
+    /// `segmentAudio` unchanged with the original ASR bounds. The
+    /// empty-intersection case is the over-clustering signal
+    /// (phantom diarizer ID), and pretending we have signal we
+    /// don't degrades worse than the current whole-window baseline.
+    ///
+    /// **Possible future improvement**: score each interval
+    /// separately and aggregate by sample-count-weighted mean.
+    /// Concatenation is simpler but introduces Mel-feature
+    /// discontinuities at the interval seams — empirically minor for
+    /// the mean-pool classifiers we run (W2V2, emotion2vec) but a
+    /// known artifact. If a future eval shows it matters, switch to
+    /// per-interval scoring; the caller's API doesn't need to change.
+    static let trimMinDurationSec: TimeInterval = 2.0
+    static func trimToSpeakerActive(
+        segmentAudio: AudioChunk,
+        asr: ASRSegment,
+        speakerID: String,
+        timeline: [DiarizedSegment]
+    ) -> SpeakerActiveTrim? {
+        // Filter to the row's speaker, clip to the window, drop empties.
+        var clipped: [(start: TimeInterval, end: TimeInterval)] = []
+        clipped.reserveCapacity(timeline.count)
+        for seg in timeline where seg.speakerID == speakerID {
+            let s = max(seg.start, asr.start)
+            let e = min(seg.end, asr.end)
+            guard e > s else { continue }
+            clipped.append((s, e))
+        }
+        guard !clipped.isEmpty else { return nil }
+        // Sort + merge overlaps. Adjacent (a.end == b.start) merges
+        // too — they'd read as one continuous run anyway.
+        clipped.sort { $0.start < $1.start }
+        var merged: [(start: TimeInterval, end: TimeInterval)] = []
+        merged.reserveCapacity(clipped.count)
+        for c in clipped {
+            if let last = merged.last, c.start <= last.end {
+                merged[merged.count - 1] = (last.start, max(last.end, c.end))
+            } else {
+                merged.append(c)
+            }
+        }
+        // Concatenate audio samples for the kept intervals.
+        // segmentAudio.timestamp is the absolute file-time of its
+        // samples[0] (see RollingAudioBuffer.slice), so we offset
+        // each interval's absolute audio-time by that origin to
+        // index into samples.
+        let sr = segmentAudio.sampleRate
+        var samples: [Float] = []
+        for run in merged {
+            let lo = max(0, Int((run.start - segmentAudio.timestamp) * sr))
+            let hi = min(segmentAudio.samples.count, Int((run.end - segmentAudio.timestamp) * sr))
+            guard lo < hi else { continue }
+            samples.append(contentsOf: segmentAudio.samples[lo..<hi])
+        }
+        guard !samples.isEmpty else { return nil }
+        // Repeat-pad up to the 2 s floor. Cycles the original
+        // speech samples — never silence — so the mean-pool window
+        // represents the utterance's own acoustic character rather
+        // than a speech / silence blend.
+        let minSamples = Int(trimMinDurationSec * sr)
+        if samples.count < minSamples {
+            let source = samples
+            while samples.count < minSamples {
+                let needed = minSamples - samples.count
+                let chunk = min(needed, source.count)
+                samples.append(contentsOf: source.prefix(chunk))
+            }
+        }
+        let trimmed = AudioChunk(
+            samples: samples,
+            sampleRate: sr,
+            timestamp: merged.first!.start
+        )
+        return SpeakerActiveTrim(
+            audio: trimmed,
+            start: merged.first!.start,
+            end: merged.last!.end
+        )
     }
 
     private func resolveTextBackend(for result: TextSEROutcome) async -> String? {
