@@ -32,6 +32,13 @@ struct CustomGlossarySheet: View {
     @State private var showingExporter = false
     @State private var pendingExportDocument: GlossaryFileDocument?
     @State private var ioError: String?
+    /// Drives both keyboard-induced auto-scroll and new-entry
+    /// auto-focus. Bound to each entry card's term field so
+    /// `onChange(of:)` can `proxy.scrollTo(...)` the focused row
+    /// into the visible area as the keyboard rises, and so the
+    /// Add Entry button can hand focus to the freshly inserted
+    /// row's TextField by writing the new entry's id here.
+    @FocusState private var focusedEntryID: UUID?
 
     var body: some View {
         NavigationStack {
@@ -126,13 +133,31 @@ struct CustomGlossarySheet: View {
 
     @ViewBuilder
     private var entryList: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach($store.entries) { $entry in
-                    entryCard(entry: $entry)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach($store.entries) { $entry in
+                        entryCard(entry: $entry)
+                            .id(entry.id)
+                    }
+                }
+                .padding(20)
+            }
+            // When focus moves to a row (tap, tab from another
+            // field, or programmatic via Add Entry), scroll
+            // that row to the center of the visible area so
+            // the keyboard doesn't occlude what the user is
+            // typing into. `.center` works better than
+            // `.bottom` here because the keyboard takes the
+            // bottom half — anchoring to center keeps the
+            // field at roughly screen-third height with room
+            // above and below.
+            .onChange(of: focusedEntryID) { _, newID in
+                guard let newID else { return }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(newID, anchor: .center)
                 }
             }
-            .padding(20)
         }
     }
 
@@ -180,6 +205,7 @@ struct CustomGlossarySheet: View {
             )
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
+            .focused($focusedEntryID, equals: entry.wrappedValue.id)
 
             HStack(spacing: 12) {
                 Picker(
@@ -286,13 +312,22 @@ struct CustomGlossarySheet: View {
     @ViewBuilder
     private var actionBar: some View {
         Button {
-            store.add(
-                LexiconBiasEntry(
-                    term: "",
-                    label: .joy,
-                    weight: 0.5
-                )
+            let newEntry = LexiconBiasEntry(
+                term: "",
+                label: .joy,
+                weight: 0.5
             )
+            store.add(newEntry)
+            // Defer focus assignment one MainActor hop so the
+            // ForEach has a chance to render the new row's
+            // TextField before `@FocusState` tries to bind to
+            // it. Setting focus on a not-yet-rendered field is
+            // a no-op in SwiftUI, so without this delay the
+            // first tap of Add Entry on an empty glossary
+            // wouldn't actually focus anything.
+            Task { @MainActor in
+                focusedEntryID = newEntry.id
+            }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus.circle.fill")
