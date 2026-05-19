@@ -1015,8 +1015,8 @@ final class AnalysisPipeline: @unchecked Sendable {
     }
 
     /// Output bundle from `trimToSpeakerActive`: the concatenated
-    /// audio of the speaker-active intervals (repeat-padded to 2 s
-    /// minimum) plus the outer bounds of the kept intervals.
+    /// audio of the speaker-active intervals plus the outer bounds
+    /// of the kept intervals.
     struct SpeakerActiveTrim {
         let audio: AudioChunk
         let start: TimeInterval
@@ -1024,14 +1024,15 @@ final class AnalysisPipeline: @unchecked Sendable {
     }
 
     /// Trim `segmentAudio` to the portions of `[asr.start, asr.end]`
-    /// where the cumulative diarizer timeline places `speakerID`.
+    /// where the cumulative diarizer timeline places `speakerID`,
+    /// further AND-ed with the cumulative VAD speech timeline.
     ///
     /// Returns:
-    ///   - `audio`: concatenated samples from every kept interval,
-    ///     repeat-padded to a 2 s minimum so `capForSER`'s smallest
-    ///     bin always gets real signal (zero-pad would re-introduce
-    ///     the silence bias that `capForSER` was rewritten to avoid:
-    ///     W2V2 → `A≈0.61, V≈0.39`; emotion2vec → `sad≈99%`).
+    ///   - `audio`: concatenated samples from every kept interval.
+    ///     Sub-2 s clips are left as-is; `capForSER` downstream
+    ///     repeat-pads them to its smallest bin (2 s) without
+    ///     re-introducing the silence bias zero-pad would
+    ///     (W2V2 → `A≈0.61, V≈0.39`; emotion2vec → `sad≈99%`).
     ///   - `start`/`end`: outer edges of the kept intervals. Caller
     ///     uses these to tighten `utterance.start/end` so the row
     ///     reflects actual voicing — inter-word pauses inside the
@@ -1052,7 +1053,6 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// the mean-pool classifiers we run (W2V2, emotion2vec) but a
     /// known artifact. If a future eval shows it matters, switch to
     /// per-interval scoring; the caller's API doesn't need to change.
-    static let trimMinDurationSec: TimeInterval = 2.0
     static func trimToSpeakerActive(
         segmentAudio: AudioChunk,
         asr: ASRSegment,
@@ -1126,19 +1126,6 @@ final class AnalysisPipeline: @unchecked Sendable {
             samples.append(contentsOf: segmentAudio.samples[lo..<hi])
         }
         guard !samples.isEmpty else { return nil }
-        // Repeat-pad up to the 2 s floor. Cycles the original
-        // speech samples — never silence — so the mean-pool window
-        // represents the utterance's own acoustic character rather
-        // than a speech / silence blend.
-        let minSamples = Int(trimMinDurationSec * sr)
-        if samples.count < minSamples {
-            let source = samples
-            while samples.count < minSamples {
-                let needed = minSamples - samples.count
-                let chunk = min(needed, source.count)
-                samples.append(contentsOf: source.prefix(chunk))
-            }
-        }
         let trimmed = AudioChunk(
             samples: samples,
             sampleRate: sr,
