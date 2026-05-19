@@ -30,6 +30,12 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     /// regardless of `preferredBackend`. Nil treats the session as
     /// Japanese (the original default) for backward compatibility.
     private var sessionLanguageCode: String?
+    /// Active glossary snapshot. Empty / disabled lexicon = identity
+    /// passthrough (the backend's score comes back unchanged). The
+    /// controller pushes a fresh snapshot whenever the user's
+    /// `GlossaryStore` mutates; in-flight rows finish with whichever
+    /// snapshot was current at the moment `classifyBiased` ran.
+    private var lexicon: LexiconBias = .init()
 
     /// Whether the language-specific text SER (DeBERTa-WRIME) is
     /// usable for the active session. DeBERTa is fine-tuned on
@@ -74,6 +80,17 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
         AppLog.serText.info("Text SER backend → \(backend.rawValue, privacy: .public)")
     }
 
+    /// Replace the active glossary snapshot. Pass `.init()` (empty
+    /// entries) to disable bias without distinguishing "no entries"
+    /// from "disabled by toggle" — the caller already does that
+    /// gating before snapshotting.
+    public func setLexicon(_ lexicon: LexiconBias) {
+        self.lexicon = lexicon
+        AppLog.serText.info(
+            "Text SER lexicon → \(lexicon.entries.count, privacy: .public) entries"
+        )
+    }
+
     /// Tell the switcher which language the current session is in.
     /// Forwards to `FoundationModelsSER.setLanguage` so the prompt
     /// opener follows along (Japanese, English, …), and re-evaluates
@@ -89,6 +106,24 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     }
 
     public func classify(_ text: String) async throws -> PlutchikScore {
+        try await classifyBiased(text).score
+    }
+
+    /// Same as `classify` plus the deduplicated list of glossary
+    /// term strings that matched the input — exposed so the caller
+    /// can stamp the matched terms onto the utterance row's badge
+    /// without running the lexicon against the transcript twice.
+    /// When the lexicon is empty or no terms match, `matchedTerms`
+    /// comes back `[]`.
+    public func classifyBiased(
+        _ text: String
+    ) async throws -> (score: PlutchikScore, matchedTerms: [String]) {
+        let raw = try await classifyRaw(text)
+        let result = lexicon.apply(raw, to: text)
+        return (result.biased, result.matched)
+    }
+
+    private func classifyRaw(_ text: String) async throws -> PlutchikScore {
         let backend = currentBackend
         AppLog.serText.debug(
             "SwitchingTextSER.classify → \(backend.rawValue, privacy: .public) (lang=\(self.sessionLanguageCode ?? "nil", privacy: .public), debertaMatched=\(self.debertaIsLanguageMatched, privacy: .public))"

@@ -355,6 +355,34 @@ struct UtteranceRow: View {
                             onRevert()
                         }
                 }
+                if let lexiconBias = badges.lexiconBias {
+                    // Tooltip-style accessibility lists the matched
+                    // terms; the visible label is just the count to
+                    // keep the chip narrow. Tap or VoiceOver focus
+                    // reveals which entries fired.
+                    Label(
+                        String(
+                            format: String(localized: "glossary.badge.format"),
+                            lexiconBias.matched.count
+                        ),
+                        systemImage: "book.closed"
+                    )
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .foregroundStyle(.purple)
+                    .glassEffect(
+                        .regular.tint(.purple.opacity(BadgeChrome.glassTint)),
+                        in: Capsule()
+                    )
+                    .accessibilityLabel(
+                        String(
+                            format: String(localized: "glossary.badge.a11y"),
+                            lexiconBias.matched.joined(separator: ", ")
+                        )
+                    )
+                }
             }
             // Transcript text — long-press (0.5 s) raises the Edit
             // Utterance dialog. Hit-test stays inside the Text

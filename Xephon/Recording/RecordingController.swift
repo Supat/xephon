@@ -78,6 +78,12 @@ final class RecordingController {
     private(set) var isSpeechBoostEnabled: Bool = true
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
+    /// User-editable custom glossary. The Settings card raises
+    /// `CustomGlossarySheet` against this store; mutations from
+    /// the sheet trigger `pushLexiconToPipeline` via the store's
+    /// `onChange` hook so the text-SER actor sees the new bias
+    /// before the next utterance flows through.
+    let glossary: GlossaryStore = GlossaryStore()
     /// Active session language. Drives the ASR locale (Apple
     /// SpeechTranscriber + offline transcriber), the FoundationModels
     /// prompt opener, and the DeBERTa-WRIME availability gate
@@ -868,6 +874,19 @@ final class RecordingController {
         )
         availableTextSERBackends = await pipeline.availableTextSERBackends()
         currentTextSERBackend = await pipeline.currentTextSERBackend()
+        // Push the user's persisted glossary into the freshly-built
+        // text-SER actor and wire the store's onChange hook so
+        // subsequent edits in the Custom Glossary sheet flow through
+        // without the user having to restart the session. Weak self
+        // — the controller outlives the closure either way, but the
+        // capture matches the rest of the controller's
+        // pump-spawning patterns.
+        await pipeline.setLexicon(glossary.currentLexicon)
+        glossary.onChange = { [weak self] in
+            guard let self else { return }
+            let snapshot = self.glossary.currentLexicon
+            Task { await self.pipeline?.setLexicon(snapshot) }
+        }
         // Also opportunistically refresh the summarizer install
         // state — `modelStore` is guaranteed live by the time this
         // runs, and we don't want the Settings card to render

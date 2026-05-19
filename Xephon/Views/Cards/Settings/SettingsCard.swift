@@ -23,6 +23,8 @@ import SERText
 struct SettingsCard: View {
     let recorder: RecordingController
 
+    @State private var showingGlossary = false
+
     /// Picker layout style. Landscape gets `.stacked` (label above
     /// control). Portrait gets `.inline` so the label hugs the leading
     /// edge and the control hugs the trailing edge.
@@ -44,10 +46,48 @@ struct SettingsCard: View {
             }
             speechBoostToggle
             diarizerSensitivitySlider
+            customGlossaryButton
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .sheet(isPresented: $showingGlossary) {
+            CustomGlossarySheet(
+                store: recorder.glossary,
+                onDismiss: { showingGlossary = false }
+            )
+        }
+    }
+
+    /// Settings row that raises the Custom Glossary sheet. Trailing
+    /// count chip so the user sees at a glance how loaded their
+    /// glossary is, and whether the bias is currently armed (the
+    /// chip dims when `isEnabled` is false).
+    @ViewBuilder
+    private var customGlossaryButton: some View {
+        Button {
+            showingGlossary = true
+        } label: {
+            HStack(spacing: 8) {
+                Label(
+                    String(localized: "glossary.title"),
+                    systemImage: "book.closed"
+                )
+                Spacer(minLength: 8)
+                if !recorder.glossary.entries.isEmpty {
+                    Text("\(recorder.glossary.entries.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .opacity(recorder.glossary.isEnabled ? 1.0 : 0.4)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal)
     }
 
     /// Session-language picker. Drives the ASR locale (Apple

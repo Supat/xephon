@@ -64,6 +64,15 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     /// can flag rows whose transcript came from human review.
     public let wasHandEdited: Bool?
 
+    /// Glossary terms (verbatim, in the form the user typed them)
+    /// that matched this row's transcript and biased the text-SER
+    /// Plutchik distribution. Nil for rows where the lexicon was
+    /// disabled / empty or no entry matched; non-empty triggers the
+    /// "Glossary" chip on `UtteranceRow`. Persisted so the chip
+    /// survives a Save/Load round-trip and so JSON export readers
+    /// can audit which bias inputs influenced a given row.
+    public let lexiconBiasMatched: [String]?
+
     // Fused
     public let fusedValence: Float?
     public let fusedArousal: Float?
@@ -86,6 +95,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         speechBoost: Bool? = nil,
         wasReevaluated: Bool? = nil,
         wasHandEdited: Bool? = nil,
+        lexiconBiasMatched: [String]? = nil,
         fusedValence: Float?,
         fusedArousal: Float?,
         fusedDominance: Float?,
@@ -106,6 +116,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.speechBoost = speechBoost
         self.wasReevaluated = wasReevaluated
         self.wasHandEdited = wasHandEdited
+        self.lexiconBiasMatched = lexiconBiasMatched
         self.fusedValence = fusedValence
         self.fusedArousal = fusedArousal
         self.fusedDominance = fusedDominance
@@ -136,6 +147,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -164,6 +176,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -193,6 +206,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -217,6 +231,36 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
+    /// Stamp the glossary terms that biased this row's text-SER
+    /// distribution. Empty list → store nil (matching the "no chip"
+    /// case) so the JSON export doesn't carry `"lexiconBiasMatched":
+    /// []` noise.
+    public func withLexiconBiasMatched(_ matched: [String]) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
+            plutchik: plutchik,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: matched.isEmpty ? nil : matched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -241,6 +285,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -270,6 +315,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -294,6 +340,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             speechBoost: enabled,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,

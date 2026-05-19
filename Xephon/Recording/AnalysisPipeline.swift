@@ -31,8 +31,14 @@ public struct ProcessingMetrics: Sendable, Hashable {
 struct TextSEROutcome: Sendable {
     let score: PlutchikScore?
     let guardrailViolation: Bool
+    /// Glossary terms that matched this row's transcript and biased
+    /// the score. `[]` for the empty / guardrail / no-match paths;
+    /// only the post-classify lexicon path can populate it.
+    let matchedTerms: [String]
 
-    static let empty = TextSEROutcome(score: nil, guardrailViolation: false)
+    static let empty = TextSEROutcome(
+        score: nil, guardrailViolation: false, matchedTerms: []
+    )
 }
 
 /// Result of `autoConfigured(modelStore:)`. Carries the pipeline plus
@@ -697,6 +703,13 @@ final class AnalysisPipeline: @unchecked Sendable {
         await (textSER as? SwitchingTextSER)?.setBackend(backend)
     }
 
+    /// Push the user's glossary into the text-SER actor. No-op when
+    /// the active backend isn't `SwitchingTextSER` (it's the only
+    /// adapter that knows about lexicon bias today).
+    func setLexicon(_ lexicon: LexiconBias) async {
+        await (textSER as? SwitchingTextSER)?.setLexicon(lexicon)
+    }
+
     /// Re-target the pipeline at a new session language. Swaps in a
     /// fresh offline `SpeechAnalyzerTranscriber` for the new locale
     /// (the streaming transcriber lives on `RecordingController`
@@ -994,6 +1007,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         var estimate = baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(ageGender)
+            .withLexiconBiasMatched(textResult.matchedTerms)
         // Propagate the trim to the utterance entry's bounds so the
         // row, the timeline strip, and any downstream re-eval all
         // see the actual voicing range. Clamped to the original ASR
@@ -1189,6 +1203,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         return baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(original.ageGender)
+            .withLexiconBiasMatched(textResult.matchedTerms)
     }
 
     // MARK: - Optional stages (return nil on failure → degraded fusion)
@@ -1303,11 +1318,28 @@ final class AnalysisPipeline: @unchecked Sendable {
             return .empty
         }
         do {
+            // Prefer `classifyBiased` when the backend is the
+            // switching adapter so glossary-matched terms can flow
+            // through to the row badge; non-switching backends
+            // (test stubs, future adapters) fall back to plain
+            // classify with empty matched terms.
+            if let switching = textSER as? SwitchingTextSER {
+                let result = try await switching.classifyBiased(text)
+                return TextSEROutcome(
+                    score: result.score,
+                    guardrailViolation: false,
+                    matchedTerms: result.matchedTerms
+                )
+            }
             let score = try await textSER.classify(text)
-            return TextSEROutcome(score: score, guardrailViolation: false)
+            return TextSEROutcome(
+                score: score, guardrailViolation: false, matchedTerms: []
+            )
         } catch TextSERError.guardrailViolation {
             AppLog.serText.info("text SER declined (Apple FM guardrail): \(text, privacy: .public)")
-            return TextSEROutcome(score: nil, guardrailViolation: true)
+            return TextSEROutcome(
+                score: nil, guardrailViolation: true, matchedTerms: []
+            )
         } catch {
             // Promoted to .warning so non-guardrail failures aren't
             // silently swallowed — debugging "text SER never runs"
