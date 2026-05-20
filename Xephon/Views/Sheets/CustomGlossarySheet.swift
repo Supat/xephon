@@ -165,7 +165,10 @@ struct CustomGlossarySheet: View {
     private func entryCard(entry: Binding<LexiconBiasEntry>) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                labelChip(entry.wrappedValue.label)
+                labelChip(
+                    entry.wrappedValue.label,
+                    isActive: store.isEnabled && entry.wrappedValue.useAsBias
+                )
                 Spacer(minLength: 4)
                 // Per-entry text-SER bias toggle. Mirrors the
                 // ASR-hint toggle below — the two pathways are
@@ -304,16 +307,23 @@ struct CustomGlossarySheet: View {
     /// for Plutchik labels. Tints chosen to map roughly onto
     /// Plutchik wheel quadrants so a glance at the chip reads
     /// "happy bucket" / "anger bucket" / etc. without naming.
+    ///
+    /// Greys out (no tint) when the entry won't actually
+    /// contribute to bias right now — either the master
+    /// `isEnabled` is off or the entry's per-row `useAsBias`
+    /// flag is off — so the chip's color is a faithful preview
+    /// of whether the row will actually tilt the distribution.
     @ViewBuilder
-    private func labelChip(_ label: PlutchikScore.Label) -> some View {
+    private func labelChip(_ label: PlutchikScore.Label, isActive: Bool) -> some View {
+        let color: Color = isActive ? Self.tint(for: label) : .secondary
         Text(Self.localizedLabel(label))
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
-                Capsule().fill(Self.tint(for: label).opacity(0.18))
+                Capsule().fill(color.opacity(0.18))
             )
-            .foregroundStyle(Self.tint(for: label))
+            .foregroundStyle(color)
     }
 
     @ViewBuilder
