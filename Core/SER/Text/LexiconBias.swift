@@ -14,6 +14,15 @@ public struct LexiconBiasEntry: Sendable, Hashable, Codable, Identifiable {
     public var term: String
     public var label: PlutchikScore.Label
     public var weight: Float
+    /// Whether this term contributes to the text-SER Plutchik
+    /// bias when the master `isEnabled` toggle is on. Lets a
+    /// user park an entry that's useful as an ASR hint (a
+    /// proper noun, jargon) without forcing it to also tilt
+    /// the emotion distribution. Default `true` so the
+    /// historical behavior (every entry biases) is preserved
+    /// for fresh entries; legacy JSON without this key decodes
+    /// as `true` for the same reason.
+    public var useAsBias: Bool
     /// Whether this term should also be forwarded to
     /// `SFSpeechRecognizer.contextualStrings` when the ASR-hint
     /// pathway is enabled. Default `true` so a user adding a
@@ -28,20 +37,23 @@ public struct LexiconBiasEntry: Sendable, Hashable, Codable, Identifiable {
         term: String,
         label: PlutchikScore.Label,
         weight: Float,
+        useAsBias: Bool = true,
         useAsASRHint: Bool = true
     ) {
         self.id = id
         self.term = term
         self.label = label
         self.weight = weight
+        self.useAsBias = useAsBias
         self.useAsASRHint = useAsASRHint
     }
 
-    // Custom Codable so glossary JSON files written before this
-    // field existed (no `useAsASRHint` key at all) decode with
-    // the field defaulting to `true` rather than failing.
+    // Custom Codable so glossary JSON files written before
+    // these fields existed (no `useAsBias` / `useAsASRHint`
+    // keys at all) decode with both defaulting to `true`
+    // rather than failing.
     private enum CodingKeys: String, CodingKey {
-        case id, term, label, weight, useAsASRHint
+        case id, term, label, weight, useAsBias, useAsASRHint
     }
 
     public init(from decoder: any Decoder) throws {
@@ -50,6 +62,7 @@ public struct LexiconBiasEntry: Sendable, Hashable, Codable, Identifiable {
         self.term = try c.decode(String.self, forKey: .term)
         self.label = try c.decode(PlutchikScore.Label.self, forKey: .label)
         self.weight = try c.decode(Float.self, forKey: .weight)
+        self.useAsBias = try c.decodeIfPresent(Bool.self, forKey: .useAsBias) ?? true
         self.useAsASRHint = try c.decodeIfPresent(Bool.self, forKey: .useAsASRHint) ?? true
     }
 }
@@ -109,7 +122,7 @@ public struct LexiconBias: Sendable, Hashable, Codable {
         var perLabelBias: [PlutchikScore.Label: Float] = [:]
         var matched: [String] = []
         var seen = Set<String>()
-        for entry in entries {
+        for entry in entries where entry.useAsBias {
             let needle = entry.term
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()

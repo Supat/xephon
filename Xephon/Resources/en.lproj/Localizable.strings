@@ -292,6 +292,8 @@
 "glossary.asrHint.enable.hint" = "When on, the Transcribe button uses SFSpeechRecognizer with flagged glossary terms as contextual hints. Lower general accuracy than the default offline ASR.";
 "glossary.entry.asrHint.on.a11y" = "Used as ASR hint";
 "glossary.entry.asrHint.off.a11y" = "Excluded from ASR hints";
+"glossary.entry.bias.on.a11y" = "Contributes to text-SER bias";
+"glossary.entry.bias.off.a11y" = "Excluded from text-SER bias";
 "glossary.entries" = "Entries";
 "glossary.add" = "Add Entry";
 "glossary.empty.title" = "No glossary entries yet.";

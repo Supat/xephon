@@ -292,6 +292,8 @@
 "glossary.asrHint.enable.hint" = "オン時、文字起こしボタンが SFSpeechRecognizer を使い、フラグ付きの語を contextualStrings として渡します。既定のオフライン ASR より一般精度は低めです。";
 "glossary.entry.asrHint.on.a11y" = "ASRヒントに使用";
 "glossary.entry.asrHint.off.a11y" = "ASRヒントから除外";
+"glossary.entry.bias.on.a11y" = "テキストSERバイアスに使用";
+"glossary.entry.bias.off.a11y" = "テキストSERバイアスから除外";
 "glossary.entries" = "登録語";
 "glossary.add" = "語を追加";
 "glossary.empty.title" = "登録語はまだありません。";

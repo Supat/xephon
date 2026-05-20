@@ -144,6 +144,7 @@ public final class GlossaryStore {
                 term: $0.term,
                 label: $0.label,
                 weight: $0.weight,
+                useAsBias: $0.useAsBias,
                 useAsASRHint: $0.useAsASRHint
             )
         }

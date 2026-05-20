@@ -167,6 +167,30 @@ struct CustomGlossarySheet: View {
             HStack(spacing: 8) {
                 labelChip(entry.wrappedValue.label)
                 Spacer(minLength: 4)
+                // Per-entry text-SER bias toggle. Mirrors the
+                // ASR-hint toggle below — the two pathways are
+                // independently flag-controlled so a proper
+                // noun can be an ASR hint without tilting the
+                // emotion distribution, and vice versa. Dimmed
+                // when the master `isEnabled` is off.
+                Button {
+                    entry.wrappedValue.useAsBias.toggle()
+                } label: {
+                    Image(systemName: entry.wrappedValue.useAsBias
+                        ? "book.closed.fill"
+                        : "book.closed"
+                    )
+                    .symbolRenderingMode(.hierarchical)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .foregroundStyle(entry.wrappedValue.useAsBias ? .purple : .secondary)
+                .opacity(store.isEnabled ? 1.0 : 0.5)
+                .accessibilityLabel(
+                    entry.wrappedValue.useAsBias
+                        ? String(localized: "glossary.entry.bias.on.a11y")
+                        : String(localized: "glossary.entry.bias.off.a11y")
+                )
                 // Per-entry ASR-hint toggle. Tap flips
                 // `useAsASRHint`; the icon shows the current
                 // state. Dimmed when the master
