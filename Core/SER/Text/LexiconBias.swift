@@ -14,17 +14,43 @@ public struct LexiconBiasEntry: Sendable, Hashable, Codable, Identifiable {
     public var term: String
     public var label: PlutchikScore.Label
     public var weight: Float
+    /// Whether this term should also be forwarded to
+    /// `SFSpeechRecognizer.contextualStrings` when the ASR-hint
+    /// pathway is enabled. Default `true` so a user adding a
+    /// domain term (e.g. a name or jargon) gets both behaviors
+    /// without having to flip an extra switch per entry; the
+    /// custom-Codable decoder below maps missing keys on legacy
+    /// JSON to `true` for backward compatibility.
+    public var useAsASRHint: Bool
 
     public init(
         id: UUID = UUID(),
         term: String,
         label: PlutchikScore.Label,
-        weight: Float
+        weight: Float,
+        useAsASRHint: Bool = true
     ) {
         self.id = id
         self.term = term
         self.label = label
         self.weight = weight
+        self.useAsASRHint = useAsASRHint
+    }
+
+    // Custom Codable so glossary JSON files written before this
+    // field existed (no `useAsASRHint` key at all) decode with
+    // the field defaulting to `true` rather than failing.
+    private enum CodingKeys: String, CodingKey {
+        case id, term, label, weight, useAsASRHint
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.term = try c.decode(String.self, forKey: .term)
+        self.label = try c.decode(PlutchikScore.Label.self, forKey: .label)
+        self.weight = try c.decode(Float.self, forKey: .weight)
+        self.useAsASRHint = try c.decodeIfPresent(Bool.self, forKey: .useAsASRHint) ?? true
     }
 }
 

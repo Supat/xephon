@@ -78,6 +78,13 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// pipeline. Tests inject a different `Transcriber` and bypass
     /// `setLocale`, so their injection survives.
     private var transcriber: any Transcriber
+    /// Lazily-constructed SFSpeechRecognizer wrapper for the
+    /// hinted ASR pathway. Reconstructed alongside `transcriber`
+    /// on `setLocale` so its recognizer matches the active
+    /// session language. Nil when the OS doesn't ship a
+    /// dictation model for the locale (e.g. exotic locales) or
+    /// when `SFSpeechRecognizer(locale:)` outright refused.
+    private var hintedTranscriber: SFSpeechRecognizerTranscriber?
     private let diarizer: (any Diarizer)?
     private let dimensionalSER: (any DimensionalAcousticSER)?
     private let categoricalSER: (any CategoricalAcousticSER)?
@@ -138,6 +145,14 @@ final class AnalysisPipeline: @unchecked Sendable {
         vadTracker: StreamingVADTracker = StreamingVADTracker()
     ) {
         self.transcriber = transcriber
+        // Default to ja_JP; the controller's first `setLocale`
+        // (right after pipeline construction) reconstructs this
+        // with the actual session locale. Can't read
+        // `transcriber.locale` from here because Transcriber is
+        // an actor and its property is isolated.
+        self.hintedTranscriber = SFSpeechRecognizerTranscriber(
+            locale: Locale(identifier: "ja_JP")
+        )
         self.diarizer = diarizer
         self.vadDetector = vadDetector
         self.dimensionalSER = dimensionalSER
@@ -804,11 +819,38 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// language-agnostic.
     func setLocale(_ locale: Locale, languageLabel: String?) async {
         transcriber = SpeechAnalyzerTranscriber(locale: locale)
+        hintedTranscriber = SFSpeechRecognizerTranscriber(locale: locale)
         let code = locale.language.languageCode?.identifier
         await (textSER as? SwitchingTextSER)?.setLanguage(
             code: code,
             label: languageLabel
         )
+    }
+
+    /// SFSpeechRecognizer pathway with `contextualStrings` set
+    /// to `hints`. Returns the joined hypothesis string; throws
+    /// `ASRError.modelUnavailable` when the recognizer isn't
+    /// available for the active locale (no on-device model
+    /// resident) so the caller can fall back to the offline
+    /// `transcribeForReevaluation` path. One-shot authorization
+    /// happens lazily on first call.
+    func transcribeWithHints(
+        audio: AudioChunk,
+        hints: [String]
+    ) async throws -> String {
+        guard let hinted = hintedTranscriber else {
+            throw ASRError.modelUnavailable(
+                reason: "SFSpeechRecognizer adapter not constructed for locale"
+            )
+        }
+        let auth = await SFSpeechRecognizerTranscriber.requestAuthorization()
+        guard auth == .authorized else {
+            throw ASRError.modelUnavailable(
+                reason: "SFSpeechRecognizer authorization: \(auth.rawValue)"
+            )
+        }
+        let result = try await hinted.transcribe(audio, hints: hints)
+        return result.text
     }
 
     /// Re-run offline ASR on `audio` and fuse the result with fresh SER

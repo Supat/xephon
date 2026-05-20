@@ -288,6 +288,10 @@
 "glossary.title" = "カスタム辞書";
 "glossary.enable" = "バイアスを適用";
 "glossary.enable.hint" = "オン時、各発話のテキストSERスコアを一致した語の感情へ偏らせてから融合します。";
+"glossary.asrHint.enable" = "ASRヒント";
+"glossary.asrHint.enable.hint" = "オン時、文字起こしボタンが SFSpeechRecognizer を使い、フラグ付きの語を contextualStrings として渡します。既定のオフライン ASR より一般精度は低めです。";
+"glossary.entry.asrHint.on.a11y" = "ASRヒントに使用";
+"glossary.entry.asrHint.off.a11y" = "ASRヒントから除外";
 "glossary.entries" = "登録語";
 "glossary.add" = "語を追加";
 "glossary.empty.title" = "登録語はまだありません。";

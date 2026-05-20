@@ -24,9 +24,17 @@ extension RecordingController {
     /// no commit. The caller decides what to do with the returned
     /// text (typically: assign it to its bound TextEditor state).
     ///
+    /// When the glossary's `isASRHintEnabled` is on AND at least
+    /// one entry is flagged `useAsASRHint`, this routes to
+    /// `SFSpeechRecognizer` with those terms as
+    /// `contextualStrings` — slower and lower general accuracy,
+    /// but biased toward the user's vocabulary. Otherwise it
+    /// uses the offline `SpeechAnalyzerTranscriber` path
+    /// (`transcribeForReevaluation`) for higher general quality.
+    ///
     /// Returns nil when there's no source audio, the range is
-    /// empty / non-positive, offline ASR finds nothing, or the I/O
-    /// + transcribe throws. All failure modes log; the sheet just
+    /// empty / non-positive, ASR finds nothing, or the I/O +
+    /// transcribe throws. All failure modes log; the sheet just
     /// keeps the user's current text on nil.
     func transcribeRange(
         start: TimeInterval,
@@ -35,6 +43,7 @@ extension RecordingController {
         guard let url = playbackSourceURL else { return nil }
         guard end > start else { return nil }
         let pipeline = await ensurePipeline()
+        let hints = glossary.currentASRHints
         do {
             let chunk = try await Task.detached(priority: .userInitiated) {
                 try Self.readAudioChunkForReevaluation(
@@ -42,6 +51,22 @@ extension RecordingController {
                 )
             }.value
             guard !chunk.samples.isEmpty else { return nil }
+            // Hinted path: SFSpeechRecognizer with contextualStrings.
+            // Falls through to the offline-analyzer path on any
+            // adapter-level failure (recognizer unavailable for
+            // locale, auth denied, on-device model missing) so the
+            // user still gets *some* transcript.
+            if !hints.isEmpty {
+                if let hinted = try? await pipeline.transcribeWithHints(
+                    audio: chunk, hints: hints
+                ) {
+                    let trimmed = hinted.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { return hinted }
+                }
+                AppLog.app.warning(
+                    "transcribeRange hinted path returned empty; falling back to offline analyzer"
+                )
+            }
             let segments = try await pipeline.transcribeForReevaluation(audio: chunk)
             let combined = segments.map(\.text).joined()
             let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)

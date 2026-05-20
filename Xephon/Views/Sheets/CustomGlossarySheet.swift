@@ -167,6 +167,34 @@ struct CustomGlossarySheet: View {
             HStack(spacing: 8) {
                 labelChip(entry.wrappedValue.label)
                 Spacer(minLength: 4)
+                // Per-entry ASR-hint toggle. Tap flips
+                // `useAsASRHint`; the icon shows the current
+                // state. Dimmed when the master
+                // `isASRHintEnabled` is off so the user sees
+                // that per-entry flags are inert without us
+                // disabling the control (they can still toggle
+                // to set up a glossary before enabling the
+                // master switch). Mic-with-slash means
+                // "excluded from ASR hints" — the inverse of
+                // the regular `mic` glyph.
+                Button {
+                    entry.wrappedValue.useAsASRHint.toggle()
+                } label: {
+                    Image(systemName: entry.wrappedValue.useAsASRHint
+                        ? "mic.fill"
+                        : "mic.slash"
+                    )
+                    .symbolRenderingMode(.hierarchical)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .foregroundStyle(entry.wrappedValue.useAsASRHint ? .blue : .secondary)
+                .opacity(store.isASRHintEnabled ? 1.0 : 0.5)
+                .accessibilityLabel(
+                    entry.wrappedValue.useAsASRHint
+                        ? String(localized: "glossary.entry.asrHint.on.a11y")
+                        : String(localized: "glossary.entry.asrHint.off.a11y")
+                )
                 Button(role: .destructive) {
                     // Defer the mutation past the current
                     // view-body cycle. Removing from
@@ -283,23 +311,41 @@ struct CustomGlossarySheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Top header carrying the global "Apply Bias" toggle. Lives
-    /// above the entry list so it reads as a setting that
-    /// governs everything below it, with the hint footer making
-    /// the off-vs-on semantics explicit.
+    /// Top header carrying the two master toggles: "Apply Bias"
+    /// (governs whether glossary entries tilt text-SER Plutchik
+    /// outputs) and "ASR Hint" (governs whether flagged entries
+    /// are forwarded to `SFSpeechRecognizer.contextualStrings`
+    /// on the transcribe-range pathway). Each has its own hint
+    /// footer because they affect different parts of the
+    /// pipeline and the user shouldn't have to guess which
+    /// switch does what.
     @ViewBuilder
     private var applyBiasHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: $store.isEnabled) {
-                Label(
-                    String(localized: "glossary.enable"),
-                    systemImage: "book.closed"
-                )
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $store.isEnabled) {
+                    Label(
+                        String(localized: "glossary.enable"),
+                        systemImage: "book.closed"
+                    )
+                }
+                .toggleStyle(.switch)
+                Text(String(localized: "glossary.enable.hint"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            .toggleStyle(.switch)
-            Text(String(localized: "glossary.enable.hint"))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $store.isASRHintEnabled) {
+                    Label(
+                        String(localized: "glossary.asrHint.enable"),
+                        systemImage: "mic.fill"
+                    )
+                }
+                .toggleStyle(.switch)
+                Text(String(localized: "glossary.asrHint.enable.hint"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)

@@ -288,6 +288,10 @@
 "glossary.title" = "Custom Glossary";
 "glossary.enable" = "Apply Bias";
 "glossary.enable.hint" = "When on, each utterance's text-SER score is biased toward the matched term's emotion before fusion.";
+"glossary.asrHint.enable" = "ASR Hint";
+"glossary.asrHint.enable.hint" = "When on, the Transcribe button uses SFSpeechRecognizer with flagged glossary terms as contextual hints. Lower general accuracy than the default offline ASR.";
+"glossary.entry.asrHint.on.a11y" = "Used as ASR hint";
+"glossary.entry.asrHint.off.a11y" = "Excluded from ASR hints";
 "glossary.entries" = "Entries";
 "glossary.add" = "Add Entry";
 "glossary.empty.title" = "No glossary entries yet.";

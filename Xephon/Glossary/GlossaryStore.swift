@@ -29,6 +29,18 @@ public final class GlossaryStore {
         didSet { didMutate() }
     }
 
+    /// Master toggle for the ASR-hint pathway. When on, the
+    /// streaming pipeline forwards terms (those with
+    /// `useAsASRHint == true`) to `SFSpeechRecognizer.contextualStrings`
+    /// on the re-evaluate / transcribe-range path. Off by
+    /// default — the user has to explicitly opt in because
+    /// SFSpeechRecognizer's general transcription quality is
+    /// lower than SpeechTranscriber's; the trade is bias toward
+    /// hinted terms vs. general accuracy.
+    public var isASRHintEnabled: Bool {
+        didSet { didMutate() }
+    }
+
     /// Ordered glossary entries. UI surfaces them in input order
     /// (newest at the bottom); reorder via drag isn't supported
     /// today — the list is short enough that delete + re-add
@@ -51,6 +63,25 @@ public final class GlossaryStore {
         isEnabled ? LexiconBias(entries: entries) : LexiconBias(entries: [])
     }
 
+    /// Deduplicated list of `term` strings to feed
+    /// `SFSpeechRecognizer.contextualStrings` on the next
+    /// hinted ASR call. Empty when `isASRHintEnabled` is off OR
+    /// no entry has `useAsASRHint == true` — caller treats both
+    /// as "no hints" identically. Whitespace-only entries are
+    /// dropped to keep SFSpeechRecognizer from receiving empty
+    /// strings.
+    public var currentASRHints: [String] {
+        guard isASRHintEnabled else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for entry in entries where entry.useAsASRHint {
+            let term = entry.term.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty else { continue }
+            if seen.insert(term).inserted { out.append(term) }
+        }
+        return out
+    }
+
     private let fileURL: URL
 
     /// Initialize from the on-disk JSON. A missing / corrupt
@@ -64,6 +95,7 @@ public final class GlossaryStore {
         let loaded = Self.read(from: fileURL)
         self.entries = loaded?.entries ?? []
         self.isEnabled = loaded?.isEnabled ?? false
+        self.isASRHintEnabled = loaded?.isASRHintEnabled ?? false
     }
 
     /// Initializer for tests / previews: use an injected file
@@ -72,6 +104,7 @@ public final class GlossaryStore {
         self.fileURL = fileURL
         self.entries = document.entries
         self.isEnabled = document.isEnabled
+        self.isASRHintEnabled = document.isASRHintEnabled
     }
 
     // MARK: - Mutations
@@ -108,10 +141,14 @@ public final class GlossaryStore {
         // when one of them later exports and re-imports.
         entries = document.entries.map {
             LexiconBiasEntry(
-                term: $0.term, label: $0.label, weight: $0.weight
+                term: $0.term,
+                label: $0.label,
+                weight: $0.weight,
+                useAsASRHint: $0.useAsASRHint
             )
         }
         isEnabled = document.isEnabled
+        isASRHintEnabled = document.isASRHintEnabled
     }
 
     /// Encode the current state for `Transferable` / file
@@ -121,6 +158,7 @@ public final class GlossaryStore {
         GlossaryDocument(
             version: GlossaryDocument.currentVersion,
             isEnabled: isEnabled,
+            isASRHintEnabled: isASRHintEnabled,
             entries: entries
         )
     }
@@ -208,15 +246,33 @@ public struct GlossaryDocument: Sendable, Hashable, Codable {
 
     public let version: Int
     public let isEnabled: Bool
+    public let isASRHintEnabled: Bool
     public let entries: [LexiconBiasEntry]
 
     public init(
         version: Int = GlossaryDocument.currentVersion,
         isEnabled: Bool,
+        isASRHintEnabled: Bool = false,
         entries: [LexiconBiasEntry]
     ) {
         self.version = version
         self.isEnabled = isEnabled
+        self.isASRHintEnabled = isASRHintEnabled
         self.entries = entries
+    }
+
+    // Custom Codable so old glossary JSON files (no
+    // `isASRHintEnabled` key) decode as `false` rather than
+    // failing. Mirrors the per-entry `useAsASRHint` decode path.
+    private enum CodingKeys: String, CodingKey {
+        case version, isEnabled, isASRHintEnabled, entries
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try c.decode(Int.self, forKey: .version)
+        self.isEnabled = try c.decode(Bool.self, forKey: .isEnabled)
+        self.isASRHintEnabled = try c.decodeIfPresent(Bool.self, forKey: .isASRHintEnabled) ?? false
+        self.entries = try c.decode([LexiconBiasEntry].self, forKey: .entries)
     }
 }
