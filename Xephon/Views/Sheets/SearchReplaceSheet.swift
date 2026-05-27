@@ -201,11 +201,18 @@ struct SearchReplaceSheet: View {
             // and individually tappable. The custom `xephon-match`
             // URL scheme on each match routes the tap through the
             // sheet's openURL handler to toggle selection.
+            // Similar-match hits get their original-text ranges
+            // painted purple in the transcript (chunk-granular via
+            // the JapaneseSearchNormalizer.Token map). Empty for
+            // rows that matched via raw or exact cross-script
+            // substring, so the highlighter no-ops them.
+            let similarRanges = coord.similarMatchRanges(for: utterance)
             Text(SearchReplaceHighlighter.attributed(
                 utteranceID: utterance.id,
                 text: displayedText,
                 replaceTerm: coord.replaceTerm,
                 matchRanges: matchRanges,
+                similarRanges: similarRanges,
                 selectedIndices: selected,
                 replaced: staged != nil
             ))

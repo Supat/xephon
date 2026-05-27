@@ -281,6 +281,60 @@ final class SearchReplaceCoordinator {
         similarMatchIDs.contains(utterance.id)
     }
 
+    /// Original-text character ranges to highlight for a row that
+    /// matched via the "Include similar" pass. Reverse-maps the
+    /// matched window in normalized romaji space back to the
+    /// `JapaneseSearchNormalizer.Token` chunks that produced it,
+    /// returning their `originalRange`s. Granularity is
+    /// chunk-level — for a single multi-character katakana
+    /// loanword tokenized as one chunk (e.g. メディアって →
+    /// "mediatte") the highlight covers the whole word, not just
+    /// the shared "dia" substring, because the tokenizer doesn't
+    /// expose intra-chunk character correspondences. Returns []
+    /// when the row isn't a similar match or when the matchers
+    /// can't relocate the original hit (defensive — shouldn't
+    /// happen if `similarMatchIDs` is consistent with the filter).
+    func similarMatchRanges(for utterance: UtteranceEstimate) -> [Range<String.Index>] {
+        guard isSimilarMatch(utterance) else { return [] }
+        let normalizedQuery = JapaneseSearchNormalizer.normalize(trimmedSearch)
+        guard normalizedQuery.count >= Self.minQueryLengthForSimilar else { return [] }
+
+        let tokens = JapaneseSearchNormalizer.tokens(utterance.transcript)
+        guard !tokens.isEmpty else { return [] }
+        var normalizedText = ""
+        var offsets: [Int] = []
+        offsets.reserveCapacity(tokens.count)
+        for token in tokens {
+            offsets.append(normalizedText.count)
+            normalizedText.append(token.normalized)
+        }
+
+        // Try the tight Levenshtein pass first so a near-miss
+        // highlights a narrower window when one exists; fall back
+        // to the loose LCS pass for the wider-variation hits.
+        let levThreshold = Self.similarMatchThreshold(for: normalizedQuery.count)
+        let hitRange: Range<Int>? = FuzzySubstringMatcher.findSimilarSubstring(
+            query: normalizedQuery,
+            in: normalizedText,
+            threshold: levThreshold
+        ) ?? FuzzySubstringMatcher.findLongCommonSubstring(
+            query: normalizedQuery,
+            in: normalizedText,
+            minLength: Self.wideVariationMinRun(for: normalizedQuery.count)
+        )
+        guard let hit = hitRange else { return [] }
+
+        var ranges: [Range<String.Index>] = []
+        for (idx, token) in tokens.enumerated() {
+            let start = offsets[idx]
+            let end = start + token.normalized.count
+            if end <= hit.lowerBound { continue }
+            if start >= hit.upperBound { break }
+            ranges.append(token.originalRange)
+        }
+        return ranges
+    }
+
     // MARK: - Match enumeration + staging
 
     /// Enumerate every case-insensitive occurrence of `term`

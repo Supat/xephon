@@ -68,25 +68,80 @@ enum FuzzySubstringMatcher {
         in text: String,
         minLength: Int
     ) -> Bool {
-        guard !query.isEmpty, !text.isEmpty, minLength > 0 else { return false }
+        findLongCommonSubstring(query: query, in: text, minLength: minLength) != nil
+    }
+
+    /// Same as `hasLongCommonSubstring` but returns the
+    /// `[start, end)` integer position range in `text` of the first
+    /// run of length ≥ `minLength` that was found. Used by the
+    /// find-and-replace highlighter to map a normalized-space hit
+    /// back to original tokens. The returned positions index into
+    /// `text` as a `Character` array, NOT into the original
+    /// `String.Index` space — callers map back via the
+    /// `JapaneseSearchNormalizer.Token` chunk offsets.
+    static func findLongCommonSubstring(
+        query: String,
+        in text: String,
+        minLength: Int
+    ) -> Range<Int>? {
+        guard !query.isEmpty, !text.isEmpty, minLength > 0 else { return nil }
         let q = Array(query)
         let t = Array(text)
         let m = q.count
         let n = t.count
-        if m < minLength || n < minLength { return false }
+        if m < minLength || n < minLength { return nil }
         var prev = Array(repeating: 0, count: n + 1)
         for i in 1...m {
             var curr = Array(repeating: 0, count: n + 1)
             for j in 1...n {
                 if q[i - 1] == t[j - 1] {
                     let next = prev[j - 1] + 1
-                    if next >= minLength { return true }
+                    if next >= minLength {
+                        return (j - next)..<j
+                    }
                     curr[j] = next
                 }
             }
             prev = curr
         }
-        return false
+        return nil
+    }
+
+    /// Same as `hasSimilarSubstring` but returns the `[start, end)`
+    /// integer position range in `text` of the first window within
+    /// `threshold` edits of `query`. Used by the highlighter for
+    /// fuzzy-match range reconstruction. Returns nil when nothing
+    /// fits the threshold.
+    static func findSimilarSubstring(
+        query: String,
+        in text: String,
+        threshold: Int
+    ) -> Range<Int>? {
+        guard !query.isEmpty, !text.isEmpty, threshold >= 0 else { return nil }
+        let qChars = Array(query)
+        let tChars = Array(text)
+        let qLen = qChars.count
+        let tLen = tChars.count
+        let minW = max(1, qLen - threshold)
+        let maxW = min(qLen + threshold, tLen)
+        if tLen < minW {
+            return levenshtein(qChars, tChars, threshold: threshold) <= threshold
+                ? 0..<tLen
+                : nil
+        }
+        for w in minW...maxW {
+            let lastStart = tLen - w
+            if lastStart < 0 { continue }
+            var start = 0
+            while start <= lastStart {
+                let slice = Array(tChars[start..<(start + w)])
+                if levenshtein(qChars, slice, threshold: threshold) <= threshold {
+                    return start..<(start + w)
+                }
+                start += 1
+            }
+        }
+        return nil
     }
 
     /// Bounded Levenshtein. Returns `threshold + 1` (i.e. "too far")
