@@ -77,18 +77,35 @@ struct SearchReplaceSheet: View {
                 return .handled
             })
             .onAppear {
-                // Pre-fill from the currently-selected keyword when
-                // the sheet opens with an empty search term. Lets a
-                // user who's already focused on a keyword on the
-                // Keywords page jump straight into find-and-replace
-                // without retyping. The empty guard means a typed-
-                // then-cleared field stays cleared within one sheet
-                // lifetime; re-opening rebuilds the coordinator
-                // (it's @State) and re-checks the selection.
-                if coord.searchTerm.isEmpty,
-                   let text = recorder.keywords.selectedKeyword?.text,
+                // Pre-fill from the keyword selection ONLY when
+                // exactly one keyword is selected. Multi-selection
+                // (and group-selection, which selects all keywords
+                // in the group) doesn't have an obvious single
+                // string to seed the field with, and joining them
+                // would produce a query that matches nothing.
+                // The empty-field guards mean typed-then-cleared
+                // fields stay cleared within one sheet lifetime;
+                // re-opening rebuilds the coordinator (it's
+                // @State) and re-checks the selection.
+                //
+                // Both Find AND Replace seed to the same keyword
+                // text: the most common single-keyword workflow is
+                // "I picked this term to focus on; now fix one of
+                // its appearances," where the user edits the
+                // Replace field down from the search term rather
+                // than typing the prefix again. Seeding Replace
+                // to the same value is a no-op until the user
+                // changes it — Replace's stage button is gated on
+                // `searchTerm != replaceTerm` implicitly because
+                // identical replace text leaves no diff to stage.
+                if let text = recorder.keywords.singleSelectedKeyword?.text,
                    !text.isEmpty {
-                    coord.searchTerm = text
+                    if coord.searchTerm.isEmpty {
+                        coord.searchTerm = text
+                    }
+                    if coord.replaceTerm.isEmpty {
+                        coord.replaceTerm = text
+                    }
                 }
                 coord.scheduleSearch(in: recorder)
             }

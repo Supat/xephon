@@ -8,13 +8,14 @@ struct FilterDepsKey: Equatable {
     /// Already-normalized search query, so we don't re-tokenize the
     /// query string on every change-check.
     let normalizedQuery: String
-    /// Already-normalized form of the currently-selected keyword, or
-    /// "" when no keyword is selected. Stacks AND-wise with the
-    /// search query so the user can search inside a keyword-filtered
-    /// slice. Tracked separately rather than folded into
-    /// `normalizedQuery` because the two inputs come from different
-    /// surfaces and shouldn't clobber each other.
-    let normalizedKeywordFilter: String
+    /// Already-normalized forms of every currently-selected
+    /// keyword. Empty when nothing's selected. Stacks AND-wise
+    /// with the search query (so the user can search inside a
+    /// keyword-filtered slice), but ORs internally — a row
+    /// survives when its normalized transcript contains ANY of
+    /// these. Sorted so the array's Equatable comparison is
+    /// stable across selection-set reorderings.
+    let normalizedKeywordFilters: [String]
     let labelFilter: String?
     let speakerFilter: String?
     /// When true, only utterances whose stored speaker disagrees
@@ -85,4 +86,23 @@ final class StripRunsMemo {
     }
     var lastKey: Key?
     var runs: [UUID: [DiarizationRun]] = [:]
+}
+
+/// Reference-typed memo for per-keyword occurrence counts.
+/// `signature` is the concatenation of `"<id>|<normalized text>"`
+/// for each keyword in order — captures both add/remove and
+/// in-place text edits, since `Keyword` doesn't carry an
+/// independent version counter. Combined with the utterance
+/// count + version it invalidates on every input that can change
+/// any per-keyword tally without firing on unrelated renders
+/// (selection toggles, group reorders).
+@MainActor
+final class KeywordCountsMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let utteranceCount: Int
+        let keywordSignature: [String]
+    }
+    var lastKey: Key?
+    var counts: [UUID: Int] = [:]
 }
