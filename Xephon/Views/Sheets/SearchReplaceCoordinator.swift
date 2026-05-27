@@ -284,56 +284,64 @@ final class SearchReplaceCoordinator {
         similarMatchIDs.contains(utterance.id)
     }
 
-    /// Original-text character ranges to highlight for a row that
-    /// matched via the "Include similar" pass. Reverse-maps the
-    /// matched window in normalized romaji space back to the
-    /// `JapaneseSearchNormalizer.Token` chunks that produced it,
-    /// returning their `originalRange`s. Granularity is
-    /// chunk-level — for a single multi-character katakana
-    /// loanword tokenized as one chunk (e.g. メディアって →
-    /// "mediatte") the highlight covers the whole word, not just
-    /// the shared "dia" substring, because the tokenizer doesn't
-    /// expose intra-chunk character correspondences. Returns []
-    /// when the row isn't a similar match or when the matchers
-    /// can't relocate the original hit (defensive — shouldn't
-    /// happen if `similarMatchIDs` is consistent with the filter).
+    /// Original-text character ranges to paint purple in a match
+    /// card — every chunk whose normalized form contains a fuzzy
+    /// or cross-script hit on the query, EXCLUDING chunks that
+    /// overlap a raw substring match (those get the yellow raw
+    /// highlight instead). Works for every row in `matches`, not
+    /// just `isSimilarMatch` ones, so a card that surfaced via a
+    /// raw match can still show purple on a separate similar /
+    /// cross-script region elsewhere in the same utterance.
+    ///
+    /// Per-token check rather than a single normalized-window
+    /// sweep: it's the only way to surface multiple non-raw
+    /// regions in one transcript, and it composes naturally with
+    /// the raw-overlap skip. Granularity stays chunk-level — for a
+    /// multi-character katakana loanword tokenized as one chunk
+    /// (e.g. メディアって → "mediatte") the highlight covers the
+    /// whole word, not just the shared "dia" substring, because
+    /// the tokenizer doesn't expose intra-chunk character
+    /// correspondences.
+    ///
+    /// Returns [] when the query is too short for the fuzzy pass
+    /// (below `minQueryLengthForSimilar`) or when no token clears
+    /// either matcher.
     func similarMatchRanges(for utterance: UtteranceEstimate) -> [Range<String.Index>] {
-        guard isSimilarMatch(utterance) else { return [] }
         let normalizedQuery = JapaneseSearchNormalizer.normalize(trimmedSearch)
         guard normalizedQuery.count >= Self.minQueryLengthForSimilar else { return [] }
 
         let tokens = JapaneseSearchNormalizer.tokens(utterance.transcript)
         guard !tokens.isEmpty else { return [] }
-        var normalizedText = ""
-        var offsets: [Int] = []
-        offsets.reserveCapacity(tokens.count)
-        for token in tokens {
-            offsets.append(normalizedText.count)
-            normalizedText.append(token.normalized)
-        }
 
-        // Try the tight Levenshtein pass first so a near-miss
-        // highlights a narrower window when one exists; fall back
-        // to the loose LCS pass for the wider-variation hits.
+        // Raw match ranges in the original transcript — yellow
+        // highlights cover them, so skip any token whose original
+        // range intersects one of them. The overlap check is
+        // generous on purpose (any character intersection counts)
+        // so partial coverage doesn't double-up.
+        let rawRanges = Self.rawMatches(in: utterance.transcript, term: trimmedSearch)
         let levThreshold = Self.similarMatchThreshold(for: normalizedQuery.count)
-        let hitRange: Range<Int>? = FuzzySubstringMatcher.findSimilarSubstring(
-            query: normalizedQuery,
-            in: normalizedText,
-            threshold: levThreshold
-        ) ?? FuzzySubstringMatcher.findLongCommonSubstring(
-            query: normalizedQuery,
-            in: normalizedText,
-            minLength: Self.wideVariationMinRun(for: normalizedQuery.count)
-        )
-        guard let hit = hitRange else { return [] }
+        let minRun = Self.wideVariationMinRun(for: normalizedQuery.count)
 
         var ranges: [Range<String.Index>] = []
-        for (idx, token) in tokens.enumerated() {
-            let start = offsets[idx]
-            let end = start + token.normalized.count
-            if end <= hit.lowerBound { continue }
-            if start >= hit.upperBound { break }
-            ranges.append(token.originalRange)
+        for token in tokens {
+            if rawRanges.contains(where: { $0.overlaps(token.originalRange) }) {
+                continue
+            }
+            if token.normalized.isEmpty { continue }
+            // Tight Levenshtein first, loose LCS fallback — same
+            // cascade the filter pass uses for "Include similar".
+            let hit = FuzzySubstringMatcher.hasSimilarSubstring(
+                query: normalizedQuery,
+                in: token.normalized,
+                threshold: levThreshold
+            ) || FuzzySubstringMatcher.hasLongCommonSubstring(
+                query: normalizedQuery,
+                in: token.normalized,
+                minLength: minRun
+            )
+            if hit {
+                ranges.append(token.originalRange)
+            }
         }
         return ranges
     }

@@ -114,7 +114,7 @@ struct SearchReplaceSheet: View {
                 .accessibilityLabel(
                     String(localized: "searchReplace.includeSimilar.a11y")
                 )
-                Image(systemName: "wand.and.stars")
+                Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
                     .foregroundStyle(coord.includeSimilar ? Color.accentColor : Color.secondary)
                     .font(.caption)
                     .accessibilityHidden(true)
@@ -201,82 +201,64 @@ struct SearchReplaceSheet: View {
             // and individually tappable. The custom `xephon-match`
             // URL scheme on each match routes the tap through the
             // sheet's openURL handler to toggle selection.
-            // Two render modes per card:
+            // Single uniform layout per card so a row can carry
+            // BOTH replaceable (raw substring) AND editable
+            // (cross-script / similar) matches without the UI
+            // forcing one mode:
             //
-            // - Raw-substring matches: read-only Text with the
-            //   yellow/green per-match highlights, tap-to-select
-            //   links, and the Replace/Commit affordances. The
-            //   user doesn't need to type because Replace mutates
-            //   the substring directly.
+            // - Read-only Text on top with raw matches in
+            //   yellow/green (tappable links + selection) and any
+            //   similar / cross-script regions in purple. Purple
+            //   highlights only show pre-stage — once the user
+            //   stages a change, the original-text indices no
+            //   longer line up with the displayed text, so we
+            //   suppress them to avoid pointing at the wrong
+            //   characters.
             //
-            // - Cross-script / similar matches: the same read-only
-            //   Text on top (showing the ORIGINAL transcript with
-            //   the purple match-context highlight, so the user has
-            //   a stable reference of what triggered the match),
-            //   plus an editable TextEditor below bound through
-            //   `setManualStaged`. There's no raw substring to swap,
-            //   so the user types the correction directly; any
-            //   divergence from the original stages the card and
-            //   enables Commit, typing back to the original clears
-            //   staging. The context Text deliberately reads from
-            //   `utterance.transcript` (not `displayedText`) so the
-            //   highlight ranges stay pinned to the original chunk
-            //   while the editor underneath diverges.
-            if coord.hasRawMatch(utterance) {
-                let similarRanges = coord.similarMatchRanges(for: utterance)
-                Text(SearchReplaceHighlighter.attributed(
-                    utteranceID: utterance.id,
-                    text: displayedText,
-                    replaceTerm: coord.replaceTerm,
-                    matchRanges: matchRanges,
-                    similarRanges: similarRanges,
-                    selectedIndices: selected,
-                    replaced: staged != nil
-                ))
+            // - Editable TextEditor below, bound through
+            //   `setManualStaged`. Always present so the user can
+            //   manually fix anything the Replace button can't —
+            //   including regions inside a raw-matched row that
+            //   need word-level surgery rather than substring swap.
+            //
+            // Replace + Commit work as before: Replace stages a
+            // raw-substring substitution; Commit pushes whatever's
+            // currently staged through `commitHandEdit`.
+            let original = utterance.transcript
+            let similarRanges = staged == nil
+                ? coord.similarMatchRanges(for: utterance)
+                : []
+            Text(SearchReplaceHighlighter.attributed(
+                utteranceID: utterance.id,
+                text: displayedText,
+                replaceTerm: coord.replaceTerm,
+                matchRanges: matchRanges,
+                similarRanges: similarRanges,
+                selectedIndices: selected,
+                replaced: staged != nil
+            ))
+            .font(.body)
+            .tint(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
+            .textSelection(.enabled)
+            let editBinding = Binding<String>(
+                get: { coord.staged(for: utterance.id) ?? original },
+                set: { coord.setManualStaged($0, for: utterance.id, original: original) }
+            )
+            TextEditor(text: editBinding)
                 .font(.body)
-                .tint(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 72)
                 .padding(8)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color(uiColor: .secondarySystemBackground))
                 )
-                .textSelection(.enabled)
-            } else {
-                let original = utterance.transcript
-                let similarRanges = coord.similarMatchRanges(for: utterance)
-                Text(SearchReplaceHighlighter.attributed(
-                    utteranceID: utterance.id,
-                    text: original,
-                    replaceTerm: coord.replaceTerm,
-                    matchRanges: [],
-                    similarRanges: similarRanges,
-                    selectedIndices: [],
-                    replaced: false
-                ))
-                .font(.body)
-                .tint(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                )
-                .textSelection(.enabled)
-                let editBinding = Binding<String>(
-                    get: { coord.staged(for: utterance.id) ?? original },
-                    set: { coord.setManualStaged($0, for: utterance.id, original: original) }
-                )
-                TextEditor(text: editBinding)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 72)
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color(uiColor: .secondarySystemBackground))
-                    )
-            }
             if matchRanges.count > 1 && staged == nil {
                 selectionControls(
                     utterance: utterance,
