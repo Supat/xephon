@@ -91,6 +91,18 @@ final class SearchReplaceCoordinator {
         max(1, normalizedLength / 4)
     }
 
+    /// Minimum contiguous-character run for the loose "wider
+    /// variation" pass (longest common substring). Set to `max(3,
+    /// ceil(L × 0.4))` so a 7-char query like "midiamu" needs a
+    /// 3-char shared run (e.g. "dia" with "mediatte") while a
+    /// 10-char query needs 4. The 3-char floor stops 2-char
+    /// coincidences (e.g. "me" appearing somewhere unrelated)
+    /// from firing. `nonisolated` so the detached filter task can
+    /// call it.
+    nonisolated static func wideVariationMinRun(for normalizedLength: Int) -> Int {
+        max(3, (normalizedLength * 2 + 4) / 5)
+    }
+
     var trimmedSearch: String {
         searchTerm.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -216,14 +228,40 @@ final class SearchReplaceCoordinator {
                     out.append(u)
                     continue
                 }
-                if doSimilar,
-                   FuzzySubstringMatcher.hasSimilarSubstring(
-                    query: normalizedQuery,
-                    in: normalizedTranscript,
-                    threshold: threshold
-                   ) {
-                    out.append(u)
-                    similar.insert(u.id)
+                if doSimilar {
+                    // Two passes under the same toggle:
+                    //
+                    // 1. Levenshtein near-match (tight) — catches
+                    //    typos and homophone confusions where the
+                    //    normalized strings differ by a few edits.
+                    //
+                    // 2. Longest common substring (loose) — catches
+                    //    root-sharing words like ミディアム /
+                    //    メディアって ("midiamu" / "mediatte" — both
+                    //    contain "dia"), which Levenshtein at
+                    //    `length/4` rejects. Wider net, more false
+                    //    positives, but that's the explicit point of
+                    //    "include similar" for the use case of
+                    //    surfacing related rows rather than just typo
+                    //    variants.
+                    if FuzzySubstringMatcher.hasSimilarSubstring(
+                        query: normalizedQuery,
+                        in: normalizedTranscript,
+                        threshold: threshold
+                    ) {
+                        out.append(u)
+                        similar.insert(u.id)
+                        continue
+                    }
+                    let minRun = Self.wideVariationMinRun(for: normalizedQuery.count)
+                    if FuzzySubstringMatcher.hasLongCommonSubstring(
+                        query: normalizedQuery,
+                        in: normalizedTranscript,
+                        minLength: minRun
+                    ) {
+                        out.append(u)
+                        similar.insert(u.id)
+                    }
                 }
             }
             return FilterResult(matches: out, similarIDs: similar)

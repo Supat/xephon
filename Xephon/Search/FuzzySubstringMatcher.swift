@@ -52,6 +52,43 @@ enum FuzzySubstringMatcher {
         return false
     }
 
+    /// True when `query` and `text` share a contiguous run of at
+    /// least `minLength` characters. Complements `hasSimilarSubstring`
+    /// — that one is tight (typo-tolerant near-matches), this one is
+    /// loose (root-sharing words like メディア / ミディアム or
+    /// medium / media that share a stem but diverge in the suffix).
+    /// Useful when the user wants the search to surface conceptual
+    /// relatives, not just typo variants.
+    ///
+    /// O(query.count × text.count) DP; early-exits the instant the
+    /// running match length crosses `minLength`. Empty inputs or
+    /// either side shorter than `minLength` return false.
+    static func hasLongCommonSubstring(
+        query: String,
+        in text: String,
+        minLength: Int
+    ) -> Bool {
+        guard !query.isEmpty, !text.isEmpty, minLength > 0 else { return false }
+        let q = Array(query)
+        let t = Array(text)
+        let m = q.count
+        let n = t.count
+        if m < minLength || n < minLength { return false }
+        var prev = Array(repeating: 0, count: n + 1)
+        for i in 1...m {
+            var curr = Array(repeating: 0, count: n + 1)
+            for j in 1...n {
+                if q[i - 1] == t[j - 1] {
+                    let next = prev[j - 1] + 1
+                    if next >= minLength { return true }
+                    curr[j] = next
+                }
+            }
+            prev = curr
+        }
+        return false
+    }
+
     /// Bounded Levenshtein. Returns `threshold + 1` (i.e. "too far")
     /// as soon as the row minimum exceeds `threshold`, so the caller
     /// can early-exit without a wrong-sentinel ambiguity. Standard
