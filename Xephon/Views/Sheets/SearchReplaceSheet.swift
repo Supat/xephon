@@ -76,7 +76,22 @@ struct SearchReplaceSheet: View {
                 )
                 return .handled
             })
-            .onAppear { coord.scheduleSearch(in: recorder) }
+            .onAppear {
+                // Pre-fill from the currently-selected keyword when
+                // the sheet opens with an empty search term. Lets a
+                // user who's already focused on a keyword on the
+                // Keywords page jump straight into find-and-replace
+                // without retyping. The empty guard means a typed-
+                // then-cleared field stays cleared within one sheet
+                // lifetime; re-opening rebuilds the coordinator
+                // (it's @State) and re-checks the selection.
+                if coord.searchTerm.isEmpty,
+                   let text = recorder.keywords.selectedKeyword?.text,
+                   !text.isEmpty {
+                    coord.searchTerm = text
+                }
+                coord.scheduleSearch(in: recorder)
+            }
             .onDisappear { coord.cancelSearch() }
             .onChange(of: coord.searchTerm) { _, _ in coord.scheduleSearch(in: recorder) }
             .onChange(of: coord.includeSimilar) { _, _ in coord.scheduleSearch(in: recorder) }
