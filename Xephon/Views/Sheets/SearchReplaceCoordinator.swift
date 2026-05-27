@@ -94,6 +94,39 @@ final class SearchReplaceCoordinator {
         max(1, normalizedLength / 4)
     }
 
+    /// Same per-token Levenshtein/LCS sweep `similarMatchRanges`
+    /// uses, but returns Bool — used by the filter to gate row
+    /// inclusion so we don't surface non-raw matches that no token
+    /// can highlight. Without this gate, rows whose match only
+    /// exists on the concatenated normalized text (spanning
+    /// tokenizer chunks too small to clear the per-token min-run
+    /// individually) would appear in the list as bare cards with
+    /// no visual indication of what triggered the match.
+    /// `nonisolated` so the detached filter task can call it.
+    nonisolated static func hasHighlightableSimilarToken(
+        in transcript: String,
+        normalizedQuery: String,
+        threshold: Int,
+        minRun: Int
+    ) -> Bool {
+        guard !normalizedQuery.isEmpty else { return false }
+        let tokens = JapaneseSearchNormalizer.tokens(transcript)
+        for token in tokens {
+            if token.normalized.isEmpty { continue }
+            if FuzzySubstringMatcher.hasSimilarSubstring(
+                query: normalizedQuery,
+                in: token.normalized,
+                threshold: threshold
+            ) { return true }
+            if FuzzySubstringMatcher.hasLongCommonSubstring(
+                query: normalizedQuery,
+                in: token.normalized,
+                minLength: minRun
+            ) { return true }
+        }
+        return false
+    }
+
     /// Minimum contiguous-character run for the loose "wider
     /// variation" pass (longest common substring). Set to `max(3,
     /// ceil(L × 0.4))` so a 7-char query like "midiamu" needs a
@@ -213,6 +246,7 @@ final class SearchReplaceCoordinator {
             let threshold = Self.similarMatchThreshold(for: normalizedQuery.count)
             var out: [UtteranceEstimate] = []
             var similar: Set<UUID> = []
+            let minRun = Self.wideVariationMinRun(for: normalizedQuery.count)
             for (idx, u) in items.enumerated() {
                 // Check cancellation every 32 rows — enough to
                 // keep the work cheap to abandon, infrequent
@@ -227,44 +261,49 @@ final class SearchReplaceCoordinator {
                 }
                 if normalizedQuery.isEmpty { continue }
                 let normalizedTranscript = JapaneseSearchNormalizer.normalize(u.transcript)
-                if normalizedTranscript.contains(normalizedQuery) {
-                    out.append(u)
-                    continue
-                }
-                if doSimilar {
-                    // Two passes under the same toggle:
-                    //
-                    // 1. Levenshtein near-match (tight) — catches
-                    //    typos and homophone confusions where the
-                    //    normalized strings differ by a few edits.
-                    //
-                    // 2. Longest common substring (loose) — catches
-                    //    root-sharing words like ミディアム /
-                    //    メディアって ("midiamu" / "mediatte" — both
-                    //    contain "dia"), which Levenshtein at
-                    //    `length/4` rejects. Wider net, more false
-                    //    positives, but that's the explicit point of
-                    //    "include similar" for the use case of
-                    //    surfacing related rows rather than just typo
-                    //    variants.
-                    if FuzzySubstringMatcher.hasSimilarSubstring(
+                let isCrossScript = normalizedTranscript.contains(normalizedQuery)
+                // Fuzzy passes only run under the "Include similar"
+                // toggle. Two layers under the same flag:
+                //
+                // 1. Levenshtein near-match (tight) — catches
+                //    typos and homophone confusions where the
+                //    normalized strings differ by a few edits.
+                //
+                // 2. Longest common substring (loose) — catches
+                //    root-sharing words like ミディアム /
+                //    メディアって ("midiamu" / "mediatte" — both
+                //    contain "dia"), which Levenshtein at
+                //    `length/4` rejects. Wider net, more false
+                //    positives, but that's the explicit point of
+                //    "include similar".
+                let fuzzyHit = doSimilar && !isCrossScript && (
+                    FuzzySubstringMatcher.hasSimilarSubstring(
                         query: normalizedQuery,
                         in: normalizedTranscript,
                         threshold: threshold
-                    ) {
-                        out.append(u)
-                        similar.insert(u.id)
-                        continue
-                    }
-                    let minRun = Self.wideVariationMinRun(for: normalizedQuery.count)
-                    if FuzzySubstringMatcher.hasLongCommonSubstring(
+                    ) || FuzzySubstringMatcher.hasLongCommonSubstring(
                         query: normalizedQuery,
                         in: normalizedTranscript,
                         minLength: minRun
-                    ) {
-                        out.append(u)
-                        similar.insert(u.id)
-                    }
+                    )
+                )
+                guard isCrossScript || fuzzyHit else { continue }
+                // Highlight-availability gate. The sheet's
+                // similarMatchRanges paints purple per-token, and a
+                // row whose only match exists on the concatenated
+                // normalized text (no single token clears the
+                // per-token Levenshtein/LCS thresholds) would
+                // surface as a card with neither yellow nor purple
+                // highlight — unexplained noise. Skip those.
+                guard Self.hasHighlightableSimilarToken(
+                    in: u.transcript,
+                    normalizedQuery: normalizedQuery,
+                    threshold: threshold,
+                    minRun: minRun
+                ) else { continue }
+                out.append(u)
+                if !isCrossScript {
+                    similar.insert(u.id)
                 }
             }
             return FilterResult(matches: out, similarIDs: similar)
