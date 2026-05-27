@@ -1438,9 +1438,22 @@ final class RecordingController {
         // Bounded wait so a misbehaving diarizer can't hang stop().
         // (capture / raw / feed have all drained above, so
         // `latestCapturedFileTime` is final at this point.)
+        //
+        // The exit condition checks the diarize task's *next* fire
+        // end against captured audio: the first fire is gated by
+        // `minFirstDiarizeWindowSec` (10 s), subsequent fires by
+        // `continuousDiarizeStrideSec` (2 s). If the next fire end
+        // wouldn't fit in what we've captured, no fire can ever
+        // happen — exit immediately. Without this asymmetry the
+        // first-fire case made a short (< 10 s) recording wait the
+        // full deadline because the loop's stride-based slack didn't
+        // match the diarize task's window-based first-fire gate.
         let diarizeDeadline = Date().addingTimeInterval(30)
-        while lastDiarizedAudioTime + Self.continuousDiarizeStrideSec < latestCapturedFileTime,
-              Date() < diarizeDeadline {
+        while Date() < diarizeDeadline {
+            let nextFireEnd: TimeInterval = lastDiarizedAudioTime == 0
+                ? Self.minFirstDiarizeWindowSec
+                : lastDiarizedAudioTime + Self.continuousDiarizeStrideSec
+            guard nextFireEnd <= latestCapturedFileTime else { break }
             try? await Task.sleep(for: .seconds(Self.diarizeDrainPollSec))
         }
 
