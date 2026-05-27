@@ -61,3 +61,21 @@ final class MismatchMemo {
     var lastKey: Key?
     var set: Set<UUID> = []
 }
+
+/// Reference-typed memo for the per-row diarization strip runs.
+/// Without this, every body re-eval (every scroll tick, every
+/// utterance mutation, every fusion-weight slider drag) would
+/// re-sweep the full timeline per row — `O(rows × samples × active)`
+/// per render. The key only changes when the timeline or the
+/// utterance count actually moves, so steady-state scrolling reuses
+/// the cached map and the strip's `body` is a pure paint.
+@MainActor
+final class StripRunsMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let timelineVersion: Int
+        let utteranceCount: Int
+    }
+    var lastKey: Key?
+    var runs: [UUID: [DiarizationRun]] = [:]
+}

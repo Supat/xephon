@@ -48,12 +48,18 @@ struct TranscriptList: View {
     let onEditTranscript: (UtteranceEstimate) -> Void
 
     @State private var mismatchMemo = MismatchMemo()
+    @State private var stripRunsMemo = StripRunsMemo()
 
     var body: some View {
         let mismatched = speakerMismatchedIDs
+        let stripRuns = perRowDiarizationRuns
         ScrollViewReader { proxy in
             List(items, id: \.u.id, selection: $selectedUtteranceID) { item in
-                row(for: item, hasSpeakerMismatch: mismatched.contains(item.u.id))
+                row(
+                    for: item,
+                    hasSpeakerMismatch: mismatched.contains(item.u.id),
+                    diarizationRuns: stripRuns[item.u.id] ?? []
+                )
             }
             .listStyle(.plain)
             // Any tap on the list dismisses keyboard focus on the
@@ -178,7 +184,8 @@ struct TranscriptList: View {
     @ViewBuilder
     private func row(
         for item: (idx: Int, u: UtteranceEstimate),
-        hasSpeakerMismatch: Bool
+        hasSpeakerMismatch: Bool,
+        diarizationRuns: [DiarizationRun]
     ) -> some View {
         UtteranceRow(
             number: item.idx + 1,
@@ -228,7 +235,7 @@ struct TranscriptList: View {
                 get: { recorder.teachingDiarizer },
                 set: { recorder.teachingDiarizer = $0 }
             ),
-            diarizationSegments: recorder.diarizationTimeline
+            diarizationRuns: diarizationRuns
             // Note: the gate "only when source audio is present"
             // moved to the dialog itself, which hides the time
             // spinners + play button when the session is mic-mode.
@@ -338,6 +345,42 @@ struct TranscriptList: View {
         }
         mismatchMemo.lastKey = key
         mismatchMemo.set = result
+        return result
+    }
+
+    /// Per-utterance diarization-strip run cache. Computed lazily
+    /// from the cumulative timeline; invalidates only when one of
+    /// `utterancesVersion` / `timelineVersion` / `utterances.count`
+    /// moves. Without this memo the per-row strip would re-sweep
+    /// the timeline on every scroll tick — the same hot-path
+    /// problem `speakerMismatchedIDs` solves for the mismatch
+    /// glyph. Skipped (empty map) when the timeline is empty so a
+    /// freshly-loaded session pays nothing until the diarizer
+    /// fires.
+    private var perRowDiarizationRuns: [UUID: [DiarizationRun]] {
+        let key = StripRunsMemo.Key(
+            utterancesVersion: recorder.utterancesVersion,
+            timelineVersion: recorder.diarizationTimelineVersion,
+            utteranceCount: recorder.utterances.count
+        )
+        if stripRunsMemo.lastKey == key { return stripRunsMemo.runs }
+        let timeline = recorder.diarizationTimeline
+        var result: [UUID: [DiarizationRun]] = [:]
+        if !timeline.isEmpty {
+            result.reserveCapacity(recorder.utterances.count)
+            for u in recorder.utterances {
+                let runs = UtteranceDiarizationStrip.computeRuns(
+                    segments: timeline,
+                    utteranceStart: u.start,
+                    utteranceEnd: u.end
+                )
+                if !runs.isEmpty {
+                    result[u.id] = runs
+                }
+            }
+        }
+        stripRunsMemo.lastKey = key
+        stripRunsMemo.runs = result
         return result
     }
 

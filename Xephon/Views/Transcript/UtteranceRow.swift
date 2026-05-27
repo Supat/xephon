@@ -154,12 +154,15 @@ struct UtteranceRow: View {
     /// row's popover. Backed by `RecordingController.teaching-
     /// Diarizer`, which is session-only (resets to off on launch).
     @Binding var teachingDiarizer: Bool
-    /// Cumulative diarizer timeline at render time. Passed through
-    /// from the controller via TranscriptList so the per-row strip
-    /// can render the slice covering this utterance's window. May
-    /// be empty (no diarization pass yet, or freshly loaded session
-    /// before the strip is re-populated by re-evaluation).
-    let diarizationSegments: [DiarizedSegment]
+    /// Pre-computed per-instant majority runs for this row's
+    /// diarization strip window, in window-local seconds. Computed
+    /// once per `(timelineVersion, utterance)` pair by
+    /// `TranscriptList` and reused across body re-evals so a long
+    /// session doesn't re-sweep the full timeline on every scroll
+    /// tick. Empty when no segment overlaps the window (mic-mode
+    /// short recordings, freshly loaded sessions before the
+    /// diarizer fires).
+    let diarizationRuns: [DiarizationRun]
 
     /// Set by a 2-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
@@ -404,9 +407,11 @@ struct UtteranceRow: View {
             // Per-row windowed diarizer strip. Hidden when the
             // window has no overlapping segments (the strip view
             // returns EmptyView in that case, so this slot collapses
-            // to zero height without leaving a gap).
+            // to zero height without leaving a gap). Runs are
+            // pre-computed by TranscriptList against the latest
+            // timeline version so this render is a pure paint.
             UtteranceDiarizationStrip(
-                segments: diarizationSegments,
+                runs: diarizationRuns,
                 utteranceStart: utterance.start,
                 utteranceEnd: utterance.end
             )
