@@ -160,6 +160,17 @@ System frameworks: `Speech`, `AVFoundation`, `CoreML`, `Accelerate`,
   (b) a privacy note in `docs/privacy.md`.
 - **Never** fine-tune on a user's data silently. Fine-tuning workflows are
   out-of-band scripts, not in-app actions.
+- **Never** attach a new `.fileImporter` or `.fileExporter` modifier inline.
+  Every file pickup in this app routes through
+  `FilePickerCoordinator.presentImport(...)` / `presentExport(...)` and the
+  single pair of modifiers at the `ContentView` navigation root. Multiple
+  `.fileImporter` / `.fileExporter` modifiers on the same view chain
+  silently collide on iPadOS 26 — the picker initializes and nothing
+  presents. If you need a new content type, whitelist it in
+  `DataFileDocument.{readable,writable}ContentTypes`. Same singular-modifier
+  discipline applies to crowded `.alert` / `.confirmationDialog` stacks on
+  one view — drive multiple modals from a single enum (see
+  `KeywordsCard.Presentation`).
 
 ## Where to look for more context
 
