@@ -20,6 +20,15 @@ final class SearchReplaceCoordinator {
     var searchTerm: String = ""
     var replaceTerm: String = ""
 
+    /// User-toggled opt-in for fuzzy "Include similar" matching.
+    /// When on, rows whose normalized transcript contains some
+    /// substring within `similarMatchThreshold(for:)` edit
+    /// operations of the normalized query also surface — but only
+    /// for queries at or above `minQueryLengthForSimilar` normalized
+    /// chars, since shorter queries explode into noise. Session-
+    /// scoped (resets to off on sheet open / app launch).
+    var includeSimilar: Bool = false
+
     /// Latest computed match list. Driven by `scheduleSearch(in:)`
     /// — never recomputed inline because `JapaneseSearchNormalizer`
     /// runs CFStringTokenizer per row and would block the keyboard
@@ -44,10 +53,43 @@ final class SearchReplaceCoordinator {
     @ObservationIgnored
     private var selectedMatches: [UUID: Set<Int>] = [:]
 
+    /// Set of utterance ids whose only reason for being in
+    /// `matches` is the fuzzy "Include similar" pass — i.e. they
+    /// failed both the raw substring and the cross-script normalized
+    /// substring checks but were within the edit-distance threshold
+    /// of some window of the normalized transcript. Drives the
+    /// "Similar" badge in the sheet, distinct from the orange
+    /// "Cross-script" badge. Replace stays disabled for these rows
+    /// for the same reason it's disabled for cross-script-only
+    /// rows: the raw substring isn't actually present, so there's
+    /// nothing to swap. Repopulated alongside `matches` on every
+    /// search pass; observation-ignored because the sheet already
+    /// re-renders when `matches` changes.
+    @ObservationIgnored
+    private var similarMatchIDs: Set<UUID> = []
+
     /// In-flight search task, cancelled on every keystroke so a
     /// pile-up of normalizer passes doesn't trail behind the user.
     @ObservationIgnored
     private var searchTask: Task<Void, Never>?
+
+    /// Minimum normalized-query length before the fuzzy pass is
+    /// allowed to contribute. Shorter queries are a near-guarantee
+    /// of noise: at length 3 with threshold 1 the matcher fires on
+    /// any 2-of-3 character match anywhere in the transcript, which
+    /// in Japanese romaji means almost every row. 4 is the smallest
+    /// length where `floor(L / 4) = 1` still feels selective.
+    /// `nonisolated` so the detached filter task can read it.
+    nonisolated static let minQueryLengthForSimilar: Int = 4
+
+    /// Edit-distance budget for the fuzzy pass at a given normalized
+    /// query length. Linear in length so a 4-char query allows 1
+    /// edit, an 8-char query 2, a 12-char query 3 — keeps the
+    /// false-positive rate roughly stable across lengths.
+    /// `nonisolated` so the detached filter task can call it.
+    nonisolated static func similarMatchThreshold(for normalizedLength: Int) -> Int {
+        max(1, normalizedLength / 4)
+    }
 
     var trimmedSearch: String {
         searchTerm.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -93,9 +135,11 @@ final class SearchReplaceCoordinator {
         let term = trimmedSearch
         guard !term.isEmpty else {
             matches = []
+            similarMatchIDs = []
             return
         }
         let snapshot = recorder.utterances
+        let allowSimilar = includeSimilar
         searchTask = Task { @MainActor in
             // Brief debounce. The sleep is cancellable, so each
             // new keystroke cancels the prior task before its
@@ -107,9 +151,14 @@ final class SearchReplaceCoordinator {
                 return
             }
             if Task.isCancelled { return }
-            let filtered = await Self.filter(items: snapshot, term: term)
+            let result = await Self.filter(
+                items: snapshot,
+                term: term,
+                allowSimilar: allowSimilar
+            )
             if Task.isCancelled { return }
-            matches = filtered
+            matches = result.matches
+            similarMatchIDs = result.similarIDs
         }
     }
 
@@ -118,9 +167,19 @@ final class SearchReplaceCoordinator {
         searchTask = nil
     }
 
-    /// Off-main filter. Runs the raw-substring fast path first,
-    /// then the Hepburn-normalized cross-script fallback.
-    /// Cancellation is wired through
+    /// Filter pass result. Separate `similarIDs` set lets the sheet
+    /// label fuzzy-only rows distinctly from exact cross-script
+    /// rows without rewalking the strings at render time.
+    private struct FilterResult {
+        let matches: [UtteranceEstimate]
+        let similarIDs: Set<UUID>
+    }
+
+    /// Off-main filter. Runs three passes per row, falling through
+    /// only when each one misses: raw substring → cross-script
+    /// normalized substring → (when `allowSimilar` is on and the
+    /// query is long enough) fuzzy substring on the normalized
+    /// pair. Cancellation is wired through
     /// `withTaskCancellationHandler` so when the outer debounce
     /// task is cancelled the detached filter sees
     /// `Task.isCancelled == true` and bails on the next chunk
@@ -128,35 +187,60 @@ final class SearchReplaceCoordinator {
     /// discarded input.
     private static func filter(
         items: [UtteranceEstimate],
-        term: String
-    ) async -> [UtteranceEstimate] {
+        term: String,
+        allowSimilar: Bool
+    ) async -> FilterResult {
         let detached = Task.detached(priority: .userInitiated) {
-            () -> [UtteranceEstimate] in
+            () -> FilterResult in
             let normalizedQuery = JapaneseSearchNormalizer.normalize(term)
+            let doSimilar = allowSimilar
+                && normalizedQuery.count >= Self.minQueryLengthForSimilar
+            let threshold = Self.similarMatchThreshold(for: normalizedQuery.count)
             var out: [UtteranceEstimate] = []
+            var similar: Set<UUID> = []
             for (idx, u) in items.enumerated() {
                 // Check cancellation every 32 rows — enough to
                 // keep the work cheap to abandon, infrequent
                 // enough that the check itself isn't the
                 // bottleneck.
-                if idx & 0x1F == 0, Task.isCancelled { return [] }
+                if idx & 0x1F == 0, Task.isCancelled {
+                    return FilterResult(matches: [], similarIDs: [])
+                }
                 if u.transcript.localizedStandardRange(of: term) != nil {
                     out.append(u)
                     continue
                 }
                 if normalizedQuery.isEmpty { continue }
-                if JapaneseSearchNormalizer.normalize(u.transcript)
-                    .contains(normalizedQuery) {
+                let normalizedTranscript = JapaneseSearchNormalizer.normalize(u.transcript)
+                if normalizedTranscript.contains(normalizedQuery) {
                     out.append(u)
+                    continue
+                }
+                if doSimilar,
+                   FuzzySubstringMatcher.hasSimilarSubstring(
+                    query: normalizedQuery,
+                    in: normalizedTranscript,
+                    threshold: threshold
+                   ) {
+                    out.append(u)
+                    similar.insert(u.id)
                 }
             }
-            return out
+            return FilterResult(matches: out, similarIDs: similar)
         }
         return await withTaskCancellationHandler {
             await detached.value
         } onCancel: {
             detached.cancel()
         }
+    }
+
+    /// True when the row is only in `matches` because of the fuzzy
+    /// pass — i.e. neither the raw substring nor the cross-script
+    /// normalized substring matched. Drives the "Similar" badge in
+    /// the sheet header.
+    func isSimilarMatch(_ utterance: UtteranceEstimate) -> Bool {
+        similarMatchIDs.contains(utterance.id)
     }
 
     // MARK: - Match enumeration + staging

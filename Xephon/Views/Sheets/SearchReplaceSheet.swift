@@ -79,6 +79,7 @@ struct SearchReplaceSheet: View {
             .onAppear { coord.scheduleSearch(in: recorder) }
             .onDisappear { coord.cancelSearch() }
             .onChange(of: coord.searchTerm) { _, _ in coord.scheduleSearch(in: recorder) }
+            .onChange(of: coord.includeSimilar) { _, _ in coord.scheduleSearch(in: recorder) }
             .onChange(of: recorder.utterancesVersion) { _, _ in coord.scheduleSearch(in: recorder) }
             .onChange(of: recorder.utterances.count) { _, _ in coord.scheduleSearch(in: recorder) }
         }
@@ -97,6 +98,26 @@ struct SearchReplaceSheet: View {
                 )
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                // Fuzzy "Include similar" toggle. Sits on the search
+                // row (not the replace row) because it modifies what
+                // counts as a match — the replace term is unaffected.
+                // `.fixedSize()` keeps it from stealing field width;
+                // `.controlSize(.mini)` matches the compact density
+                // of the surrounding chrome.
+                Toggle(
+                    String(localized: "searchReplace.includeSimilar"),
+                    isOn: $coord.includeSimilar
+                )
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .accessibilityLabel(
+                    String(localized: "searchReplace.includeSimilar.a11y")
+                )
+                Image(systemName: "wand.and.stars")
+                    .foregroundStyle(coord.includeSimilar ? Color.accentColor : Color.secondary)
+                    .font(.caption)
+                    .accessibilityHidden(true)
             }
             HStack(spacing: 8) {
                 Image(systemName: "arrow.right.circle")
@@ -241,6 +262,16 @@ struct SearchReplaceSheet: View {
                 Text(String(localized: "searchReplace.staged"))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.green)
+            } else if coord.isSimilarMatch(utterance) {
+                // Fuzzy match — neither raw substring nor exact
+                // cross-script. Distinct purple tint so the user
+                // can tell at a glance that this row matched via
+                // the "Include similar" pass (and that Replace
+                // therefore won't work on it for the same reason
+                // it doesn't on cross-script rows).
+                Text(String(localized: "searchReplace.similar"))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.purple)
             } else if !coord.hasRawMatch(utterance) {
                 Text(String(localized: "searchReplace.crossScript"))
                     .font(.caption2.weight(.semibold))

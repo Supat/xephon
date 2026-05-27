@@ -38,6 +38,9 @@
 "searchReplace.commit" = "Commit";
 "searchReplace.staged" = "Staged";
 "searchReplace.crossScript" = "Cross-script match — edit manually";
+"searchReplace.similar" = "Similar match — edit manually";
+"searchReplace.includeSimilar" = "Similar";
+"searchReplace.includeSimilar.a11y" = "Include similar words in matches";
 "searchReplace.selectedCount" = "%1$lld / %2$lld selected";
 "searchReplace.selectAll" = "Select all";
 "searchReplace.clear" = "Clear";

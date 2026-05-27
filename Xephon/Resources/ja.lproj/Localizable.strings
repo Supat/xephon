@@ -38,6 +38,9 @@
 "searchReplace.commit" = "確定";
 "searchReplace.staged" = "保留";
 "searchReplace.crossScript" = "表記揺れ一致 — 手動編集が必要";
+"searchReplace.similar" = "類似一致 — 手動編集が必要";
+"searchReplace.includeSimilar" = "類似";
+"searchReplace.includeSimilar.a11y" = "類似語も検索結果に含める";
 "searchReplace.selectedCount" = "%2$lld 件中 %1$lld 件選択";
 "searchReplace.selectAll" = "すべて選択";
 "searchReplace.clear" = "クリア";
