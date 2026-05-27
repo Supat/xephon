@@ -310,6 +310,7 @@
 "glossary.error.ok" = "OK";
 "glossary.badge.format" = "Glossary %d";
 "glossary.badge.a11y" = "Glossary bias matched: %@";
+"row.diarization.a11y" = "Diarizer timeline around utterance, %d to %d seconds";
 "plutchik.joy" = "Joy";
 "plutchik.sadness" = "Sadness";
 "plutchik.anticipation" = "Anticipation";

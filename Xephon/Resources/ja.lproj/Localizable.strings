@@ -310,6 +310,7 @@
 "glossary.error.ok" = "OK";
 "glossary.badge.format" = "辞書 %d";
 "glossary.badge.a11y" = "辞書バイアスが一致: %@";
+"row.diarization.a11y" = "発話前後の話者推定タイムライン %d〜%d 秒";
 "plutchik.joy" = "喜び";
 "plutchik.sadness" = "悲しみ";
 "plutchik.anticipation" = "期待";

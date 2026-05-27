@@ -227,7 +227,8 @@ struct TranscriptList: View {
             teachingDiarizer: Binding(
                 get: { recorder.teachingDiarizer },
                 set: { recorder.teachingDiarizer = $0 }
-            )
+            ),
+            diarizationSegments: recorder.diarizationTimeline
             // Note: the gate "only when source audio is present"
             // moved to the dialog itself, which hides the time
             // spinners + play button when the session is mic-mode.
