@@ -7,13 +7,14 @@ import XephonUtilities
 /// replacements, per-utterance selected-match indices, the latest
 /// computed match list, and the in-flight debounced search task.
 ///
-/// `searchTerm` / `replaceTerm` / `matches` stay default-observed
-/// so the sheet's bindings + match-list render react to changes.
-/// The two dictionaries (`stagedReplacements`, `selectedMatches`)
-/// are `@ObservationIgnored` because the only places that care
-/// already re-render on `recorder.utterancesVersion` /
-/// `matches` changes — observing them too would invalidate the
-/// entire sheet on every per-row keystroke.
+/// `searchTerm` / `replaceTerm` / `matches` / `stagedReplacements` /
+/// `selectedMatches` are all default-observed so the card's
+/// "Staged" badge, Commit-enabled state, and per-match selection
+/// reflect every Replace tap or TextEditor keystroke without
+/// waiting for the next search re-trigger. `similarMatchIDs` stays
+/// ignored — it only changes in lockstep with `matches`, so any
+/// dependent read already invalidates via the matches update.
+/// `searchTask` is a task handle, not user-visible state.
 @MainActor
 @Observable
 final class SearchReplaceCoordinator {
@@ -36,11 +37,11 @@ final class SearchReplaceCoordinator {
     var matches: [UtteranceEstimate] = []
 
     /// Staged replacement text per utterance. Populated by tapping
-    /// Replace on a row; consumed by Commit which calls
-    /// `commitHandEdit` and clears the entry. Survives view
-    /// re-renders so the SER pipeline updating the row underneath
-    /// doesn't blow away pending stages.
-    @ObservationIgnored
+    /// Replace on a row or typing into the manual-edit TextEditor;
+    /// consumed by Commit which calls `commitHandEdit` and clears
+    /// the entry. Observed so the card's Commit-button enable
+    /// state, the "Staged" badge, and the highlighter mode all
+    /// update synchronously with the write.
     private var stagedReplacements: [UUID: String] = [:]
 
     /// Per-utterance set of match indices the user has picked for
@@ -50,7 +51,9 @@ final class SearchReplaceCoordinator {
     /// when there's only one match anyway. Indices reset after
     /// each Replace pass because the staged text's match
     /// positions no longer line up with the pre-staging ones.
-    @ObservationIgnored
+    /// Observed so the selection toggle updates the highlighter
+    /// (green vs yellow per match) and the per-row counter in
+    /// `selectionControls` immediately.
     private var selectedMatches: [UUID: Set<Int>] = [:]
 
     /// Set of utterance ids whose only reason for being in
@@ -388,6 +391,24 @@ final class SearchReplaceCoordinator {
         return displayed.localizedStandardRange(of: trimmedSearch) != nil
     }
 
+    /// Stage `text` for `utteranceID` as if it were the result of
+    /// a Replace pass. Used by the sheet's editable TextEditor on
+    /// "edit manually" rows (cross-script / similar matches), where
+    /// there's no raw substring to swap so the user types the
+    /// correction directly. Clears the staging entry when `text`
+    /// equals `original` so the Commit button greys out the moment
+    /// the user reverts their edit. Selection state is cleared
+    /// alongside the stage write because match indices computed
+    /// against the prior text no longer line up.
+    func setManualStaged(_ text: String, for utteranceID: UUID, original: String) {
+        if text == original {
+            stagedReplacements.removeValue(forKey: utteranceID)
+        } else {
+            stagedReplacements[utteranceID] = text
+        }
+        selectedMatches[utteranceID] = []
+    }
+
     func stageReplace(for utterance: UtteranceEstimate) {
         let term = trimmedSearch
         guard !term.isEmpty else { return }
@@ -430,6 +451,16 @@ final class SearchReplaceCoordinator {
                 newEnd: end
             )
             stagedReplacements.removeValue(forKey: id)
+            // Refresh the match list against the post-commit
+            // utterance snapshot. `.onChange(of: utterancesVersion)`
+            // in the sheet body doesn't fire reliably because the
+            // body reads `coord.matches` (not the recorder's
+            // utterances), so the version-bump observation
+            // dependency isn't established. Calling scheduleSearch
+            // here closes the loop deterministically so the card
+            // either drops out of the list (term no longer present)
+            // or re-renders against the new transcript.
+            scheduleSearch(in: recorder)
         }
     }
 }
