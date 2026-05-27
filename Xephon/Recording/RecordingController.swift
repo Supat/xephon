@@ -1413,14 +1413,21 @@ final class RecordingController {
         // which is undefined behavior.
         guard phase == .recording else { return }
 
+        let t0 = Date()
+        func elapsed() -> Double { Date().timeIntervalSince(t0) }
+        AppLog.app.info("stop(): begin")
+
         // Don't await the auto-stop watcher (it's the caller in the
         // file-end path). Cancel it so manual Stop also tears it down.
         fileEndWatcherTask?.cancel()
         fileEndWatcherTask = nil
 
         await capture.stop()
+        AppLog.app.info("stop(): capture.stop done at \(elapsed(), privacy: .public)s")
         await rawTask?.value
+        AppLog.app.info("stop(): rawTask drained at \(elapsed(), privacy: .public)s")
         await feedTask?.value
+        AppLog.app.info("stop(): feedTask drained at \(elapsed(), privacy: .public)s")
         rawTask = nil
         feedTask = nil
 
@@ -1456,6 +1463,7 @@ final class RecordingController {
             guard nextFireEnd <= latestCapturedFileTime else { break }
             try? await Task.sleep(for: .seconds(Self.diarizeDrainPollSec))
         }
+        AppLog.app.info("stop(): diarize drain exited at \(elapsed(), privacy: .public)s (lastDiarized=\(self.lastDiarizedAudioTime, privacy: .public) captured=\(self.latestCapturedFileTime, privacy: .public))")
 
         continuousDiarizeTask?.cancel()
         continuousDiarizeTask = nil
@@ -1464,9 +1472,12 @@ final class RecordingController {
         // Flushing remaining utterances may take a few seconds (SpeechAnalyzer
         // finalize + per-segment SER for any tail audio).
         phase = .analyzing
+        AppLog.app.info("stop(): phase=.analyzing at \(elapsed(), privacy: .public)s")
         liveActivity.scheduleUpdate(currentLiveActivityState)
         await streamingTranscriber.finish()
+        AppLog.app.info("stop(): transcriber.finish done at \(elapsed(), privacy: .public)s")
         await analysisTask?.value
+        AppLog.app.info("stop(): analysisTask drained at \(elapsed(), privacy: .public)s")
         analysisTask = nil
 
         // Reconcile every utterance's speaker against the now-final
