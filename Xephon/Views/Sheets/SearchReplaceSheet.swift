@@ -166,8 +166,16 @@ struct SearchReplaceSheet: View {
         let displayedText = staged ?? utterance.transcript
         let matchRanges = coord.rawMatches(in: displayedText)
         let selected = coord.selection(for: utterance.id)
+        let audioEditingEnabled = recorder.playbackSourceURL != nil
+        let isThisPlaying = recorder.isPreviewPlaying
+            && recorder.playingUtteranceID == utterance.id
         VStack(alignment: .leading, spacing: 10) {
-            cardHeader(utterance: utterance, staged: staged)
+            cardHeader(
+                utterance: utterance,
+                staged: staged,
+                audioEditingEnabled: audioEditingEnabled,
+                isThisPlaying: isThisPlaying
+            )
             // Non-editable transcript with each match highlighted
             // and individually tappable. The custom `xephon-match`
             // URL scheme on each match routes the tap through the
@@ -211,7 +219,9 @@ struct SearchReplaceSheet: View {
     @ViewBuilder
     private func cardHeader(
         utterance: UtteranceEstimate,
-        staged: String?
+        staged: String?,
+        audioEditingEnabled: Bool,
+        isThisPlaying: Bool
     ) -> some View {
         HStack(spacing: 8) {
             Text(utterance.speakerID)
@@ -235,6 +245,33 @@ struct SearchReplaceSheet: View {
                 Text(String(localized: "searchReplace.crossScript"))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.orange)
+            }
+            // Inline play affordance — mirrors the per-row button in
+            // `TranscriptionReviewSheet`. File-mode only (mic-mode
+            // sessions have no source audio to slice); `owner` pins
+            // the per-row "playing" state so neighbouring cards know
+            // to render the idle glyph rather than the stop glyph.
+            if audioEditingEnabled {
+                Button {
+                    if isThisPlaying {
+                        recorder.stopPlayback()
+                    } else {
+                        recorder.playRange(
+                            start: utterance.start,
+                            end: utterance.end,
+                            owner: utterance.id
+                        )
+                    }
+                } label: {
+                    Image(systemName: isThisPlaying
+                        ? "stop.circle.fill"
+                        : "play.circle.fill"
+                    )
+                        .font(.title2)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.borderless)
             }
         }
     }
