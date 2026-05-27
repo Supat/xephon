@@ -64,6 +64,7 @@ struct ControlPaneView: View {
                 settingsPage
                 summaryPage
                 speakerAnalysisPage
+                keywordsPage
                 summarizerPage
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
@@ -199,6 +200,19 @@ struct ControlPaneView: View {
                 SynchronyArcCard(
                     utterances: recorder.utterances
                 )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 32)
+        }
+        .clipped()
+    }
+
+    @ViewBuilder
+    private var keywordsPage: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                KeywordsCard(store: recorder.keywords)
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)

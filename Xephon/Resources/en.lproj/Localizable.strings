@@ -314,6 +314,16 @@
 "glossary.badge.format" = "Glossary %d";
 "glossary.badge.a11y" = "Glossary bias matched: %@";
 "row.diarization.a11y" = "Diarizer timeline around utterance, %d to %d seconds";
+"keywords.header" = "Keywords";
+"keywords.add.placeholder" = "Add keyword";
+"keywords.empty.title" = "No keywords yet.";
+"keywords.empty.hint" = "Type to add one, or import a keyword JSON.";
+"keywords.import" = "Import…";
+"keywords.export" = "Export…";
+"keywords.removeAll" = "Remove All";
+"keywords.remove.a11y" = "Remove keyword %@";
+"keywords.error.title" = "Keywords I/O Error";
+"keywords.error.ok" = "OK";
 "plutchik.joy" = "Joy";
 "plutchik.sadness" = "Sadness";
 "plutchik.anticipation" = "Anticipation";

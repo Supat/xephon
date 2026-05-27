@@ -314,6 +314,16 @@
 "glossary.badge.format" = "辞書 %d";
 "glossary.badge.a11y" = "辞書バイアスが一致: %@";
 "row.diarization.a11y" = "発話前後の話者推定タイムライン %d〜%d 秒";
+"keywords.header" = "キーワード";
+"keywords.add.placeholder" = "キーワードを追加";
+"keywords.empty.title" = "キーワードはまだありません。";
+"keywords.empty.hint" = "入力して追加するか、JSON を取り込んでください。";
+"keywords.import" = "読み込み…";
+"keywords.export" = "書き出し…";
+"keywords.removeAll" = "すべて削除";
+"keywords.remove.a11y" = "キーワード %@ を削除";
+"keywords.error.title" = "キーワード I/O エラー";
+"keywords.error.ok" = "OK";
 "plutchik.joy" = "喜び";
 "plutchik.sadness" = "悲しみ";
 "plutchik.anticipation" = "期待";

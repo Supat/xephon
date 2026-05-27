@@ -84,6 +84,12 @@ final class RecordingController {
     /// `onChange` hook so the text-SER actor sees the new bias
     /// before the next utterance flows through.
     let glossary: GlossaryStore = GlossaryStore()
+    /// User-managed keyword bank. Persisted alongside the glossary
+    /// but semantically free-form — features that want to opt in
+    /// (notes, search shortcuts, downstream filters) read it
+    /// directly. No pipeline wiring today; the card on the
+    /// Keywords page is the only surface that touches it.
+    let keywords: KeywordStore = KeywordStore()
     /// Active session language. Drives the ASR locale (Apple
     /// SpeechTranscriber + offline transcriber), the FoundationModels
     /// prompt opener, and the DeBERTa-WRIME availability gate
