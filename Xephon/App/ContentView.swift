@@ -84,6 +84,12 @@ struct ContentView: View {
     /// `Task` handles that the dismiss / scenePhase-background
     /// paths cancel. Wired into the view tree via `LLMSheetBridge`.
     @State private var llmCoord = LLMSheetCoordinator()
+    /// App-level file pickup. Every card that needs `.fileImporter`
+    /// or `.fileExporter` routes through this rather than attaching
+    /// its own modifier — see `FilePickerCoordinator`'s doc comment
+    /// for why one pair of modifiers at the app root sidesteps the
+    /// SwiftUI multi-modifier presentation hazard.
+    @State private var filePicker = FilePickerCoordinator()
 
     var body: some View {
         if !recorder.modelsReady {
@@ -94,7 +100,12 @@ struct ContentView: View {
     }
 
     private var mainBody: some View {
-        NavigationStack {
+        // Local @Bindable shadow so the centralized file picker
+        // modifiers below can bind to `$filePicker.is*Presented`
+        // with proper two-way semantics. @State alone doesn't
+        // expose `$` syntax for @Observable class properties.
+        @Bindable var filePicker = filePicker
+        return NavigationStack {
             VStack(spacing: 0) {
                 if !recorder.pipelineDiagnostics.isEmpty {
                     PipelineDiagnosticsBanner(messages: recorder.pipelineDiagnostics)
@@ -105,6 +116,7 @@ struct ContentView: View {
                             recorder: recorder,
                             filterModel: filterModel,
                             fileCoord: fileCoord,
+                            filePicker: filePicker,
                             selectedUtteranceID: $selectedUtteranceID,
                             scrollRequestUtteranceID: $scrollRequestUtteranceID,
                             showingDiscardConfirm: $showingDiscardConfirm
@@ -204,8 +216,37 @@ struct ContentView: View {
             .modifier(SessionFileBridge(
                 recorder: recorder,
                 coord: fileCoord,
+                filePicker: filePicker,
                 menuCommands: menuCommands
             ))
+            // Centralized file pickers. Every feature that wants to
+            // present an import or export goes through
+            // `filePicker.presentImport` / `presentExport` rather
+            // than attaching its own modifier. Two modifiers,
+            // attached at the navigation root, drive the actual
+            // system pickers from the coordinator's flags.
+            //
+            // Bindings target the explicit `is*Presented` bools
+            // (not a derived `request != nil` closure) so SwiftUI's
+            // standard two-way dismissal flow doesn't race with
+            // request cleanup. `finishImport` / `finishExport`
+            // capture the request first, then clear, then dispatch
+            // — see the coordinator's doc-comments for the race
+            // that prompted this split.
+            .fileImporter(
+                isPresented: $filePicker.isImporterPresented,
+                allowedContentTypes: filePicker.importRequest?.allowedTypes ?? []
+            ) { result in
+                filePicker.finishImport(result)
+            }
+            .fileExporter(
+                isPresented: $filePicker.isExporterPresented,
+                document: filePicker.exportRequest?.document,
+                contentType: filePicker.exportRequest?.contentType ?? .data,
+                defaultFilename: filePicker.exportRequest?.defaultFilename ?? "export"
+            ) { result in
+                filePicker.finishExport(result)
+            }
             .alert(
                 String(localized: "record.discardConfirm.title"),
                 isPresented: $showingDiscardConfirm

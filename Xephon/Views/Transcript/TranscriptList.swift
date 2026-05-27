@@ -158,6 +158,16 @@ struct TranscriptList: View {
             .onChange(of: recorder.utterances.count, initial: true) { _, _ in
                 filterModel.refreshSearchCache(for: recorder.utterances)
             }
+            // In-place mutations (commitHandEdit, applyReevaluation,
+            // speaker reassignments) bump `utterancesVersion`
+            // without changing the count, so the count-keyed
+            // refresh above misses them. Without this, the
+            // normalized-transcript cache keeps the pre-edit
+            // normalization for the row's id and search / keyword
+            // filters can't find the new text.
+            .onChange(of: recorder.utterancesVersion) { _, _ in
+                filterModel.refreshSearchCache(for: recorder.utterances)
+            }
             .onChange(of: isLastUtteranceVisible) { _, visible in
                 if visible { hasUnreadUtterance = false }
             }

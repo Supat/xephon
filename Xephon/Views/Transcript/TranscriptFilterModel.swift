@@ -31,13 +31,39 @@ final class TranscriptFilterModel {
     /// with the cumulative-timeline majority survive the filter.
     var showingMismatchOnly: Bool = false
 
+    /// One cached normalized form alongside the raw transcript it
+    /// was derived from. Used to invalidate entries whose
+    /// underlying transcript has been edited in place — the ID
+    /// stays the same across `commitHandEdit` and re-evaluation,
+    /// so a plain `[UUID: String]` would happily hand back the
+    /// pre-edit normalization forever. Comparing `raw` against
+    /// `utterance.transcript` at lookup time catches the drift
+    /// even if `refreshSearchCache` hasn't fired yet.
+    struct NormalizedTranscript: Sendable {
+        let raw: String
+        let normalized: String
+    }
+
     /// Normalized (Hepburn romaji, lowercased) form of each
     /// utterance's transcript, keyed by utterance ID. Populated
     /// off-MainActor in `refreshSearchCache` so the filter loop is
     /// a dictionary lookup per row instead of an N-per-keystroke
     /// CFStringTokenizer pass.
     @ObservationIgnored
-    var normalizedTranscriptCache: [UUID: String] = [:]
+    var normalizedTranscriptCache: [UUID: NormalizedTranscript] = [:]
+
+    /// Look up the cached normalized form, fall back to inline
+    /// normalization if missing OR if the cached entry is stale
+    /// (raw text differs from the utterance's current transcript).
+    /// Same call site for the filter loop and the keyword-count
+    /// computation so they agree on staleness handling.
+    private func normalizedTranscript(for utterance: UtteranceEstimate) -> String {
+        if let entry = normalizedTranscriptCache[utterance.id],
+           entry.raw == utterance.transcript {
+            return entry.normalized
+        }
+        return JapaneseSearchNormalizer.normalize(utterance.transcript)
+    }
 
     /// Background task that's currently rebuilding the cache.
     /// Cancelled and replaced on every utterance-count change so a
@@ -54,6 +80,15 @@ final class TranscriptFilterModel {
     /// Mismatch-set memo. Same reasoning as `filterMemo`.
     @ObservationIgnored
     private let mismatchMemo = MismatchMemo()
+
+    /// Per-keyword occurrence-count memo. The Keywords page reads
+    /// these to render a count badge per row; recomputing per
+    /// body re-eval would be O(utterances × keywords) on every
+    /// keystroke during keyword-add (every observed mutation fires
+    /// a render across both panes), so memoize at the model
+    /// level — same pattern as `mismatchMemo`.
+    @ObservationIgnored
+    private let keywordCountsMemo = KeywordCountsMemo()
 
     // MARK: - Filter controls
 
@@ -132,6 +167,53 @@ final class TranscriptFilterModel {
         return result
     }
 
+    /// Per-keyword count of utterances whose normalized transcript
+    /// contains that keyword's normalized form. Computed against
+    /// the FULL utterance list (no other filter applied) so the
+    /// badge tells the user how prevalent each keyword is in the
+    /// session independent of any currently-active search /
+    /// label / speaker filter — keeps the number stable across
+    /// filter toggles. Empty keywords return 0; the empty map is
+    /// returned when there are no keywords at all.
+    ///
+    /// Memoized on `(utterancesVersion, utteranceCount,
+    /// keywordSignature)`; cached map is returned unchanged on
+    /// renders that don't touch any of those inputs.
+    func keywordOccurrenceCounts(
+        in recorder: RecordingController
+    ) -> [UUID: Int] {
+        let kws = recorder.keywords.keywords
+        let signature = kws.map { "\($0.id.uuidString)|\($0.text)" }
+        let key = KeywordCountsMemo.Key(
+            utterancesVersion: recorder.utterancesVersion,
+            utteranceCount: recorder.utterances.count,
+            keywordSignature: signature
+        )
+        if keywordCountsMemo.lastKey == key { return keywordCountsMemo.counts }
+        var counts: [UUID: Int] = [:]
+        guard !kws.isEmpty else {
+            keywordCountsMemo.lastKey = key
+            keywordCountsMemo.counts = counts
+            return counts
+        }
+        // Pre-normalize each keyword once; reuse across every
+        // utterance. Drops empties so a row of whitespace never
+        // inflates every utterance's count to its full length.
+        let normalizedKeywords: [(id: UUID, normalized: String)] = kws.compactMap {
+            let n = JapaneseSearchNormalizer.normalize($0.text)
+            return n.isEmpty ? nil : (id: $0.id, normalized: n)
+        }
+        for u in recorder.utterances {
+            let normalizedText = normalizedTranscript(for: u)
+            for entry in normalizedKeywords where normalizedText.contains(entry.normalized) {
+                counts[entry.id, default: 0] += 1
+            }
+        }
+        keywordCountsMemo.lastKey = key
+        keywordCountsMemo.counts = counts
+        return counts
+    }
+
     // MARK: - Filtered slice + summary
 
     /// `(originalIndex, utterance)` pairs surviving every active
@@ -161,14 +243,19 @@ final class TranscriptFilterModel {
     /// returned as-is.
     private func refreshFilterMemoIfNeeded(in recorder: RecordingController) {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedKeywordText = recorder.keywords.selectedKeyword?.text ?? ""
+        // Normalize every selected keyword once per refresh, dedupe
+        // (the user can have two keywords with the same surface
+        // form) and sort so the Equatable comparison is stable.
+        let normalizedKeywordFilters: [String] = Set(
+            recorder.keywords.selectedKeywords
+                .map { JapaneseSearchNormalizer.normalize($0.text) }
+                .filter { !$0.isEmpty }
+        ).sorted()
         let key = FilterDepsKey(
             normalizedQuery: trimmed.isEmpty
                 ? ""
                 : JapaneseSearchNormalizer.normalize(trimmed),
-            normalizedKeywordFilter: selectedKeywordText.isEmpty
-                ? ""
-                : JapaneseSearchNormalizer.normalize(selectedKeywordText),
+            normalizedKeywordFilters: normalizedKeywordFilters,
             labelFilter: selectedLabelFilter,
             speakerFilter: selectedSpeakerFilter,
             mismatchOnly: showingMismatchOnly,
@@ -198,24 +285,24 @@ final class TranscriptFilterModel {
                 }
                 // Compute normalized text at most once per row even
                 // when both the search query AND the keyword filter
-                // are active. Falls back to inline normalization
-                // when the async cache hasn't caught up — rare in
-                // steady state.
+                // are active. `normalizedTranscript(for:)` returns
+                // the cached form when the raw text still matches,
+                // and re-normalizes inline when it doesn't (post-
+                // edit, re-eval, or refresh-cache lag).
                 let needsNormalized =
                     !key.normalizedQuery.isEmpty
-                    || !key.normalizedKeywordFilter.isEmpty
+                    || !key.normalizedKeywordFilters.isEmpty
                 let normalizedText: String? = needsNormalized
-                    ? (normalizedTranscriptCache[u.id]
-                        ?? JapaneseSearchNormalizer.normalize(u.transcript))
+                    ? normalizedTranscript(for: u)
                     : nil
                 if !key.normalizedQuery.isEmpty,
                    let nt = normalizedText,
                    !nt.contains(key.normalizedQuery) {
                     return nil
                 }
-                if !key.normalizedKeywordFilter.isEmpty,
+                if !key.normalizedKeywordFilters.isEmpty,
                    let nt = normalizedText,
-                   !nt.contains(key.normalizedKeywordFilter) {
+                   !key.normalizedKeywordFilters.contains(where: { nt.contains($0) }) {
                     return nil
                 }
                 return (idx, u)
@@ -233,39 +320,57 @@ final class TranscriptFilterModel {
     // MARK: - Search cache lifecycle
 
     /// Bring `normalizedTranscriptCache` up to date with the
-    /// recorder's current utterance list. Only normalizes
-    /// utterances that aren't already in the cache, so steady-state
-    /// utterance arrivals each pay one normalize call (not N).
-    /// Normalization runs concurrently across the missing entries
-    /// via `TaskGroup`, off the MainActor; completed results are
-    /// merged back into the cache in one hop.
+    /// recorder's current utterance list. Re-normalizes utterances
+    /// whose cached entry is missing OR whose raw text has
+    /// diverged from the cached `raw` (in-place edits via
+    /// `commitHandEdit` / `applyReevaluation` keep the ID but
+    /// replace the transcript). Also evicts entries for ids that
+    /// are no longer present so the dict can't grow unboundedly
+    /// across session loads. Normalization runs concurrently
+    /// across the to-rebuild set via `TaskGroup`, off the
+    /// MainActor; completed results are merged back into the
+    /// cache in one hop.
     func refreshSearchCache(for utterances: [UtteranceEstimate]) {
+        let currentIDs = Set(utterances.map(\.id))
+        if normalizedTranscriptCache.keys.contains(where: { !currentIDs.contains($0) }) {
+            normalizedTranscriptCache = normalizedTranscriptCache.filter {
+                currentIDs.contains($0.key)
+            }
+        }
         let cached = normalizedTranscriptCache
-        let missing = utterances.filter { cached[$0.id] == nil }
-        guard !missing.isEmpty else { return }
+        let toRebuild: [(UUID, String)] = utterances.compactMap { u in
+            if let entry = cached[u.id], entry.raw == u.transcript {
+                return nil
+            }
+            return (u.id, u.transcript)
+        }
+        guard !toRebuild.isEmpty else { return }
 
         searchCacheTask?.cancel()
         searchCacheTask = Task.detached(priority: .userInitiated) { [weak self] in
             let normalized = await withTaskGroup(
-                of: (UUID, String).self
-            ) { group -> [(UUID, String)] in
-                for u in missing {
+                of: (UUID, String, String).self
+            ) { group -> [(UUID, String, String)] in
+                for (id, raw) in toRebuild {
                     if Task.isCancelled { break }
                     group.addTask {
-                        (u.id, JapaneseSearchNormalizer.normalize(u.transcript))
+                        (id, raw, JapaneseSearchNormalizer.normalize(raw))
                     }
                 }
-                var out: [(UUID, String)] = []
-                for await pair in group {
-                    out.append(pair)
+                var out: [(UUID, String, String)] = []
+                for await triple in group {
+                    out.append(triple)
                 }
                 return out
             }
             if Task.isCancelled { return }
             await MainActor.run {
                 guard let self else { return }
-                for (id, text) in normalized {
-                    self.normalizedTranscriptCache[id] = text
+                for (id, raw, normalized) in normalized {
+                    self.normalizedTranscriptCache[id] = NormalizedTranscript(
+                        raw: raw,
+                        normalized: normalized
+                    )
                 }
             }
         }
