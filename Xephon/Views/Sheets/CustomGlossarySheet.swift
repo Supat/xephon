@@ -187,7 +187,7 @@ struct CustomGlossarySheet: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .foregroundStyle(entry.wrappedValue.useAsBias ? .purple : .secondary)
+                .foregroundStyle(entry.wrappedValue.useAsBias ? .green : .secondary)
                 .opacity(store.isEnabled ? 1.0 : 0.5)
                 .accessibilityLabel(
                     entry.wrappedValue.useAsBias
@@ -262,6 +262,16 @@ struct CustomGlossarySheet: View {
             .textInputAutocapitalization(.never)
             .focused($focusedEntryID, equals: entry.wrappedValue.id)
 
+            // Picker + weight slider share one row. Picker
+            // takes intrinsic width (so "Anticipation" can't
+            // wrap), slider flexes to fill the remainder, and
+            // the value readout is pinned at the trailing
+            // edge. Both controls disable when bias is inactive
+            // (master `isEnabled` off OR per-entry `useAsBias`
+            // off) — same gating as the label chip's grey-out
+            // so the row's three bias affordances (chip, picker,
+            // slider) all read the same state at a glance.
+            let biasActive = store.isEnabled && entry.wrappedValue.useAsBias
             HStack(spacing: 12) {
                 Picker(
                     String(localized: "glossary.entry.label"),
@@ -273,29 +283,29 @@ struct CustomGlossarySheet: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                // Size the menu button to its longest possible
-                // selection ("Anticipation") so the trailing
-                // weight controls can't compress it into wrapping
-                // when that label is currently picked.
-                .fixedSize(horizontal: true, vertical: false)
+                // Pin to the worst-case width ("Anticipation"
+                // in body font + menu chevron + chrome padding,
+                // measured at ~ 130pt; 140 leaves a safe
+                // margin). Without this the menu button resizes
+                // every time the user picks a different label,
+                // which makes the slider next to it jump around
+                // mid-edit.
+                .frame(width: 140)
+                .disabled(!biasActive)
 
-                Spacer(minLength: 0)
-
-                Text(String(localized: "glossary.entry.weight"))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                Text(String(format: "%.1f", entry.wrappedValue.weight))
-                    .font(.body.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 36, alignment: .trailing)
-                Stepper(
-                    "",
+                Slider(
                     value: entry.weight,
                     in: 0.0...1.0,
                     step: 0.1
                 )
-                .labelsHidden()
+                .tint(.green)
+                .accessibilityLabel(String(localized: "glossary.entry.weight"))
+                .disabled(!biasActive)
+
+                Text(String(format: "%.1f", entry.wrappedValue.weight))
+                    .font(.body.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, alignment: .trailing)
             }
         }
         .padding(12)
