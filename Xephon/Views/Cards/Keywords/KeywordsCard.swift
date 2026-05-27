@@ -19,6 +19,12 @@ struct KeywordsCard: View {
     @State private var showingExporter = false
     @State private var pendingExportDocument: KeywordsFileDocument?
     @State private var ioError: String?
+    /// Drives the per-row delete confirmation dialog. Non-nil means
+    /// the user tapped a row's × and we're awaiting their confirm
+    /// / cancel; the actual `store.remove(id:)` only fires inside
+    /// the Delete button's action so a tap-then-tap-cancel leaves
+    /// the keyword untouched.
+    @State private var pendingDeleteKeyword: Keyword?
     @FocusState private var newKeywordFocused: Bool
 
     var body: some View {
@@ -162,33 +168,112 @@ struct KeywordsCard: View {
     private var keywordList: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(store.keywords) { keyword in
-                HStack(spacing: 8) {
-                    Text(keyword.text)
-                        .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button {
-                        store.remove(id: keyword.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                            .symbolRenderingMode(.hierarchical)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(
-                        String(
-                            format: String(localized: "keywords.remove.a11y"),
-                            keyword.text
-                        )
-                    )
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                )
+                keywordRow(keyword)
             }
         }
+    }
+
+    @ViewBuilder
+    private func keywordRow(_ keyword: Keyword) -> some View {
+        let isSelected = store.selectedKeywordID == keyword.id
+        HStack(spacing: 8) {
+            // Whole row outside the × button is the toggle target —
+            // tap to select (filters the transcript to utterances
+            // containing this keyword), tap again to clear. Wrapped
+            // in a Button instead of `.onTapGesture` so the touch
+            // affordance reads as interactive.
+            Button {
+                store.toggleSelection(keyword)
+            } label: {
+                HStack(spacing: 6) {
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.tint)
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    Text(keyword.text)
+                        .font(.body)
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                String(
+                    format: String(
+                        localized: isSelected
+                            ? "keywords.select.deselect.a11y"
+                            : "keywords.select.select.a11y"
+                    ),
+                    keyword.text
+                )
+            )
+            Button {
+                pendingDeleteKeyword = keyword
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .symbolRenderingMode(.hierarchical)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                String(
+                    format: String(localized: "keywords.remove.a11y"),
+                    keyword.text
+                )
+            )
+            // Attach the confirmation dialog HERE — directly to
+            // this row's × button — so the iPad popover form
+            // anchors to the tapped glyph instead of the card's
+            // outer frame. Each row's `isPresented` binding is
+            // gated on matching ids so only the tapped row's
+            // dialog actually fires; SwiftUI's same-state-many-
+            // attach-points pattern would otherwise try to
+            // present every dialog at once.
+            .confirmationDialog(
+                String(
+                    format: String(localized: "keywords.delete.confirm.title"),
+                    keyword.text
+                ),
+                isPresented: Binding(
+                    get: { pendingDeleteKeyword?.id == keyword.id },
+                    set: { if !$0 { pendingDeleteKeyword = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(
+                    String(localized: "keywords.delete.confirm.delete"),
+                    role: .destructive
+                ) {
+                    store.remove(id: keyword.id)
+                    pendingDeleteKeyword = nil
+                }
+                Button(
+                    String(localized: "keywords.delete.confirm.cancel"),
+                    role: .cancel
+                ) {
+                    pendingDeleteKeyword = nil
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(
+                    isSelected
+                        ? Color.accentColor.opacity(0.18)
+                        : Color(uiColor: .secondarySystemBackground)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(
+                    isSelected ? Color.accentColor.opacity(0.55) : Color.clear,
+                    lineWidth: 1
+                )
+        )
     }
 
     private var submitDisabled: Bool {

@@ -322,6 +322,11 @@
 "keywords.export" = "Export…";
 "keywords.removeAll" = "Remove All";
 "keywords.remove.a11y" = "Remove keyword %@";
+"keywords.select.select.a11y" = "Filter transcript by keyword %@";
+"keywords.select.deselect.a11y" = "Clear keyword filter for %@";
+"keywords.delete.confirm.title" = "Delete keyword “%@”?";
+"keywords.delete.confirm.delete" = "Delete";
+"keywords.delete.confirm.cancel" = "Cancel";
 "keywords.error.title" = "Keywords I/O Error";
 "keywords.error.ok" = "OK";
 "plutchik.joy" = "Joy";

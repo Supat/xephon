@@ -43,6 +43,25 @@ public final class KeywordStore {
     /// yet — the card mutates the store directly.
     public var onChange: (@MainActor () -> Void)?
 
+    /// Currently-selected keyword id, or nil when nothing is
+    /// selected. Session-only — deliberately NOT routed through
+    /// `didMutate` so it doesn't persist across launches and
+    /// doesn't fire the `onChange` hook. The transcript filter
+    /// reads `selectedKeyword?.text` and treats a non-nil value
+    /// as an additional filter dimension layered on top of the
+    /// search field; a tap on the same keyword again clears this
+    /// to release the filter.
+    public var selectedKeywordID: UUID?
+
+    /// Resolves the selected id to the live `Keyword` entry, or
+    /// nil if the id was cleared / the entry was removed
+    /// underneath us. Computed every read so it always reflects
+    /// the current `keywords` array.
+    public var selectedKeyword: Keyword? {
+        guard let id = selectedKeywordID else { return nil }
+        return keywords.first { $0.id == id }
+    }
+
     private let fileURL: URL
 
     /// Initialize from the on-disk JSON. A missing / corrupt file
@@ -77,15 +96,31 @@ public final class KeywordStore {
     }
 
     public func remove(at offsets: IndexSet) {
+        let removedIDs = Set(offsets.map { keywords[$0].id })
         keywords.remove(atOffsets: offsets)
+        if let id = selectedKeywordID, removedIDs.contains(id) {
+            selectedKeywordID = nil
+        }
     }
 
     public func remove(id: UUID) {
         keywords.removeAll { $0.id == id }
+        if selectedKeywordID == id {
+            selectedKeywordID = nil
+        }
     }
 
     public func removeAll() {
         keywords.removeAll()
+        selectedKeywordID = nil
+    }
+
+    /// Toggle the selection state of `keyword`. If it's already
+    /// selected, clear the selection (releasing the filter). If
+    /// it's a different entry (or selection was nil), point the
+    /// selection at this one. The card binds row taps to this.
+    public func toggleSelection(_ keyword: Keyword) {
+        selectedKeywordID = (selectedKeywordID == keyword.id) ? nil : keyword.id
     }
 
     // MARK: - Import / Export

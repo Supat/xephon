@@ -322,6 +322,11 @@
 "keywords.export" = "書き出し…";
 "keywords.removeAll" = "すべて削除";
 "keywords.remove.a11y" = "キーワード %@ を削除";
+"keywords.select.select.a11y" = "キーワード %@ で文字起こしを絞り込み";
+"keywords.select.deselect.a11y" = "キーワード %@ の絞り込みを解除";
+"keywords.delete.confirm.title" = "キーワード「%@」を削除しますか？";
+"keywords.delete.confirm.delete" = "削除";
+"keywords.delete.confirm.cancel" = "キャンセル";
 "keywords.error.title" = "キーワード I/O エラー";
 "keywords.error.ok" = "OK";
 "plutchik.joy" = "喜び";

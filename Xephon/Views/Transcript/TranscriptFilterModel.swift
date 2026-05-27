@@ -161,10 +161,14 @@ final class TranscriptFilterModel {
     /// returned as-is.
     private func refreshFilterMemoIfNeeded(in recorder: RecordingController) {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedKeywordText = recorder.keywords.selectedKeyword?.text ?? ""
         let key = FilterDepsKey(
             normalizedQuery: trimmed.isEmpty
                 ? ""
                 : JapaneseSearchNormalizer.normalize(trimmed),
+            normalizedKeywordFilter: selectedKeywordText.isEmpty
+                ? ""
+                : JapaneseSearchNormalizer.normalize(selectedKeywordText),
             labelFilter: selectedLabelFilter,
             speakerFilter: selectedSpeakerFilter,
             mismatchOnly: showingMismatchOnly,
@@ -192,16 +196,27 @@ final class TranscriptFilterModel {
                 if key.mismatchOnly, !mismatchSet.contains(u.id) {
                     return nil
                 }
-                if !key.normalizedQuery.isEmpty {
-                    // Fall back to inline normalization when the
-                    // async cache hasn't caught up yet. The async
-                    // refresher will populate it momentarily; the
-                    // per-row inline call is rare.
-                    let normalizedText = normalizedTranscriptCache[u.id]
-                        ?? JapaneseSearchNormalizer.normalize(u.transcript)
-                    if !normalizedText.contains(key.normalizedQuery) {
-                        return nil
-                    }
+                // Compute normalized text at most once per row even
+                // when both the search query AND the keyword filter
+                // are active. Falls back to inline normalization
+                // when the async cache hasn't caught up — rare in
+                // steady state.
+                let needsNormalized =
+                    !key.normalizedQuery.isEmpty
+                    || !key.normalizedKeywordFilter.isEmpty
+                let normalizedText: String? = needsNormalized
+                    ? (normalizedTranscriptCache[u.id]
+                        ?? JapaneseSearchNormalizer.normalize(u.transcript))
+                    : nil
+                if !key.normalizedQuery.isEmpty,
+                   let nt = normalizedText,
+                   !nt.contains(key.normalizedQuery) {
+                    return nil
+                }
+                if !key.normalizedKeywordFilter.isEmpty,
+                   let nt = normalizedText,
+                   !nt.contains(key.normalizedKeywordFilter) {
+                    return nil
                 }
                 return (idx, u)
             }

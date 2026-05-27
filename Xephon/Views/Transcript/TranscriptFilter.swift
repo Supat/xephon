@@ -8,6 +8,13 @@ struct FilterDepsKey: Equatable {
     /// Already-normalized search query, so we don't re-tokenize the
     /// query string on every change-check.
     let normalizedQuery: String
+    /// Already-normalized form of the currently-selected keyword, or
+    /// "" when no keyword is selected. Stacks AND-wise with the
+    /// search query so the user can search inside a keyword-filtered
+    /// slice. Tracked separately rather than folded into
+    /// `normalizedQuery` because the two inputs come from different
+    /// surfaces and shouldn't clobber each other.
+    let normalizedKeywordFilter: String
     let labelFilter: String?
     let speakerFilter: String?
     /// When true, only utterances whose stored speaker disagrees
