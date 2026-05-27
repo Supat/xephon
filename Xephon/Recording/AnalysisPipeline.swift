@@ -487,11 +487,16 @@ final class AnalysisPipeline: @unchecked Sendable {
             for j in 0..<upperBound where t <= sorted[j].end {
                 instant[sorted[j].speakerID, default: 0] += 1
             }
-            if let winner = instant.max(by: { $0.value < $1.value })?.key {
+            // Stable tie-break — see the matching comment in
+            // `DiarizationTimelineStrip.majorityRuns` for the
+            // rationale. Same tuple form here so the per-row strip
+            // and the chip label always pick the same speaker on
+            // ties.
+            if let winner = instant.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
                 votes[winner, default: 0] += 1
             }
         }
-        if let mode = votes.max(by: { $0.value < $1.value })?.key {
+        if let mode = votes.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
             return mode
         }
         let mid = (start + end) / 2
@@ -1703,11 +1708,13 @@ final class AnalysisPipeline: @unchecked Sendable {
             for j in 0..<upperBound where t <= timeline[j].end {
                 instant[timeline[j].speakerID, default: 0] += 1
             }
-            if let winner = instant.max(by: { $0.value < $1.value })?.key {
+            // Stable tie-break — see `dominantSpeakerInSegments`
+            // above; same rationale.
+            if let winner = instant.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
                 votes[winner, default: 0] += 1
             }
         }
-        if let mode = votes.max(by: { $0.value < $1.value })?.key {
+        if let mode = votes.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
             return mode
         }
 

@@ -163,7 +163,16 @@ struct DiarizationTimelineStrip: View {
             for idx in active {
                 votes[sorted[idx].speakerID, default: 0] += 1
             }
-            let winner = votes.max(by: { $0.value < $1.value })?.key
+            // Stable tie-break: when two speakers have equal votes
+            // at this sample, prefer the lexicographically smaller
+            // id. Without this, `Dictionary.max(by:)` returns
+            // whichever element happens to come first in dictionary
+            // iteration order, which Swift doesn't guarantee across
+            // runs — same timeline, same query, different rendered
+            // speaker color between two consecutive `body` calls.
+            // Matches `AnalysisPipeline.dominantSpeaker[InSegments]`
+            // so the strip and the chip label always agree on ties.
+            let winner = votes.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key
             if winner != currentSpeaker {
                 if let prev = currentSpeaker {
                     runs.append((speakerID: prev, start: runStart, end: t))
