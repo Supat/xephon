@@ -483,9 +483,24 @@ struct KeywordsCard: View {
                             .foregroundStyle(.tint)
                             .symbolRenderingMode(.hierarchical)
                     }
+                    let hasMatches = (keywordCounts[keyword.id] ?? 0) > 0
                     Text(keyword.text)
                         .font(.body)
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                        // Bold + blue when this keyword has at
+                        // least one matching utterance — quick
+                        // visual scan for "which keywords are
+                        // actually live in the current session"
+                        // vs ones the user typed in but nothing
+                        // matches. Selected rows always read in
+                        // accent regardless of match state (the
+                        // selection bg + checkmark already imply
+                        // a hit by virtue of being filterable).
+                        .fontWeight(hasMatches ? .bold : .regular)
+                        .foregroundStyle(
+                            isSelected
+                                ? Color.accentColor
+                                : (hasMatches ? Color.blue : Color.primary)
+                        )
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .contentShape(Rectangle())
