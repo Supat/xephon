@@ -45,6 +45,7 @@
 "searchReplace.selectAll" = "すべて選択";
 "searchReplace.clear" = "クリア";
 "searchReplace.replaceAll" = "すべて置換";
+"searchReplace.annotate" = "注記";
 "searchReplace.replaceSelected" = "選択を置換（%lld 件）";
 "searchReplace.empty.noTerm" = "上の欄に検索語を入力してください。";
 "searchReplace.empty.noMatch" = "一致する発話はありません。";

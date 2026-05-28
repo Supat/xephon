@@ -45,6 +45,7 @@
 "searchReplace.selectAll" = "Select all";
 "searchReplace.clear" = "Clear";
 "searchReplace.replaceAll" = "Replace all";
+"searchReplace.annotate" = "Annotate";
 "searchReplace.replaceSelected" = "Replace selected (%lld)";
 "searchReplace.empty.noTerm" = "Type a term above to find matching utterances.";
 "searchReplace.empty.noMatch" = "No utterances contain that term.";
