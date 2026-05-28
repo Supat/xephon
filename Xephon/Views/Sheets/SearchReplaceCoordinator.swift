@@ -456,6 +456,33 @@ final class SearchReplaceCoordinator {
         selectedMatches[utteranceID] = []
     }
 
+    /// Stage a replacement for a row that has NO raw substring
+    /// match — i.e. cross-script or similar matches surfaced via
+    /// the per-token highlight pass. Operates on
+    /// `utterance.transcript` (the original) and swaps every
+    /// chunk range that `similarMatchRanges` would paint purple
+    /// for the replace term. Sorted high-to-low so earlier ranges
+    /// stay valid as we mutate.
+    ///
+    /// Intentionally bypasses any current staging: the "Replace
+    /// Anyway" affordance is a one-shot from the original text.
+    /// Manual edits (via the TextEditor) are the right tool once
+    /// the user has started shaping the staged form themselves.
+    /// No-op when the search or replace term is empty, or when no
+    /// chunk range exists for this row.
+    func stageReplaceAnyway(for utterance: UtteranceEstimate) {
+        guard !trimmedSearch.isEmpty else { return }
+        let ranges = similarMatchRanges(for: utterance)
+        guard !ranges.isEmpty else { return }
+        var result = utterance.transcript
+        for range in ranges.sorted(by: { $0.lowerBound > $1.lowerBound }) {
+            result.replaceSubrange(range, with: replaceTerm)
+        }
+        guard result != utterance.transcript else { return }
+        stagedReplacements[utterance.id] = result
+        selectedMatches[utterance.id] = []
+    }
+
     func stageReplace(for utterance: UtteranceEstimate) {
         let term = trimmedSearch
         guard !term.isEmpty else { return }
@@ -483,6 +510,46 @@ final class SearchReplaceCoordinator {
         // to anything in the staged text. The next render will
         // recompute matches against the new source.
         selectedMatches[utterance.id] = []
+    }
+
+    /// True when at least one row is staged. Drives the
+    /// "Commit All" button's enabled state in the sheet header.
+    var hasStagedAny: Bool {
+        !stagedReplacements.isEmpty
+    }
+
+    /// Commit every staged row in one pass. Snapshots
+    /// `stagedReplacements` synchronously, looks up each
+    /// utterance's `[start, end]` from the recorder's current
+    /// list, then awaits `commitHandEdit` serially (parallel
+    /// would race the recorder's actor-side bookkeeping). Each
+    /// id is removed from the staging dict as soon as its commit
+    /// completes, so a mid-flight cancellation still leaves the
+    /// staging dict consistent with what was actually committed.
+    /// Final `scheduleSearch` rebuilds the matches list against
+    /// the post-commit utterances.
+    func commitAll(recorder: RecordingController) {
+        let snapshot = stagedReplacements
+        guard !snapshot.isEmpty else { return }
+        let pending: [(id: UUID, text: String, start: TimeInterval, end: TimeInterval)] =
+            snapshot.compactMap { id, text in
+                guard let u = recorder.utterances.first(where: { $0.id == id }) else {
+                    return nil
+                }
+                return (id, text, u.start, u.end)
+            }
+        Task {
+            for entry in pending {
+                await recorder.commitHandEdit(
+                    utteranceID: entry.id,
+                    newText: entry.text,
+                    newStart: entry.start,
+                    newEnd: entry.end
+                )
+                stagedReplacements.removeValue(forKey: entry.id)
+            }
+            scheduleSearch(in: recorder)
+        }
     }
 
     func commit(for utterance: UtteranceEstimate, recorder: RecordingController) {

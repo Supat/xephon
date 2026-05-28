@@ -175,6 +175,21 @@ struct SearchReplaceSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 Spacer()
+                // Sheet-level commit. Fires `commitHandEdit` for
+                // every row currently in `stagedReplacements`,
+                // serially, then refreshes the match list. Gated
+                // on at least one staged row.
+                Button {
+                    coord.commitAll(recorder: recorder)
+                } label: {
+                    Label(
+                        String(localized: "searchReplace.commitAll"),
+                        systemImage: "checkmark.circle.fill"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!coord.hasStagedAny)
             }
         }
         .padding(20)
@@ -418,7 +433,26 @@ private struct MatchCard: View {
         matchCount: Int,
         selectedCount: Int
     ) -> some View {
+        // Replace splits into two modes depending on what kind of
+        // match this row carries:
+        //
+        // - Raw substring present → standard "Replace" / "Replace all"
+        //   / "Replace selected (n)" against the raw matches in the
+        //   displayed text. Enabled gate is `canStageReplace`.
+        //
+        // - No raw substring but the per-token similar pass found
+        //   at least one chunk → "Replace Anyway" replaces those
+        //   chunks in the ORIGINAL transcript with the replace
+        //   term, regardless of any current staging. Lets the user
+        //   one-shot a swap on a cross-script / fuzzy hit instead
+        //   of editing the transcript by hand.
+        let similarRanges = coord.similarMatchRanges(for: utterance)
+        let canRaw = coord.canStageReplace(for: utterance)
+        let useAnyway = !canRaw && !similarRanges.isEmpty
         let replaceLabel: String = {
+            if useAnyway {
+                return String(localized: "searchReplace.replaceAnyway")
+            }
             if selectedCount > 0 {
                 return String.localizedStringWithFormat(
                     String(localized: "searchReplace.replaceSelected"),
@@ -449,12 +483,16 @@ private struct MatchCard: View {
             .buttonStyle(.bordered)
             .disabled(!annotateEnabled)
             Button {
-                coord.stageReplace(for: utterance)
+                if useAnyway {
+                    coord.stageReplaceAnyway(for: utterance)
+                } else {
+                    coord.stageReplace(for: utterance)
+                }
             } label: {
                 Label(replaceLabel, systemImage: "arrow.triangle.2.circlepath")
             }
             .buttonStyle(.bordered)
-            .disabled(!coord.canStageReplace(for: utterance))
+            .disabled(!(canRaw || useAnyway))
             Button {
                 coord.commit(for: utterance, recorder: recorder)
             } label: {
