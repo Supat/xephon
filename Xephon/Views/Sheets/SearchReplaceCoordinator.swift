@@ -512,8 +512,23 @@ final class SearchReplaceCoordinator {
         selectedMatches[utterance.id] = []
     }
 
-    /// True when at least one row is staged. Drives the
-    /// "Commit All" button's enabled state in the sheet header.
+    /// True while a `commitAll` Task is in flight. Drives the
+    /// "Commit All" button's disabled state alongside
+    /// `hasStagedAny` so a second tap during the loop can't
+    /// snapshot a half-processed dict and re-fire commits for
+    /// rows the first call hasn't drained yet.
+    private(set) var commitAllInflight: Bool = false
+
+    /// True when at least one row is staged AND no Commit All is
+    /// currently running. Drives the "Commit All" button's
+    /// enabled state in the sheet header.
+    var canCommitAll: Bool {
+        !stagedReplacements.isEmpty && !commitAllInflight
+    }
+
+    /// True when at least one row is staged. Kept around for
+    /// older readers; new code should prefer `canCommitAll` for
+    /// button gating.
     var hasStagedAny: Bool {
         !stagedReplacements.isEmpty
     }
@@ -528,7 +543,16 @@ final class SearchReplaceCoordinator {
     /// staging dict consistent with what was actually committed.
     /// Final `scheduleSearch` rebuilds the matches list against
     /// the post-commit utterances.
+    ///
+    /// Re-entry-guarded via `commitAllInflight`: a second call
+    /// while a previous Task is still draining the dict is a
+    /// no-op. Without this guard the second snapshot would
+    /// include ids the first call hadn't committed yet and
+    /// commitHandEdit would re-run SER+fusion on already-
+    /// committed text, plus two `scheduleSearch` debounces would
+    /// race the matches list.
     func commitAll(recorder: RecordingController) {
+        guard !commitAllInflight else { return }
         let snapshot = stagedReplacements
         guard !snapshot.isEmpty else { return }
         let pending: [(id: UUID, text: String, start: TimeInterval, end: TimeInterval)] =
@@ -538,7 +562,9 @@ final class SearchReplaceCoordinator {
                 }
                 return (id, text, u.start, u.end)
             }
+        commitAllInflight = true
         Task {
+            defer { commitAllInflight = false }
             for entry in pending {
                 await recorder.commitHandEdit(
                     utteranceID: entry.id,
