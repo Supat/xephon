@@ -78,6 +78,13 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// pipeline. Tests inject a different `Transcriber` and bypass
     /// `setLocale`, so their injection survives.
     private var transcriber: any Transcriber
+    /// Which backend the user picked for the offline `transcriber`.
+    /// Stored so `setLocale` can rebuild as the same backend kind
+    /// when the session language changes. Defaults to
+    /// `.speechAnalyzer` for backward compatibility; the
+    /// controller pushes the persisted value during pipeline
+    /// pre-warm.
+    private var offlineASRBackend: OfflineASRBackend = .speechAnalyzer
     /// Lazily-constructed SFSpeechRecognizer wrapper for the
     /// hinted ASR pathway. Reconstructed alongside `transcriber`
     /// on `setLocale` so its recognizer matches the active
@@ -823,13 +830,54 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// FM prompt opener — pass nil to leave the prompt
     /// language-agnostic.
     func setLocale(_ locale: Locale, languageLabel: String?) async {
-        transcriber = SpeechAnalyzerTranscriber(locale: locale)
+        // Rebuild the transcriber under the new locale, preserving
+        // whichever backend the user previously selected. Without
+        // honoring `offlineASRBackend` here, a session-language
+        // change would silently revert a Qwen3 selection back to
+        // SpeechAnalyzer.
+        transcriber = Self.makeTranscriber(backend: offlineASRBackend, locale: locale)
         hintedTranscriber = SFSpeechRecognizerTranscriber(locale: locale)
         let code = locale.language.languageCode?.identifier
         await (textSER as? SwitchingTextSER)?.setLanguage(
             code: code,
             label: languageLabel
         )
+    }
+
+    /// Available offline ASR backends. Returns both
+    /// unconditionally on iPadOS 26 — both run on this platform;
+    /// model assets download lazily on first use.
+    func availableOfflineASRBackends() -> [OfflineASRBackend] {
+        OfflineASRBackend.allCases
+    }
+
+    /// Currently-selected offline ASR backend.
+    func currentOfflineASRBackend() -> OfflineASRBackend {
+        offlineASRBackend
+    }
+
+    /// Swap the offline transcriber to the requested backend.
+    /// No-op when the choice already matches. The transcriber
+    /// instance is replaced wholesale; in-flight calls finish on
+    /// the prior instance. Synchronous — just stores the new
+    /// reference; the new transcriber's own model load happens
+    /// lazily on its first `transcribe` call.
+    func setOfflineASRBackend(_ backend: OfflineASRBackend, locale: Locale) {
+        guard backend != offlineASRBackend else { return }
+        offlineASRBackend = backend
+        transcriber = Self.makeTranscriber(backend: backend, locale: locale)
+    }
+
+    private static func makeTranscriber(
+        backend: OfflineASRBackend,
+        locale: Locale
+    ) -> any Transcriber {
+        switch backend {
+        case .speechAnalyzer:
+            return SpeechAnalyzerTranscriber(locale: locale)
+        case .qwen3ASR:
+            return Qwen3ASRTranscriber(locale: locale)
+        }
     }
 
     /// SFSpeechRecognizer pathway with `contextualStrings` set

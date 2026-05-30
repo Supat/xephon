@@ -80,9 +80,29 @@ public enum SummarizerBackend: String, Sendable, Hashable, Codable, CaseIterable
     /// long sessions need aggressive truncation. Default backend
     /// because it Just Works once the feature is enabled.
     case appleFM
-    /// Qwen2.5-7B-Instruct (4-bit MLX, ~4.3 GB on disk). Higher-
-    /// quality multi-speaker reasoning, 32k context. Opt-in
-    /// download; release the analysis pipeline before invoking
-    /// to fit under iOS's per-app memory ceiling.
+    /// Qwen3-8B-Instruct (4-bit MLX, ~4.6 GB on disk). Multilingual
+    /// generalist with strong JSON adherence; 32k context. Opt-in
+    /// download; release the analysis pipeline before invoking to
+    /// fit under iOS's per-app memory ceiling.
     case qwen
+    /// Llama-3.1-Swallow-8B-Instruct (4-bit MLX, ~4.6 GB on disk).
+    /// Tokyo Tech's Japanese fine-tune of Llama 3.1; aimed at
+    /// stronger conversational JP at the cost of slightly weaker
+    /// JSON discipline vs Qwen3. Same opt-in download + memory
+    /// orchestration as `qwen`. Falls under Llama 3 Community
+    /// License + tokyotech-llm terms — both permissive for
+    /// research use.
+    case llamaSwallow
+}
+
+/// Which model architecture a `SessionSummarizer` / reviewer is
+/// pointed at. Used by the MLX-backed implementations to toggle a
+/// few prompt-token differences (e.g. Qwen3's `/no_think` line is
+/// literal text for Llama and would corrupt its output). The
+/// architectural model loading itself is family-agnostic —
+/// `LLMModelFactory` introspects `config.json`'s `model_type` and
+/// picks the right MLX module.
+public enum LLMModelFamily: String, Sendable, Hashable, Codable, CaseIterable {
+    case qwen
+    case llama
 }

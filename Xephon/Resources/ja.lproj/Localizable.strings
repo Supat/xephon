@@ -8,6 +8,9 @@
 "settings.textSER" = "テキスト SER";
 "settings.textSER.deberta" = "DeBERTa";
 "settings.textSER.foundationModels" = "Apple FM";
+"settings.offlineASR" = "オフラインASR";
+"settings.offlineASR.speechAnalyzer" = "Apple Speech";
+"settings.offlineASR.qwen3ASR" = "Qwen3-ASR";
 "textSER.appleFMViolation" = "Apple FM ✕";
 "language.japanese" = "日本語";
 "language.english" = "English";
@@ -15,6 +18,7 @@
 "settings.summarizer.backend" = "要約バックエンド";
 "settings.summarizer.backend.appleFM" = "Apple FM";
 "settings.summarizer.backend.qwen" = "Qwen3 8B";
+"settings.summarizer.backend.llamaSwallow" = "Llama-3 Swallow 8B";
 "settings.summarizer.downloading" = "Qwen3をダウンロード中 (約4.6 GB)…";
 "settings.summarizer.downloading.bytes" = "Qwen3をダウンロード中 · %@ / %@";
 "settings.summarizer.ready" = "準備完了";
@@ -236,6 +240,9 @@
 "models.summarizerAppleFM.detail" = "システム標準モデル";
 "models.summarizerQwen.title" = "要約 · Qwen3-8B";
 "models.summarizerQwen.detail" = "MLX 4-bit · 約 4.6 GB";
+"models.summarizerLlamaSwallow.title" = "要約 · Llama-3.1-Swallow-8B";
+"models.summarizerLlamaSwallow.detail" = "MLX 4-bit · 約 4.6 GB · 日本語特化";
+"models.license.a11y" = "ライセンス: %@";
 "models.status.ready" = "利用可能";
 "models.status.downloading" = "ダウンロード中";
 "models.status.unavailable" = "未対応";

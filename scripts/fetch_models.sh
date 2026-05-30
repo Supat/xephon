@@ -2,14 +2,21 @@
 # Hydrate Core ML / ONNX / SafeTensors models into Models/.
 #
 # Usage:
-#   scripts/fetch_models.sh                       # fetch the default set (no LLM)
-#   scripts/fetch_models.sh --list                # show what would be fetched
-#   scripts/fetch_models.sh --only NAME [NAME...] # subset by short name
-#   scripts/fetch_models.sh --with-summarizer     # also convert Qwen2.5-7B-Instruct
-#                                                 #   to 4-bit MLX format (~5 GB DL,
-#                                                 #   ~4.3 GB output). Opt-in because
-#                                                 #   it's heavy and not everyone needs
-#                                                 #   the on-device session summarizer.
+#   scripts/fetch_models.sh                              # fetch the default set (no LLM)
+#   scripts/fetch_models.sh --list                       # show what would be fetched
+#   scripts/fetch_models.sh --only NAME [NAME...]        # subset by short name
+#   scripts/fetch_models.sh --with-summarizer            # also pull Qwen3-8B 4-bit
+#                                                        #   MLX (~4.6 GB). Opt-in
+#                                                        #   because it's heavy and
+#                                                        #   not everyone needs the
+#                                                        #   on-device summarizer.
+#   scripts/fetch_models.sh --with-summarizer-llama      # also pull Llama-3.1-Swallow
+#                                                        #   8B 4-bit MLX — Japanese-
+#                                                        #   tuned alternative
+#                                                        #   summarizer backend
+#                                                        #   (~4.5 GB). Independent
+#                                                        #   of --with-summarizer; both
+#                                                        #   can be combined.
 #
 # Models are NOT committed to git. The .gitattributes filter is defense-in-depth.
 set -euo pipefail
@@ -72,11 +79,13 @@ MODELS=(
 ACTION=fetch
 FILTER=()
 WITH_SUMMARIZER=0
+WITH_SUMMARIZER_LLAMA=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --list)  ACTION=list; shift ;;
     --only)  shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILTER+=("$1"); shift; done ;;
     --with-summarizer) WITH_SUMMARIZER=1; shift ;;
+    --with-summarizer-llama) WITH_SUMMARIZER_LLAMA=1; shift ;;
     -h|--help)
       sed -n '2,13p' "$0" | sed 's/^# *//'
       exit 0
@@ -239,6 +248,21 @@ if [ "$WITH_SUMMARIZER" -eq 1 ]; then
     echo "[skip] $QWEN_OUT (already present)"
   else
     fetch_hf "mlx-community/Qwen3-8B-4bit" "$QWEN_OUT" ""
+  fi
+fi
+
+echo
+if [ "$WITH_SUMMARIZER_LLAMA" -eq 1 ]; then
+  echo "[step] Fetching Llama-3.1-Swallow-8B 4-bit MLX (alternative summarizer)…"
+  LLAMA_OUT=Models/llama-3-1-swallow-8b-4bit
+  # Same idempotency check as the Qwen path. Llama-Swallow is the
+  # Japanese-tuned alternative summarizer backend; user picks it
+  # via the SummarizerCard backend picker. Independent of Qwen —
+  # both can be downloaded so the user can A/B without re-fetching.
+  if [ -f "$LLAMA_OUT/tokenizer.json" ] && ls "$LLAMA_OUT"/*.safetensors >/dev/null 2>&1; then
+    echo "[skip] $LLAMA_OUT (already present)"
+  else
+    fetch_hf "mlx-community/Llama-3.1-Swallow-8B-Instruct-v0.3-4bit" "$LLAMA_OUT" ""
   fi
 fi
 

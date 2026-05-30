@@ -8,6 +8,9 @@
 "settings.textSER" = "Text SER";
 "settings.textSER.deberta" = "DeBERTa";
 "settings.textSER.foundationModels" = "Apple FM";
+"settings.offlineASR" = "Offline ASR";
+"settings.offlineASR.speechAnalyzer" = "Apple Speech";
+"settings.offlineASR.qwen3ASR" = "Qwen3-ASR";
 "textSER.appleFMViolation" = "Apple FM ✕";
 "language.japanese" = "Japanese";
 "language.english" = "English";
@@ -15,6 +18,7 @@
 "settings.summarizer.backend" = "Summarizer backend";
 "settings.summarizer.backend.appleFM" = "Apple FM";
 "settings.summarizer.backend.qwen" = "Qwen3 8B";
+"settings.summarizer.backend.llamaSwallow" = "Llama-3 Swallow 8B";
 "settings.summarizer.downloading" = "Downloading Qwen3 (~4.6 GB)…";
 "settings.summarizer.downloading.bytes" = "Downloading Qwen3 · %@ of %@";
 "settings.summarizer.ready" = "Ready";
@@ -236,6 +240,9 @@
 "models.summarizerAppleFM.detail" = "System foundation models";
 "models.summarizerQwen.title" = "Summarizer · Qwen3-8B";
 "models.summarizerQwen.detail" = "MLX 4-bit · ~4.6 GB";
+"models.summarizerLlamaSwallow.title" = "Summarizer · Llama-3.1-Swallow-8B";
+"models.summarizerLlamaSwallow.detail" = "MLX 4-bit · ~4.6 GB · Japanese-tuned";
+"models.license.a11y" = "License: %@";
 "models.status.ready" = "Ready";
 "models.status.downloading" = "Downloading";
 "models.status.unavailable" = "Unavailable";

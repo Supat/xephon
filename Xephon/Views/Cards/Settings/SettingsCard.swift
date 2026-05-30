@@ -1,4 +1,5 @@
 import SwiftUI
+import ASR
 import Diarization
 import SERText
 
@@ -34,16 +35,22 @@ struct SettingsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Row 1: language + offline ASR live together —
+            // they're both "what audio gets transcribed as" knobs
+            // and benefit from sitting side-by-side. Text SER
+            // moves to its own row (different concern: emotion
+            // classifier choice, independent of ASR pipeline).
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
                     languagePicker(layout: .stacked)
-                    textSERPicker(layout: .stacked)
+                    offlineASRPicker(layout: .stacked)
                 }
                 VStack(spacing: 12) {
                     languagePicker(layout: .inline)
-                    textSERPicker(layout: .inline)
+                    offlineASRPicker(layout: .inline)
                 }
             }
+            textSERPicker(layout: .stacked)
             speechBoostToggle
             diarizerSensitivitySlider
             customGlossaryButton
@@ -178,6 +185,45 @@ struct SettingsCard: View {
         switch backend {
         case .deberta:          return String(localized: "settings.textSER.deberta")
         case .foundationModels: return String(localized: "settings.textSER.foundationModels")
+        }
+    }
+
+    /// Picker for the offline ASR backend used by file analysis,
+    /// re-evaluation, and Transcribe Range. Live recording stays
+    /// on Apple's `StreamingTranscriber` regardless of this pick
+    /// (Qwen3-ASR isn't streaming-capable in the current wiring).
+    /// Disabled while a session is in flight to avoid swapping
+    /// the transcriber mid-analysis.
+    @ViewBuilder
+    private func offlineASRPicker(layout: PickerLayout) -> some View {
+        if recorder.availableOfflineASRBackends.count > 1 {
+            let label = Text(String(localized: "settings.offlineASR"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            let control = Picker(
+                String(localized: "settings.offlineASR"),
+                selection: Binding(
+                    get: { recorder.currentOfflineASRBackend },
+                    set: { newValue in
+                        Task { await recorder.setOfflineASRBackend(newValue) }
+                    }
+                )
+            ) {
+                ForEach(recorder.availableOfflineASRBackends, id: \.self) { backend in
+                    Text(Self.offlineASRLabel(for: backend)).tag(backend)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .disabled(recorder.isRecording || recorder.isAnalyzing)
+            layoutPair(label: label, control: control, layout: layout)
+        }
+    }
+
+    private static func offlineASRLabel(for backend: OfflineASRBackend) -> String {
+        switch backend {
+        case .speechAnalyzer: return String(localized: "settings.offlineASR.speechAnalyzer")
+        case .qwen3ASR:       return String(localized: "settings.offlineASR.qwen3ASR")
         }
     }
 

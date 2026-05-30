@@ -23,9 +23,18 @@ final class SummarizerCoordinator {
     /// Apple's `SystemLanguageModel.default` availability snapshot.
     /// Refreshed at init and on backend change. Folded into `ready`.
     private(set) var appleFMAvailable: Bool = false
-    /// True iff every file declared by the summarizer's optional
-    /// manifest entry is present on disk.
+    /// True iff every file declared by the CURRENTLY-SELECTED
+    /// MLX backend's manifest entry is present on disk. Apple FM
+    /// reads as `true` (no install needed). Drives the picker's
+    /// `ready` check and the SummarizerCard's "Downloading / Ready"
+    /// status line.
     private(set) var modelInstalled: Bool = false
+    /// Per-MLX-backend install flags, refreshed alongside
+    /// `modelInstalled` whenever `syncInstallState` runs. Lets the
+    /// ModelsCard show both rows (Qwen + Llama) with their own
+    /// status independent of which one is the active backend.
+    private(set) var qwenInstalled: Bool = false
+    private(set) var llamaSwallowInstalled: Bool = false
     /// True while `ModelStore.ensureOptional` is in flight.
     private(set) var downloading: Bool = false
     /// True while `summarize` is generating tokens. Disables the
@@ -71,17 +80,44 @@ final class SummarizerCoordinator {
 
     /// True iff the chosen backend is ready to summarize. Apple FM
     /// is "ready" when the system model is available on this device;
-    /// Qwen is "ready" when its 4.3 GB on-disk install is complete.
+    /// the MLX backends are "ready" when their on-disk install is
+    /// complete.
     var ready: Bool {
         switch backend {
-        case .appleFM: return appleFMAvailable
-        case .qwen:    return modelInstalled
+        case .appleFM:      return appleFMAvailable
+        case .qwen:         return modelInstalled
+        case .llamaSwallow: return modelInstalled
+        }
+    }
+
+    /// Model id of the MLX backend selected (Qwen or Llama). Nil
+    /// for Apple FM (no install needed). Drives `ModelStore` calls
+    /// — install / directory lookup / removal — so a single switch
+    /// statement here centralizes the per-backend manifest mapping.
+    private var mlxModelID: String? {
+        switch backend {
+        case .appleFM:      return nil
+        case .qwen:         return ModelManifest.summarizerID
+        case .llamaSwallow: return ModelManifest.summarizerLlamaID
+        }
+    }
+
+    /// LLM family hint passed to `MLXQwenSummarizer` /
+    /// `MLXQwenTranscriptionReviewer` so they can toggle
+    /// family-specific prompt bits (e.g. Qwen3's `/no_think`).
+    /// nil for Apple FM since the family enum doesn't apply.
+    private var currentMLXFamily: LLMModelFamily? {
+        switch backend {
+        case .appleFM:      return nil
+        case .qwen:         return .qwen
+        case .llamaSwallow: return .llama
         }
     }
 
     /// Flip the enabled flag. Persist + refresh backend-specific
-    /// readiness. Turning Qwen on with weights missing kicks off the
-    /// download; turning off unloads the resident Qwen actor.
+    /// readiness. Turning an MLX backend on with weights missing
+    /// kicks off the download; turning off unloads the resident
+    /// MLX actor.
     func setEnabled(_ value: Bool) async {
         guard enabled != value else { return }
         enabled = value
@@ -93,26 +129,39 @@ final class SummarizerCoordinator {
             return
         }
         syncAppleFMAvailability()
-        syncInstallState()
-        if backend == .qwen, !modelInstalled, !downloading {
+        await syncInstallState()
+        if mlxModelID != nil, !modelInstalled, !downloading {
             await triggerDownload()
         }
     }
 
-    /// Switch backend. Apple FM has no install step; Qwen kicks off
-    /// the download when weights are missing.
+    /// Switch backend. Apple FM has no install step; MLX backends
+    /// kick off the download when weights are missing AND drop the
+    /// previously-resident MLX actor so the new family's weights
+    /// can claim the memory.
     func setBackend(_ value: SummarizerBackend) async {
         guard backend != value else { return }
         backend = value
         UserDefaults.standard.set(value.rawValue, forKey: Self.backendKey)
         AppLog.app.info("summarizer backend → \(value.rawValue, privacy: .public)")
-        if value == .qwen, enabled, !modelInstalled, !downloading {
+        // Switching backend always tears down the prior MLX actor.
+        // Even Qwen → Llama (or vice versa) requires this because
+        // the two would otherwise co-exist at ~9 GB resident, and
+        // both reviewer + summarizer of the prior family would
+        // also drift out of sync with the picker.
+        await summarizerActor?.unload()
+        summarizerActor = nil
+        await reviewerActor?.unload()
+        reviewerActor = nil
+        // Re-sync install state against the new backend's model id
+        // before deciding whether to download. `await` is load-
+        // bearing: without it, `modelInstalled` still reflects the
+        // PRIOR backend's state and the download trigger below
+        // would skip when switching from Qwen (installed) → Llama
+        // (not installed).
+        await syncInstallState()
+        if mlxModelID != nil, enabled, !modelInstalled, !downloading {
             await triggerDownload()
-        }
-        if value == .appleFM {
-            // Reclaim Qwen's RAM if it was loaded.
-            await summarizerActor?.unload()
-            summarizerActor = nil
         }
         syncAppleFMAvailability()
     }
@@ -121,33 +170,52 @@ final class SummarizerCoordinator {
         appleFMAvailable = SystemLanguageModel.default.isAvailable
     }
 
-    /// Recheck `modelInstalled` against the filesystem. Cheap — just
-    /// an existence check per declared file.
-    func syncInstallState() {
+    /// Recheck install state against the filesystem for BOTH MLX
+    /// backends (so the ModelsCard's per-row badges stay accurate
+    /// regardless of which one is the active picker selection)
+    /// AND for the currently-selected backend (so the SummarizerCard
+    /// status line + the `ready` check stay in sync). Apple FM has
+    /// no on-disk install so its `modelInstalled` reads as `true`.
+    /// Cheap — just an existence check per declared file.
+    ///
+    /// `async` so callers that immediately read `modelInstalled` /
+    /// `qwenInstalled` / `llamaSwallowInstalled` see the refreshed
+    /// values (the pre-async fire-and-forget version had setBackend
+    /// reading stale state on every backend switch and skipping
+    /// the auto-download trigger).
+    func syncInstallState() async {
         guard let modelStore = parent.modelStore else {
-            modelInstalled = false
+            modelInstalled = mlxModelID == nil
+            qwenInstalled = false
+            llamaSwallowInstalled = false
             return
         }
-        Task {
-            let installed = await modelStore.isOptionalInstalled(
-                id: ModelManifest.summarizerID
-            )
-            await MainActor.run {
-                self.modelInstalled = installed
-            }
+        let qwen = await modelStore.isOptionalInstalled(
+            id: ModelManifest.summarizerID
+        )
+        let llama = await modelStore.isOptionalInstalled(
+            id: ModelManifest.summarizerLlamaID
+        )
+        qwenInstalled = qwen
+        llamaSwallowInstalled = llama
+        switch backend {
+        case .appleFM:      modelInstalled = true
+        case .qwen:         modelInstalled = qwen
+        case .llamaSwallow: modelInstalled = llama
         }
     }
 
-    /// Drive the on-demand download via `ModelStore.ensureOptional`.
-    /// Wraps the call in `downloading` so the Settings card can
-    /// render an inline progress indicator.
+    /// Drive the on-demand download via `ModelStore.ensureOptional`
+    /// for the current MLX backend. Wraps the call in `downloading`
+    /// so the Settings card can render an inline progress indicator.
     private func triggerDownload() async {
-        guard let modelStore = parent.modelStore else { return }
+        guard let id = mlxModelID,
+              let modelStore = parent.modelStore else { return }
         downloading = true
         defer { downloading = false }
         do {
-            try await modelStore.ensureOptional(id: ModelManifest.summarizerID)
-            syncInstallState()
+            try await modelStore.ensureOptional(id: id)
+            await syncInstallState()
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
@@ -177,8 +245,8 @@ final class SummarizerCoordinator {
         await releasePipelineForSummarization()
         logAvailableMemory(label: "summarize start (after pipeline release)")
         switch backend {
-        case .appleFM: return await summarizeWithAppleFM()
-        case .qwen:    return await summarizeWithQwen()
+        case .appleFM:                  return await summarizeWithAppleFM()
+        case .qwen, .llamaSwallow:      return await summarizeWithMLX()
         }
     }
 
@@ -217,14 +285,14 @@ final class SummarizerCoordinator {
         }
     }
 
-    private func summarizeWithQwen() async -> SessionSummary? {
-        guard let modelStore = parent.modelStore else {
+    private func summarizeWithMLX() async -> SessionSummary? {
+        guard let modelStore = parent.modelStore,
+              let modelID = mlxModelID,
+              let family = currentMLXFamily else {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        guard let directory = await modelStore.optionalDirectory(
-            id: ModelManifest.summarizerID
-        ) else {
+        guard let directory = await modelStore.optionalDirectory(id: modelID) else {
             parent.errorMessage = String(describing: SummarizerError.modelNotInstalled)
             scheduleUnloadAndPipelineRewarm()
             return nil
@@ -234,8 +302,9 @@ final class SummarizerCoordinator {
             actor = existing
         } else {
             actor = MLXQwenSummarizer(
-                modelIdentifier: ModelManifest.summarizerID,
-                modelDirectory: directory
+                modelIdentifier: modelID,
+                modelDirectory: directory,
+                family: family
             )
             summarizerActor = actor
         }
@@ -254,12 +323,12 @@ final class SummarizerCoordinator {
             lastSessionSummary = summary
             return summary
         } catch is CancellationError {
-            AppLog.app.info("summarizeWithQwen cancelled by user")
+            AppLog.app.info("summarizeWithMLX cancelled by user")
             return nil
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
-                "summarizeWithQwen failed: \(String(describing: error), privacy: .public)"
+                "summarizeWithMLX failed: \(String(describing: error), privacy: .public)"
             )
             return nil
         }
@@ -276,8 +345,8 @@ final class SummarizerCoordinator {
         await releasePipelineForSummarization()
         logAvailableMemory(label: "review start (after pipeline release)")
         switch backend {
-        case .appleFM: return await reviewWithAppleFM()
-        case .qwen:    return await reviewWithQwen()
+        case .appleFM:              return await reviewWithAppleFM()
+        case .qwen, .llamaSwallow:  return await reviewWithMLX()
         }
     }
 
@@ -317,21 +386,22 @@ final class SummarizerCoordinator {
         }
     }
 
-    private func reviewWithQwen() async -> [TranscriptionIssue]? {
-        guard let modelStore = parent.modelStore else {
+    private func reviewWithMLX() async -> [TranscriptionIssue]? {
+        guard let modelStore = parent.modelStore,
+              let modelID = mlxModelID,
+              let family = currentMLXFamily else {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        guard let directory = await modelStore.optionalDirectory(
-            id: ModelManifest.summarizerID
-        ) else {
+        guard let directory = await modelStore.optionalDirectory(id: modelID) else {
             parent.errorMessage = String(describing: TranscriptionReviewError.modelNotInstalled)
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
         // Belt-and-braces: drop the summarizer actor before the
-        // reviewer comes up. Both share Qwen3-8B's 4.6 GB weights;
-        // holding both = ~9 GB resident and a guaranteed Jetsam.
+        // reviewer comes up. Both share an MLX model's ~4.6 GB
+        // weights (Qwen3 or Llama-3-Swallow); holding both =
+        // ~9 GB resident and a guaranteed Jetsam.
         await summarizerActor?.unload()
         summarizerActor = nil
 
@@ -340,8 +410,9 @@ final class SummarizerCoordinator {
             actor = existing
         } else {
             actor = MLXQwenTranscriptionReviewer(
-                modelIdentifier: ModelManifest.summarizerID,
-                modelDirectory: directory
+                modelIdentifier: modelID,
+                modelDirectory: directory,
+                family: family
             )
             reviewerActor = actor
         }
@@ -361,12 +432,12 @@ final class SummarizerCoordinator {
             self.issues = issues
             return issues
         } catch is CancellationError {
-            AppLog.app.info("reviewWithQwen cancelled by user")
+            AppLog.app.info("reviewWithMLX cancelled by user")
             return nil
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
-                "reviewWithQwen failed: \(String(describing: error), privacy: .public)"
+                "reviewWithMLX failed: \(String(describing: error), privacy: .public)"
             )
             return nil
         }
@@ -411,21 +482,23 @@ final class SummarizerCoordinator {
         self.issues = issues
     }
 
-    /// Remove the on-disk model. Toggle state is preserved so the
-    /// user's preference survives.
+    /// Remove the on-disk model for the currently-selected backend.
+    /// Toggle state is preserved so the user's preference survives.
+    /// No-op for Apple FM (no on-disk install).
     func removeModel() async {
         await summarizerActor?.unload()
         summarizerActor = nil
         await reviewerActor?.unload()
         reviewerActor = nil
+        guard let id = mlxModelID else { return }
         do {
-            try await parent.modelStore?.removeOptional(id: ModelManifest.summarizerID)
+            try await parent.modelStore?.removeOptional(id: id)
         } catch {
             AppLog.app.warning(
                 "removeOptional failed: \(String(describing: error), privacy: .public)"
             )
         }
-        syncInstallState()
+        await syncInstallState()
     }
 
     /// Drop strong refs to the analysis pipeline so ARC can reclaim

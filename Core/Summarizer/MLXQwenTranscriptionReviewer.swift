@@ -17,6 +17,10 @@ import MLXLMCommon
 public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     public let modelIdentifier: String
     private let modelDirectory: URL
+    /// Model family — gates a few prompt-token differences (Qwen3's
+    /// `/no_think`, mainly). The actual model loading is family-
+    /// agnostic via the MLX-LM factory.
+    private let family: LLMModelFamily
     private var container: ModelContainer?
 
     /// Cap on output tokens. Each issue is ~50–80 tokens of JSON
@@ -34,9 +38,14 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     /// window mirrors the summarizer's strategy for long sessions.
     private static let maxPromptUtterances = 80
 
-    public init(modelIdentifier: String, modelDirectory: URL) {
+    public init(
+        modelIdentifier: String,
+        modelDirectory: URL,
+        family: LLMModelFamily = .qwen
+    ) {
         self.modelIdentifier = modelIdentifier
         self.modelDirectory = modelDirectory
+        self.family = family
     }
 
     public var isReady: Bool {
@@ -99,7 +108,8 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
             utterances: promptUtterances,
             speakerNames: speakerNames,
             truncatedFromTotal: truncatedFrom,
-            language: language
+            language: language,
+            family: family
         )
         AppLog.app.info(
             "MLXQwenTranscriptionReviewer reviewing \(promptUtterances.count, privacy: .public) utterances (prompt \(prompt.count, privacy: .public) chars)"
@@ -155,7 +165,8 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         truncatedFromTotal: Int?,
-        language: ReviewLanguage
+        language: ReviewLanguage,
+        family: LLMModelFamily
     ) -> String {
         var lines: [String] = []
         lines.reserveCapacity(utterances.count + 24)
@@ -184,7 +195,12 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         // iPadOS app-language pick. Qwen3 will otherwise drift to
         // Chinese when reviewing Japanese transcripts.
         lines.append("The \"reason\" text in each issue MUST be written in this language: \(SummarizerLocale.responseLanguageNameInEnglish). No other language is acceptable.")
-        lines.append("/no_think")
+        // Family-gated: Qwen3 has the `/no_think` directive to
+        // skip its <think> chain-of-thought block; Llama 3 would
+        // emit the literal token, corrupting the JSON output.
+        if family == .qwen {
+            lines.append("/no_think")
+        }
         if let total = truncatedFromTotal {
             lines.append("")
             lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Review only these rows.")

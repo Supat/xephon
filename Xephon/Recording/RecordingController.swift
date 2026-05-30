@@ -78,6 +78,15 @@ final class RecordingController {
     private(set) var isSpeechBoostEnabled: Bool = true
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
+    /// Offline ASR backend list + current pick, mirrored from the
+    /// pipeline so the Settings card can render a picker. Live
+    /// recording always uses Apple SpeechAnalyzer; this picker
+    /// only affects file analysis / re-evaluation / Transcribe
+    /// Range. Persisted via `UserDefaults` (key
+    /// `offlineASRBackendKey`) so the user's choice survives
+    /// restarts.
+    private(set) var availableOfflineASRBackends: [OfflineASRBackend] = []
+    private(set) var currentOfflineASRBackend: OfflineASRBackend = .speechAnalyzer
     /// User-editable custom glossary. The Settings card raises
     /// `CustomGlossarySheet` against this store; mutations from
     /// the sheet trigger `pushLexiconToPipeline` via the store's
@@ -111,6 +120,10 @@ final class RecordingController {
     var summarizerBackend: SummarizerBackend { summarizer.backend }
     var summarizerAppleFMAvailable: Bool { summarizer.appleFMAvailable }
     var summarizerModelInstalled: Bool { summarizer.modelInstalled }
+    /// Per-MLX-backend install flags — drive the ModelsCard's
+    /// independent Qwen + Llama rows.
+    var summarizerQwenInstalled: Bool { summarizer.qwenInstalled }
+    var summarizerLlamaSwallowInstalled: Bool { summarizer.llamaSwallowInstalled }
     var summarizerDownloading: Bool { summarizer.downloading }
     var summarizerInferenceRunning: Bool { summarizer.inferenceRunning }
     var summarizerInferenceStart: Date? { summarizer.inferenceStart }
@@ -499,6 +512,7 @@ final class RecordingController {
     private static let fusionAcousticWeightKey = "xephon.fusionAcousticWeight"
     private static let fusionTextWeightFloorKey = "xephon.fusionTextWeightFloor"
     private static let diarizerClusteringThresholdKey = "xephon.diarizerClusteringThreshold"
+    private static let offlineASRBackendKey = "xephon.offlineASRBackend"
 
 
     /// Current weight applied to the acoustic modality during late
@@ -526,10 +540,15 @@ final class RecordingController {
     /// speaker popover. Flipping the switch in one row's popover
     /// propagates to every other row's popover, so a user
     /// correcting a batch of misattributions doesn't have to flip
-    /// it repeatedly. Session-only (not persisted) — resets to off
-    /// on launch so the heavier centroid-folding behavior never
-    /// silently survives a cold start.
-    var teachingDiarizer: Bool = false
+    /// it repeatedly. Session-only (not persisted) — resets to
+    /// this default on every launch. Default is `true` because
+    /// the typical correction flow IS the teach-on path: the user
+    /// is reassigning because the diarizer was wrong, and
+    /// folding the embedding into the target centroid is what
+    /// makes the next utterance match the right speaker. Users
+    /// who want pure-annotation reassignment flip the toggle off
+    /// per session.
+    var teachingDiarizer: Bool = true
 
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
@@ -562,6 +581,10 @@ final class RecordingController {
             self.diarizerClusteringThreshold = UserDefaults.standard.float(forKey: Self.diarizerClusteringThresholdKey)
         } else {
             self.diarizerClusteringThreshold = FluidAudioDiarizer.defaultClusteringThreshold
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.offlineASRBackendKey),
+           let backend = OfflineASRBackend(rawValue: raw) {
+            self.currentOfflineASRBackend = backend
         }
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
         self.streamingTranscriber = streamingTranscriber
@@ -819,6 +842,10 @@ final class RecordingController {
     private func applyConfiguration(to pipeline: AnalysisPipeline) async {
         applyFusionWeights(to: pipeline)
         await pipeline.setDiarizerClusteringThreshold(diarizerClusteringThreshold)
+        pipeline.setOfflineASRBackend(
+            currentOfflineASRBackend,
+            locale: sessionLanguage.locale
+        )
         await applyLatestBackgroundMode(to: pipeline)
     }
 
@@ -880,6 +907,8 @@ final class RecordingController {
         )
         availableTextSERBackends = await pipeline.availableTextSERBackends()
         currentTextSERBackend = await pipeline.currentTextSERBackend()
+        availableOfflineASRBackends = pipeline.availableOfflineASRBackends()
+        currentOfflineASRBackend = pipeline.currentOfflineASRBackend()
         // Push the user's persisted glossary into the freshly-built
         // text-SER actor and wire the store's onChange hook so
         // subsequent edits in the Custom Glossary sheet flow through
@@ -898,7 +927,7 @@ final class RecordingController {
         // runs, and we don't want the Settings card to render
         // "Not installed" on first launch when the files are
         // actually present from a previous session.
-        summarizer.syncInstallState()
+        await summarizer.syncInstallState()
     }
 
     func toggle() async {
@@ -1542,6 +1571,26 @@ final class RecordingController {
         let pipeline = await ensurePipeline()
         await pipeline.setTextSERBackend(backend)
         await syncTextSERStateFromPipeline(from: pipeline)
+    }
+
+    /// Persist the user's offline ASR backend pick and push it
+    /// into the pipeline. Live recording is unaffected — that
+    /// path always uses Apple's `StreamingTranscriber`. Subsequent
+    /// re-evaluation / file analysis / Transcribe Range calls go
+    /// through the freshly-swapped offline transcriber.
+    func setOfflineASRBackend(_ backend: OfflineASRBackend) async {
+        guard backend != currentOfflineASRBackend else { return }
+        currentOfflineASRBackend = backend
+        UserDefaults.standard.set(backend.rawValue, forKey: Self.offlineASRBackendKey)
+        if let pipeline {
+            pipeline.setOfflineASRBackend(
+                backend,
+                locale: sessionLanguage.locale
+            )
+        }
+        AppLog.app.info(
+            "offlineASRBackend → \(backend.rawValue, privacy: .public)"
+        )
     }
 
     /// Replay the active glossary against every utterance with a

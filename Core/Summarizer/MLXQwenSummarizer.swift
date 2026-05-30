@@ -7,12 +7,19 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 
-/// MLX-backed summarizer using a Qwen2.5-Instruct 4-bit model
-/// hydrated under `ModelStore`'s install directory. All inference
-/// runs on-device — no network calls, no cloud fallback.
+/// MLX-backed summarizer hydrated under `ModelStore`'s install
+/// directory. All inference runs on-device — no network calls,
+/// no cloud fallback. Despite the `Qwen` in the class name (kept
+/// for diff minimality during the multi-family rollout), this
+/// class supports any LLM the MLX-LM factory can load — Qwen3,
+/// Llama 3, etc. Family-specific prompt tokens (e.g. Qwen3's
+/// `/no_think` directive) are gated on `family` so a Llama
+/// backend doesn't get Qwen's control-token treated as literal
+/// text.
 ///
 /// Lifecycle:
-///   1. Construct with the resolved model directory + identifier.
+///   1. Construct with the resolved model directory + identifier
+///      + the model's family.
 ///   2. Call `load()` (or let `summarize(...)` lazy-load on first
 ///      use) to bring the weights into memory. Loading 4-bit 7B is
 ///      ~5–10 s on M4 iPad Pro.
@@ -24,6 +31,7 @@ import MLXLMCommon
 public actor MLXQwenSummarizer: SessionSummarizer {
     public let modelIdentifier: String
     private let modelDirectory: URL
+    private let family: LLMModelFamily
     private var container: ModelContainer?
 
     /// Hard cap on tokens the LLM may emit per summary. The output
@@ -48,9 +56,14 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     /// edge of a conversation.
     private static let maxPromptUtterances = 100
 
-    public init(modelIdentifier: String, modelDirectory: URL) {
+    public init(
+        modelIdentifier: String,
+        modelDirectory: URL,
+        family: LLMModelFamily = .qwen
+    ) {
         self.modelIdentifier = modelIdentifier
         self.modelDirectory = modelDirectory
+        self.family = family
     }
 
     public var isReady: Bool {
@@ -134,7 +147,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         let prompt = Self.buildPrompt(
             utterances: promptUtterances,
             speakerNames: speakerNames,
-            truncatedFromTotal: truncatedFrom
+            truncatedFromTotal: truncatedFrom,
+            family: family
         )
         if let truncatedFrom {
             AppLog.app.info(
@@ -246,7 +260,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     private static func buildPrompt(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
-        truncatedFromTotal: Int?
+        truncatedFromTotal: Int?,
+        family: LLMModelFamily
     ) -> String {
         let speakers = utterances.orderedSpeakerIDs
         var lines: [String] = []
@@ -278,7 +293,13 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         // reasoning for a single turn — it must appear in the user
         // prompt (system instructions are routed through Jinja
         // template logic that doesn't honor it the same way).
-        lines.append("/no_think")
+        // Gated on family: Llama 3 doesn't recognize this token
+        // and would emit it verbatim in the output, breaking the
+        // JSON parser. The <think>-stripping recovery code below
+        // is a defensive no-op for Llama.
+        if family == .qwen {
+            lines.append("/no_think")
+        }
         if let total = truncatedFromTotal {
             lines.append("")
             lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Frame the overall mood as the trailing portion of the session, not the whole arc.")

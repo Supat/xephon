@@ -73,6 +73,8 @@ struct SummarizerCard: View {
                 .tag(SummarizerBackend.appleFM)
             Text(String(localized: "settings.summarizer.backend.qwen"))
                 .tag(SummarizerBackend.qwen)
+            Text(String(localized: "settings.summarizer.backend.llamaSwallow"))
+                .tag(SummarizerBackend.llamaSwallow)
         }
         .pickerStyle(.menu)
         .labelsHidden()
@@ -96,7 +98,7 @@ struct SummarizerCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        case .qwen:
+        case .qwen, .llamaSwallow:
             if recorder.summarizerDownloading {
                 HStack(spacing: 8) {
                     CircularDownloadProgress(
