@@ -32,8 +32,11 @@ struct SpeakerRosterCard: View {
 
     /// Header toggle: hide speaker rows whose id isn't in
     /// `linkedSpeakerIDs`. Styled to match the cluster card's
-    /// matching toggle.
-    @State private var hideUnreferencedSpeakers: Bool = false
+    /// matching toggle. Defaults to `true` so the roster opens
+    /// scoped to the conversation's active cast — orphan /
+    /// promoted-but-unclaimed ids are usually noise unless the
+    /// user is specifically inspecting the diarizer DB.
+    @State private var hideUnreferencedSpeakers: Bool = true
 
     var body: some View {
         let digest = SpeakerRosterDigest(recorder: recorder, cluster: cluster)

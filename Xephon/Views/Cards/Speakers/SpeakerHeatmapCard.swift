@@ -34,8 +34,10 @@ struct SpeakerHeatmapCard: View {
 
     /// Header toggle: hide speakers whose id isn't in
     /// `linkedSpeakerIDs`. Same caption2 link-icon button the
-    /// cluster card uses.
-    @State private var hideUnreferencedSpeakers: Bool = false
+    /// cluster card uses. Defaults to `true` so the matrix opens
+    /// scoped to the active cast — diarizer-DB orphans rarely
+    /// inform the cross-speaker similarity read.
+    @State private var hideUnreferencedSpeakers: Bool = true
 
     /// Identifies the cell whose popover is currently shown. Carries
     /// the row/column speaker ids + the cosine distance so the

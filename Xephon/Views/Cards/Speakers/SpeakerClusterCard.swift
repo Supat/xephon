@@ -81,8 +81,10 @@ struct SpeakerClusterCard: View {
     /// doesn't trigger a PCA refit — the basis stays anchored to
     /// the full point set, only the visibility filter changes,
     /// so the visible dots don't drift around when the toggle is
-    /// flipped.
-    @State private var hideUnlinkedObservations: Bool = false
+    /// flipped. Defaults to `true` so the scatter opens scoped to
+    /// utterance-linked observations — orphan dots from earlier
+    /// diarize ticks dominate the canvas otherwise.
+    @State private var hideUnlinkedObservations: Bool = true
 
     nonisolated private static let canvasHeight: CGFloat = 180
     nonisolated private static let centroidRadius: CGFloat = 5
