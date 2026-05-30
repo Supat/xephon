@@ -14,6 +14,28 @@ and **dimensional** (valence, arousal, dominance).
 - **Primary device:** iPad Pro M4/M5 (16 GB SKU strongly preferred).
 - **License of the source code:** TBD (do not assume MIT).
 
+## Minimum viable scope
+
+Three load-bearing capabilities — without any one of these the project
+doesn't serve its purpose:
+
+1. **Speech transcription** — Japanese audio → text per utterance.
+2. **Speaker diarization** — attribute each utterance to a specific speaker.
+3. **On-device LLM summarization** — turn the per-utterance stream into a
+   session-level read.
+
+Affect estimation (Plutchik / V/A/D / age-gender) sits above this floor — a
+session is still useful without it; the three above aren't. When triaging,
+picking between fixes, or recommending a tradeoff, weight these three first
+— prefer the option that keeps them working (or fixes them) over the
+locally-cleaner option that weakens any of them.
+
+**Local-first, remote-open.** On-device stays the default (privacy, offline,
+no API-key plumbing). When a remote/cloud solution is genuinely the right
+fit, propose it openly with the tradeoff (latency, privacy posture, dep) —
+don't reflexively rule it out. The "no cloud without UI toggle + privacy
+note" rule under Always / Never still governs anything that ships.
+
 ## Architecture (the canonical pipeline)
 
 ```
