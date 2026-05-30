@@ -18,58 +18,121 @@ struct ControlPaneView: View {
     @Binding var scrollRequestUtteranceID: UUID?
     @Binding var showingDiscardConfirm: Bool
 
+    /// Index of the currently-visible TabView page. Bound to the
+    /// TabView's `selection` purely so swipes trigger an
+    /// `onChange` we can use to re-show the page-indicator dots.
+    @State private var selectedTab: Int = 0
+    /// Visibility of the system page-indicator. Flipped to
+    /// `.always` for a short window after the user swipes, then
+    /// back to `.never` so the dots fully disappear (not just
+    /// their capsule background, which is all `.automatic` mode
+    /// hides).
+    @State private var dotsVisible: Bool = false
+    /// Pending hide work. Cancelled and rescheduled every time
+    /// the user swipes so a rapid sequence of pages keeps the
+    /// dots up until they pause.
+    @State private var dotsHideTask: Task<Void, Never>? = nil
+
+    private static let dotsHideDelayNanos: UInt64 = 1_500_000_000
+
     var body: some View {
         // Two-region layout: a fixed header that pins the controls at
         // the top (input picker, record/open, level meter, status,
-        // error) plus a scrollable region below that holds the cards
-        // (Settings + Pipeline + Summary + Statistics). The header
-        // never scrolls off — the user can always reach Start/Stop
-        // even with every card expanded.
-        VStack(spacing: 16) {
-            inputPicker
+        // error) plus a card region below that holds the swipeable
+        // TabView. The header never scrolls off — the user can always
+        // reach Start/Stop even with every card expanded.
+        //
+        // The two regions live in separate VStacks so the outer
+        // VStack has a clear intrinsic-vs-flex split: header is
+        // intrinsic-sized, TabView region is `.frame(maxHeight:
+        // .infinity)` and absorbs the slack. We tried a single
+        // VStack with `.frame(maxHeight: .infinity, alignment:
+        // .top)` and `.frame(maxHeight: .infinity)` on the TabView
+        // — that produced a TabView whose *containing frame* was
+        // infinity-tall but whose actual rendering stayed at its
+        // intrinsic page-content height, leaving the page-indicator
+        // dots floating mid-screen with transparent space below.
+        // The split-VStack pattern forces the TabView to actually
+        // be tall (its parent only has one child and it's flex).
+        VStack(spacing: 0) {
+            VStack(spacing: 16) {
+                inputPicker
 
-            HStack(spacing: 12) {
-                recordButton
-                openFileButton
+                HStack(spacing: 12) {
+                    recordButton
+                    openFileButton
+                }
+
+                if recorder.isRecording {
+                    LevelMeterView(channelLevels: recorder.inputChannelLevels)
+                        .frame(maxWidth: 280)
+                }
+
+                statusLine
+
+                if let error = recorder.errorMessage {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                        .multilineTextAlignment(.center)
+                }
             }
+            .padding()
 
-            if recorder.isRecording {
-                LevelMeterView(channelLevels: recorder.inputChannelLevels)
-                    .frame(maxWidth: 280)
-            }
-
-            statusLine
-
-            if let error = recorder.errorMessage {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
-                    .multilineTextAlignment(.center)
-            }
-
-            // Card section split across four swipeable pages so
+            // Card section split across five swipeable pages so
             // the left pane doesn't grow into a long single scroll
             // (the cluster + heatmap especially want vertical room
             // to render their data legibly). Page 1: session
             // controls — Settings + Pipeline. Page 2: read-only
             // affect output — Summary + Statistics. Page 3:
-            // diarizer cluster diagnostics — PCA scatter + pairwise
-            // heatmap. Page 4: summarizer configuration — toggle,
-            // backend picker, install / Remove-model. The page-
-            // style indicator dots render at the bottom of the
-            // TabView; we force `backgroundDisplayMode: .always`
-            // so they stay visible against the glass cards on
-            // iPadOS 26.
-            TabView {
-                settingsPage
-                summaryPage
-                speakerAnalysisPage
-                keywordsPage
-                summarizerPage
+            // diarizer cluster + speaker-behavior cards. Page 4:
+            // keywords. Page 5: summarizer configuration.
+            //
+            // The selection binding exists only so swipes fire
+            // `onChange` and we can re-show the page indicator.
+            // The standard `.page(indexDisplayMode: .automatic)`
+            // mode only hides the dots' capsule background, not
+            // the dots themselves, so we flip the index display
+            // mode between `.always` and `.never` ourselves —
+            // still the system indicator, just with timed
+            // visibility.
+            TabView(selection: $selectedTab) {
+                settingsPage.tag(0)
+                summaryPage.tag(1)
+                speakerAnalysisPage.tag(2)
+                keywordsPage.tag(3)
+                summarizerPage.tag(4)
             }
-            .tabViewStyle(.page(indexDisplayMode: .always))
+            .tabViewStyle(.page(indexDisplayMode: dotsVisible ? .always : .never))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Let the TabView visually extend through the home-
+            // indicator safe-area zone so the column reaches the
+            // screen's bottom edge instead of stopping at the
+            // safe-area top. The system page indicator positions
+            // itself with the safe-area inset internally so it
+            // doesn't disappear under the home indicator.
+            .ignoresSafeArea(.container, edges: .bottom)
+            // Swallow taps over the indicator-capsule area. The
+            // system `UIPageControl` advances ±1 page on tap
+            // depending on which half of the bar got touched —
+            // since we're not exposing per-dot jump and tapping
+            // an indicator dot mid-fade reads as random, absorb
+            // the tap before it reaches the page control.
+            // `onTapGesture` only consumes taps, so swipes still
+            // pass through to the TabView's pan gesture.
+            .overlay(alignment: .bottom) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(maxWidth: 240, maxHeight: 36)
+                    .padding(.bottom, 16)
+                    .onTapGesture { }
+                    .allowsHitTesting(dotsVisible)
+            }
+            .onChange(of: selectedTab) { _, _ in
+                showDotsAndScheduleHide()
+            }
             // While idle (no recording in flight) the controller's
             // continuous-diarize tick isn't refreshing the cluster
             // snapshot — pull at 1 Hz so the heatmap + scatter stay
@@ -88,8 +151,29 @@ struct ControlPaneView: View {
                 }
             }
         }
-        .padding()
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Page-indicator auto-hide
+
+    /// Flip `dotsVisible` true and schedule it back to false
+    /// after a short pause. Cancels any pending hide so rapid
+    /// swipes keep the indicator up until the user pauses.
+    /// Both transitions go through `withAnimation` so the
+    /// indicator's appearance is driven by SwiftUI's animation
+    /// context rather than snapping on a state flip.
+    private func showDotsAndScheduleHide() {
+        dotsHideTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            dotsVisible = true
+        }
+        dotsHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.dotsHideDelayNanos)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.6)) {
+                dotsVisible = false
+            }
+        }
     }
 
     // MARK: - Tab pages
@@ -106,6 +190,7 @@ struct ControlPaneView: View {
             .padding(.bottom, 32)
         }
         .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     @ViewBuilder
@@ -133,6 +218,7 @@ struct ControlPaneView: View {
             .padding(.bottom, 32)
         }
         .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     @ViewBuilder
@@ -207,6 +293,7 @@ struct ControlPaneView: View {
             .padding(.bottom, 32)
         }
         .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     @ViewBuilder
@@ -224,6 +311,7 @@ struct ControlPaneView: View {
             .padding(.bottom, 32)
         }
         .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     @ViewBuilder
@@ -238,6 +326,7 @@ struct ControlPaneView: View {
             .padding(.bottom, 32)
         }
         .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     // MARK: - Header pieces
