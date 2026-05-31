@@ -780,10 +780,11 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             lines.append("  \"overallMood\" — 推定された状況と一貫した、セッション全体の感情的な雰囲気を1段落で記述してください。")
             lines.append("  \"perSpeaker\" — 配列。次の話者IDごとに1エントリ：\(speakerList)。")
             lines.append("各perSpeakerエントリの形式：{ \"speakerID\": <id>, \"summary\": <1段落>, \"dominantMood\": <短いフレーズ> }。")
-            lines.append("各行には次の情報が含まれます：融合ラベル、融合V/A/D（valence/arousal/dominance、0〜1）、および各モダリティの生確率ベクトル：")
-            lines.append("  aP = 音響9クラスsoftmax（angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown）")
-            lines.append("  tP = テキスト8クラスPlutchik強度（joy, sadness, anticipation, surprise, anger, fear, disgust, trust）")
-            lines.append("これらを使って信頼度を判断し、モダリティの不一致を話者ごとに指摘してください — 例：aPがsadだがtPがjoyである行は言及する価値があります。融合ラベルではこの情報が見えません。")
+            // Llama rows are stripped of SER detail (see
+            // `compactLine`) so no aP/tP/V-A-D schema description
+            // here — describing fields the model won't see in the
+            // data confuses it. Speaker, time, and transcript only.
+            lines.append("各行には話者ID、時刻、文字起こしのみが含まれます。感情は文字起こしの内容から推測してください。")
             lines.append("以下の話者人口統計ブロックに性別が記載されている場合、その話者の代名詞として全体で使用してください — 女性は「she/her」、男性は「he/him」、子供または性別が記載されていない場合は「they/them」。（日本語のように代名詞を省略する言語では無関係です。）")
             lines.append("有効なJSONのみを返し、前後に散文を含めないでください。")
         }
@@ -827,7 +828,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         case .llama: lines.append("発話：")
         }
         for u in utterances {
-            lines.append(compactLine(for: u, speakerNames: speakerNames))
+            lines.append(compactLine(for: u, speakerNames: speakerNames, family: family))
         }
         // Instruction sandwich — restate the directive right
         // before generation so the model's recent attention has
@@ -897,11 +898,12 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             lines.append("  \"timeEnd\": \(tEndStr)、")
             lines.append("  \"topicSnapshot\": このウィンドウの話題を短いフレーズで、")
             lines.append("  \"moodSnapshot\": このウィンドウの感情的な雰囲気を短いフレーズで、")
-            lines.append("  \"perSpeaker\": { \"speakerID\": <id>, \"notes\": この話者の本ウィンドウでの貢献を1〜2文で, \"dominantMood\": 短いフレーズ } の配列。次の話者ごとに1エントリ：\(speakerList)、")
-            lines.append("  \"modalityFlags\": 音響とテキストの分類器が顕著に不一致だった行を示す短い文字列の配列（例：「S03 at 42.3s: acoustic=sad, text=joy」）。顕著な不一致がない場合は空配列。")
-            lines.append("各行には次の情報が含まれます：融合ラベル、融合V/A/D（valence/arousal/dominance、0〜1）、および各モダリティの生確率ベクトル：")
-            lines.append("  aP = 音響9クラスsoftmax（angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown）")
-            lines.append("  tP = テキスト8クラスPlutchik強度（joy, sadness, anticipation, surprise, anger, fear, disgust, trust）")
+            lines.append("  \"perSpeaker\": { \"speakerID\": <id>, \"notes\": この話者の本ウィンドウでの貢献を1〜2文で, \"dominantMood\": 短いフレーズ } の配列。次の話者ごとに1エントリ：\(speakerList)。")
+            // modalityFlags field omitted — Llama rows don't carry
+            // aP/tP, so the model has no signal to populate it.
+            // DeepWindowIntermediate.modalityFlags is optional;
+            // the decoder treats nil as "no flags this window."
+            lines.append("各行には話者ID、時刻、文字起こしのみが含まれます。感情は文字起こしの内容から推測してください。")
             lines.append("有効なJSONのみを返し、前後に散文を含めないでください。")
         }
         lines.append(SummarizerLocale.responseLanguageInstruction)
@@ -921,7 +923,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         case .llama: lines.append("発話：")
         }
         for u in utterances {
-            lines.append(compactLine(for: u, speakerNames: speakerNames))
+            lines.append(compactLine(for: u, speakerNames: speakerNames, family: family))
         }
         // Instruction sandwich — see `buildPrompt` for rationale.
         lines.append("")
@@ -930,7 +932,7 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         case .qwen:
             lines.append("IMPORTANT: Follow the instructions above and produce exactly one window-intermediate JSON object with fields windowIndex, timeStart, timeEnd, topicSnapshot, moodSnapshot, perSpeaker, modalityFlags. The FIRST character of your output MUST be `{`. Do NOT echo the utterance list above; do NOT add any prose.")
         case .llama:
-            lines.append("重要：上記の指示に従い、windowIndex、timeStart、timeEnd、topicSnapshot、moodSnapshot、perSpeaker、modalityFlags のフィールドを持つウィンドウ中間JSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記の発話リストをエコーしないでください。散文も一切含めないでください。")
+            lines.append("重要：上記の指示に従い、windowIndex、timeStart、timeEnd、topicSnapshot、moodSnapshot、perSpeaker のフィールドを持つウィンドウ中間JSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記の発話リストをエコーしないでください。散文も一切含めないでください。")
         }
         return lines.joined(separator: "\n")
     }
@@ -978,7 +980,9 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             lines.append("  \"overallMood\" — セッション全体の感情的な雰囲気を1段落で — 末尾のウィンドウだけでなく、弧全体を記述してください。")
             lines.append("  \"perSpeaker\" — 配列、次の話者IDごとに1エントリ：\(speakerList)。")
             lines.append("各perSpeakerエントリの形式：{ \"speakerID\": <id>, \"summary\": <セッション全体にわたる1段落>, \"dominantMood\": <短いフレーズ> }。")
-            lines.append("ウィンドウ中間データには \"modalityFlags\" 配列が含まれています — 反復的または注目すべき音響↔テキストの不一致を話者ごとの記述で取り上げてください。すべてのフラグを列挙する必要はありません。")
+            // No modalityFlags guidance — Llama window
+            // intermediates omit that field because the row data
+            // doesn't carry the per-modality vectors.
             lines.append("以下の話者人口統計ブロックに性別が記載されている場合、その話者の代名詞として全体で使用してください — 女性は「she/her」、男性は「he/him」、子供または性別が記載されていない場合は「they/them」。（日本語のように代名詞を省略する言語では無関係です。）")
             lines.append("有効なJSONのみを返し、前後に散文を含めないでください。")
         }
@@ -1023,9 +1027,23 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     /// fused → per-modality probability vectors → transcript.
     /// The transcript field is named `text` so to avoid collision
     /// with the text-SER's Plutchik vector we name that `tP`.
+    ///
+    /// Family-gated emission: Llama-Swallow gets a stripped row
+    /// (speaker + name? + time + text only). Qwen gets the full
+    /// row (unchanged from before the strip was introduced). The
+    /// rationale lives on `compactLineStripsSER(for:)` — short
+    /// version: Llama-Swallow can't reliably produce structured
+    /// JSON from a 14k-token prompt because it echoes the
+    /// `- speaker=… aP={…} tP={…}` pattern instead of summarizing,
+    /// and the full per-row format is what's giving it material
+    /// to echo. Stripping aP/tP/V/A/D drops the prompt to ~25-45
+    /// tokens/row (from ~140-160), giving Llama a fighting chance
+    /// at the task; Qwen stays on the rich format because it can
+    /// actually use the modality signal.
     private static func compactLine(
         for u: UtteranceEstimate,
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        family: LLMModelFamily
     ) -> String {
         var fields: [String] = []
         fields.append("speaker=\(u.speakerID)")
@@ -1033,21 +1051,33 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             fields.append("name=\(name)")
         }
         fields.append(String(format: "t=%.1fs", u.start))
-        if let label = u.fusedTopLabel { fields.append("label=\(label)") }
-        if let v = u.fusedValence { fields.append(String(format: "V=%.2f", v)) }
-        if let a = u.fusedArousal { fields.append(String(format: "A=%.2f", a)) }
-        if let d = u.fusedDominance { fields.append(String(format: "D=%.2f", d)) }
-        if let acoustic = u.acousticCategorical {
-            fields.append("aP={\(renderAcoustic(acoustic))}")
-        }
-        if let plutchik = u.plutchik {
-            fields.append("tP={\(renderPlutchik(plutchik))}")
+        if !Self.compactLineStripsSER(for: family) {
+            if let label = u.fusedTopLabel { fields.append("label=\(label)") }
+            if let v = u.fusedValence { fields.append(String(format: "V=%.2f", v)) }
+            if let a = u.fusedArousal { fields.append(String(format: "A=%.2f", a)) }
+            if let d = u.fusedDominance { fields.append(String(format: "D=%.2f", d)) }
+            if let acoustic = u.acousticCategorical {
+                fields.append("aP={\(renderAcoustic(acoustic))}")
+            }
+            if let plutchik = u.plutchik {
+                fields.append("tP={\(renderPlutchik(plutchik))}")
+            }
         }
         let escaped = u.transcript
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         fields.append("text=\"\(escaped)\"")
         return "- " + fields.joined(separator: " ")
+    }
+
+    /// True when `compactLine` should omit the SER (label, V/A/D,
+    /// aP, tP) block for the given family. Single source of truth
+    /// so the prompt builders can gate their schema descriptions
+    /// against the same predicate that gates the row content —
+    /// describing aP/tP in the prompt while emitting rows without
+    /// them would confuse the model.
+    private static func compactLineStripsSER(for family: LLMModelFamily) -> Bool {
+        family == .llama
     }
 
     /// Render the acoustic 9-class softmax in `Label.allCases`
