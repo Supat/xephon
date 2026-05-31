@@ -208,12 +208,16 @@ struct SettingsCard: View {
         }
     }
 
-    /// Picker for the offline ASR backend used by file analysis,
-    /// re-evaluation, and Transcribe Range. Live recording stays
-    /// on Apple's `StreamingTranscriber` regardless of this pick
-    /// (Qwen3-ASR isn't streaming-capable in the current wiring).
-    /// Disabled while a session is in flight to avoid swapping
-    /// the transcriber mid-analysis.
+    /// Picker for the ASR backend used by both live recording and
+    /// the non-streaming paths (file analysis, re-evaluation,
+    /// Transcribe Range). Qwen3-ASR rows carry a yellow warning
+    /// glyph as a discoverable hint that the backend's
+    /// performance is subpar today: it sometimes drifts to its
+    /// training-dominant language despite the hint (post-filter
+    /// keeps the picker's language but can produce empty
+    /// transcripts) and the streaming wrapper's chunk latency
+    /// lags live audio by 10–20 s. Disabled while a session is
+    /// in flight to avoid swapping the transcriber mid-analysis.
     @ViewBuilder
     private func offlineASRPicker(layout: PickerLayout) -> some View {
         if recorder.availableOfflineASRBackends.count > 1 {
@@ -230,13 +234,36 @@ struct SettingsCard: View {
                 )
             ) {
                 ForEach(recorder.availableOfflineASRBackends, id: \.self) { backend in
-                    Text(Self.offlineASRLabel(for: backend)).tag(backend)
+                    Self.pickerRow(for: backend).tag(backend)
                 }
             }
             .pickerStyle(.menu)
             .labelsHidden()
             .disabled(recorder.isRecording || recorder.isAnalyzing)
             layoutPair(label: label, control: control, layout: layout)
+        }
+    }
+
+    /// Row content rendered inside each Picker item. Most backends
+    /// are a plain `Text`; `.qwen3ASR` is a `Label` with the
+    /// `exclamationmark.triangle.fill` icon tinted yellow so the
+    /// "subpar today" caveat is visible at the point of choice.
+    /// Uses the trailing-closure `Label(title:icon:)` initializer
+    /// so `.foregroundStyle(.yellow)` can be applied to the icon
+    /// view alone, isolated from the text's inherited menu style.
+    @ViewBuilder
+    private static func pickerRow(for backend: OfflineASRBackend) -> some View {
+        let text = Text(Self.offlineASRLabel(for: backend))
+        switch backend {
+        case .qwen3ASR:
+            Label {
+                text
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+            }
+        default:
+            text
         }
     }
 

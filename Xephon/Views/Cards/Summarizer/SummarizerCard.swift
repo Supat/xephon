@@ -109,8 +109,7 @@ struct SummarizerCard: View {
                         .tag(SummarizeMode.trailing)
                     Text(String(localized: "settings.summarizer.mode.heuristic"))
                         .tag(SummarizeMode.heuristic)
-                    Text(String(localized: "settings.summarizer.mode.deep"))
-                        .tag(SummarizeMode.deep)
+                    deepModeRow.tag(SummarizeMode.deep)
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
@@ -119,6 +118,31 @@ struct SummarizerCard: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Deep-mode row content. Adds a yellow warning glyph when
+    /// Llama-Swallow is the active summarizer backend — Llama
+    /// Deep is known to lose detail relative to its Trailing /
+    /// Heuristic output (the audit-driven hybrid-merge
+    /// mitigation in `MLXLlamaSummarizer` narrowed the gap but
+    /// didn't close it). Apple FM and Qwen3 Deep work fine, so
+    /// they get the plain text row. Uses the trailing-closure
+    /// `Label(title:icon:)` initializer so
+    /// `.foregroundStyle(.yellow)` applies to the icon alone,
+    /// isolated from the menu's inherited text style.
+    @ViewBuilder
+    private var deepModeRow: some View {
+        let text = Text(String(localized: "settings.summarizer.mode.deep"))
+        if recorder.summarizerBackend == .llamaSwallow {
+            Label {
+                text
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+            }
+        } else {
+            text
         }
     }
 
