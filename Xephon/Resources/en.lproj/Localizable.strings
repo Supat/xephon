@@ -6,7 +6,7 @@
 "settings.diarizerSensitivity.max" = "Split";
 "settings.diarizerSensitivity.hint" = "Higher = more distinct speakers. Double-tap label to reset.";
 "settings.textSER" = "Text SER";
-"settings.textSER.deberta" = "DeBERTa";
+"settings.textSER.deberta" = "WRIME";
 "settings.textSER.foundationModels" = "Apple FM";
 "settings.offlineASR" = "Offline ASR";
 "settings.offlineASR.speechAnalyzer" = "Apple Speech";
@@ -278,7 +278,7 @@
 "models.categorical.title" = "Acoustic SER · 9-class";
 "models.categorical.detail" = "emotion2vec+ (large)";
 "models.textSER.title" = "Text SER";
-"models.textSER.detail" = "DeBERTa-WRIME (Japanese)";
+"models.textSER.detail" = "WRIME-tuned RoBERTa (Japanese)";
 "models.demographics.title" = "Speaker Demographics";
 "models.demographics.detail" = "audeering W2V2 age + gender";
 "models.summarizerAppleFM.title" = "Summarizer · Apple FM";
@@ -314,7 +314,7 @@
 "fusion.legend.acoustic" = "Acoustic SER";
 "fusion.legend.acoustic.detail" = "W2V2 V/A/D + emotion2vec 9-class score.";
 "fusion.legend.text" = "Text SER";
-"fusion.legend.text.detail" = "DeBERTa-WRIME / Apple FM Plutchik 8-class score.";
+"fusion.legend.text.detail" = "WRIME-tuned RoBERTa / Apple FM Plutchik 8-class score.";
 "fusion.legend.footnote" = "Each slot's color is its net contribution along (acoustic − text) ÷ (acoustic + text): full orange = text-only, neutral gray = balanced, full blue = acoustic-only. Low ASR confidence pulls the color toward blue because text weight is scaled by ASR confidence.";
 "fusion.controls.header" = "Adjust Weights";
 "fusion.controls.acousticWeight" = "Acoustic weight";

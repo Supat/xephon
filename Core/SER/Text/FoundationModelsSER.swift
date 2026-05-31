@@ -4,7 +4,7 @@ import XephonLogging
 
 // Optional second-opinion classifier using Apple Foundation Models (iPadOS 26+, ~3B).
 // Use for structured V/A or open-ended affect description. NOT the classifier of record —
-// expect lower quality than fine-tuned DeBERTa-WRIME per Takenaka 2025.
+// expect lower quality than the fine-tuned WRIME text SER per Takenaka 2025.
 public actor FoundationModelsSER: TextSER {
     // Each classify() call constructs a fresh LanguageModelSession so the
     // 4096-token context window doesn't fill up across utterances. Reusing a

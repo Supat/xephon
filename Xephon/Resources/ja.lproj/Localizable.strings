@@ -6,7 +6,7 @@
 "settings.diarizerSensitivity.max" = "分離";
 "settings.diarizerSensitivity.hint" = "高いほど話者を細かく区別します。ラベルをダブルタップでリセット。";
 "settings.textSER" = "テキスト SER";
-"settings.textSER.deberta" = "DeBERTa";
+"settings.textSER.deberta" = "WRIME";
 "settings.textSER.foundationModels" = "Apple FM";
 "settings.offlineASR" = "オフラインASR";
 "settings.offlineASR.speechAnalyzer" = "Apple Speech";
@@ -278,7 +278,7 @@
 "models.categorical.title" = "音響SER · 9クラス";
 "models.categorical.detail" = "emotion2vec+ (large)";
 "models.textSER.title" = "テキストSER";
-"models.textSER.detail" = "DeBERTa-WRIME (日本語)";
+"models.textSER.detail" = "WRIMEファインチューニング済みRoBERTa（日本語）";
 "models.demographics.title" = "話者属性 (年齢・性別)";
 "models.demographics.detail" = "audeering W2V2 age + gender";
 "models.summarizerAppleFM.title" = "要約 · Apple FM";
@@ -314,7 +314,7 @@
 "fusion.legend.acoustic" = "音響SER";
 "fusion.legend.acoustic.detail" = "W2V2のV/A/D + emotion2vecの9クラス出力。";
 "fusion.legend.text" = "テキストSER";
-"fusion.legend.text.detail" = "DeBERTa-WRIME / Apple FMのPlutchik 8クラス出力。";
+"fusion.legend.text.detail" = "WRIMEファインチューニング済みRoBERTa / Apple FMのPlutchik 8クラス出力。";
 "fusion.legend.footnote" = "各スロットの色は (音響 − テキスト) ÷ (音響 + テキスト) の正味寄与を表します。完全なオレンジはテキストSERのみ、中間のグレーは均衡、完全な青は音響SERのみ。ASR信頼度が低いとテキスト重みが下がるため、色は青寄りになります。";
 "fusion.controls.header" = "重みの調整";
 "fusion.controls.acousticWeight" = "音響の重み";

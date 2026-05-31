@@ -31,7 +31,7 @@ the app mid-download, it picks up where it left off on next launch.
 
 > **Figure 1: First-launch model download progress.**
 > Centered modal showing a circular progress ring at ~ 45 %, with the
-> active model name ("DeBERTa-WRIME · tokenizer.json") and a "1 of 9
+> active model name ("WRIME RoBERTa · tokenizer.json") and a "1 of 9
 > models" subtitle. Cancel button at the bottom.
 
 When the ring closes you land on the main screen.
@@ -130,7 +130,7 @@ Each row in the transcript is one utterance.
 >   • Speaker chip "S01" (tinted to that speaker's color) — bottom-left
 >   • Play button (▶) — leading edge
 >   • Re-evaluate button (↻) — directly below play
->   • Backend badge "DeBERTa" — top-right of the metadata strip
+>   • Backend badge "WRIME" — top-right of the metadata strip
 >   • Modality badge "≠ Modalities" — next to backend badge when text
 >     and acoustic disagree
 >   • Glossary chip "Glossary 2" (purple) — when glossary terms fired
@@ -148,7 +148,7 @@ Tapping the row expands it into a detail panel:
 >     three dots — acoustic (orange), text (purple), fused (green) —
 >     and translucent connecting lines
 >   • Acoustic SER (emotion2vec) bars on the left side, Text SER
->     (DeBERTa) bars on the right
+>     (WRIME) bars on the right
 > Below the columns: ASR confidence, Acoustic V/A/D readout, Fused
 > V/A/D readout, Fusion-weight summary ("Text 72% · Acoustic 28%"),
 > and an Age + Gender readout when available.
@@ -473,7 +473,7 @@ results into external tooling.
 > **Figure 18: Settings card, expanded.**
 > The full Settings card with every control labeled:
 >   • Language picker (🇯🇵 Japanese ⌄)
->   • Text SER picker (DeBERTa ⌄)
+>   • Text SER picker (WRIME ⌄)
 >   • Speech Boost toggle (mic mode only)
 >   • Speaker Sensitivity slider (👥 ─── value)
 >   • Custom Glossary navigation row (📕 Custom Glossary  N >)
@@ -481,7 +481,7 @@ results into external tooling.
 | Control               | When to change                                          |
 |-----------------------|---------------------------------------------------------|
 | Language              | Recording in a language other than Japanese.            |
-| Text SER              | Pick DeBERTa for fastest Japanese inference, or Apple FM for richer (slower) reasoning. Auto-falls back when one is unavailable. |
+| Text SER              | Pick WRIME for fastest Japanese inference, or Apple FM for richer (slower) reasoning. Auto-falls back when one is unavailable. |
 | Speech Boost          | Quiet or distant input. Affects ASR only.              |
 | Speaker Sensitivity   | Diarizer is splitting one person into many speakers (drag left), or merging two people into one (drag right). |
 | Custom Glossary       | Open to bias text-SER or seed ASR with your vocabulary. |

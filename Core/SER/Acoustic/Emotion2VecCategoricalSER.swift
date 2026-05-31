@@ -38,7 +38,7 @@ public actor Emotion2VecCategoricalSER: CategoricalAcousticSER, BackgroundAwareS
 
     public init(modelURL: URL, useCoreML: Bool = true) throws {
         self.modelURL = modelURL
-        // Same defensive fallback as `DeBERTaWRIME.init`: macOS-via-
+        // Same defensive fallback as `WRIMETextSER.init`: macOS-via-
         // Designed-for-iPad sometimes has the CoreML EP refuse a
         // model, and an init-time throw would lose the whole modality.
         // CPU is a slower-but-working alternative on those hosts.

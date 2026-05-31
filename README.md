@@ -26,7 +26,7 @@ open Xephon.xcodeproj
 
 ### Apple Intelligence (text SER on non-Japanese sessions)
 
-The Japanese path uses bundled DeBERTa-WRIME for text SER, so no system
+The Japanese path uses a bundled WRIME-tuned text SER (RoBERTa-base today; DeBERTa-v3-large is the long-term target), so no system
 service is required. **English (and any other non-Japanese) sessions
 route text SER through Apple FoundationModels**, which means
 [Apple Intelligence](https://www.apple.com/apple-intelligence/) must be
@@ -41,7 +41,7 @@ is unsupported, `SystemLanguageModel.default.isAvailable` returns
 `false`, every English utterance logs
 `text SER skipped: foundationModelsUnavailable`, and rows arrive without
 a Plutchik score or text-backend chip. Japanese rows are unaffected (they
-keep using DeBERTa).
+keep using the WRIME text SER).
 
 ## Repository status
 

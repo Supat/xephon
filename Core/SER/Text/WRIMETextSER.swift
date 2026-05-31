@@ -6,11 +6,12 @@ import SERRuntime
 import XephonLogging
 import XephonUtilities
 
-// On-device WRIME text-emotion classifier. Despite the type name (kept for
-// historical continuity), the bundled artifact today is a fine-tuned
-// Japanese RoBERTa-base regressor (MuneK/roberta-base-japanese-finetuned-wrime,
-// ~110M params) — Takenaka 2025's DeBERTa-v3-large is the long-term target
-// once a usable Core ML / ONNX export is published.
+// On-device WRIME text-emotion classifier. The bundled artifact today is a
+// fine-tuned Japanese RoBERTa-base regressor
+// (MuneK/roberta-base-japanese-finetuned-wrime, ~110M params); Takenaka
+// 2025's DeBERTa-v3-large is the long-term target once a usable Core ML /
+// ONNX export is published. The type name follows the dataset (WRIME) rather
+// than the transformer family so the swap doesn't require another rename.
 //
 // Caveat per CLAUDE.md: WRIME-trained classifiers under-detect strong affect
 // when the speaker uses 敬語 (politeness register).
@@ -31,7 +32,7 @@ import XephonUtilities
 //            attention_mask  [batch, seq]  Int64
 //   outputs: logits          [batch, 8]    Float32   regression intensities
 //                                                    in roughly [0, 3]
-public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
+public actor WRIMETextSER: TextSER, BackgroundAwareSER {
     private static let LABEL_ORDER: [PlutchikScore.Label] = [
         // Canonical WRIME-ver2 ordering for the 8-emotion intensity vector.
         .joy, .sadness, .anticipation, .surprise,
@@ -73,7 +74,7 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
                     resolvedCoreMLAllowed = true
                 } else {
                     AppLog.serText.warning(
-                        "DeBERTa CoreML EP init failed; retrying on CPU (likely macOS-via-Designed-for-iPad EP rejection)"
+                        "WRIME text SER CoreML EP init failed; retrying on CPU (likely macOS-via-Designed-for-iPad EP rejection)"
                     )
                     resolvedSession = try Self.makeSession(modelURL: modelURL, useCoreML: false)
                     resolvedCoreMLAllowed = false
@@ -110,7 +111,7 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
             self.maxTokens = maxTokens
             self.intensityScale = intensityScale
             AppLog.serText.info(
-                "DeBERTaWRIME ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
+                "WRIME text SER ONNX loaded: \(modelURL.lastPathComponent, privacy: .public) (CoreML EP: \(coreMLActive, privacy: .public))"
             )
         } catch {
             throw TextSERError.modelUnavailable(reason: String(describing: error))
@@ -132,11 +133,11 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
             session = try Self.makeSession(modelURL: modelURL, useCoreML: targetCoreML)
             usingCoreML = targetCoreML && ORTIsCoreMLExecutionProviderAvailable()
             AppLog.serText.info(
-                "DeBERTa session → \(self.usingCoreML ? "CoreML" : "CPU", privacy: .public) (inBackground=\(inBackground, privacy: .public))"
+                "WRIME text SER session → \(self.usingCoreML ? "CoreML" : "CPU", privacy: .public) (inBackground=\(inBackground, privacy: .public))"
             )
         } catch {
             AppLog.serText.warning(
-                "DeBERTa session swap failed (inBackground=\(inBackground, privacy: .public)): \(String(describing: error), privacy: .public); keeping current session"
+                "WRIME text SER session swap failed (inBackground=\(inBackground, privacy: .public)): \(String(describing: error), privacy: .public); keeping current session"
             )
         }
     }
@@ -191,7 +192,19 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
 
         // Tokenize, pad/truncate to fixed length (static shape ONNX graph).
         var ids = tokenizer.encode(text: trimmed, addSpecialTokens: true)
-        if ids.count > maxTokens { ids = Array(ids.prefix(maxTokens)) }
+        if ids.count > maxTokens {
+            // Truncate the middle, not the tail. `addSpecialTokens:
+            // true` placed [CLS] at index 0 and [SEP] at the last
+            // index. Trailing truncation (`prefix(maxTokens)`)
+            // would drop [SEP], leaving the WRIME-tuned head to see
+            // [CLS]…body with no end-of-sequence token — out-of-
+            // distribution for a classifier trained on full
+            // [CLS]…[SEP] framing. Keeping the original last token
+            // preserves [SEP] without needing the tokenizer to
+            // expose its id separately.
+            let sep = ids.last!
+            ids = Array(ids.prefix(maxTokens - 1)) + [sep]
+        }
         let realCount = ids.count
         let padId = tokenizer.unknownTokenId ?? 0
         while ids.count < maxTokens { ids.append(padId) }
@@ -225,7 +238,7 @@ public actor DeBERTaWRIME: TextSER, BackgroundAwareSER {
                 throw TextSERError.underlying(error)
             }
             AppLog.serText.warning(
-                "DeBERTa CoreML EP failed (\(String(describing: error), privacy: .public)); rebuilding session on CPU"
+                "WRIME text SER CoreML EP failed (\(String(describing: error), privacy: .public)); rebuilding session on CPU"
             )
             do {
                 session = try Self.makeSession(modelURL: modelURL, useCoreML: false)

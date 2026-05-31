@@ -49,7 +49,8 @@ AVAudioEngine (16 kHz mono Float32)
        audeering wav2vec2-large-robust-12-ft-emotion-msp-dim  → V/A/D
        emotion2vec_plus_large                                  → 9-class softmax
   → Text SER
-       fine-tuned Japanese DeBERTa-v3-large on WRIME           → 8-Plutchik
+       WRIME-tuned text classifier (RoBERTa-base today;        → 8-Plutchik
+         DeBERTa-v3-large is the long-term target)
        (optional) Apple Foundation Models 3B                   → structured V/A
   → Late fusion (weighted, ASR-confidence-aware)
   → Per-utterance JSON export (see `docs/output_schema.md`)
@@ -68,7 +69,7 @@ Core/
   Diarization/        FluidAudio adapter
   SER/
     Acoustic/         W2V2 + emotion2vec inference (Core ML / ONNX)
-    Text/             DeBERTa-WRIME inference, Foundation Models adapter
+    Text/             WRIME text SER inference (RoBERTa today, DeBERTa-v3-large target), Foundation Models adapter
   Fusion/             Late-fusion logic, calibration, V/A/D mapping
   Export/             JSON / CSV writers
 Models/               *.mlpackage and *.onnx (git-lfs, see below)

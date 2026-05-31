@@ -15,7 +15,7 @@ import SERText
 /// left pane shrinks to ~1/3 of screen width — they stack vertically
 /// and switch to an *inline* row layout (label on the leading edge,
 /// menu pinned to the trailing edge) so each row reads "Language →
-/// Japanese", "Text SER → DeBERTa" without truncation. `ViewThatFits`
+/// Japanese", "Text SER → WRIME" without truncation. `ViewThatFits`
 /// picks the first variant whose horizontal extent fits.
 ///
 /// Speech-boost (a toggle, distinct affordance) sits below on its
@@ -101,7 +101,7 @@ struct SettingsCard: View {
     }
 
     /// Session-language picker. Drives the ASR locale (Apple
-    /// SpeechTranscriber) and the text-SER gating (DeBERTa-WRIME is
+    /// SpeechTranscriber) and the text-SER gating (the WRIME-tuned text SER is
     /// Japanese-only and hides for non-Japanese sessions). Disabled
     /// while a session is active because the streaming transcriber
     /// is locked to its start-time locale — the user can still see
