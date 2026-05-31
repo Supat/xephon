@@ -24,35 +24,34 @@ public actor AppleFMSummarizer: SessionSummarizer {
 
     public init() {}
 
-    /// Cap on prompt utterances. Apple FM's 4096-token window is
-    /// shared by instructions, the schema for constrained
-    /// decoding, the utterance lines, AND the generated output —
-    /// the reserved response budget eats into "what we can pass
-    /// in" even though our prompt strictly looks smaller than
-    /// 4096 tokens. At 30 utterances we were tripping
-    /// `exceededContextWindowSize`; 15 leaves comfortable
+    /// Cap on prompt utterances for the fast path. Apple FM's
+    /// 4096-token window is shared by instructions, the schema
+    /// for constrained decoding, the utterance lines, AND the
+    /// generated output — the reserved response budget eats into
+    /// "what we can pass in" even though our prompt strictly
+    /// looks smaller than 4096 tokens. At 30 utterances we were
+    /// tripping `exceededContextWindowSize`; 15 leaves comfortable
     /// headroom for a ~500-token response and the schema. The
     /// trailing edge of a session has the most actionable arc
     /// anyway.
     private static let maxPromptUtterances = 15
+
+    /// Per-window utterance count for `.deep` mode. Sized smaller
+    /// than the Qwen/Llama 50 because Apple FM's 4k context is
+    /// much tighter — even with the simpler intermediate schema,
+    /// 15 lands at ~450 prompt tokens leaving plenty of room for
+    /// the per-window Generable response. The trade-off vs. Qwen
+    /// is more windows per session (a 600-utterance session
+    /// becomes 40 windows here vs. 12 on Qwen) but each window
+    /// runs much faster on FM's smaller model so the total wall
+    /// time is comparable for short-to-medium sessions.
+    private static let deepWindowSize = 15
 
     public func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         mode: SummarizeMode
     ) async throws -> SessionSummary {
-        // Apple FM's 4096-token context window makes a true
-        // map-reduce deep pass impractical here — at 15
-        // utterances per window the chunk count for a 600-
-        // utterance session approaches 40, each requiring a fresh
-        // `LanguageModelSession` plus its own
-        // GenerableSpeakerSummary schema overhead. We document
-        // the limitation in the UI ("Deep mode requires Qwen or
-        // Llama") and fall through to the trailing-window path so
-        // the toggle being on doesn't break Apple FM users.
-        if mode == .deep {
-            AppLog.app.info("AppleFMSummarizer: deep mode requested but not supported on this backend; using fast path")
-        }
         guard SystemLanguageModel.default.isAvailable else {
             throw SummarizerError.modelNotInstalled
         }
@@ -66,7 +65,28 @@ public actor AppleFMSummarizer: SessionSummarizer {
                 generatedAt: Date()
             )
         }
+        switch mode {
+        case .fast:
+            return try await summarizeFast(
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        case .deep:
+            return try await summarizeDeep(
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        }
+    }
 
+    /// Single-pass summary over the trailing
+    /// `maxPromptUtterances` window. Matches the historical
+    /// behavior — fastest wall time, drops the prefix of long
+    /// sessions.
+    private func summarizeFast(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) async throws -> SessionSummary {
         let promptUtterances: [UtteranceEstimate]
         let truncatedFrom: Int?
         if utterances.count > Self.maxPromptUtterances {
@@ -143,7 +163,8 @@ public actor AppleFMSummarizer: SessionSummarizer {
                 overallMood: g.overallMood,
                 perSpeaker: perSpeaker,
                 model: modelIdentifier,
-                generatedAt: Date()
+                generatedAt: Date(),
+                mode: .fast
             )
         } catch let error as SummarizerError {
             throw error
@@ -154,6 +175,230 @@ public actor AppleFMSummarizer: SessionSummarizer {
             throw SummarizerError.inferenceFailed(
                 reason: String(describing: error)
             )
+        }
+    }
+
+    /// Map-reduce path: chunk every utterance into windows of
+    /// `deepWindowSize`, summarize each window into a compact
+    /// intermediate via constrained decoding on
+    /// `GenerableWindowIntermediate`, then merge intermediates
+    /// into the final `SessionSummary`. Same `LanguageModelSession`
+    /// pattern as the fast path but iterated; wall time scales
+    /// linearly with `numChunks`.
+    private func summarizeDeep(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) async throws -> SessionSummary {
+        let chunks = stride(from: 0, to: utterances.count, by: Self.deepWindowSize).map {
+            offset -> [UtteranceEstimate] in
+            let end = min(offset + Self.deepWindowSize, utterances.count)
+            return Array(utterances[offset..<end])
+        }
+        AppLog.app.info(
+            "AppleFMSummarizer deep mode: \(utterances.count, privacy: .public) utterances → \(chunks.count, privacy: .public) windows"
+        )
+        // Short-circuit when the session fits in one window — no
+        // benefit to a merge pass over a single intermediate.
+        if chunks.count <= 1 {
+            return try await summarizeFast(
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        }
+
+        var intermediates: [DeepWindowIntermediate] = []
+        intermediates.reserveCapacity(chunks.count)
+        for (idx, chunk) in chunks.enumerated() {
+            if Task.isCancelled { throw CancellationError() }
+            let intermediate = try await runDeepWindow(
+                chunk: chunk,
+                speakerNames: speakerNames,
+                windowIndex: idx,
+                totalWindows: chunks.count
+            )
+            intermediates.append(intermediate)
+            AppLog.app.info(
+                "AppleFMSummarizer deep window \(idx + 1, privacy: .public)/\(chunks.count, privacy: .public) done (\(intermediate.perSpeaker.count, privacy: .public) speakers)"
+            )
+        }
+        if Task.isCancelled { throw CancellationError() }
+        return try await runDeepMerge(
+            intermediates: intermediates,
+            allUtterances: utterances,
+            speakerNames: speakerNames
+        )
+    }
+
+    /// Run one window pass — feed the chunk's utterances to a
+    /// fresh `LanguageModelSession` with the window instructions,
+    /// constrained to `GenerableWindowIntermediate`. On any error
+    /// (context-window overrun, refusal, etc.) we synthesize a
+    /// placeholder so one bad window doesn't sink the whole deep
+    /// pass.
+    private func runDeepWindow(
+        chunk: [UtteranceEstimate],
+        speakerNames: [String: String],
+        windowIndex: Int,
+        totalWindows: Int
+    ) async throws -> DeepWindowIntermediate {
+        let speakers = chunk.orderedSpeakerIDs
+        let utteranceLines = chunk
+            .map { Self.compactLine(for: $0, speakerNames: speakerNames) }
+            .joined(separator: "\n")
+        let timeStart = chunk.first?.start ?? 0
+        let timeEnd = chunk.last?.end ?? 0
+        let demographicsBlock = SpeakerDemographicsDigest
+            .build(from: chunk)
+            .renderForPrompt(speakerIDs: speakers, speakerNames: speakerNames)
+        let demographicsLine = demographicsBlock.isEmpty
+            ? ""
+            : "\n\n\(demographicsBlock)"
+        let languageDirective = SummarizerLocale.responseLanguageInstruction
+        let userMessage = """
+            \(languageDirective)
+
+            This is window \(windowIndex + 1) of \(totalWindows), covering utterances from t=\(String(format: "%.1f", timeStart))s to t=\(String(format: "%.1f", timeEnd))s.
+            Speakers in this window: \(speakers.joined(separator: ", ")).\(demographicsLine)
+
+            Utterances:
+            \(utteranceLines)
+            """
+        let session = LanguageModelSession(instructions: Self.windowInstructions)
+        do {
+            let response = try await session.respond(
+                to: userMessage,
+                generating: GenerableWindowIntermediate.self,
+                includeSchemaInPrompt: false
+            )
+            let g = response.content
+            return DeepWindowIntermediate(
+                windowIndex: windowIndex,
+                timeStart: timeStart,
+                timeEnd: timeEnd,
+                topicSnapshot: g.topicSnapshot,
+                moodSnapshot: g.moodSnapshot,
+                perSpeaker: g.perSpeaker.map { note in
+                    DeepWindowIntermediate.PerSpeakerNote(
+                        speakerID: note.speakerID,
+                        notes: note.notes,
+                        dominantMood: note.dominantMood
+                    )
+                }
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            AppLog.app.error(
+                "AppleFMSummarizer deep window \(windowIndex + 1, privacy: .public) failed: \(String(describing: error), privacy: .public); synthesizing placeholder"
+            )
+            return DeepWindowIntermediate(
+                windowIndex: windowIndex,
+                timeStart: timeStart,
+                timeEnd: timeEnd,
+                topicSnapshot: "(window summary unavailable)",
+                moodSnapshot: "(window summary unavailable)",
+                perSpeaker: speakers.map {
+                    DeepWindowIntermediate.PerSpeakerNote(
+                        speakerID: $0,
+                        notes: "(no notes captured for this window)",
+                        dominantMood: ""
+                    )
+                }
+            )
+        }
+    }
+
+    /// Run the final merge pass — flatten the window intermediates
+    /// into a compact text representation and feed them to a fresh
+    /// `LanguageModelSession` constrained to `GenerableSummary`.
+    /// Same output schema as the fast path so downstream consumers
+    /// don't care which mode produced the summary.
+    private func runDeepMerge(
+        intermediates: [DeepWindowIntermediate],
+        allUtterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) async throws -> SessionSummary {
+        let allSpeakers = allUtterances.orderedSpeakerIDs
+        let demographicsBlock = SpeakerDemographicsDigest
+            .build(from: allUtterances)
+            .renderForPrompt(speakerIDs: allSpeakers, speakerNames: speakerNames)
+        let demographicsLine = demographicsBlock.isEmpty
+            ? ""
+            : "\n\n\(demographicsBlock)"
+        let languageDirective = SummarizerLocale.responseLanguageInstruction
+        let intermediatesText = intermediates.map { window in
+            var lines: [String] = []
+            lines.append("Window \(window.windowIndex + 1) (t=\(String(format: "%.1f", window.timeStart))s–\(String(format: "%.1f", window.timeEnd))s):")
+            lines.append("  topic: \(window.topicSnapshot)")
+            lines.append("  mood: \(window.moodSnapshot)")
+            for note in window.perSpeaker {
+                lines.append("  \(note.speakerID) (\(note.dominantMood)): \(note.notes)")
+            }
+            return lines.joined(separator: "\n")
+        }.joined(separator: "\n\n")
+        let userMessage = """
+            \(languageDirective)
+
+            This conversation has \(allUtterances.count) utterances across \(intermediates.count) windows.
+            Speakers present: \(allSpeakers.joined(separator: ", ")).\(demographicsLine)
+
+            Window summaries (chronological):
+            \(intermediatesText)
+            """
+        AppLog.app.info(
+            "AppleFMSummarizer deep merge: \(intermediates.count, privacy: .public) windows"
+        )
+        let session = LanguageModelSession(instructions: Self.mergeInstructions)
+        do {
+            let response = try await session.respond(
+                to: userMessage,
+                generating: GenerableSummary.self,
+                includeSchemaInPrompt: false
+            )
+            let g = response.content
+            let perSpeaker = g.perSpeaker.map { entry in
+                SessionSummary.SpeakerSummary(
+                    speakerID: entry.speakerID,
+                    speakerName: speakerNames[entry.speakerID],
+                    summary: entry.summary,
+                    dominantMood: entry.dominantMood
+                )
+            }
+            return SessionSummary(
+                inferredSetting: g.setting,
+                topic: g.topic,
+                overallMood: g.overallMood,
+                perSpeaker: perSpeaker,
+                model: modelIdentifier,
+                generatedAt: Date(),
+                mode: .deep
+            )
+        } catch let error as SummarizerError {
+            throw error
+        } catch {
+            AppLog.app.error(
+                "AppleFMSummarizer deep merge failed: \(String(describing: error), privacy: .public)"
+            )
+            throw SummarizerError.inferenceFailed(
+                reason: String(describing: error)
+            )
+        }
+    }
+
+    /// Per-window intermediate. In-memory only — never persisted,
+    /// never crosses an actor boundary in user-facing API.
+    private struct DeepWindowIntermediate {
+        let windowIndex: Int
+        let timeStart: Double
+        let timeEnd: Double
+        let topicSnapshot: String
+        let moodSnapshot: String
+        let perSpeaker: [PerSpeakerNote]
+
+        struct PerSpeakerNote {
+            let speakerID: String
+            let notes: String
+            let dominantMood: String
         }
     }
 
@@ -175,6 +420,50 @@ public actor AppleFMSummarizer: SessionSummarizer {
         for female, "he/him" for male, "they/them" for child or when no gender
         is listed. This directive is moot for languages that drop subject
         pronouns (Japanese, Korean, etc.).
+        """
+
+    /// Instructions for the per-window pass in `.deep` mode. The
+    /// output is a compact intermediate (topic + mood snapshot +
+    /// per-speaker notes), NOT a full `SessionSummary` — the merge
+    /// pass synthesizes those into the final answer.
+    private static let windowInstructions = """
+        Summarize ONE WINDOW of a longer multi-speaker conversation.
+        Each input line has speaker, time, fused emotion label,
+        valence V (0..1, 0.5 = neutral), and arousal A (0..1, higher
+        = stronger affect), then the transcript.
+        Produce a compact intermediate — NOT a final summary, just a
+        snapshot the merge pass will combine with other windows.
+        Emit a short topic phrase for this window, a short mood
+        phrase for this window, and one per-speaker entry (1-2
+        sentences of notes + dominant-mood phrase) for every speaker
+        id in this window. Do not invent speakers.
+        """
+
+    /// Instructions for the merge pass in `.deep` mode. Same output
+    /// shape as the fast path's `instructions` (Generable schema is
+    /// the same — `GenerableSummary`) so downstream consumers
+    /// don't care which mode produced the summary, but the input is
+    /// per-window intermediate text rather than raw utterances.
+    private static let mergeInstructions = """
+        Produce the FINAL summary of a multi-speaker conversation by
+        synthesizing per-window intermediate summaries (provided in
+        chronological order). Each speaker should be treated as one
+        person across windows — do not split a speaker's arc into
+        per-window sections.
+        First, infer the conversation's setting / situation / register
+        in one short sentence (e.g. "casual phone catchup", "job
+        interview", "classroom discussion"). Stay general — do not
+        invent specific locations or institutions. Then produce a
+        one-sentence topic (factoring topic snapshots across all
+        windows), a one-paragraph overall mood (describing the arc,
+        not just the trailing window), and one per-speaker entry
+        (short paragraph + dominant-mood phrase) for every speaker
+        id in the input. Do not invent speakers.
+        When the speaker demographics block lists a gender, use it as
+        the canonical pronoun for that speaker throughout the summary
+        — "she/her" for female, "he/him" for male, "they/them" for
+        child or when no gender is listed. This directive is moot for
+        languages that drop subject pronouns (Japanese, Korean, etc.).
         """
 
     /// Tight per-utterance line tuned for the 4k context.
@@ -208,6 +497,26 @@ private struct GenerableSpeakerSummary {
     var summary: String
     @Guide(description: "Short phrase (1–6 words) capturing the speaker's dominant mood")
     var dominantMood: String
+}
+
+@Generable
+private struct GenerableWindowSpeakerNote {
+    @Guide(description: "Canonical speaker id (e.g. S01, S02) — copy from the input")
+    var speakerID: String
+    @Guide(description: "1-2 sentences on this speaker's contribution in this window")
+    var notes: String
+    @Guide(description: "Short phrase (1-6 words) for this speaker's dominant mood in this window")
+    var dominantMood: String
+}
+
+@Generable
+private struct GenerableWindowIntermediate {
+    @Guide(description: "Short phrase capturing this window's topic")
+    var topicSnapshot: String
+    @Guide(description: "Short phrase capturing this window's emotional tone")
+    var moodSnapshot: String
+    @Guide(description: "Per-speaker notes for this window, one entry per distinct speaker id in this window's input")
+    var perSpeaker: [GenerableWindowSpeakerNote]
 }
 
 @Generable

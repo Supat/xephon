@@ -67,6 +67,13 @@ public struct SessionSummary: Sendable, Hashable, Codable {
     public let model: String
     /// Wall-clock time the summary was generated. ISO-8601 in JSON.
     public let generatedAt: Date
+    /// Which summarization mode produced this summary —
+    /// `.fast` (single-pass trailing window) vs `.deep`
+    /// (map-reduce across every utterance). Optional so older
+    /// `.xph` bundles whose `SessionSummary` predates this field
+    /// decode cleanly; the sheet footer just omits the mode
+    /// parenthetical when nil.
+    public let mode: SummarizeMode?
 
     public init(
         inferredSetting: String? = nil,
@@ -74,7 +81,8 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         overallMood: String,
         perSpeaker: [SpeakerSummary],
         model: String,
-        generatedAt: Date
+        generatedAt: Date,
+        mode: SummarizeMode? = nil
     ) {
         self.inferredSetting = inferredSetting
         self.topic = topic
@@ -82,6 +90,7 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         self.perSpeaker = perSpeaker
         self.model = model
         self.generatedAt = generatedAt
+        self.mode = mode
     }
 
     /// Render the summary as a portable Markdown document. The
@@ -128,7 +137,11 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         }
         lines.append("")
         lines.append("---")
-        lines.append("Model: \(model)")
+        if let mode {
+            lines.append("Model: \(model) (\(mode.rawValue))")
+        } else {
+            lines.append("Model: \(model)")
+        }
         let stamp = generatedAt.formatted(date: .abbreviated, time: .shortened)
         lines.append("Generated: \(stamp)")
         return lines.joined(separator: "\n") + "\n"

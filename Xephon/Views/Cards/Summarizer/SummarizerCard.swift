@@ -83,16 +83,11 @@ struct SummarizerCard: View {
                 )
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .disabled(recorder.summarizerBackend == .appleFM)
             }
-            Text(
-                recorder.summarizerBackend == .appleFM
-                ? String(localized: "settings.summarizer.deepMode.unsupported")
-                : String(localized: "settings.summarizer.deepMode.caption")
-            )
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(String(localized: "settings.summarizer.deepMode.caption"))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -351,7 +351,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         return try Self.parse(
             raw: raw,
             speakerNames: speakerNames,
-            modelIdentifier: modelIdentifier
+            modelIdentifier: modelIdentifier,
+            mode: .fast
         )
     }
 
@@ -478,7 +479,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         return try Self.parse(
             raw: raw,
             speakerNames: speakerNames,
-            modelIdentifier: modelIdentifier
+            modelIdentifier: modelIdentifier,
+            mode: .deep
         )
     }
 
@@ -1112,7 +1114,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
     private static func parse(
         raw: String,
         speakerNames: [String: String],
-        modelIdentifier: String
+        modelIdentifier: String,
+        mode: SummarizeMode
     ) throws -> SessionSummary {
         // Belt-and-braces: even with `/no_think` in the prompt some
         // Qwen3 builds still emit an (often empty) `<think></think>`
@@ -1210,7 +1213,8 @@ public actor MLXQwenSummarizer: SessionSummarizer {
             overallMood: decoded.overallMood,
             perSpeaker: perSpeaker,
             model: modelIdentifier,
-            generatedAt: Date()
+            generatedAt: Date(),
+            mode: mode
         )
     }
 
