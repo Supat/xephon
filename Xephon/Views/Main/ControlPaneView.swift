@@ -84,14 +84,15 @@ struct ControlPaneView: View {
                 }
                 .padding()
 
-                // Card section split across five swipeable pages so
+                // Card section split across six swipeable pages so
                 // the left pane doesn't grow into a long single scroll
                 // (the cluster + heatmap especially want vertical room
                 // to render their data legibly). Page 1: session
                 // controls — Settings + Pipeline. Page 2: read-only
                 // affect output — Summary + Statistics. Page 3:
                 // diarizer cluster + speaker-behavior cards. Page 4:
-                // keywords. Page 5: summarizer configuration.
+                // user-defined sections. Page 5: keywords. Page 6:
+                // summarizer configuration.
                 //
                 // The selection binding exists only so swipes fire
                 // `onChange` and we can re-show the page indicator.
@@ -105,8 +106,9 @@ struct ControlPaneView: View {
                     settingsPage.tag(0)
                     summaryPage.tag(1)
                     speakerAnalysisPage.tag(2)
-                    keywordsPage.tag(3)
-                    summarizerPage.tag(4)
+                    sectionsPage.tag(3)
+                    keywordsPage.tag(4)
+                    summarizerPage.tag(5)
                 }
                 .tabViewStyle(.page(indexDisplayMode: dotsVisible ? .always : .never))
                 .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -296,6 +298,23 @@ struct ControlPaneView: View {
                 )
                 SynchronyArcCard(
                     utterances: recorder.utterances
+                )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 32)
+        }
+        .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
+    }
+
+    @ViewBuilder
+    private var sectionsPage: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                SectionsCard(
+                    recorder: recorder,
+                    store: recorder.sections
                 )
             }
             .frame(maxWidth: .infinity)

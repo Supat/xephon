@@ -99,6 +99,12 @@ final class RecordingController {
     /// directly. No pipeline wiring today; the card on the
     /// Keywords page is the only surface that touches it.
     let keywords: KeywordStore = KeywordStore()
+    /// User-defined `ConversationSection` list for the current
+    /// session — named ranges of utterances the user has
+    /// bookmarked. In-memory only (sections reference per-
+    /// session utterance IDs); the Sections page card on the
+    /// left pane is the only surface that touches it.
+    let sections: SectionStore = SectionStore()
     /// Active session language. Drives the ASR locale (Apple
     /// SpeechTranscriber + offline transcriber), the FoundationModels
     /// prompt opener, and the DeBERTa-WRIME availability gate
@@ -1015,6 +1021,13 @@ final class RecordingController {
         // issues — both pointed at utterances that are gone.
         summarizer.clearLastSummary()
         summarizer.clearIssues()
+        // Same logic for user-defined sections: their
+        // start/end references the prior session's utterance
+        // UUIDs, which are about to be dropped. Clear here
+        // rather than rely on `pruneDangling` because EVERY
+        // section is dangling after a session reset — a
+        // single bulk clear is cheaper and more obvious.
+        sections.clear()
         sessionStartedAt = Date()
         lastASRFinalizeLatency = nil
         lastChunkSpeakerCount = 0

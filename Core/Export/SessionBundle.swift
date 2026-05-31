@@ -145,6 +145,15 @@ public struct SessionDocument: Codable, Sendable {
     /// diarizer hadn't yet ingested a matching observation).
     public let utteranceObservationSegmentIDs: [UUID: UUID]?
 
+    /// Opaque blob carrying the user-defined `ConversationSection`
+    /// list at save time (JSON-encoded `[ConversationSection]`
+    /// from the app target). Stored as `Data?` rather than typed
+    /// so this Export module doesn't take a dependency on the app
+    /// target — same pattern as `sessionSummary` /
+    /// `transcriptionIssues`. Optional for v1 compat; nil round-
+    /// trips for sessions that never defined any sections.
+    public let sections: Data?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -171,7 +180,8 @@ public struct SessionDocument: Codable, Sendable {
         transcriptionIssues: Data? = nil,
         transcriptionIssueTranscriptSnapshots: [UUID: String]? = nil,
         utteranceEmbeddings: [UUID: [Float]]? = nil,
-        utteranceObservationSegmentIDs: [UUID: UUID]? = nil
+        utteranceObservationSegmentIDs: [UUID: UUID]? = nil,
+        sections: Data? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -189,6 +199,7 @@ public struct SessionDocument: Codable, Sendable {
         self.transcriptionIssueTranscriptSnapshots = transcriptionIssueTranscriptSnapshots
         self.utteranceEmbeddings = utteranceEmbeddings
         self.utteranceObservationSegmentIDs = utteranceObservationSegmentIDs
+        self.sections = sections
     }
 }
 
