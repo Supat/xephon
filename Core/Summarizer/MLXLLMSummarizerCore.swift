@@ -291,7 +291,8 @@ internal enum MLXLLMSummarizerCore {
             raw: raw,
             speakerNames: speakerNames,
             modelIdentifier: modelIdentifier,
-            mode: mode
+            mode: mode,
+            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs
         )
     }
 
@@ -414,7 +415,8 @@ internal enum MLXLLMSummarizerCore {
             raw: raw,
             speakerNames: speakerNames,
             modelIdentifier: modelIdentifier,
-            mode: .deep
+            mode: .deep,
+            expectedSpeakerIDs: allUtterances.orderedSpeakerIDs
         )
     }
 
@@ -529,7 +531,8 @@ internal enum MLXLLMSummarizerCore {
         raw: String,
         speakerNames: [String: String],
         modelIdentifier: String,
-        mode: SummarizeMode
+        mode: SummarizeMode,
+        expectedSpeakerIDs: [String]
     ) throws -> SessionSummary {
         let dethought = stripThinkBlocks(raw)
         let stripped = stripCodeFence(dethought)
@@ -591,12 +594,28 @@ internal enum MLXLLMSummarizerCore {
                 dominantMood: entry.dominantMood
             )
         }
+        // Post-hoc fill: Llama-Swallow (and occasionally Qwen
+        // on edge cases) silently drops marginal-contribution
+        // speakers from `perSpeaker`. Synthesize a placeholder
+        // entry for any speaker in the input that's missing
+        // from the output, so downstream UI sees a roster
+        // that matches what it sent in.
+        let filled = SessionSummary.fillMissingPerSpeaker(
+            perSpeaker,
+            expectedSpeakerIDs: expectedSpeakerIDs,
+            speakerNames: speakerNames
+        )
+        if filled.count > perSpeaker.count {
+            AppLog.app.info(
+                "MLX summarizer filled \(filled.count - perSpeaker.count, privacy: .public) missing per-speaker entries (\(perSpeaker.count, privacy: .public) emitted, \(expectedSpeakerIDs.count, privacy: .public) expected)"
+            )
+        }
         return SessionSummary(
             inferredSetting: decoded.setting?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             topic: decoded.topic,
             overallMood: decoded.overallMood,
-            perSpeaker: perSpeaker,
+            perSpeaker: filled,
             model: modelIdentifier,
             generatedAt: Date(),
             mode: mode

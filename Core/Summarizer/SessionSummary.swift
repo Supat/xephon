@@ -93,6 +93,38 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         self.mode = mode
     }
 
+    /// Append placeholder entries for any speaker in
+    /// `expectedSpeakerIDs` that's missing from `perSpeaker`,
+    /// preserving the input order for the appended entries.
+    /// Used right after parsing the LLM output so the
+    /// `SessionSummary.perSpeaker` roster always matches the
+    /// input speaker set even when the model dropped someone
+    /// (Llama-Swallow in particular is loose about the "one
+    /// entry per speaker" schema; this guarantees completeness
+    /// at the data layer so callers don't have to defend).
+    /// Returns the input unchanged when no speakers are
+    /// missing. Logs a one-line warning when fills happen so
+    /// model-side schema slippage is visible in the field.
+    public static func fillMissingPerSpeaker(
+        _ perSpeaker: [SpeakerSummary],
+        expectedSpeakerIDs: [String],
+        speakerNames: [String: String]
+    ) -> [SpeakerSummary] {
+        let present = Set(perSpeaker.map { $0.speakerID })
+        let missing = expectedSpeakerIDs.filter { !present.contains($0) }
+        guard !missing.isEmpty else { return perSpeaker }
+        var filled = perSpeaker
+        for speakerID in missing {
+            filled.append(SpeakerSummary(
+                speakerID: speakerID,
+                speakerName: speakerNames[speakerID],
+                summary: SummarizerLocale.missingSpeakerSummary,
+                dominantMood: SummarizerLocale.missingSpeakerMood
+            ))
+        }
+        return filled
+    }
+
     /// Render the summary as a portable Markdown document. The
     /// section headers mirror the in-app sheet so a user reading
     /// the export later can map paragraphs back to the UI without

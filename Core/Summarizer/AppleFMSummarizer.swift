@@ -204,11 +204,26 @@ public actor AppleFMSummarizer: SessionSummarizer {
                     dominantMood: entry.dominantMood
                 )
             }
+            // Post-hoc fill — Apple FM is more disciplined than
+            // Llama-Swallow about the per-speaker schema but
+            // can still drop a one-utterance speaker on edge
+            // cases; mirror the MLX core's safety net so the
+            // roster always matches the input.
+            let filled = SessionSummary.fillMissingPerSpeaker(
+                perSpeaker,
+                expectedSpeakerIDs: speakers,
+                speakerNames: speakerNames
+            )
+            if filled.count > perSpeaker.count {
+                AppLog.app.info(
+                    "AppleFMSummarizer filled \(filled.count - perSpeaker.count, privacy: .public) missing per-speaker entries (\(perSpeaker.count, privacy: .public) emitted, \(speakers.count, privacy: .public) expected)"
+                )
+            }
             return SessionSummary(
                 inferredSetting: g.setting,
                 topic: g.topic,
                 overallMood: g.overallMood,
-                perSpeaker: perSpeaker,
+                perSpeaker: filled,
                 model: modelIdentifier,
                 generatedAt: Date(),
                 mode: mode
@@ -417,11 +432,21 @@ public actor AppleFMSummarizer: SessionSummarizer {
                     dominantMood: entry.dominantMood
                 )
             }
+            let filled = SessionSummary.fillMissingPerSpeaker(
+                perSpeaker,
+                expectedSpeakerIDs: allSpeakers,
+                speakerNames: speakerNames
+            )
+            if filled.count > perSpeaker.count {
+                AppLog.app.info(
+                    "AppleFMSummarizer deep merge filled \(filled.count - perSpeaker.count, privacy: .public) missing per-speaker entries (\(perSpeaker.count, privacy: .public) emitted, \(allSpeakers.count, privacy: .public) expected)"
+                )
+            }
             return SessionSummary(
                 inferredSetting: g.setting,
                 topic: g.topic,
                 overallMood: g.overallMood,
-                perSpeaker: perSpeaker,
+                perSpeaker: filled,
                 model: modelIdentifier,
                 generatedAt: Date(),
                 mode: .deep
