@@ -1149,6 +1149,26 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         if let strict, let data = strict.data(using: .utf8),
            let ok = try? JSONDecoder().decode(Wire.self, from: data) {
             decoded = ok
+        } else if let strict,
+                  let data = strict.data(using: .utf8),
+                  let normalized = Self.normalizePerSpeakerShape(in: data),
+                  let ok = try? JSONDecoder().decode(Wire.self, from: normalized) {
+            // Shape salvage: the model emitted `perSpeaker` as an
+            // OBJECT keyed by speakerID instead of an ARRAY of
+            // {speakerID, summary, dominantMood}. Common LLM JSON-
+            // schema variance — Llama-Swallow in particular has
+            // been observed emitting
+            //   "perSpeaker": { "S01": { "summary": "...",
+            //                           "dominantMood": "..." } }
+            // when asked for an array. `normalizePerSpeakerShape`
+            // rewrites the dict to an array form, injecting each
+            // dict key as the entry's `speakerID`. Qwen always
+            // emits the array form so this branch is dead code for
+            // it — keeps the strict-path behavior unchanged.
+            AppLog.app.info(
+                "MLXQwenSummarizer normalized perSpeaker dict → array (\(normalized.count, privacy: .public) bytes)"
+            )
+            decoded = ok
         } else {
             // Truncated output: walk the `perSpeaker` array forward
             // from its `[`, find the last balanced entry object, and
@@ -1271,6 +1291,45 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         }
         truncated.append("]}")
         return truncated
+    }
+
+    /// Rewrite a JSON blob where `perSpeaker` is a dict keyed by
+    /// speakerID into one where `perSpeaker` is an array of
+    /// `{speakerID, summary, dominantMood}` — the canonical shape
+    /// the `Wire` struct decodes. Returns nil when `perSpeaker`
+    /// is already an array (or absent), so the caller's strict
+    /// path stays in charge of every well-shaped output.
+    ///
+    /// Handles two sub-variants of the dict shape:
+    ///   1. Entries omit `speakerID` (the dict key is the only
+    ///      reference) — injected from the key.
+    ///   2. Entries already include `speakerID` — kept as-is.
+    ///
+    /// The conversion is order-preserving only insofar as
+    /// `JSONSerialization` preserves dictionary order, which
+    /// on Apple platforms it does for the top-level object —
+    /// but the salvage path is for malformed output, not a
+    /// stability guarantee. Callers that need ordering should
+    /// rely on the input speaker list.
+    private static func normalizePerSpeakerShape(in data: Data) -> Data? {
+        guard var obj = try? JSONSerialization
+            .jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        guard let dict = obj["perSpeaker"] as? [String: Any] else {
+            return nil
+        }
+        var arr: [[String: Any]] = []
+        arr.reserveCapacity(dict.count)
+        for (speakerID, value) in dict {
+            guard var entry = value as? [String: Any] else { continue }
+            if entry["speakerID"] == nil {
+                entry["speakerID"] = speakerID
+            }
+            arr.append(entry)
+        }
+        obj["perSpeaker"] = arr
+        return try? JSONSerialization.data(withJSONObject: obj)
     }
 
     /// Remove any `<think>...</think>` reasoning blocks Qwen3 emits
