@@ -36,122 +36,132 @@ struct ControlPaneView: View {
     private static let dotsHideDelayNanos: UInt64 = 1_500_000_000
 
     var body: some View {
-        // Two-region layout: a fixed header that pins the controls at
-        // the top (input picker, record/open, level meter, status,
-        // error) plus a card region below that holds the swipeable
-        // TabView. The header never scrolls off — the user can always
-        // reach Start/Stop even with every card expanded.
+        // Two-region layout: a fixed header that pins the controls
+        // at the top (input picker, record/open, level meter,
+        // status, error) plus a card region below that holds the
+        // swipeable TabView. The header never scrolls off — the
+        // user can always reach Start/Stop even with every card
+        // expanded.
         //
         // The two regions live in separate VStacks so the outer
         // VStack has a clear intrinsic-vs-flex split: header is
         // intrinsic-sized, TabView region is `.frame(maxHeight:
-        // .infinity)` and absorbs the slack. We tried a single
-        // VStack with `.frame(maxHeight: .infinity, alignment:
-        // .top)` and `.frame(maxHeight: .infinity)` on the TabView
-        // — that produced a TabView whose *containing frame* was
-        // infinity-tall but whose actual rendering stayed at its
-        // intrinsic page-content height, leaving the page-indicator
-        // dots floating mid-screen with transparent space below.
-        // The split-VStack pattern forces the TabView to actually
-        // be tall (its parent only has one child and it's flex).
-        VStack(spacing: 0) {
-            VStack(spacing: 16) {
-                inputPicker
+        // .infinity)` and absorbs the slack. The outer VStack is
+        // re-identified via `.id(geometry.size.height)` so a
+        // rotation (portrait → landscape, or any size-class
+        // change that shifts the column height) forces SwiftUI to
+        // rebuild the TabView's internal UIPageViewController —
+        // without this, the page content kept its pre-rotation
+        // content offset and overlapped the header. `safeAreaInset`
+        // was tried as an alternative but TabView's `.page` style
+        // doesn't respect SwiftUI safe-area insets (the page
+        // controller draws through the inset region), which made
+        // the overlap permanent rather than rotation-conditional.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                VStack(spacing: 16) {
+                    inputPicker
 
-                HStack(spacing: 12) {
-                    recordButton
-                    openFileButton
-                }
-
-                if recorder.isRecording {
-                    LevelMeterView(channelLevels: recorder.inputChannelLevels)
-                        .frame(maxWidth: 280)
-                }
-
-                statusLine
-
-                if let error = recorder.errorMessage {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal)
-                        .multilineTextAlignment(.center)
-                }
-            }
-            .padding()
-
-            // Card section split across five swipeable pages so
-            // the left pane doesn't grow into a long single scroll
-            // (the cluster + heatmap especially want vertical room
-            // to render their data legibly). Page 1: session
-            // controls — Settings + Pipeline. Page 2: read-only
-            // affect output — Summary + Statistics. Page 3:
-            // diarizer cluster + speaker-behavior cards. Page 4:
-            // keywords. Page 5: summarizer configuration.
-            //
-            // The selection binding exists only so swipes fire
-            // `onChange` and we can re-show the page indicator.
-            // The standard `.page(indexDisplayMode: .automatic)`
-            // mode only hides the dots' capsule background, not
-            // the dots themselves, so we flip the index display
-            // mode between `.always` and `.never` ourselves —
-            // still the system indicator, just with timed
-            // visibility.
-            TabView(selection: $selectedTab) {
-                settingsPage.tag(0)
-                summaryPage.tag(1)
-                speakerAnalysisPage.tag(2)
-                keywordsPage.tag(3)
-                summarizerPage.tag(4)
-            }
-            .tabViewStyle(.page(indexDisplayMode: dotsVisible ? .always : .never))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Let the TabView visually extend through the home-
-            // indicator safe-area zone so the column reaches the
-            // screen's bottom edge instead of stopping at the
-            // safe-area top. The system page indicator positions
-            // itself with the safe-area inset internally so it
-            // doesn't disappear under the home indicator.
-            .ignoresSafeArea(.container, edges: .bottom)
-            // Swallow taps over the indicator-capsule area. The
-            // system `UIPageControl` advances ±1 page on tap
-            // depending on which half of the bar got touched —
-            // since we're not exposing per-dot jump and tapping
-            // an indicator dot mid-fade reads as random, absorb
-            // the tap before it reaches the page control.
-            // `onTapGesture` only consumes taps, so swipes still
-            // pass through to the TabView's pan gesture.
-            .overlay(alignment: .bottom) {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .frame(maxWidth: 240, maxHeight: 36)
-                    .padding(.bottom, 16)
-                    .onTapGesture { }
-                    .allowsHitTesting(dotsVisible)
-            }
-            .onChange(of: selectedTab) { _, _ in
-                showDotsAndScheduleHide()
-            }
-            // While idle (no recording in flight) the controller's
-            // continuous-diarize tick isn't refreshing the cluster
-            // snapshot — pull at 1 Hz so the heatmap + scatter stay
-            // live after a file analysis completes or a session is
-            // loaded. Cheap (just hands back resident `[Float]`
-            // arrays), no-op when no pipeline is up. Lives on the
-            // TabView (not the cluster page) so swiping to that
-            // page shows the latest snapshot immediately rather
-            // than blinking through a stale state for one second.
-            .task {
-                while !Task.isCancelled {
-                    if !recorder.isRecording {
-                        await recorder.refreshClusterSnapshot()
+                    HStack(spacing: 12) {
+                        recordButton
+                        openFileButton
                     }
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+                    if recorder.isRecording {
+                        LevelMeterView(channelLevels: recorder.inputChannelLevels)
+                            .frame(maxWidth: 280)
+                    }
+
+                    statusLine
+
+                    if let error = recorder.errorMessage {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding()
+
+                // Card section split across five swipeable pages so
+                // the left pane doesn't grow into a long single scroll
+                // (the cluster + heatmap especially want vertical room
+                // to render their data legibly). Page 1: session
+                // controls — Settings + Pipeline. Page 2: read-only
+                // affect output — Summary + Statistics. Page 3:
+                // diarizer cluster + speaker-behavior cards. Page 4:
+                // keywords. Page 5: summarizer configuration.
+                //
+                // The selection binding exists only so swipes fire
+                // `onChange` and we can re-show the page indicator.
+                // The standard `.page(indexDisplayMode: .automatic)`
+                // mode only hides the dots' capsule background, not
+                // the dots themselves, so we flip the index display
+                // mode between `.always` and `.never` ourselves —
+                // still the system indicator, just with timed
+                // visibility.
+                TabView(selection: $selectedTab) {
+                    settingsPage.tag(0)
+                    summaryPage.tag(1)
+                    speakerAnalysisPage.tag(2)
+                    keywordsPage.tag(3)
+                    summarizerPage.tag(4)
+                }
+                .tabViewStyle(.page(indexDisplayMode: dotsVisible ? .always : .never))
+                .indexViewStyle(.page(backgroundDisplayMode: .always))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Let the TabView visually extend through the home-
+                // indicator safe-area zone so the column reaches the
+                // screen's bottom edge instead of stopping at the
+                // safe-area top. The system page indicator positions
+                // itself with the safe-area inset internally so it
+                // doesn't disappear under the home indicator.
+                .ignoresSafeArea(.container, edges: .bottom)
+                // Swallow taps over the indicator-capsule area. The
+                // system `UIPageControl` advances ±1 page on tap
+                // depending on which half of the bar got touched —
+                // since we're not exposing per-dot jump and tapping
+                // an indicator dot mid-fade reads as random, absorb
+                // the tap before it reaches the page control.
+                // `onTapGesture` only consumes taps, so swipes still
+                // pass through to the TabView's pan gesture.
+                .overlay(alignment: .bottom) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(maxWidth: 240, maxHeight: 36)
+                        .padding(.bottom, 16)
+                        .onTapGesture { }
+                        .allowsHitTesting(dotsVisible)
+                }
+                .onChange(of: selectedTab) { _, _ in
+                    showDotsAndScheduleHide()
+                }
+                // While idle (no recording in flight) the controller's
+                // continuous-diarize tick isn't refreshing the cluster
+                // snapshot — pull at 1 Hz so the heatmap + scatter stay
+                // live after a file analysis completes or a session is
+                // loaded. Cheap (just hands back resident `[Float]`
+                // arrays), no-op when no pipeline is up. Lives on the
+                // TabView (not the cluster page) so swiping to that
+                // page shows the latest snapshot immediately rather
+                // than blinking through a stale state for one second.
+                .task {
+                    while !Task.isCancelled {
+                        if !recorder.isRecording {
+                            await recorder.refreshClusterSnapshot()
+                        }
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Force SwiftUI to rebuild the page-controller-backed
+            // TabView on column-height changes — without this the
+            // post-rotation page content kept its pre-rotation
+            // content offset and overlapped the header.
+            .id(Int(geo.size.height.rounded()))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Page-indicator auto-hide
