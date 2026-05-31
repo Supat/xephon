@@ -41,6 +41,20 @@ struct ControlPaneView: View {
     /// dots up until they pause.
     @State private var dotsHideTask: Task<Void, Never>? = nil
 
+    /// Measured height of the top header VStack (input picker,
+    /// record/open, optional level meter, status, optional
+    /// error). Pushed up from a `GeometryReader` in the
+    /// header's background; consumed by the outer `.id(...)`
+    /// so the page-controller-backed TabView is forced to
+    /// rebuild when the header expands or contracts (e.g.
+    /// LevelMeterView appearing on recording start, or an
+    /// error banner showing up). Without this, the
+    /// UIPageViewController inside SwiftUI's `.page`-style
+    /// TabView keeps its prior internal layout and the page
+    /// ScrollView's top edge slides under the expanded
+    /// header, hiding the first few px of card content.
+    @State private var headerHeight: CGFloat = 0
+
     private static let dotsHideDelayNanos: UInt64 = 1_500_000_000
 
     var body: some View {
@@ -91,6 +105,22 @@ struct ControlPaneView: View {
                     }
                 }
                 .padding()
+                // Track the header's measured height directly via
+                // `.onGeometryChange` so the outer `.id(...)` can
+                // rebuild the page-controller-backed TabView when
+                // the header grows or shrinks (level meter
+                // appearing, error banner showing, status line
+                // wrapping, level meter row count changing from
+                // mono to stereo mid-recording). `.onGeometryChange`
+                // (iOS 17+) fires on every layout pass for this
+                // view, more reliably than a
+                // `.background(GeometryReader)` + `PreferenceKey`
+                // chain that can miss grandchild size changes.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { newHeight in
+                    headerHeight = newHeight
+                }
 
                 // Card section split across six swipeable pages so
                 // the left pane doesn't grow into a long single scroll
@@ -170,7 +200,32 @@ struct ControlPaneView: View {
             // TabView on column-height changes — without this the
             // post-rotation page content kept its pre-rotation
             // content offset and overlapped the header.
-            .id(Int(geo.size.height.rounded()))
+            //
+            // The id also folds in `headerHeight` and the
+            // explicit recording-state / error-presence /
+            // channel-count flags so any header expansion
+            // triggers the same rebuild. The measured height
+            // alone can miss transitions that don't reach
+            // `.onGeometryChange` in time (e.g. the level
+            // meter's row count flipping from 1 to 2 the moment
+            // capture reports stereo). Including the underlying
+            // state directly is a belt-and-braces signal: even
+            // if the geometry callback hasn't fired yet, the
+            // state flip forces the rebuild. SwiftUI's flex
+            // layout shrinks the TabView's frame correctly, but
+            // UIPageViewController doesn't reliably propagate
+            // that to the page content — the inner ScrollView
+            // keeps its prior layout and its top edge ends up
+            // obscured by the now-larger header. Rebuilding
+            // gives the page controller a fresh frame to lay
+            // out against.
+            .id(
+                "\(Int(geo.size.height.rounded()))"
+                + "-\(Int(headerHeight.rounded()))"
+                + "-\(recorder.isRecording ? 1 : 0)"
+                + "-\(recorder.inputChannelLevels.count)"
+                + "-\(recorder.errorMessage != nil ? 1 : 0)"
+            )
         }
     }
 
@@ -585,3 +640,4 @@ struct ControlPaneView: View {
         Set(recorder.utterances.map(\.speakerID))
     }
 }
+
