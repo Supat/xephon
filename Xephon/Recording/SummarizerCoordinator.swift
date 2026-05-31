@@ -263,24 +263,15 @@ final class SummarizerCoordinator {
     /// the user has their result.
     func summarize() async -> SessionSummary? {
         guard !inferenceRunning else { return nil }
+        guard !reviewRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
-        // Set the gate eagerly (before pipeline release) so a
-        // concurrent `summarizeSection` tap can't slip through
-        // the `!inferenceRunning` check while the pipeline-
-        // release await is yielding.
-        inferenceRunning = true
-        inferenceStart = Date()
-        defer {
-            inferenceRunning = false
-            inferenceStart = nil
+        return await withInferenceGate {
+            await runSummarize(
+                utterances: parent.utterances,
+                logLabelPrefix: "summarize",
+                writeback: { summary in self.lastSessionSummary = summary }
+            )
         }
-        return await runSummarize(
-            utterances: parent.utterances,
-            logLabelPrefix: "summarize",
-            writeback: { [weak self] summary in
-                self?.lastSessionSummary = summary
-            }
-        )
     }
 
     /// Run the summarizer over a single user-defined section's
@@ -296,6 +287,7 @@ final class SummarizerCoordinator {
     /// section's `Codable` payload.
     func summarizeSection(id: UUID) async -> SessionSummary? {
         guard !inferenceRunning else { return nil }
+        guard !reviewRunning else { return nil }
         guard let section = parent.sections.section(id: id),
               section.isComplete,
               let startID = section.startUtteranceID,
@@ -306,25 +298,41 @@ final class SummarizerCoordinator {
         else { return nil }
         let slice = Array(parent.utterances[startIdx...endIdx])
         guard !slice.isEmpty else { return nil }
-        // Same eager-gate rationale as `summarize()` — close
-        // the window where a second tap (on this row or on
-        // another) could pass the `!inferenceRunning` check
-        // while pipeline release is yielding.
+        return await withInferenceGate(sectionID: id) {
+            await runSummarize(
+                utterances: slice,
+                logLabelPrefix: "summarize section",
+                writeback: { summary in
+                    self.parent.sections.setSummary(forSectionID: id, summary: summary)
+                }
+            )
+        }
+    }
+
+    /// Set the inference gate eagerly (before any await inside
+    /// `body` yields), run the body, and clear the gate on
+    /// return. Bundles `inferenceRunning` + `inferenceStart` +
+    /// `summarizingSectionID` so all three flip together; the
+    /// summarizer card's "in flight" UI then can't observe one
+    /// without the others. `sectionID` non-nil marks a per-
+    /// section run so the Sections card knows which row owns
+    /// the active pass. Closing the gate eagerly closes the
+    /// race window where a second tap could pass the
+    /// `!inferenceRunning` precondition during the pipeline-
+    /// release yield.
+    private func withInferenceGate(
+        sectionID: UUID? = nil,
+        body: () async -> SessionSummary?
+    ) async -> SessionSummary? {
         inferenceRunning = true
         inferenceStart = Date()
-        summarizingSectionID = id
+        summarizingSectionID = sectionID
         defer {
             inferenceRunning = false
             inferenceStart = nil
             summarizingSectionID = nil
         }
-        return await runSummarize(
-            utterances: slice,
-            logLabelPrefix: "summarize section",
-            writeback: { [weak self] summary in
-                self?.parent.sections.setSummary(forSectionID: id, summary: summary)
-            }
-        )
+        return await body()
     }
 
     /// Shared dispatch entry for both overall-session and per-
@@ -339,7 +347,7 @@ final class SummarizerCoordinator {
     private func runSummarize(
         utterances: [UtteranceEstimate],
         logLabelPrefix: String,
-        writeback: @MainActor @escaping (SessionSummary) -> Void
+        writeback: @MainActor (SessionSummary) -> Void
     ) async -> SessionSummary? {
         // Both backends benefit from releasing the analysis pipeline
         // before invoking — even Apple FM, light on RAM in our
@@ -488,13 +496,33 @@ final class SummarizerCoordinator {
         guard !reviewRunning else { return nil }
         guard !inferenceRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
-        logAvailableMemory(label: "review start (before pipeline release)")
-        await releasePipelineForSummarization()
-        logAvailableMemory(label: "review start (after pipeline release)")
-        switch backend {
-        case .appleFM:              return await reviewWithAppleFM()
-        case .qwen, .llamaSwallow:  return await reviewWithMLX()
+        return await withReviewGate {
+            logAvailableMemory(label: "review start (before pipeline release)")
+            await releasePipelineForSummarization()
+            logAvailableMemory(label: "review start (after pipeline release)")
+            switch backend {
+            case .appleFM:              return await reviewWithAppleFM()
+            case .qwen, .llamaSwallow:  return await reviewWithMLX()
+            }
         }
+    }
+
+    /// Reviewer-side counterpart of `withInferenceGate`. Sets
+    /// `reviewRunning` + `reviewStart` eagerly so a second
+    /// review tap (or, with the summarize check we ALSO want
+    /// in place, a summarize tap) can't slip past the
+    /// precondition during the pipeline-release yield, then
+    /// clears them on return.
+    private func withReviewGate(
+        body: () async -> [TranscriptionIssue]?
+    ) async -> [TranscriptionIssue]? {
+        reviewRunning = true
+        reviewStart = Date()
+        defer {
+            reviewRunning = false
+            reviewStart = nil
+        }
+        return await body()
     }
 
     private func reviewWithAppleFM() async -> [TranscriptionIssue]? {
@@ -504,13 +532,12 @@ final class SummarizerCoordinator {
             return nil
         }
         let backend = AppleFMTranscriptionReviewer()
-        reviewRunning = true
-        reviewStart = Date()
-        defer {
-            reviewRunning = false
-            reviewStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
+        // Review gating (`reviewRunning` / `reviewStart`) is
+        // owned by `review()` via `withReviewGate` so it can't
+        // race with itself during the pipeline-release yield.
+        // This method only schedules the post-run pipeline
+        // rewarm.
+        defer { scheduleUnloadAndPipelineRewarm() }
         logAvailableMemory(label: "review Apple FM (before respond)")
         do {
             let issues = try await backend.review(
@@ -576,13 +603,9 @@ final class SummarizerCoordinator {
             }
             reviewerActor = actor
         }
-        reviewRunning = true
-        reviewStart = Date()
-        defer {
-            reviewRunning = false
-            reviewStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
+        // Review gating owned by `review()` via `withReviewGate`
+        // (see comment in `reviewWithAppleFM`).
+        defer { scheduleUnloadAndPipelineRewarm() }
         do {
             let issues = try await actor.review(
                 utterances: parent.utterances,

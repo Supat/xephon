@@ -345,7 +345,7 @@ private struct SectionsCardRow: View {
                     Image(systemName: completeWithFocusGlyph)
                         .font(.caption)
                         .foregroundStyle(.tint)
-                        .opacity(canCompleteWithFocus ? 1.0 : 0.35)
+                        .opacity(canCompleteWithFocus ? 1.0 : 0.15)
                 }
                 .buttonStyle(.borderless)
                 .disabled(!canCompleteWithFocus)
