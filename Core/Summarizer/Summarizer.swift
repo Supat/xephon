@@ -197,26 +197,4 @@ public enum SummarizerBackend: String, Sendable, Hashable, Codable, CaseIterable
 public enum LLMModelFamily: String, Sendable, Hashable, Codable, CaseIterable {
     case qwen
     case llama
-
-    /// Additional stop tokens to pass into MLX-LM's
-    /// `ModelConfiguration.extraEOSTokens`. MLX-LM only honors a
-    /// single `eosTokenId` from `tokenizer_config.json#eos_token`,
-    /// but Llama 3.1's `config.json` declares three valid stop
-    /// tokens (`<|end_of_text|>`, `<|eom_id|>`, `<|eot_id|>`) and
-    /// the Swallow Japanese fine-tune has been observed to emit
-    /// the base-model `<|end_of_text|>` to end its turn instead
-    /// of the chat-template `<|eot_id|>` — without this set MLX
-    /// runs the model all the way to `maxOutputTokens` because
-    /// the stop signal it does emit isn't on the recognized list.
-    /// Qwen3 stops cleanly on `<|im_end|>` (its tokenizer's
-    /// `eos_token`) but we add `<|endoftext|>` defensively in
-    /// case a future quant drops the chat template.
-    public var extraEOSTokens: Set<String> {
-        switch self {
-        case .qwen:
-            return ["<|endoftext|>"]
-        case .llama:
-            return ["<|end_of_text|>", "<|eom_id|>", "<|eot_id|>"]
-        }
-    }
 }

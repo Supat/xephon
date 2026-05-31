@@ -71,10 +71,15 @@ final class SummarizerCoordinator {
     /// `MLXQwenSummarizer` and `MLXLlamaSummarizer` conform to
     /// (lifecycle + `summarize`), letting one slot hold either.
     private var summarizerActor: (any MLXLLMSummarizerActor)?
-    /// Qwen reviewer's actor — separate `ModelContainer`. The
-    /// coordinator ensures only one of the two is loaded at a time
-    /// (both = ~9 GB resident, well over the per-app ceiling).
-    private var reviewerActor: MLXQwenTranscriptionReviewer?
+    /// Resident MLX reviewer (Qwen or Llama, depending on
+    /// `backend`). Separate `ModelContainer` from the
+    /// summarizer — the coordinator ensures only one of the
+    /// two is loaded at a time (both = ~9 GB resident, well
+    /// over the per-app ceiling). `MLXLLMReviewerActor` is
+    /// the small protocol both `MLXQwenTranscriptionReviewer`
+    /// and `MLXLlamaTranscriptionReviewer` conform to so one
+    /// slot holds either.
+    private var reviewerActor: (any MLXLLMReviewerActor)?
     /// Snapshot of the FluidAudio diarizer's speaker DB captured
     /// right before the pipeline is released for summarization, so
     /// embedding-based matching survives the rebuild.
@@ -124,18 +129,6 @@ final class SummarizerCoordinator {
         case .appleFM:      return nil
         case .qwen:         return ModelManifest.summarizerID
         case .llamaSwallow: return ModelManifest.summarizerLlamaID
-        }
-    }
-
-    /// LLM family hint passed to `MLXQwenSummarizer` /
-    /// `MLXQwenTranscriptionReviewer` so they can toggle
-    /// family-specific prompt bits (e.g. Qwen3's `/no_think`).
-    /// nil for Apple FM since the family enum doesn't apply.
-    private var currentMLXFamily: LLMModelFamily? {
-        switch backend {
-        case .appleFM:      return nil
-        case .qwen:         return .qwen
-        case .llamaSwallow: return .llama
         }
     }
 
@@ -440,8 +433,7 @@ final class SummarizerCoordinator {
 
     private func reviewWithMLX() async -> [TranscriptionIssue]? {
         guard let modelStore = parent.modelStore,
-              let modelID = mlxModelID,
-              let family = currentMLXFamily else {
+              let modelID = mlxModelID else {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
@@ -457,15 +449,29 @@ final class SummarizerCoordinator {
         await summarizerActor?.unload()
         summarizerActor = nil
 
-        let actor: MLXQwenTranscriptionReviewer
+        // Pick the right per-family reviewer actor. Same
+        // pattern as `summarizeWithMLX` — Apple FM is routed
+        // via `reviewWithAppleFM` so the switch is exhaustive
+        // over the MLX backends.
+        let actor: any MLXLLMReviewerActor
         if let existing = reviewerActor {
             actor = existing
         } else {
-            actor = MLXQwenTranscriptionReviewer(
-                modelIdentifier: modelID,
-                modelDirectory: directory,
-                family: family
-            )
+            switch backend {
+            case .qwen:
+                actor = MLXQwenTranscriptionReviewer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .llamaSwallow:
+                actor = MLXLlamaTranscriptionReviewer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .appleFM:
+                scheduleUnloadAndPipelineRewarm()
+                return nil
+            }
             reviewerActor = actor
         }
         reviewRunning = true
