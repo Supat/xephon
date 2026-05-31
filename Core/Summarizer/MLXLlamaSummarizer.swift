@@ -95,14 +95,28 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
     /// Llama prompt lands at ~4k tokens vs Qwen's ~14k.
     let maxPromptUtterances = 100
 
-    /// Same window size as Qwen so the heuristic-balanced
-    /// selection's speaker allocation behaves comparably
-    /// across backends. Deep-mode wall time is set by
-    /// Llama's per-token throughput (slower than Qwen on
-    /// iPad), not the window size.
-    let deepWindowSize = 50
+    /// Larger than Qwen's 50 because Llama's `compactLine`
+    /// is stripped of SER detail — same raw token budget
+    /// fits more rows per window. Fewer chunks → fewer
+    /// merge-stage compression cascades, the dominant
+    /// source of detail loss in deep mode. A 200-utterance
+    /// session goes from 4 windows (at 50) to 3 windows
+    /// (at 75); each window covers more of the conversation
+    /// so the merge synthesizes from richer intermediates.
+    let deepWindowSize = 75
 
-    let deepWindowOutputTokens = 1280
+    /// Bumped from 1280 → 2560 specifically for Llama after the
+    /// schema loosening (per-speaker notes 1-2 → 3-5 sentences)
+    /// and window size bump (50 → 75) stacked enough additional
+    /// output demand that the prior cap saturated mid-`perSpeaker`
+    /// on speaker-heavy windows. With ~8 speakers × ~5 sentences
+    /// × ~30 tokens = ~1200 tokens just for the notes, plus
+    /// topic/mood/modalityFlags overhead, 1280 left no headroom
+    /// and forced the `recoverTruncatedWindowIntermediate` path
+    /// or — worse — the placeholder synthesis fallback. 2560
+    /// gives the verbose chunks room to finish naturally;
+    /// recovery still salvages anything that spills.
+    let deepWindowOutputTokens = 2560
 
     let maxOutputTokens = 4096
 
@@ -203,7 +217,7 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
         lines.append("  \"timeEnd\": \(tEndStr)、")
         lines.append("  \"topicSnapshot\": このウィンドウの話題を短いフレーズで、")
         lines.append("  \"moodSnapshot\": このウィンドウの感情的な雰囲気を短いフレーズで、")
-        lines.append("  \"perSpeaker\": { \"speakerID\": <id>, \"notes\": この話者の本ウィンドウでの貢献を1〜2文で, \"dominantMood\": 短いフレーズ } の配列。次の話者ごとに1エントリ：\(speakerList)。")
+        lines.append("  \"perSpeaker\": { \"speakerID\": <id>, \"notes\": この話者の本ウィンドウでの貢献を3〜5文でしっかり記述してください（重要な発言、トピック、感情の変化を含めて）, \"dominantMood\": 短いフレーズ } の配列。次の話者ごとに1エントリ：\(speakerList)。")
         // modalityFlags field omitted — Llama rows don't
         // carry aP/tP, so the model has no signal to populate
         // it. `MLXLLMDeepWindowIntermediate.modalityFlags` is
@@ -240,8 +254,8 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
         var lines: [String] = []
         lines.reserveCapacity(intermediates.count + 24)
         lines.append("あなたは複数話者の会話の最終要約を作成するアナリストです。")
-        lines.append("以下は会話の\(intermediates.count)個の連続するウィンドウのJSON要約（時系列順）です。会話には合計\(allUtterances.count)発話があります。")
-        lines.append("これらを1つの構造化された要約に統合してください。各話者はウィンドウを跨いで1人の人物として扱い、話者の弧をウィンドウごとに分割しないでください。")
+        lines.append("以下には2種類の補完的な入力があります：(a) 会話の\(intermediates.count)個の連続するウィンドウのJSON要約（時系列順）、(b) セッション全体から選ばれた最も特徴的な発話の抜粋。会話には合計\(allUtterances.count)発話があります。")
+        lines.append("ウィンドウ要約を統合して話者ごとの一貫した弧を作成し（各話者はウィンドウを跨いで1人の人物として扱い、弧をウィンドウごとに分割しないでください）、話者ごとの要約を書く際は発話の抜粋を引用や具体的な表現の根拠として活用してください。")
         lines.append("")
         lines.append("次の4つのフィールドを持つJSONオブジェクトを1つ生成してください：")
         lines.append("  \"setting\" — 会話の状況・場面・レジスタを1文で示してください（例：「友人同士のカジュアルな電話」「就職面接」「教室での議論」）。具体的な場所や機関を創作せず、一般的に保ってください。最初に出力し、以降の内容と一貫させてください。")
@@ -272,11 +286,36 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
                 lines.append(json)
             }
         }
+        // Hybrid merge — see `MLXQwenSpec.buildDeepMergePrompt`
+        // for the rationale. Without raw utterances the merge
+        // is "summarizing summaries"; injecting top-N by
+        // speaker-balanced TF-IDF gives it verbatim quotes
+        // and specific phrasing to draw on.
+        let supplementalCap = Self.deepMergeSupplementalUtterances
+        let topIDs = Informativeness.topNBalancedBySpeaker(
+            supplementalCap,
+            utterances: allUtterances
+        )
+        let supplemental = allUtterances.filter { topIDs.contains($0.id) }
+        if !supplemental.isEmpty {
+            lines.append("")
+            lines.append("発話の抜粋（全\(allUtterances.count)発話のうち最も特徴的な\(supplemental.count)発話 — 話者ごとの記述で引用や具体的な内容に使ってください）：")
+            for u in supplemental {
+                lines.append(compactLine(for: u, speakerNames: speakerNames))
+            }
+        }
         lines.append("")
         lines.append("---")
-        lines.append("重要：上記の指示に従い、setting、topic、overallMood、perSpeaker の4フィールドを持つ最終要約JSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記のウィンドウ要約をエコーしないでください。散文も一切含めないでください。")
+        lines.append("重要：上記の指示に従い、setting、topic、overallMood、perSpeaker の4フィールドを持つ最終要約JSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記のウィンドウ要約や発話の抜粋をエコーしないでください。散文も一切含めないでください。")
         return lines.joined(separator: "\n")
     }
+
+    /// Count of raw utterances to append to the deep-merge
+    /// prompt as quoted-detail context. Same value as Qwen
+    /// (50) — Llama's `compactLine` is shorter per row so
+    /// the supplemental section costs even less token-wise
+    /// here.
+    private static let deepMergeSupplementalUtterances = 50
 
     /// Stripped row format: speaker / time / transcript only.
     /// The full Qwen-shape row (label + V/A/D + aP + tP)

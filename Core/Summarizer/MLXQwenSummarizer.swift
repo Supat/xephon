@@ -235,7 +235,7 @@ internal struct MLXQwenSpec: MLXLLMSpec {
         lines.append("  \"timeEnd\": \(tEndStr),")
         lines.append("  \"topicSnapshot\": one short phrase on this window's topic,")
         lines.append("  \"moodSnapshot\": one short phrase on this window's emotional tone,")
-        lines.append("  \"perSpeaker\": array of { \"speakerID\": <id>, \"notes\": one or two sentences on this speaker's contribution in this window, \"dominantMood\": short phrase }, one entry per speaker in: \(speakerList),")
+        lines.append("  \"perSpeaker\": array of { \"speakerID\": <id>, \"notes\": three to five sentences fleshing out this speaker's contribution in this window (notable statements, topics, emotional shifts — give the merge pass enough material to write a real per-speaker arc), \"dominantMood\": short phrase }, one entry per speaker in: \(speakerList),")
         lines.append("  \"modalityFlags\": array of short strings, each flagging one row where the acoustic and text classifiers notably disagreed (e.g. \"S03 at 42.3s: acoustic=sad, text=joy\"). Empty array if no notable disagreement.")
         lines.append("Each row carries: fused label and fused V/A/D (valence/arousal/dominance, 0–1), plus the raw per-modality probability vectors:")
         lines.append("  aP = acoustic 9-class softmax (angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown)")
@@ -271,8 +271,8 @@ internal struct MLXQwenSpec: MLXLLMSpec {
         var lines: [String] = []
         lines.reserveCapacity(intermediates.count + 24)
         lines.append("You are an analyst producing the FINAL summary of a multi-speaker conversation.")
-        lines.append("Below are JSON summaries of \(intermediates.count) consecutive windows of the conversation (in chronological order). The conversation has \(allUtterances.count) utterances total.")
-        lines.append("Synthesize them into a single structured summary. Each speaker should be treated as one person across windows — do not split a speaker's arc into per-window sections.")
+        lines.append("Below you'll see two complementary inputs: (a) JSON summaries of \(intermediates.count) consecutive windows of the conversation (in chronological order), and (b) a sample of the most distinctive raw utterances from across the session. The conversation has \(allUtterances.count) utterances total.")
+        lines.append("Synthesize the window summaries into a single structured per-speaker arc — each speaker treated as one person across windows, not split into per-window sections — and lean on the raw utterances for verbatim quotes and specific phrasing when writing the per-speaker summaries.")
         lines.append("")
         lines.append("Produce a JSON object with four fields:")
         lines.append("  \"setting\" — one short sentence identifying the conversation's setting / situation / register (e.g. 'casual phone catchup between friends', 'job interview', 'classroom discussion'). Stay general — do not invent specific locations or institutions. Emit this FIRST so the rest stays consistent with it.")
@@ -302,11 +302,40 @@ internal struct MLXQwenSpec: MLXLLMSpec {
                 lines.append(json)
             }
         }
+        // Hybrid merge: also feed the top-N most informative
+        // RAW utterances as quoted-detail context. Window
+        // intermediates are already summaries; without raw
+        // signal the merge's per-speaker write-ups are
+        // "summarizing summaries" and lose verbatim quotes /
+        // specific phrasing. Top-N selected by the same
+        // speaker-balanced TF-IDF ranker heuristic mode uses,
+        // so every speaker is represented.
+        let supplementalCap = Self.deepMergeSupplementalUtterances
+        let topIDs = Informativeness.topNBalancedBySpeaker(
+            supplementalCap,
+            utterances: allUtterances
+        )
+        let supplemental = allUtterances.filter { topIDs.contains($0.id) }
+        if !supplemental.isEmpty {
+            lines.append("")
+            lines.append("Key raw utterances (\(supplemental.count) of \(allUtterances.count), chosen for distinctiveness — use these for verbatim quotes and specific detail in the per-speaker write-ups):")
+            for u in supplemental {
+                lines.append(compactLine(for: u, speakerNames: speakerNames))
+            }
+        }
         lines.append("")
         lines.append("---")
-        lines.append("IMPORTANT: Follow the instructions above and produce exactly one final-summary JSON object with fields setting, topic, overallMood, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the window summaries above; do NOT add any prose.")
+        lines.append("IMPORTANT: Follow the instructions above and produce exactly one final-summary JSON object with fields setting, topic, overallMood, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the window summaries or raw utterances above; do NOT add any prose.")
         return lines.joined(separator: "\n")
     }
+
+    /// Count of raw utterances to append to the deep-merge
+    /// prompt as quoted-detail context (alongside the window
+    /// intermediates). Half of `maxPromptUtterances` keeps
+    /// the merge prompt's total token budget comfortably
+    /// below Qwen3's 32k context even when combined with
+    /// per-window intermediates.
+    private static let deepMergeSupplementalUtterances = 50
 
     /// Qwen rows carry the FULL SER block (label + V/A/D +
     /// aP + tP). Qwen3-8B can actually use this signal to
