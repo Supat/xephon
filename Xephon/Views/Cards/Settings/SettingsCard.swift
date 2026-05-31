@@ -50,7 +50,7 @@ struct SettingsCard: View {
                     offlineASRPicker(layout: .inline)
                 }
             }
-            textSERPicker(layout: .stacked)
+            textSERPicker
             speechBoostToggle
             diarizerSensitivitySlider
             customGlossaryButton
@@ -130,8 +130,24 @@ struct SettingsCard: View {
         layoutPair(label: label, control: control, layout: layout)
     }
 
+    /// Text SER picker lives on its own row — distinct concern
+    /// from Language / Offline ASR (it's the emotion classifier,
+    /// not the transcriber).
+    ///
+    /// Layout depends on pane width (proxy for orientation):
+    /// - Landscape (pane wide enough): `.stacked` — label on top,
+    ///   picker on the row below, LEFT-aligned filling the row.
+    /// - Portrait (pane narrower): `.inline` — label on top,
+    ///   picker on the row below, RIGHT-aligned (matches the
+    ///   Language / Offline ASR portrait layout).
+    ///
+    /// The 340pt threshold roughly tracks where the
+    /// Language/Offline ASR `ViewThatFits` flips between its
+    /// two-column HStack and the stacked VStack, so all three
+    /// pickers in the card switch alignment together as the user
+    /// rotates the device.
     @ViewBuilder
-    private func textSERPicker(layout: PickerLayout) -> some View {
+    private var textSERPicker: some View {
         if recorder.availableTextSERBackends.count > 1 {
             let label = Text(String(localized: "settings.textSER"))
                 .font(.caption)
@@ -151,7 +167,11 @@ struct SettingsCard: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            layoutPair(label: label, control: control, layout: layout)
+            ViewThatFits(in: .horizontal) {
+                layoutPair(label: label, control: control, layout: .stacked)
+                    .frame(minWidth: 340)
+                layoutPair(label: label, control: control, layout: .inline)
+            }
         }
     }
 
