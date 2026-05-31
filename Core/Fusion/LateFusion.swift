@@ -217,7 +217,16 @@ public actor LateFusion: Fuser {
         acousticCategorical: CategoricalEmotion?,
         plutchik: PlutchikScore?
     ) async throws -> UtteranceEstimate {
-        let asrConfidence = asr.confidence ?? 0.5
+        // Backends that don't expose per-token confidences
+        // (Qwen3-ASR is the main one, plus rare empty-segment
+        // SFSpeechRecognizer results) hand us nil here. Fall
+        // back to the text-weight floor rather than a mid
+        // value — "unknown" should read as low-trust, not as
+        // moderately-trusted text. Using `textWeightFloor`
+        // also makes the `max(...)` below idempotent for the
+        // nil case, so the formula degrades to the floor
+        // cleanly instead of jumping to 0.5.
+        let asrConfidence = asr.confidence ?? textWeightFloor
         let textWeight = max(textWeightFloor, asrConfidence)
 
         let plutchikValence = plutchik.map(Self.plutchikToValence)
@@ -337,9 +346,26 @@ public actor LateFusion: Fuser {
         }
         let winner = scores.max(by: { $0.value < $1.value })?.key
         if winner == "other" || winner == "unknown" {
-            if let p = plutchik,
-               let topPlutchik = p.probabilities.max(by: { $0.value < $1.value })?.key {
-                return topPlutchik.rawValue
+            if let p = plutchik {
+                // Walk Plutchik in descending probability and
+                // return the first label whose MAPPING lands on
+                // an emotion-bearing acoustic label. The previous
+                // version returned `topPlutchik.rawValue`, which
+                // leaked Plutchik-space strings ("joy", "trust",
+                // …) that are NOT in the acoustic 9-class schema
+                // — even `.joy` should surface as `"happy"`, its
+                // mapping, not as `"joy"`. When only sink-mapped
+                // Plutchik labels (trust / anticipation) are
+                // populated, falls through to the winner
+                // ("other"/"unknown"), which IS a valid acoustic
+                // sink label.
+                let sorted = p.probabilities.sorted { $0.value > $1.value }
+                for (label, _) in sorted {
+                    if let mapped = plutchikToAcousticLabelMapping[label],
+                       mapped != "other", mapped != "unknown" {
+                        return mapped
+                    }
+                }
             }
         }
         return winner

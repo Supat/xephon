@@ -606,10 +606,11 @@ final class AnalysisPipeline: @unchecked Sendable {
                 // EP sessions don't pile up rebuilding during
                 // backgrounding, and (b) the per-actor reactive
                 // CPU-rebuild shim that catches anything the swap
-                // misses. DeBERTa's CPU latency is small (~50 ms)
-                // so reverting to CPU here is the cheapest rollback
-                // if the cascade re-appears in practice.
-                try await DeBERTaWRIME(modelURL: model, tokenizerDirectory: dir, useCoreML: true)
+                // misses. WRIME text SER's CPU latency is small
+                // (~50 ms) so reverting to CPU here is the
+                // cheapest rollback if the cascade re-appears in
+                // practice.
+                try await WRIMETextSER(modelURL: model, tokenizerDirectory: dir, useCoreML: true)
             }
         } else {
             deberta = nil
@@ -1139,8 +1140,24 @@ final class AnalysisPipeline: @unchecked Sendable {
         // segment audio — predictable degradation.
         let trim: SpeakerActiveTrim?
         if applyDiarizerTrim {
-            let timeline = await speakerTracker.cumulativeSnapshot()
-            let vadTimeline = await vadTracker.cumulativeSnapshot()
+            // Read both trackers in parallel rather than
+            // sequentially. The continuous-diarize task on
+            // another Task ingests into both actors on its
+            // own schedule; back-to-back sequential awaits
+            // here can be straddled by an update that lands
+            // in one tracker but not the other, leaving the
+            // two timelines drifted by up to a continuous-
+            // diarize stride (~2 s) and producing AND-
+            // intersection misses in `trimToSpeakerActive`.
+            // `async let` doesn't make the two reads atomic
+            // (each actor still serializes its own queue)
+            // but it narrows the racy window from "two
+            // sequential round-trips" to "one round-trip
+            // worth of cross-actor scheduling slack."
+            async let timelineTask = speakerTracker.cumulativeSnapshot()
+            async let vadTimelineTask = vadTracker.cumulativeSnapshot()
+            let timeline = await timelineTask
+            let vadTimeline = await vadTimelineTask
             trim = Self.trimToSpeakerActive(
                 segmentAudio: segmentAudio,
                 asr: asr,
@@ -1517,7 +1534,19 @@ final class AnalysisPipeline: @unchecked Sendable {
             AppLog.serText.warning("text SER skipped: no backend wired")
             return .empty
         }
-        guard !text.isEmpty else { return .empty }
+        // Trim BEFORE the empty check. Whitespace-only input
+        // would otherwise pass this gate, reach the backend, and
+        // hit the backend's defensive `guard !trimmed.isEmpty`
+        // path that returns an empty `PlutchikScore`. Empty score
+        // ≠ nil score downstream: fusion's `plutchik.map(...)`
+        // still fires on the empty dict, treats every label as
+        // `?? 0`, and produces a confident-looking neutral V/A.
+        // Routing whitespace-only utterances through `.empty`
+        // (which carries `score: nil`) lets fusion correctly fall
+        // back to acoustic-only.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .empty
+        }
         if Self.isFiller(text) {
             AppLog.serText.debug("text SER skipped (filler): \(text, privacy: .public)")
             return .empty
@@ -1779,8 +1808,18 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// `sliceRelative` which respects the buffer's timeline origin.
     static func slice(_ buffer: AudioChunk, start: TimeInterval, end: TimeInterval) -> AudioChunk {
         let total = Double(buffer.samples.count)
-        let startIndex = Int(start * buffer.sampleRate).clamped(to: 0...buffer.samples.count)
-        let endIndex = Int(end * buffer.sampleRate).clamped(to: startIndex...buffer.samples.count)
+        // `.rounded()` (banker's), not truncation. Matches
+        // `sliceAudioFromStart` and `sliceRelative` so a token
+        // end that floats one ULP below an exact sample
+        // boundary doesn't lop off a final sample in one slicer
+        // but not another. The boundary delta is sub-sample
+        // either way — the value of the consistency is in
+        // downstream code that mixes slicers and assumes
+        // equivalent semantics.
+        let startIndex = Int((start * buffer.sampleRate).rounded())
+            .clamped(to: 0...buffer.samples.count)
+        let endIndex = Int((end * buffer.sampleRate).rounded())
+            .clamped(to: startIndex...buffer.samples.count)
         guard startIndex < endIndex, total > 0 else { return buffer }
         let slice = Array(buffer.samples[startIndex..<endIndex])
         return AudioChunk(samples: slice, sampleRate: buffer.sampleRate, timestamp: start)
@@ -1797,8 +1836,15 @@ final class AnalysisPipeline: @unchecked Sendable {
     ) -> AudioChunk {
         let relStart = max(0, start - buffer.timestamp)
         let relEnd = max(relStart, end - buffer.timestamp)
-        let startIndex = min(Int(relStart * buffer.sampleRate), buffer.samples.count)
-        let endIndex = min(Int(relEnd * buffer.sampleRate), buffer.samples.count)
+        // See `slice` for the rounding-convention rationale.
+        let startIndex = min(
+            Int((relStart * buffer.sampleRate).rounded()),
+            buffer.samples.count
+        )
+        let endIndex = min(
+            Int((relEnd * buffer.sampleRate).rounded()),
+            buffer.samples.count
+        )
         guard startIndex < endIndex else {
             return AudioChunk(samples: [], sampleRate: buffer.sampleRate, timestamp: start)
         }

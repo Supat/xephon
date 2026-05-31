@@ -43,7 +43,7 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     /// backend returned before any glossary entries tilted it. Kept
     /// alongside `plutchik` so the user can re-apply the glossary
     /// (e.g. after editing weights in the Custom Glossary sheet)
-    /// without re-running DeBERTa / Apple FM: the controller hands
+    /// without re-running WRIME text SER / Apple FM: the controller hands
     /// `plutchikRaw` back through `LexiconBias.apply` to produce a
     /// fresh `plutchik`. Nil when text SER was skipped, when no
     /// backend was wired, or for sessions saved before this field
@@ -88,6 +88,18 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     // Fused
     public let fusedValence: Float?
     public let fusedArousal: Float?
+    /// Fused dominance. **Acoustic-only by design** — the text-
+    /// SER models on this pipeline (WRIME-tuned text SER, Apple
+    /// FoundationModels) don't estimate dominance, per CLAUDE.md.
+    /// Fusion sets this to `dimensional?.dominance` directly,
+    /// so a nil value means "acoustic SER didn't run or failed"
+    /// — NOT "the speaker came across as neutrally dominant."
+    /// Downstream analyses that aggregate dominance across a
+    /// session should filter nil rows out (treat as missing)
+    /// rather than imputing a midpoint default, otherwise the
+    /// per-speaker dominance score gets pulled toward 0.5 by
+    /// every utterance whose acoustic path was skipped (short
+    /// clips, ORT errors, empty audio).
     public let fusedDominance: Float?
     public let fusedTopLabel: String?
 
