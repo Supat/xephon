@@ -14,6 +14,7 @@ import SERText
 struct UtteranceBadges {
     let textBackend: TextBackendBadge?
     let modality: ModalityBadge?
+    let lexiconBias: LexiconBiasBadge?
     /// Display name for the text-SER backend, used to label the
     /// detail-panel "Text SER (…)" section header. Falls back to
     /// "Plutchik" when the backend is unknown or absent.
@@ -22,7 +23,17 @@ struct UtteranceBadges {
     init(utterance: UtteranceEstimate) {
         self.textBackend = Self.resolveTextBackend(utterance)
         self.modality = Self.resolveModality(utterance)
+        self.lexiconBias = Self.resolveLexiconBias(utterance)
         self.textBackendName = Self.resolveTextBackendName(utterance)
+    }
+
+    private static func resolveLexiconBias(
+        _ utterance: UtteranceEstimate
+    ) -> LexiconBiasBadge? {
+        guard let matched = utterance.lexiconBiasMatched, !matched.isEmpty else {
+            return nil
+        }
+        return LexiconBiasBadge(matched: matched)
     }
 
     private static func resolveTextBackend(

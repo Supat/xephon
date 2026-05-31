@@ -17,7 +17,19 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: "0.1.0"
-    DEVELOPMENT_TEAM: "" # set in Xcode > Signing & Capabilities for sideload
+    # DEVELOPMENT_TEAM (+ CODE_SIGN_STYLE) live in
+    # Config/Local.xcconfig — gitignored per-developer. The xcconfig
+    # is wired into both signed targets (main app + widget
+    # extension) via `configFiles` below; XcodeGen writes the
+    # reference but never touches the file's contents, so the team
+    # id you set there survives `./scripts/generate_project.sh`
+    # regenerations. The bootstrap script copies
+    # Config/Local.xcconfig.example → Config/Local.xcconfig on
+    # first run so the reference always resolves.
+
+configFiles:
+  Debug: Config/Local.xcconfig
+  Release: Config/Local.xcconfig
 
 packages:
   Xephon:

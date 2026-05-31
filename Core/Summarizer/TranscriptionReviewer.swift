@@ -51,18 +51,22 @@ public enum ReviewLanguage: Sendable, Hashable {
                 The conversation is in JAPANESE. All transcripts use Japanese script
                 (kanji, hiragana, katakana). DO NOT interpret characters as Chinese
                 or propose Chinese readings. Common Japanese ASR errors to look for:
-                - misrecognized homophones (橋/箸/端, 紙/神/髪, 雨/飴, 帰る/変える/買える)
+                - misrecognized homophones
                 - wrong kanji selection for the same yomi
-                - wrong particle (は/が, を/に, で/と)
-                - missing or extra long-vowel marker (ー)
+                - wrong particle
+                - missing or extra long-vowel marker
+                Only cite homophone candidates that actually share the reading of text
+                in the utterance. Do not invent candidates that don't match the yomi.
                 Reason about meaning, grammar, and naturalness in Japanese only.
                 """
         case .english:
             return """
                 The conversation is in ENGLISH. Common ASR errors to look for:
-                - homophones (their/there/they're, to/too/two, write/right)
+                - homophones
                 - missing/extra plural -s, wrong tense
                 - wrong word choice that sounds similar
+                Only cite homophone candidates that actually sound like text in the
+                utterance. Do not invent candidates that don't match the pronunciation.
                 Reason about meaning and grammar in English only.
                 """
         }

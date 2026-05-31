@@ -39,6 +39,18 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
 
     // Text side
     public let plutchik: PlutchikScore?
+    /// Pre-bias Plutchik distribution — exactly what the text-SER
+    /// backend returned before any glossary entries tilted it. Kept
+    /// alongside `plutchik` so the user can re-apply the glossary
+    /// (e.g. after editing weights in the Custom Glossary sheet)
+    /// without re-running DeBERTa / Apple FM: the controller hands
+    /// `plutchikRaw` back through `LexiconBias.apply` to produce a
+    /// fresh `plutchik`. Nil when text SER was skipped, when no
+    /// backend was wired, or for sessions saved before this field
+    /// existed (legacy rows fall back to `plutchik` only when
+    /// `lexiconBiasMatched == nil`, so a stale double-bias can't
+    /// happen).
+    public let plutchikRaw: PlutchikScore?
     /// Identifier for the text-SER backend that produced `plutchik`
     /// (e.g. "deberta", "foundationModels"). Nil when text SER was skipped.
     public let textBackend: String?
@@ -64,6 +76,15 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
     /// can flag rows whose transcript came from human review.
     public let wasHandEdited: Bool?
 
+    /// Glossary terms (verbatim, in the form the user typed them)
+    /// that matched this row's transcript and biased the text-SER
+    /// Plutchik distribution. Nil for rows where the lexicon was
+    /// disabled / empty or no entry matched; non-empty triggers the
+    /// "Glossary" chip on `UtteranceRow`. Persisted so the chip
+    /// survives a Save/Load round-trip and so JSON export readers
+    /// can audit which bias inputs influenced a given row.
+    public let lexiconBiasMatched: [String]?
+
     // Fused
     public let fusedValence: Float?
     public let fusedArousal: Float?
@@ -82,10 +103,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         acousticCategorical: CategoricalEmotion?,
         ageGender: AgeGenderEstimate? = nil,
         plutchik: PlutchikScore?,
+        plutchikRaw: PlutchikScore? = nil,
         textBackend: String? = nil,
         speechBoost: Bool? = nil,
         wasReevaluated: Bool? = nil,
         wasHandEdited: Bool? = nil,
+        lexiconBiasMatched: [String]? = nil,
         fusedValence: Float?,
         fusedArousal: Float?,
         fusedDominance: Float?,
@@ -102,10 +125,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
         self.acousticCategorical = acousticCategorical
         self.ageGender = ageGender
         self.plutchik = plutchik
+        self.plutchikRaw = plutchikRaw
         self.textBackend = textBackend
         self.speechBoost = speechBoost
         self.wasReevaluated = wasReevaluated
         self.wasHandEdited = wasHandEdited
+        self.lexiconBiasMatched = lexiconBiasMatched
         self.fusedValence = fusedValence
         self.fusedArousal = fusedArousal
         self.fusedDominance = fusedDominance
@@ -132,10 +157,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: ageGender,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: textBackend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -160,10 +187,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: ageGender,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: textBackend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -189,10 +218,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: score,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: textBackend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -213,10 +244,111 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: ageGender,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: backend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
+    /// Stamp the raw (pre-bias) Plutchik distribution. Called by the
+    /// pipeline right after text SER returns so the controller can
+    /// later replay the glossary against this snapshot when the user
+    /// edits weights.
+    public func withPlutchikRaw(_ raw: PlutchikScore?) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
+            plutchik: plutchik,
+            plutchikRaw: raw,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
+            fusedValence: fusedValence,
+            fusedArousal: fusedArousal,
+            fusedDominance: fusedDominance,
+            fusedTopLabel: fusedTopLabel
+        )
+    }
+
+    /// Atomic re-bias swap: replace `plutchik`, `lexiconBiasMatched`,
+    /// and the fused V/A/D/top-label together. Used by the controller's
+    /// "Done in glossary sheet → reapply" path after `LateFusion.fuse`
+    /// produces a fresh estimate from the re-biased Plutchik snapshot.
+    /// Preserves `plutchikRaw` (invariant across re-applies) and
+    /// every non-affect field on the row.
+    public func withRebiased(
+        plutchik newPlutchik: PlutchikScore?,
+        matched: [String],
+        fusedValence newV: Float?,
+        fusedArousal newA: Float?,
+        fusedDominance newD: Float?,
+        fusedTopLabel newTop: String?
+    ) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
+            plutchik: newPlutchik,
+            plutchikRaw: plutchikRaw,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: matched.isEmpty ? nil : matched,
+            fusedValence: newV,
+            fusedArousal: newA,
+            fusedDominance: newD,
+            fusedTopLabel: newTop
+        )
+    }
+
+    /// Stamp the glossary terms that biased this row's text-SER
+    /// distribution. Empty list → store nil (matching the "no chip"
+    /// case) so the JSON export doesn't carry `"lexiconBiasMatched":
+    /// []` noise.
+    public func withLexiconBiasMatched(_ matched: [String]) -> UtteranceEstimate {
+        UtteranceEstimate(
+            id: id,
+            speakerID: speakerID,
+            speakerName: speakerName,
+            start: start,
+            end: end,
+            transcript: transcript,
+            asrConfidence: asrConfidence,
+            dimensional: dimensional,
+            acousticCategorical: acousticCategorical,
+            ageGender: ageGender,
+            plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
+            textBackend: textBackend,
+            speechBoost: speechBoost,
+            wasReevaluated: wasReevaluated,
+            wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: matched.isEmpty ? nil : matched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -237,10 +369,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: ageGender,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: textBackend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -266,10 +400,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: ageGender,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: textBackend,
             speechBoost: speechBoost,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,
@@ -290,10 +426,12 @@ public struct UtteranceEstimate: Sendable, Hashable, Codable, Identifiable {
             acousticCategorical: acousticCategorical,
             ageGender: ageGender,
             plutchik: plutchik,
+            plutchikRaw: plutchikRaw,
             textBackend: textBackend,
             speechBoost: enabled,
             wasReevaluated: wasReevaluated,
             wasHandEdited: wasHandEdited,
+            lexiconBiasMatched: lexiconBiasMatched,
             fusedValence: fusedValence,
             fusedArousal: fusedArousal,
             fusedDominance: fusedDominance,

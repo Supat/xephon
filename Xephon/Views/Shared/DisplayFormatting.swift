@@ -43,6 +43,15 @@ struct ModalityBadge: Equatable {
     let accessibility: String
 }
 
+/// View-model for the "glossary bias fired" chip on rows whose
+/// text-SER score was tilted by one or more user-glossary entries.
+/// `matched` carries the verbatim terms (post-dedup) so the
+/// accessibility label can list them and the chip's count caption
+/// renders without re-reading the source utterance.
+struct LexiconBiasBadge: Equatable {
+    let matched: [String]
+}
+
 /// Live `mm:ss` readout of the wall-clock time elapsed since `start`.
 /// Uses `TimelineView(.periodic)` so the value ticks once per second
 /// without driving the rest of the view's body to re-evaluate —

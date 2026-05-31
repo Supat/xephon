@@ -1,11 +1,17 @@
 import SwiftUI
 
 /// Attaches every SwiftUI surface that the `SessionFileCoordinator`
-/// drives: the shared `.fileImporter`, the discard-before-import
-/// alert, the JSON-export share sheet, the Save Session
-/// `.fileExporter` (via `SessionIOModifier`), and the four
-/// menu-command observers (`openAudioFileToken`, `exportJSONToken`,
+/// drives: the discard-before-import alert, the JSON-export share
+/// sheet, the session I/O error alert, and the four menu-command
+/// observers (`openAudioFileToken`, `exportJSONToken`,
 /// `saveSessionToken`, `importSessionToken`).
+///
+/// All file picker surfaces (audio open, session import, session
+/// save) route through `FilePickerCoordinator` instead of attaching
+/// their own `.fileImporter` / `.fileExporter` modifiers — that
+/// keeps exactly one importer + one exporter at the navigation
+/// root, sidestepping the iPadOS 26 multi-modifier-on-the-same-
+/// view-chain collision that silently swallows presentations.
 ///
 /// Pulling these out of `ContentView.mainBody` keeps the body
 /// readable AND keeps the Swift type-checker comfortably under its
@@ -15,25 +21,11 @@ import SwiftUI
 struct SessionFileBridge: ViewModifier {
     let recorder: RecordingController
     @Bindable var coord: SessionFileCoordinator
+    let filePicker: FilePickerCoordinator
     let menuCommands: MenuCommands
 
     func body(content: Content) -> some View {
         content
-            // Save Session export panel + the shared I/O error
-            // alert that both save and load funnel into.
-            .modifier(SessionIOModifier(
-                showingSaveSession: $coord.showingSaveSession,
-                pendingSaveDocument: $coord.pendingSaveDocument,
-                sessionIOError: $coord.sessionIOError,
-                defaultFilename: coord.defaultSessionFilename
-            ))
-            .fileImporter(
-                isPresented: $coord.showingFilePicker,
-                allowedContentTypes: coord.filePickerAllowedTypes,
-                allowsMultipleSelection: false
-            ) { result in
-                coord.handleFilePickerResult(result, recorder: recorder)
-            }
             .sheet(item: $coord.shareURL) { url in
                 ShareSheet(items: [url])
             }
@@ -56,12 +48,27 @@ struct SessionFileBridge: ViewModifier {
                     )
                 )
             }
+            // Shared error alert for both save and load failures —
+            // moved here from the old `SessionIOModifier` when its
+            // `.fileExporter` migrated into `FilePickerCoordinator`.
+            .alert(
+                "Session I/O Error",
+                isPresented: Binding(
+                    get: { coord.sessionIOError != nil },
+                    set: { if !$0 { coord.sessionIOError = nil } }
+                ),
+                presenting: coord.sessionIOError
+            ) { _ in
+                Button("OK", role: .cancel) { coord.sessionIOError = nil }
+            } message: { msg in
+                Text(msg)
+            }
             // File → Open… (⌘O) command pipe. The menu writes a
             // fresh UUID into `menuCommands.openAudioFileToken`; we
-            // observe the change and raise the same `.fileImporter`
-            // the on-screen button does.
+            // observe the change and ask the centralized file
+            // picker to raise the importer.
             .onChange(of: menuCommands.openAudioFileToken) { _, _ in
-                coord.presentAudioPicker(recorder: recorder)
+                coord.presentAudioPicker(recorder: recorder, filePicker: filePicker)
             }
             // File → Export to JSON (⌘S) command pipe.
             .onChange(of: menuCommands.exportJSONToken) { _, _ in
@@ -69,11 +76,11 @@ struct SessionFileBridge: ViewModifier {
             }
             // File → Save Session… (⇧⌘S).
             .onChange(of: menuCommands.saveSessionToken) { _, _ in
-                Task { await coord.saveSession(recorder: recorder) }
+                Task { await coord.saveSession(recorder: recorder, filePicker: filePicker) }
             }
             // File → Import Session… (⇧⌘O).
             .onChange(of: menuCommands.importSessionToken) { _, _ in
-                coord.presentSessionPicker(recorder: recorder)
+                coord.presentSessionPicker(recorder: recorder, filePicker: filePicker)
             }
     }
 }

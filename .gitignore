@@ -9,6 +9,12 @@ xcuserdata/
 # XcodeGen output (regenerate with `scripts/generate_project.sh`)
 Xephon.xcodeproj/
 
+# Per-developer signing xcconfig — bootstrapped from
+# Config/Local.xcconfig.example by scripts/generate_project.sh.
+# Keeps DEVELOPMENT_TEAM out of git so each developer's team id
+# stays local and survives project regeneration.
+Config/Local.xcconfig
+
 # SwiftPM
 .build/
 .swiftpm/

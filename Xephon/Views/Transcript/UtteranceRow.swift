@@ -1,4 +1,5 @@
 import SwiftUI
+import Diarization
 import Fusion
 import SERAcoustic
 import SERText
@@ -153,6 +154,15 @@ struct UtteranceRow: View {
     /// row's popover. Backed by `RecordingController.teaching-
     /// Diarizer`, which is session-only (resets to off on launch).
     @Binding var teachingDiarizer: Bool
+    /// Pre-computed per-instant majority runs for this row's
+    /// diarization strip window, in window-local seconds. Computed
+    /// once per `(timelineVersion, utterance)` pair by
+    /// `TranscriptList` and reused across body re-evals so a long
+    /// session doesn't re-sweep the full timeline on every scroll
+    /// tick. Empty when no segment overlaps the window (mic-mode
+    /// short recordings, freshly loaded sessions before the
+    /// diarizer fires).
+    let diarizationRuns: [DiarizationRun]
 
     /// Set by a 2-second long-press on the re-evaluate button to
     /// suppress the upcoming tap action (so a held press doesn't
@@ -355,6 +365,34 @@ struct UtteranceRow: View {
                             onRevert()
                         }
                 }
+                if let lexiconBias = badges.lexiconBias {
+                    // Tooltip-style accessibility lists the matched
+                    // terms; the visible label is just the count to
+                    // keep the chip narrow. Tap or VoiceOver focus
+                    // reveals which entries fired.
+                    Label(
+                        String(
+                            format: String(localized: "glossary.badge.format"),
+                            lexiconBias.matched.count
+                        ),
+                        systemImage: "book.closed"
+                    )
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .foregroundStyle(.purple)
+                    .glassEffect(
+                        .regular.tint(.purple.opacity(BadgeChrome.glassTint)),
+                        in: Capsule()
+                    )
+                    .accessibilityLabel(
+                        String(
+                            format: String(localized: "glossary.badge.a11y"),
+                            lexiconBias.matched.joined(separator: ", ")
+                        )
+                    )
+                }
             }
             // Transcript text — long-press (0.5 s) raises the Edit
             // Utterance dialog. Hit-test stays inside the Text
@@ -366,6 +404,17 @@ struct UtteranceRow: View {
                 .onLongPressGesture(minimumDuration: Self.editLongPressSec) {
                     onEditTranscript()
                 }
+            // Per-row windowed diarizer strip. Hidden when the
+            // window has no overlapping segments (the strip view
+            // returns EmptyView in that case, so this slot collapses
+            // to zero height without leaving a gap). Runs are
+            // pre-computed by TranscriptList against the latest
+            // timeline version so this render is a pure paint.
+            UtteranceDiarizationStrip(
+                runs: diarizationRuns,
+                utteranceStart: utterance.start,
+                utteranceEnd: utterance.end
+            )
         }
     }
 

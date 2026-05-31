@@ -30,9 +30,22 @@ public struct ProcessingMetrics: Sendable, Hashable {
 /// (dedicated "Apple FM ✕" chip).
 struct TextSEROutcome: Sendable {
     let score: PlutchikScore?
+    /// Pre-bias score exactly as the backend produced it. Nil on
+    /// the same paths `score` is nil; equal to `score` when no
+    /// glossary entry matched. Stamped onto the row so the
+    /// reapply path (Custom Glossary sheet → Done) can replay
+    /// the bias against the new lexicon without re-running the
+    /// model.
+    let rawScore: PlutchikScore?
     let guardrailViolation: Bool
+    /// Glossary terms that matched this row's transcript and biased
+    /// the score. `[]` for the empty / guardrail / no-match paths;
+    /// only the post-classify lexicon path can populate it.
+    let matchedTerms: [String]
 
-    static let empty = TextSEROutcome(score: nil, guardrailViolation: false)
+    static let empty = TextSEROutcome(
+        score: nil, rawScore: nil, guardrailViolation: false, matchedTerms: []
+    )
 }
 
 /// Result of `autoConfigured(modelStore:)`. Carries the pipeline plus
@@ -65,6 +78,13 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// pipeline. Tests inject a different `Transcriber` and bypass
     /// `setLocale`, so their injection survives.
     private var transcriber: any Transcriber
+    /// Lazily-constructed SFSpeechRecognizer wrapper for the
+    /// hinted ASR pathway. Reconstructed alongside `transcriber`
+    /// on `setLocale` so its recognizer matches the active
+    /// session language. Nil when the OS doesn't ship a
+    /// dictation model for the locale (e.g. exotic locales) or
+    /// when `SFSpeechRecognizer(locale:)` outright refused.
+    private var hintedTranscriber: SFSpeechRecognizerTranscriber?
     private let diarizer: (any Diarizer)?
     private let dimensionalSER: (any DimensionalAcousticSER)?
     private let categoricalSER: (any CategoricalAcousticSER)?
@@ -125,6 +145,14 @@ final class AnalysisPipeline: @unchecked Sendable {
         vadTracker: StreamingVADTracker = StreamingVADTracker()
     ) {
         self.transcriber = transcriber
+        // Default to ja_JP; the controller's first `setLocale`
+        // (right after pipeline construction) reconstructs this
+        // with the actual session locale. Can't read
+        // `transcriber.locale` from here because Transcriber is
+        // an actor and its property is isolated.
+        self.hintedTranscriber = SFSpeechRecognizerTranscriber(
+            locale: Locale(identifier: "ja_JP")
+        )
         self.diarizer = diarizer
         self.vadDetector = vadDetector
         self.dimensionalSER = dimensionalSER
@@ -459,11 +487,16 @@ final class AnalysisPipeline: @unchecked Sendable {
             for j in 0..<upperBound where t <= sorted[j].end {
                 instant[sorted[j].speakerID, default: 0] += 1
             }
-            if let winner = instant.max(by: { $0.value < $1.value })?.key {
+            // Stable tie-break — see the matching comment in
+            // `DiarizationTimelineStrip.majorityRuns` for the
+            // rationale. Same tuple form here so the per-row strip
+            // and the chip label always pick the same speaker on
+            // ties.
+            if let winner = instant.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
                 votes[winner, default: 0] += 1
             }
         }
-        if let mode = votes.max(by: { $0.value < $1.value })?.key {
+        if let mode = votes.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
             return mode
         }
         let mid = (start + end) / 2
@@ -697,6 +730,89 @@ final class AnalysisPipeline: @unchecked Sendable {
         await (textSER as? SwitchingTextSER)?.setBackend(backend)
     }
 
+    /// Push the user's glossary into the text-SER actor. No-op when
+    /// the active backend isn't `SwitchingTextSER` (it's the only
+    /// adapter that knows about lexicon bias today).
+    func setLexicon(_ lexicon: LexiconBias) async {
+        await (textSER as? SwitchingTextSER)?.setLexicon(lexicon)
+    }
+
+    /// Snapshot the live lexicon. `LexiconBias.init()` fallback
+    /// when the active backend isn't `SwitchingTextSER` keeps the
+    /// reapply caller's loop honest (it'll see "no entries" and
+    /// rebias every row to its raw distribution).
+    func lexiconSnapshot() async -> LexiconBias {
+        await (textSER as? SwitchingTextSER)?.lexiconSnapshot() ?? .init()
+    }
+
+    /// Replay the active glossary against `utterance`'s pre-bias
+    /// Plutchik and re-run late fusion, returning a fresh estimate
+    /// with updated `plutchik`, `lexiconBiasMatched`, and fused
+    /// V/A/D/top label. All other fields are preserved.
+    ///
+    /// Returns nil when the row can't safely be rebiased:
+    ///   - text SER never ran (`plutchik == nil`)
+    ///   - row predates the `plutchikRaw` field AND already had a
+    ///     prior bias stamped (`lexiconBiasMatched != nil`), which
+    ///     would mean we'd be biasing on top of bias
+    ///
+    /// For legacy rows with `plutchikRaw == nil` and no prior bias,
+    /// the current `plutchik` is treated as raw (correct for any
+    /// row classified before this feature existed without glossary
+    /// matches — i.e. essentially every legacy row).
+    func rebiasAndFuse(
+        _ utterance: UtteranceEstimate
+    ) async -> UtteranceEstimate? {
+        guard let storedPlutchik = utterance.plutchik else { return nil }
+        let raw: PlutchikScore
+        if let stored = utterance.plutchikRaw {
+            raw = stored
+        } else if utterance.lexiconBiasMatched == nil {
+            raw = storedPlutchik
+        } else {
+            return nil
+        }
+        let lexicon = await lexiconSnapshot()
+        let (biased, matched) = lexicon.apply(raw, to: utterance.transcript)
+        let asr = ASRSegment(
+            text: utterance.transcript,
+            start: utterance.start,
+            end: utterance.end,
+            confidence: utterance.asrConfidence,
+            tokens: []
+        )
+        let fused: UtteranceEstimate
+        do {
+            fused = try await fuser.fuse(
+                asr: asr,
+                speakerID: utterance.speakerID,
+                dimensional: utterance.dimensional,
+                acousticCategorical: utterance.acousticCategorical,
+                plutchik: biased
+            )
+        } catch {
+            AppLog.serText.warning(
+                "rebiasAndFuse fuse failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+        var next = utterance.withRebiased(
+            plutchik: biased,
+            matched: matched,
+            fusedValence: fused.fusedValence,
+            fusedArousal: fused.fusedArousal,
+            fusedDominance: fused.fusedDominance,
+            fusedTopLabel: fused.fusedTopLabel
+        )
+        // Stamp raw when the row didn't carry one (legacy
+        // promotion); subsequent re-applies will short-circuit
+        // through the `utterance.plutchikRaw` branch above.
+        if utterance.plutchikRaw == nil {
+            next = next.withPlutchikRaw(raw)
+        }
+        return next
+    }
+
     /// Re-target the pipeline at a new session language. Swaps in a
     /// fresh offline `SpeechAnalyzerTranscriber` for the new locale
     /// (the streaming transcriber lives on `RecordingController`
@@ -708,11 +824,38 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// language-agnostic.
     func setLocale(_ locale: Locale, languageLabel: String?) async {
         transcriber = SpeechAnalyzerTranscriber(locale: locale)
+        hintedTranscriber = SFSpeechRecognizerTranscriber(locale: locale)
         let code = locale.language.languageCode?.identifier
         await (textSER as? SwitchingTextSER)?.setLanguage(
             code: code,
             label: languageLabel
         )
+    }
+
+    /// SFSpeechRecognizer pathway with `contextualStrings` set
+    /// to `hints`. Returns the joined hypothesis string; throws
+    /// `ASRError.modelUnavailable` when the recognizer isn't
+    /// available for the active locale (no on-device model
+    /// resident) so the caller can fall back to the offline
+    /// `transcribeForReevaluation` path. One-shot authorization
+    /// happens lazily on first call.
+    func transcribeWithHints(
+        audio: AudioChunk,
+        hints: [String]
+    ) async throws -> String {
+        guard let hinted = hintedTranscriber else {
+            throw ASRError.modelUnavailable(
+                reason: "SFSpeechRecognizer adapter not constructed for locale"
+            )
+        }
+        let auth = await SFSpeechRecognizerTranscriber.requestAuthorization()
+        guard auth == .authorized else {
+            throw ASRError.modelUnavailable(
+                reason: "SFSpeechRecognizer authorization: \(auth.rawValue)"
+            )
+        }
+        let result = try await hinted.transcribe(audio, hints: hints)
+        return result.text
     }
 
     /// Re-run offline ASR on `audio` and fuse the result with fresh SER
@@ -962,9 +1105,24 @@ final class AnalysisPipeline: @unchecked Sendable {
         }
         let serAudio = trim?.audio ?? segmentAudio
 
-        async let dimensional = runDimensional(serAudio)
-        async let categorical = runCategorical(serAudio)
-        async let demographics = runAgeGender(serAudio)
+        // Skip the acoustic models entirely when the slice is
+        // empty. This happens when ASR finalizes an utterance
+        // after the audio source has been exhausted (e.g. file
+        // pump end-of-file with in-flight ASR finalize) — the
+        // captured-audio buffer has nothing for that time range,
+        // so `sliceForSegment` returns a zero-sample chunk. ORT
+        // would otherwise throw "empty audio" on each model; the
+        // text path still runs since transcript is independent
+        // of audio availability at this stage.
+        let serAudioIsEmpty = serAudio.samples.isEmpty
+        if serAudioIsEmpty {
+            AppLog.app.debug(
+                "acoustic SER skipped (empty slice) at t=\(asr.start, privacy: .public)–\(asr.end, privacy: .public)s"
+            )
+        }
+        async let dimensional = serAudioIsEmpty ? nil : runDimensional(serAudio)
+        async let categorical = serAudioIsEmpty ? nil : runCategorical(serAudio)
+        async let demographics = serAudioIsEmpty ? nil : runAgeGender(serAudio)
         async let plutchik = runText(asr.text)
 
         // Acoustic timing = wall time until both dimensional + categorical
@@ -994,6 +1152,8 @@ final class AnalysisPipeline: @unchecked Sendable {
         var estimate = baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(ageGender)
+            .withPlutchikRaw(textResult.rawScore)
+            .withLexiconBiasMatched(textResult.matchedTerms)
         // Propagate the trim to the utterance entry's bounds so the
         // row, the timeline strip, and any downstream re-eval all
         // see the actual voicing range. Clamped to the original ASR
@@ -1189,6 +1349,8 @@ final class AnalysisPipeline: @unchecked Sendable {
         return baseEstimate
             .withTextBackend(textBackend)
             .withAgeGender(original.ageGender)
+            .withPlutchikRaw(textResult.rawScore)
+            .withLexiconBiasMatched(textResult.matchedTerms)
     }
 
     // MARK: - Optional stages (return nil on failure → degraded fusion)
@@ -1207,7 +1369,13 @@ final class AnalysisPipeline: @unchecked Sendable {
         guard let dimensionalSER else { return nil }
         let capped = Self.capForSER(buffer)
         do { return try await dimensionalSER.score(capped) } catch {
-            AppLog.app.debug("dimensional SER skipped: \(String(describing: error), privacy: .public)")
+            // Promoted from .debug to .warning while we hunt down
+            // why isolated rows come back with no acoustic. Include
+            // the input shape so a degenerate post-trim slice
+            // (the leading hypothesis) is obvious in the log.
+            AppLog.app.warning(
+                "dimensional SER skipped (samples=\(capped.samples.count, privacy: .public), sr=\(capped.sampleRate, privacy: .public), t=\(capped.timestamp, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
     }
@@ -1216,7 +1384,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         guard let categoricalSER else { return nil }
         let capped = Self.capForSER(buffer)
         do { return try await categoricalSER.score(capped) } catch {
-            AppLog.app.debug("categorical SER skipped: \(String(describing: error), privacy: .public)")
+            AppLog.app.warning(
+                "categorical SER skipped (samples=\(capped.samples.count, privacy: .public), sr=\(capped.sampleRate, privacy: .public), t=\(capped.timestamp, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
     }
@@ -1225,7 +1395,9 @@ final class AnalysisPipeline: @unchecked Sendable {
         guard let ageGenderSER else { return nil }
         let capped = Self.capForSER(buffer)
         do { return try await ageGenderSER.estimate(capped) } catch {
-            AppLog.app.debug("age-gender SER skipped: \(String(describing: error), privacy: .public)")
+            AppLog.app.warning(
+                "age-gender SER skipped (samples=\(capped.samples.count, privacy: .public), sr=\(capped.sampleRate, privacy: .public), t=\(capped.timestamp, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
     }
@@ -1303,11 +1475,32 @@ final class AnalysisPipeline: @unchecked Sendable {
             return .empty
         }
         do {
+            // Prefer `classifyBiased` when the backend is the
+            // switching adapter so glossary-matched terms can flow
+            // through to the row badge; non-switching backends
+            // (test stubs, future adapters) fall back to plain
+            // classify with empty matched terms.
+            if let switching = textSER as? SwitchingTextSER {
+                let result = try await switching.classifyBiased(text)
+                return TextSEROutcome(
+                    score: result.score,
+                    rawScore: result.rawScore,
+                    guardrailViolation: false,
+                    matchedTerms: result.matchedTerms
+                )
+            }
             let score = try await textSER.classify(text)
-            return TextSEROutcome(score: score, guardrailViolation: false)
+            return TextSEROutcome(
+                score: score,
+                rawScore: score,
+                guardrailViolation: false,
+                matchedTerms: []
+            )
         } catch TextSERError.guardrailViolation {
             AppLog.serText.info("text SER declined (Apple FM guardrail): \(text, privacy: .public)")
-            return TextSEROutcome(score: nil, guardrailViolation: true)
+            return TextSEROutcome(
+                score: nil, rawScore: nil, guardrailViolation: true, matchedTerms: []
+            )
         } catch {
             // Promoted to .warning so non-guardrail failures aren't
             // silently swallowed — debugging "text SER never runs"
@@ -1515,11 +1708,13 @@ final class AnalysisPipeline: @unchecked Sendable {
             for j in 0..<upperBound where t <= timeline[j].end {
                 instant[timeline[j].speakerID, default: 0] += 1
             }
-            if let winner = instant.max(by: { $0.value < $1.value })?.key {
+            // Stable tie-break — see `dominantSpeakerInSegments`
+            // above; same rationale.
+            if let winner = instant.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
                 votes[winner, default: 0] += 1
             }
         }
-        if let mode = votes.max(by: { $0.value < $1.value })?.key {
+        if let mode = votes.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
             return mode
         }
 

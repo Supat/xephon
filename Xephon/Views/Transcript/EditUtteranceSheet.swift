@@ -37,6 +37,13 @@ struct EditUtteranceSheet: View {
     let audioEditingEnabled: Bool
     let onPlayRange: (TimeInterval, TimeInterval) -> Void
     let onStopRange: () -> Void
+    /// Re-transcribe the current `[editedStart, editedEnd]` range
+    /// from the source audio and return the offline-ASR text, or
+    /// nil if the range yielded nothing. The sheet drops the
+    /// returned text straight into the editor on completion. Only
+    /// invoked when `audioEditingEnabled` is true; the button is
+    /// hidden otherwise.
+    let onTranscribeRange: (TimeInterval, TimeInterval) async -> String?
     /// Live "is a preview playing right now" flag from the
     /// controller. Drives the play/stop icon swap on the preview
     /// button so the user knows they can tap to interrupt.
@@ -47,6 +54,12 @@ struct EditUtteranceSheet: View {
     @State private var editedText: String
     @State private var editedStart: TimeInterval
     @State private var editedEnd: TimeInterval
+    /// Local "transcription in flight" flag — flips while the
+    /// Transcribe button is awaiting `onTranscribeRange`. Drives
+    /// the button's spinner swap and disables the TextEditor so a
+    /// concurrent user edit doesn't get clobbered by the ASR
+    /// result on completion.
+    @State private var isTranscribing = false
 
     init(
         utterance: UtteranceEstimate,
@@ -54,6 +67,7 @@ struct EditUtteranceSheet: View {
         audioEditingEnabled: Bool,
         onPlayRange: @escaping (TimeInterval, TimeInterval) -> Void,
         onStopRange: @escaping () -> Void,
+        onTranscribeRange: @escaping (TimeInterval, TimeInterval) async -> String?,
         isPreviewPlaying: Bool,
         onCommit: @escaping (String, TimeInterval, TimeInterval) -> Void,
         onCancel: @escaping () -> Void
@@ -63,6 +77,7 @@ struct EditUtteranceSheet: View {
         self.audioEditingEnabled = audioEditingEnabled
         self.onPlayRange = onPlayRange
         self.onStopRange = onStopRange
+        self.onTranscribeRange = onTranscribeRange
         self.isPreviewPlaying = isPreviewPlaying
         self.onCommit = onCommit
         self.onCancel = onCancel
@@ -108,6 +123,7 @@ struct EditUtteranceSheet: View {
                     .frame(minHeight: 120)
                     .padding(10)
                     .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .disabled(isTranscribing)
 
                 if audioEditingEnabled {
                     sectionHeader(String(localized: "edit.range.header"))
@@ -145,6 +161,8 @@ struct EditUtteranceSheet: View {
                     }
                     .padding(12)
                     .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    transcribeButton
                 }
             }
             .padding(20)
@@ -171,6 +189,41 @@ struct EditUtteranceSheet: View {
                 }
             }
         }
+    }
+
+    /// "Transcribe" action button: re-runs offline ASR on
+    /// `[editedStart, editedEnd]` and writes the result back into
+    /// the TextEditor. Disabled while the range is empty or a
+    /// transcription is already in flight; the TextEditor is also
+    /// disabled during the run so a concurrent user edit doesn't
+    /// get clobbered by the ASR result on completion.
+    @ViewBuilder
+    private var transcribeButton: some View {
+        Button {
+            let s = editedStart
+            let e = editedEnd
+            isTranscribing = true
+            Task {
+                let text = await onTranscribeRange(s, e)
+                if let text {
+                    editedText = text
+                }
+                isTranscribing = false
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if isTranscribing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "text.bubble.fill")
+                }
+                Text(String(localized: "edit.transcribe"))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.bordered)
+        .disabled(isTranscribing || editedEnd <= editedStart)
     }
 
     /// Section header rendered as plain secondary text — no

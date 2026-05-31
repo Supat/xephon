@@ -1,0 +1,22 @@
+// Local.xcconfig.example
+//
+// Per-developer signing settings. Copy to Local.xcconfig (which is
+// gitignored), fill in DEVELOPMENT_TEAM, and your values will
+// survive `./scripts/generate_project.sh` regenerations. The
+// project's xcodeproj references Config/Local.xcconfig via
+// XcodeGen's configFiles, so XcodeGen never touches this file.
+//
+// scripts/generate_project.sh auto-bootstraps Local.xcconfig from
+// this example on first run if Local.xcconfig is missing.
+//
+// To find your Apple Developer team id:
+//   - Xcode > Settings > Accounts > <your Apple ID> > Manage Certificates
+//   - or: xcrun security find-identity -v -p codesigning
+//     (the 10-char prefix in parentheses is the team id)
+//
+// For sideload / personal signing the two lines below are enough.
+// For manual / distribution signing also set CODE_SIGN_IDENTITY
+// and PROVISIONING_PROFILE_SPECIFIER per configuration.
+
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic

@@ -52,11 +52,22 @@ enum SearchReplaceHighlighter {
     /// on tap; post-replace renders skip the links because the
     /// staged text is shown read-only with the inserted replace
     /// term highlighted in green.
+    ///
+    /// `similarRanges` carries the chunk-level ranges reverse-
+    /// mapped from the fuzzy / wider-variation passes (see
+    /// `SearchReplaceCoordinator.similarMatchRanges(for:)`).
+    /// They're painted purple beneath the (typically empty) raw
+    /// `matchRanges` overlay and skip both the link and the
+    /// selection state, since fuzzy hits aren't directly
+    /// replaceable. Suppressed entirely on post-replace renders
+    /// because the original text is gone and the chunk offsets
+    /// would no longer line up.
     static func attributed(
         utteranceID: UUID,
         text: String,
         replaceTerm: String,
         matchRanges: [Range<String.Index>],
+        similarRanges: [Range<String.Index>] = [],
         selectedIndices: Set<Int>,
         replaced: Bool
     ) -> AttributedString {
@@ -80,6 +91,15 @@ enum SearchReplaceHighlighter {
                 cursor = r.upperBound
             }
             return attributed
+        }
+        // Similar-match base layer. Purple distinguishes it from
+        // the yellow/green raw-match overlay; opacity matches the
+        // raw-match layer so the two read as siblings rather than
+        // background chrome.
+        let similarBG = Color.purple.opacity(0.45)
+        for range in similarRanges {
+            guard let attrRange = Range(range, in: attributed) else { continue }
+            attributed[attrRange].backgroundColor = similarBG
         }
         // Pre-replace path: each search-term match gets a
         // tappable link. Selected matches read green; unselected

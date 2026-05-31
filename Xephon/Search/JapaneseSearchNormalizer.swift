@@ -20,10 +20,32 @@ import Foundation
 /// best contextual guess (usually the most common reading); rare
 /// proper-noun readings can miss.
 enum JapaneseSearchNormalizer {
+    /// One CFStringTokenizer chunk with the original character
+    /// range it covered and the lowercased, whitespace-stripped
+    /// latin transcription it produced. Exposed so callers that
+    /// need to map a position in the concatenated normalized form
+    /// back to an original range (e.g. the find-and-replace
+    /// highlighter for fuzzy / cross-script hits) can walk the
+    /// chunks rather than re-tokenizing or guessing.
+    struct Token: Sendable, Hashable {
+        let originalRange: Range<String.Index>
+        let normalized: String
+    }
+
     /// Normalized form suitable for substring search. Empty input
     /// returns "" so callers can compare against it directly.
     static func normalize(_ input: String) -> String {
-        guard !input.isEmpty else { return "" }
+        tokens(input).map(\.normalized).joined()
+    }
+
+    /// Per-chunk view of `normalize(input)`. The concatenation of
+    /// the returned tokens' `normalized` strings equals
+    /// `normalize(input)` byte-for-byte. Tokens whose chunk
+    /// produced no characters after lowercasing and whitespace
+    /// stripping are dropped so the offsets stay tight.
+    static func tokens(_ input: String) -> [Token] {
+        guard !input.isEmpty else { return [] }
+        let nsInput = input as NSString
         let mutable = NSMutableString(string: input) as CFMutableString
         let range = CFRangeMake(0, CFStringGetLength(mutable))
         let tokenizer = CFStringTokenizerCreate(
@@ -34,31 +56,47 @@ enum JapaneseSearchNormalizer {
             Locale(identifier: "ja") as CFLocale
         )
 
-        var out = ""
+        var out: [Token] = []
         var type = CFStringTokenizerAdvanceToNextToken(tokenizer)
         while type != [] {
+            let tokenRange = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            let raw: String
             if let latin = CFStringTokenizerCopyCurrentTokenAttribute(
                 tokenizer,
                 kCFStringTokenizerAttributeLatinTranscription
             ) as? String {
-                out.append(latin)
+                raw = latin
+            } else if tokenRange.length > 0 {
+                // No latin attribute (punctuation, digit run, or
+                // ASCII the tokenizer doesn't retranscribe).
+                // Reuse the raw chunk so numbers and existing
+                // romaji still participate in matching.
+                let nsRange = NSRange(
+                    location: tokenRange.location,
+                    length: tokenRange.length
+                )
+                raw = nsInput.substring(with: nsRange)
             } else {
-                // Token had no latin attribute (e.g. punctuation,
-                // a digit run, or ASCII that the tokenizer doesn't
-                // re-transcribe). Append the raw token text so
-                // numbers and existing romaji still participate in
-                // matching.
-                let tokenRange = CFStringTokenizerGetCurrentTokenRange(tokenizer)
-                if tokenRange.length > 0 {
-                    let nsRange = NSRange(location: tokenRange.location, length: tokenRange.length)
-                    out.append((input as NSString).substring(with: nsRange))
+                raw = ""
+            }
+            let normalized = raw
+                .lowercased()
+                .components(separatedBy: .whitespacesAndNewlines)
+                .joined()
+            if !normalized.isEmpty, tokenRange.length > 0 {
+                let nsRange = NSRange(
+                    location: tokenRange.location,
+                    length: tokenRange.length
+                )
+                if let origRange = Range(nsRange, in: input) {
+                    out.append(Token(
+                        originalRange: origRange,
+                        normalized: normalized
+                    ))
                 }
             }
             type = CFStringTokenizerAdvanceToNextToken(tokenizer)
         }
         return out
-            .lowercased()
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
     }
 }

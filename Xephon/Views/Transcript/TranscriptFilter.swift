@@ -8,6 +8,14 @@ struct FilterDepsKey: Equatable {
     /// Already-normalized search query, so we don't re-tokenize the
     /// query string on every change-check.
     let normalizedQuery: String
+    /// Already-normalized forms of every currently-selected
+    /// keyword. Empty when nothing's selected. Stacks AND-wise
+    /// with the search query (so the user can search inside a
+    /// keyword-filtered slice), but ORs internally — a row
+    /// survives when its normalized transcript contains ANY of
+    /// these. Sorted so the array's Equatable comparison is
+    /// stable across selection-set reorderings.
+    let normalizedKeywordFilters: [String]
     let labelFilter: String?
     let speakerFilter: String?
     /// When true, only utterances whose stored speaker disagrees
@@ -60,4 +68,41 @@ final class MismatchMemo {
     }
     var lastKey: Key?
     var set: Set<UUID> = []
+}
+
+/// Reference-typed memo for the per-row diarization strip runs.
+/// Without this, every body re-eval (every scroll tick, every
+/// utterance mutation, every fusion-weight slider drag) would
+/// re-sweep the full timeline per row — `O(rows × samples × active)`
+/// per render. The key only changes when the timeline or the
+/// utterance count actually moves, so steady-state scrolling reuses
+/// the cached map and the strip's `body` is a pure paint.
+@MainActor
+final class StripRunsMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let timelineVersion: Int
+        let utteranceCount: Int
+    }
+    var lastKey: Key?
+    var runs: [UUID: [DiarizationRun]] = [:]
+}
+
+/// Reference-typed memo for per-keyword occurrence counts.
+/// `signature` is the concatenation of `"<id>|<normalized text>"`
+/// for each keyword in order — captures both add/remove and
+/// in-place text edits, since `Keyword` doesn't carry an
+/// independent version counter. Combined with the utterance
+/// count + version it invalidates on every input that can change
+/// any per-keyword tally without firing on unrelated renders
+/// (selection toggles, group reorders).
+@MainActor
+final class KeywordCountsMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let utteranceCount: Int
+        let keywordSignature: [String]
+    }
+    var lastKey: Key?
+    var counts: [UUID: Int] = [:]
 }

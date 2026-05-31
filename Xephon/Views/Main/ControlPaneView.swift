@@ -13,6 +13,7 @@ struct ControlPaneView: View {
     let recorder: RecordingController
     let filterModel: TranscriptFilterModel
     let fileCoord: SessionFileCoordinator
+    let filePicker: FilePickerCoordinator
     @Binding var selectedUtteranceID: UUID?
     @Binding var scrollRequestUtteranceID: UUID?
     @Binding var showingDiscardConfirm: Bool
@@ -64,6 +65,7 @@ struct ControlPaneView: View {
                 settingsPage
                 summaryPage
                 speakerAnalysisPage
+                keywordsPage
                 summarizerPage
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
@@ -198,6 +200,23 @@ struct ControlPaneView: View {
                 )
                 SynchronyArcCard(
                     utterances: recorder.utterances
+                )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 32)
+        }
+        .clipped()
+    }
+
+    @ViewBuilder
+    private var keywordsPage: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                KeywordsCard(
+                    store: recorder.keywords,
+                    filePicker: filePicker,
+                    keywordCounts: filterModel.keywordOccurrenceCounts(in: recorder)
                 )
             }
             .frame(maxWidth: .infinity)
@@ -346,7 +365,7 @@ struct ControlPaneView: View {
 
     private var openFileButton: some View {
         Button {
-            fileCoord.presentAudioPicker(recorder: recorder)
+            fileCoord.presentAudioPicker(recorder: recorder, filePicker: filePicker)
         } label: {
             Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
                 .font(.title3)

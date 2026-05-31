@@ -21,29 +21,6 @@ import XephonLogging
 @MainActor
 @Observable
 final class SessionFileCoordinator {
-    enum FilePickerMode { case audio, session }
-
-    // MARK: - File-importer (shared between Open Audio / Import Session)
-
-    /// `.fileImporter` presentation flag. Two `.fileImporter`
-    /// modifiers stacked on the same view chain silently collide on
-    /// iPadOS 26 — one importer switching its content type by mode
-    /// is the reliable shape.
-    var showingFilePicker = false
-    /// What the next picker presentation should accept and what its
-    /// result handler should do with the URL.
-    var filePickerMode: FilePickerMode = .audio
-
-    // MARK: - Save Session export panel
-
-    /// True while the session-save panel is up.
-    var showingSaveSession = false
-    /// Snapshot bundled when the user invokes Save Session.
-    /// Captured at command time (synchronously) so the file-exporter
-    /// sheet writes a stable copy even if the user keeps interacting
-    /// with the app while it's open. Nil = no save in progress.
-    var pendingSaveDocument: SessionFileDocument?
-
     // MARK: - Open Audio: pending URL + scope lifecycle + discard alert
 
     /// True iff a picked audio URL is awaiting the discard-confirm
@@ -67,7 +44,7 @@ final class SessionFileCoordinator {
     // MARK: - Shared error surface + JSON export share sheet
 
     /// Last error from a save/load attempt; surfaces as an alert
-    /// inside `SessionIOModifier`.
+    /// in `SessionFileBridge`.
     var sessionIOError: String?
     /// Drives the JSON-export ShareSheet presentation. Identifiable
     /// via the `URL: @retroactive Identifiable` extension so it
@@ -76,19 +53,12 @@ final class SessionFileCoordinator {
 
     // MARK: - Read-only derived
 
-    /// Content types the single shared fileImporter advertises,
-    /// based on which menu command opened it. `xephonSession` is
-    /// registered via `project.yml`'s `UTExportedTypeDeclarations`,
-    /// so the picker greys out non-`.xph` files when in session
-    /// mode.
-    var filePickerAllowedTypes: [UTType] {
-        switch filePickerMode {
-        case .audio:
-            return [.audio, .mp3, .wav, .mpeg4Audio, .aiff]
-        case .session:
-            return [.xephonSession]
-        }
-    }
+    /// Content types accepted by the audio Open path. Hard-coded
+    /// here so the menu / button callers don't have to know what
+    /// the picker should accept.
+    private static let audioContentTypes: [UTType] = [
+        .audio, .mp3, .wav, .mpeg4Audio, .aiff,
+    ]
 
     /// Filename suggestion for the Save Session… panel. ISO-8601-ish
     /// stamp so successive saves don't collide and the user can scan
@@ -106,37 +76,61 @@ final class SessionFileCoordinator {
 
     // MARK: - Menu-command entry points
 
-    /// File → Open… / on-screen Open button. Pins the picker mode
-    /// to `.audio` so a stale mode left over from an earlier Import
-    /// Session… invocation can't leak through and make this entry
-    /// accept `.xph` files. Gated on busy state.
-    func presentAudioPicker(recorder: RecordingController) {
+    /// File → Open… / on-screen Open button. Routes through the
+    /// app-level `FilePickerCoordinator` so we don't stack a
+    /// second `.fileImporter` modifier on the view chain (which
+    /// collides on iPadOS 26 — see FilePickerCoordinator's doc).
+    /// Gated on busy state.
+    func presentAudioPicker(
+        recorder: RecordingController,
+        filePicker: FilePickerCoordinator
+    ) {
         guard !recorder.isRecording, !recorder.isAnalyzing else { return }
-        filePickerMode = .audio
-        showingFilePicker = true
+        filePicker.presentImport(allowedTypes: Self.audioContentTypes) { [weak self, weak recorder] result in
+            guard let self, let recorder else { return }
+            self.handleAudioPickerResult(result, recorder: recorder)
+        }
     }
 
-    /// File → Import Session… (⇧⌘O). Reuses the single fileImporter
-    /// by switching its mode to `.session` before raising it.
-    func presentSessionPicker(recorder: RecordingController) {
+    /// File → Import Session… (⇧⌘O). Same centralized importer
+    /// as the audio path, with `.xephonSession` as the allowed
+    /// type so non-`.xph` files grey out.
+    func presentSessionPicker(
+        recorder: RecordingController,
+        filePicker: FilePickerCoordinator
+    ) {
         guard !recorder.isRecording, !recorder.isAnalyzing else { return }
-        filePickerMode = .session
-        showingFilePicker = true
+        filePicker.presentImport(allowedTypes: [.xephonSession]) { [weak self, weak recorder] result in
+            guard let self, let recorder else { return }
+            self.handleSessionPickerResult(result, recorder: recorder)
+        }
     }
 
     /// File → Save Session… Snapshot the recorder's state into a
-    /// `SessionDocument` synchronously, stash it in
-    /// `pendingSaveDocument`, and raise the `.fileExporter`. The
-    /// exporter dismisses by clearing the pending doc so
-    /// re-triggering works.
-    func saveSession(recorder: RecordingController) async {
+    /// `SessionDocument`, encode synchronously, and hand the bytes
+    /// to the app-level exporter. The export callback flips the
+    /// error alert on failure; success dismisses the picker
+    /// without further work.
+    func saveSession(
+        recorder: RecordingController,
+        filePicker: FilePickerCoordinator
+    ) async {
         guard !recorder.utterances.isEmpty,
               !recorder.isRecording,
               !recorder.isAnalyzing else { return }
         do {
             let doc = try await recorder.makeSessionDocument()
-            pendingSaveDocument = SessionFileDocument(session: doc)
-            showingSaveSession = true
+            let data = try SessionBundle.encode(doc)
+            let filename = defaultSessionFilename
+            filePicker.presentExport(
+                data: data,
+                contentType: .xephonSession,
+                defaultFilename: filename
+            ) { [weak self] result in
+                if case .failure(let error) = result {
+                    self?.sessionIOError = String(describing: error)
+                }
+            }
         } catch {
             sessionIOError = String(describing: error)
         }
@@ -174,34 +168,43 @@ final class SessionFileCoordinator {
 
     // MARK: - File-picker result + audio scope lifecycle
 
-    /// Single dispatcher for the shared fileImporter. The audio
-    /// path pins security scope and hands off to the pacing dialog
-    /// (or starts analysis immediately if the transcript is empty);
-    /// the session path reads + decodes off MainActor.
-    func handleFilePickerResult(
-        _ result: Result<[URL], any Error>,
+    /// Audio-import callback. Pins security scope on the picked
+    /// URL (the picker's implicit grant can expire across the
+    /// multi-dialog hop to `startFromFile`), then either gates on
+    /// the discard-confirm dialog (utterances present) or starts
+    /// analysis directly (empty list).
+    private func handleAudioPickerResult(
+        _ result: Result<URL, any Error>,
         recorder: RecordingController
     ) {
         switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            switch filePickerMode {
-            case .audio:
-                pendingFileURL = url
-                pendingFileScopeAcquired = url.startAccessingSecurityScopedResource()
-                if !recorder.utterances.isEmpty {
-                    showingFileDiscardConfirm = true
-                } else {
-                    startFromPendingFile(recorder: recorder)
-                }
-            case .session:
-                Task { await loadSessionFromPickedFile(url, recorder: recorder) }
+        case .success(let url):
+            pendingFileURL = url
+            pendingFileScopeAcquired = url.startAccessingSecurityScopedResource()
+            if !recorder.utterances.isEmpty {
+                showingFileDiscardConfirm = true
+            } else {
+                startFromPendingFile(recorder: recorder)
             }
         case .failure(let error):
-            AppLog.app.error("file picker: \(String(describing: error), privacy: .public)")
-            if filePickerMode == .session {
-                sessionIOError = String(describing: error)
-            }
+            AppLog.app.error("audio file picker: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Session-import callback. Off-MainActor read + decode.
+    /// Errors surface through the shared `sessionIOError` alert
+    /// (the audio path doesn't surface picker failures the same
+    /// way because the user can also cancel that flow benignly).
+    private func handleSessionPickerResult(
+        _ result: Result<URL, any Error>,
+        recorder: RecordingController
+    ) {
+        switch result {
+        case .success(let url):
+            Task { await loadSessionFromPickedFile(url, recorder: recorder) }
+        case .failure(let error):
+            AppLog.app.error("session file picker: \(String(describing: error), privacy: .public)")
+            sessionIOError = String(describing: error)
         }
     }
 
