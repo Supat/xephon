@@ -51,7 +51,7 @@ struct SummarizerCard: View {
                     summarizerBackendPicker
                 }
                 summarizerStatusLine
-                deepModeToggleRow
+                summaryModePickerRow
             }
         }
         .padding(12)
@@ -59,35 +59,52 @@ struct SummarizerCard: View {
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// "Deep summary" toggle. When on, the MLX backends process
-    /// every utterance via map-reduce (windows of 50 + a merge
-    /// pass) instead of truncating to the trailing 100. Apple FM
-    /// can't honor this — its 4096-token context makes the chunk
-    /// count impractical — and the caption surfaces that so the
-    /// user knows the toggle is no-op for that backend.
+    /// Three-way summary-mode picker — Fast (trailing window),
+    /// Heuristic (top-N most distinctive utterances by TF-IDF),
+    /// Deep (map-reduce over every utterance). Caption beneath
+    /// changes per selection so the wall-time / coverage
+    /// tradeoff is visible at the moment of choice.
     @ViewBuilder
-    private var deepModeToggleRow: some View {
+    private var summaryModePickerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
-                Text(String(localized: "settings.summarizer.deepMode"))
+                Text(String(localized: "settings.summarizer.mode"))
                     .font(.callout)
                 Spacer(minLength: 0)
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { recorder.summarizerDeepMode },
+                Picker(
+                    String(localized: "settings.summarizer.mode"),
+                    selection: Binding(
+                        get: { recorder.summarizerMode },
                         set: { newValue in
-                            recorder.setSummarizerDeepMode(newValue)
+                            recorder.setSummarizerMode(newValue)
                         }
                     )
-                )
+                ) {
+                    Text(String(localized: "summary.footer.mode.fast"))
+                        .tag(SummarizeMode.fast)
+                    Text(String(localized: "summary.footer.mode.heuristic"))
+                        .tag(SummarizeMode.heuristic)
+                    Text(String(localized: "summary.footer.mode.deep"))
+                        .tag(SummarizeMode.deep)
+                }
+                .pickerStyle(.menu)
                 .labelsHidden()
-                .toggleStyle(.switch)
             }
-            Text(String(localized: "settings.summarizer.deepMode.caption"))
+            Text(captionForCurrentMode)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var captionForCurrentMode: String {
+        switch recorder.summarizerMode {
+        case .fast:
+            return String(localized: "settings.summarizer.mode.fast.caption")
+        case .heuristic:
+            return String(localized: "settings.summarizer.mode.heuristic.caption")
+        case .deep:
+            return String(localized: "settings.summarizer.mode.deep.caption")
         }
     }
 

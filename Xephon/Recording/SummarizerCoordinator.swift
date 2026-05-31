@@ -20,14 +20,15 @@ final class SummarizerCoordinator {
 
     private(set) var enabled: Bool
     private(set) var backend: SummarizerBackend
-    /// Opt-in toggle for `.deep` map-reduce summarization. When
-    /// true, the MLX backend processes EVERY utterance in windows
-    /// of `MLXQwenSummarizer.deepWindowSize` and fuses them in a
-    /// final merge pass; when false, it truncates to the trailing
-    /// 100 utterances in a single pass. Apple FM treats this as
-    /// always-fast (see `AppleFMSummarizer.summarize`). Persisted
-    /// via `xephon.summarizerDeepMode`.
-    private(set) var deepMode: Bool
+    /// User's pick of `SummarizeMode`. `.fast` truncates to a
+    /// trailing window, `.heuristic` picks the top-N most
+    /// distinctive utterances by TF-IDF, `.deep` runs map-reduce
+    /// over every utterance. Persisted via
+    /// `xephon.summarizerMode`. Defaults to `.fast` for fresh
+    /// installs and for the historical `deepMode = false` users
+    /// (we don't migrate from the legacy boolean — opting back
+    /// into deep is a one-tap action in the picker).
+    private(set) var mode: SummarizeMode
     /// Apple's `SystemLanguageModel.default` availability snapshot.
     /// Refreshed at init and on backend change. Folded into `ready`.
     private(set) var appleFMAvailable: Bool = false
@@ -62,10 +63,14 @@ final class SummarizerCoordinator {
     /// edits or dismisses them. Cleared on session start.
     private(set) var issues: [TranscriptionIssue] = []
 
-    /// Resident Qwen weights. Lazy-created on first `summarize` and
-    /// dropped when the user disables the summarizer or starts a new
-    /// session, so the ~4 GB working set doesn't linger.
-    private var summarizerActor: MLXQwenSummarizer?
+    /// Resident MLX summarizer (Qwen or Llama, depending on
+    /// `backend`). Lazy-created on first `summarize` and dropped
+    /// when the user disables the summarizer or starts a new
+    /// session so the ~4 GB working set doesn't linger.
+    /// `MLXLLMSummarizerActor` is the small protocol both
+    /// `MLXQwenSummarizer` and `MLXLlamaSummarizer` conform to
+    /// (lifecycle + `summarize`), letting one slot hold either.
+    private var summarizerActor: (any MLXLLMSummarizerActor)?
     /// Qwen reviewer's actor — separate `ModelContainer`. The
     /// coordinator ensures only one of the two is loaded at a time
     /// (both = ~9 GB resident, well over the per-app ceiling).
@@ -77,25 +82,25 @@ final class SummarizerCoordinator {
 
     private static let enabledKey = "xephon.summarizerEnabled"
     private static let backendKey = "xephon.summarizerBackend"
-    private static let deepModeKey = "xephon.summarizerDeepMode"
+    private static let modeKey    = "xephon.summarizerMode"
 
     init(parent: RecordingController) {
         self.parent = parent
         self.enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         let rawBackend = UserDefaults.standard.string(forKey: Self.backendKey) ?? ""
         self.backend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
-        self.deepMode = UserDefaults.standard.bool(forKey: Self.deepModeKey)
+        let rawMode = UserDefaults.standard.string(forKey: Self.modeKey) ?? ""
+        self.mode = SummarizeMode(rawValue: rawMode) ?? .fast
         self.appleFMAvailable = SystemLanguageModel.default.isAvailable
     }
 
-    /// Persist + apply a new deep-mode preference. No side
-    /// effects beyond the persist + state update — the next
-    /// `summarize` call reads `deepMode` and picks `.deep` vs
-    /// `.fast`.
-    func setDeepMode(_ on: Bool) {
-        guard deepMode != on else { return }
-        deepMode = on
-        UserDefaults.standard.set(on, forKey: Self.deepModeKey)
+    /// Persist + apply a new mode preference. No side effects
+    /// beyond the persist + state update — the next `summarize`
+    /// call reads `mode` and dispatches to the matching path.
+    func setMode(_ newMode: SummarizeMode) {
+        guard mode != newMode else { return }
+        mode = newMode
+        UserDefaults.standard.set(newMode.rawValue, forKey: Self.modeKey)
     }
 
     /// True iff the chosen backend is ready to summarize. Apple FM
@@ -285,12 +290,16 @@ final class SummarizerCoordinator {
             scheduleUnloadAndPipelineRewarm()
         }
         logAvailableMemory(label: "summarize Apple FM (before respond)")
-        let mode: SummarizeMode = deepMode ? .deep : .fast
+        let mode: SummarizeMode = self.mode
+        let boostedIDs = mode == .heuristic
+            ? Self.keywordBoostedIDs(in: parent)
+            : Set<UUID>()
         do {
             let summary = try await backend.summarize(
                 utterances: parent.utterances,
                 speakerNames: parent.speakerNameOverrides,
-                mode: mode
+                mode: mode,
+                boostedUtteranceIDs: boostedIDs
             )
             logAvailableMemory(label: "summarize Apple FM (after respond)")
             lastSessionSummary = summary
@@ -309,8 +318,7 @@ final class SummarizerCoordinator {
 
     private func summarizeWithMLX() async -> SessionSummary? {
         guard let modelStore = parent.modelStore,
-              let modelID = mlxModelID,
-              let family = currentMLXFamily else {
+              let modelID = mlxModelID else {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
@@ -319,15 +327,31 @@ final class SummarizerCoordinator {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        let actor: MLXQwenSummarizer
+        // Pick the right per-family actor type. `backend` is
+        // checked at the call site so the switch is exhaustive
+        // over the MLX backends (Apple FM is routed through
+        // `summarizeWithAppleFM` in `summarize()`).
+        let actor: any MLXLLMSummarizerActor
         if let existing = summarizerActor {
             actor = existing
         } else {
-            actor = MLXQwenSummarizer(
-                modelIdentifier: modelID,
-                modelDirectory: directory,
-                family: family
-            )
+            switch backend {
+            case .qwen:
+                actor = MLXQwenSummarizer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .llamaSwallow:
+                actor = MLXLlamaSummarizer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .appleFM:
+                // Unreachable — Apple FM is routed via
+                // `summarizeWithAppleFM` from `summarize()`.
+                scheduleUnloadAndPipelineRewarm()
+                return nil
+            }
             summarizerActor = actor
         }
         inferenceRunning = true
@@ -337,12 +361,16 @@ final class SummarizerCoordinator {
             inferenceStart = nil
             scheduleUnloadAndPipelineRewarm()
         }
-        let mode: SummarizeMode = deepMode ? .deep : .fast
+        let mode: SummarizeMode = self.mode
+        let boostedIDs = mode == .heuristic
+            ? Self.keywordBoostedIDs(in: parent)
+            : Set<UUID>()
         do {
             let summary = try await actor.summarize(
                 utterances: parent.utterances,
                 speakerNames: parent.speakerNameOverrides,
-                mode: mode
+                mode: mode,
+                boostedUtteranceIDs: boostedIDs
             )
             lastSessionSummary = summary
             return summary
@@ -589,5 +617,36 @@ final class SummarizerCoordinator {
         AppLog.app.info(
             "memory available [\(label, privacy: .public)]: \(mb, privacy: .public) MB"
         )
+    }
+
+    /// Build the set of utterance IDs whose normalized
+    /// transcript contains at least one normalized user-
+    /// keyword. Drives the heuristic summarizer's
+    /// keyword-boost so user-curated terms reliably surface in
+    /// the prompt window. Returns empty when the keyword list
+    /// is empty (most users won't have one). Uses the same
+    /// `JapaneseSearchNormalizer` the transcript-filter +
+    /// keyword-occurrence counters use, so cross-script
+    /// matching (kanji ↔ kana ↔ romaji) behaves consistently
+    /// with what the user sees in the transcript pane.
+    static func keywordBoostedIDs(in parent: RecordingController) -> Set<UUID> {
+        let keywords = parent.keywords.keywords
+        guard !keywords.isEmpty else { return [] }
+        let normalizedKeywords: [String] = keywords.compactMap {
+            let n = JapaneseSearchNormalizer.normalize($0.text)
+            return n.isEmpty ? nil : n
+        }
+        guard !normalizedKeywords.isEmpty else { return [] }
+        var hits: Set<UUID> = []
+        for u in parent.utterances {
+            let normalizedText = JapaneseSearchNormalizer.normalize(u.transcript)
+            if normalizedKeywords.contains(where: { normalizedText.contains($0) }) {
+                hits.insert(u.id)
+            }
+        }
+        AppLog.app.info(
+            "keyword boost: \(hits.count, privacy: .public) of \(parent.utterances.count, privacy: .public) utterances match \(normalizedKeywords.count, privacy: .public) keyword(s)"
+        )
+        return hits
     }
 }

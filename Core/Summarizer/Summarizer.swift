@@ -28,26 +28,40 @@ public enum SummarizerError: Error, CustomStringConvertible {
     }
 }
 
-/// How a `SessionSummarizer` should weigh time vs. completeness.
-/// Persisted via UserDefaults under `xephon.summarizeMode` so the
-/// user's pick survives app relaunches.
+/// How a `SessionSummarizer` should pick utterances and run
+/// inference. Persisted via UserDefaults under
+/// `xephon.summarizerMode` so the user's pick survives
+/// app relaunches.
 public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
-    /// Single pass over a trailing window. Implementations
+    /// Single pass over a TRAILING window. Implementations
     /// truncate to whatever fits comfortably in their context
-    /// budget (100 for MLX, 15 for Apple FM). Wall time on the
-    /// order of minutes; memory: just the model + one prompt's
-    /// KV cache. Default — matches the historical behavior.
+    /// budget (100 for MLX, 15 for Apple FM), keeping the most
+    /// recent utterances. Wall time on the order of minutes;
+    /// memory: just the model + one prompt's KV cache. Default
+    /// — matches the historical behavior. Best when the
+    /// trailing edge of the conversation carries the most
+    /// actionable arc (typical).
     case fast
-    /// Map-reduce across every utterance. Implementations split
-    /// the session into windows, summarize each into a compact
-    /// intermediate, then merge intermediates into the final
-    /// `SessionSummary`. Wall time scales with session length
-    /// (roughly `numChunks × per-chunk inference + one merge
-    /// pass`); peak memory matches `.fast` because only one
-    /// chunk is in the KV cache at any time. Chosen when the
-    /// user values completeness over latency — long sessions
-    /// (200+ utterances) where the trailing-100 window would
-    /// drop a meaningful prefix of the conversation.
+    /// Single pass over a HEURISTICALLY-SELECTED window —
+    /// same context budget as `.fast`, but the selection is
+    /// `Informativeness.topN` instead of `suffix(...)`. Picks
+    /// the N most distinctive utterances by session-relative
+    /// TF-IDF, with a Japanese backchannel/filler penalty
+    /// down-weighting "うん"/"そう"/"えーと"-heavy rows. Same
+    /// wall time as `.fast`; better content coverage on long
+    /// sessions where the trailing window would drop a
+    /// meaningful prefix. Tradeoff vs `.deep`: same speed as
+    /// `.fast` (one inference pass), but the LLM only ever
+    /// sees a curated subset, not every utterance.
+    case heuristic
+    /// Map-reduce across EVERY utterance. Implementations
+    /// split the session into windows, summarize each into a
+    /// compact intermediate, then merge intermediates into the
+    /// final `SessionSummary`. Wall time scales with session
+    /// length (roughly `numChunks × per-chunk inference + one
+    /// merge pass`); peak memory matches `.fast` because only
+    /// one chunk is in the KV cache at any time. Chosen when
+    /// the user values complete coverage over latency.
     case deep
 }
 
@@ -93,18 +107,31 @@ public protocol SessionSummarizer: Sendable {
     /// path may treat `.deep` as `.fast` (the protocol contract
     /// is "best-effort honor"); the MLX-backed implementation is
     /// the load-bearing one for long-session deep summaries.
+    ///
+    /// `boostedUtteranceIDs` — IDs the caller has flagged as
+    /// containing user-curated keywords (matched per the
+    /// caller's preferred normalizer). Only consulted by the
+    /// `.heuristic` mode's `Informativeness` ranker, which
+    /// applies a heavy multiplicative boost so these rows
+    /// reliably land in the heuristic-selected prompt window.
+    /// `.fast` and `.deep` ignore the set: `.fast` always picks
+    /// the trailing window regardless of content, and `.deep`
+    /// processes every utterance so no selection bias applies.
+    /// Default empty (no boost).
     func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
-        mode: SummarizeMode
+        mode: SummarizeMode,
+        boostedUtteranceIDs: Set<UUID>
     ) async throws -> SessionSummary
 }
 
 extension SessionSummarizer {
-    /// Convenience overload defaulting to `.fast`. Keeps existing
-    /// call sites (tests, the reviewer's parallel `review(...)`
-    /// pathway, etc.) compiling unchanged; new callers that care
-    /// about the mode opt in explicitly.
+    /// Convenience overload defaulting to `.fast` with no
+    /// keyword boost. Keeps existing call sites (tests, the
+    /// reviewer's parallel `review(...)` pathway, etc.)
+    /// compiling unchanged; new callers that care about the
+    /// mode / keyword boost opt in explicitly.
     public func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String]
@@ -112,7 +139,25 @@ extension SessionSummarizer {
         try await summarize(
             utterances: utterances,
             speakerNames: speakerNames,
-            mode: .fast
+            mode: .fast,
+            boostedUtteranceIDs: []
+        )
+    }
+
+    /// Convenience overload that omits the keyword-boost set
+    /// (callers without curated keywords). Forwards an empty
+    /// set so backends always see the canonical four-arg
+    /// signature.
+    public func summarize(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        mode: SummarizeMode
+    ) async throws -> SessionSummary {
+        try await summarize(
+            utterances: utterances,
+            speakerNames: speakerNames,
+            mode: mode,
+            boostedUtteranceIDs: []
         )
     }
 }

@@ -133,11 +133,11 @@ final class RecordingController {
     var transcriptionReviewStart: Date? { summarizer.reviewStart }
     var transcriptionIssues: [TranscriptionIssue] { summarizer.issues }
 
-    var summarizerDeepMode: Bool { summarizer.deepMode }
+    var summarizerMode: SummarizeMode { summarizer.mode }
 
     func setSummarizerEnabled(_ enabled: Bool) async { await summarizer.setEnabled(enabled) }
     func setSummarizerBackend(_ backend: SummarizerBackend) async { await summarizer.setBackend(backend) }
-    func setSummarizerDeepMode(_ on: Bool) { summarizer.setDeepMode(on) }
+    func setSummarizerMode(_ mode: SummarizeMode) { summarizer.setMode(mode) }
     func summarizeSession() async -> SessionSummary? { await summarizer.summarize() }
     func reviewSession() async -> [TranscriptionIssue]? { await summarizer.review() }
     func removeSummarizerModel() async { await summarizer.removeModel() }

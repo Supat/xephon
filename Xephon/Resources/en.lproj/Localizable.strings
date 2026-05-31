@@ -29,9 +29,10 @@
 "settings.summarizer.removeConfirm.cancel" = "Cancel";
 "settings.summarizer.notInstalled" = "Model not installed yet";
 "settings.summarizer.appleFM.unavailable" = "Apple Foundation Models unavailable on this device";
-"settings.summarizer.deepMode" = "Deep summary";
-"settings.summarizer.deepMode.caption" = "Process every utterance via map-reduce instead of truncating to the trailing 100. Takes longer (scales with session length); peak memory unchanged.";
-"settings.summarizer.deepMode.unsupported" = "Deep summary requires Qwen or Llama (Apple FM's context window is too small to chunk).";
+"settings.summarizer.mode" = "Summary mode";
+"settings.summarizer.mode.fast.caption" = "Single pass over the most recent utterances (trailing window). Fastest; drops the prefix of long sessions.";
+"settings.summarizer.mode.heuristic.caption" = "Single pass over the most distinctive utterances picked by session-relative TF-IDF (backchannels and fillers downweighted). Same speed as Fast; better coverage on long sessions.";
+"settings.summarizer.mode.deep.caption" = "Map-reduce over every utterance. Takes longer (scales with session length); peak memory unchanged.";
 "summary.summarize" = "Summarize";
 "summary.regenerate" = "Regenerate";
 "summary.exportMarkdown" = "Export Markdown";
@@ -81,6 +82,7 @@
 "summary.section.perSpeaker" = "Per Speaker";
 "summary.footer.model" = "Model: %@";
 "summary.footer.mode.fast" = "Fast summary";
+"summary.footer.mode.heuristic" = "Heuristic summary";
 "summary.footer.mode.deep" = "Deep summary";
 "summary.footer.aiGenerated" = "AI-generated";
 "summary.footer.aiCaveat" = "May contain mistakes";

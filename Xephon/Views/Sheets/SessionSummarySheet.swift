@@ -275,8 +275,9 @@ struct SessionSummarySheet: View {
             guard let mode else { return base }
             let modeLabel: String
             switch mode {
-            case .fast: modeLabel = String(localized: "summary.footer.mode.fast")
-            case .deep: modeLabel = String(localized: "summary.footer.mode.deep")
+            case .fast:      modeLabel = String(localized: "summary.footer.mode.fast")
+            case .heuristic: modeLabel = String(localized: "summary.footer.mode.heuristic")
+            case .deep:      modeLabel = String(localized: "summary.footer.mode.deep")
             }
             return "\(base) · \(modeLabel)"
         }()

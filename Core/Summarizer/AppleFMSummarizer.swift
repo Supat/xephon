@@ -50,7 +50,8 @@ public actor AppleFMSummarizer: SessionSummarizer {
     public func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
-        mode: SummarizeMode
+        mode: SummarizeMode,
+        boostedUtteranceIDs: Set<UUID>
     ) async throws -> SessionSummary {
         guard SystemLanguageModel.default.isAvailable else {
             throw SummarizerError.modelNotInstalled
@@ -67,9 +68,20 @@ public actor AppleFMSummarizer: SessionSummarizer {
         }
         switch mode {
         case .fast:
-            return try await summarizeFast(
+            return try await summarizeSinglePass(
                 utterances: utterances,
-                speakerNames: speakerNames
+                speakerNames: speakerNames,
+                selection: .trailing,
+                mode: .fast,
+                boostedUtteranceIDs: boostedUtteranceIDs
+            )
+        case .heuristic:
+            return try await summarizeSinglePass(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                selection: .heuristicTopN,
+                mode: .heuristic,
+                boostedUtteranceIDs: boostedUtteranceIDs
             )
         case .deep:
             return try await summarizeDeep(
@@ -79,18 +91,48 @@ public actor AppleFMSummarizer: SessionSummarizer {
         }
     }
 
-    /// Single-pass summary over the trailing
-    /// `maxPromptUtterances` window. Matches the historical
-    /// behavior — fastest wall time, drops the prefix of long
-    /// sessions.
-    private func summarizeFast(
+    /// Selection strategy for single-pass modes (`.fast` and
+    /// `.heuristic`). Determines how the prompt window is
+    /// filled when the session exceeds `maxPromptUtterances`.
+    private enum Selection {
+        case trailing
+        case heuristicTopN
+    }
+
+    /// Single-pass summary over a `maxPromptUtterances`-sized
+    /// window. Content of the window depends on `selection`:
+    /// trailing N (`.fast`) or top-N by informativeness
+    /// (`.heuristic`). Same inference call, same output schema
+    /// — only the slice changes.
+    private func summarizeSinglePass(
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        selection: Selection,
+        mode: SummarizeMode,
+        boostedUtteranceIDs: Set<UUID>
     ) async throws -> SessionSummary {
         let promptUtterances: [UtteranceEstimate]
         let truncatedFrom: Int?
         if utterances.count > Self.maxPromptUtterances {
-            promptUtterances = Array(utterances.suffix(Self.maxPromptUtterances))
+            switch selection {
+            case .trailing:
+                promptUtterances = Array(utterances.suffix(Self.maxPromptUtterances))
+            case .heuristicTopN:
+                // Speaker-balanced — each speaker (up to the
+                // default `maxSpeakers = 10`) is guaranteed at
+                // least one slot when the budget allows; the
+                // remainder is distributed by total per-speaker
+                // informativeness, with `boostedUtteranceIDs`
+                // (caller-flagged keyword hits) getting a 4×
+                // multiplicative boost. See
+                // `Informativeness.topNBalancedBySpeaker`.
+                let topIDs = Informativeness.topNBalancedBySpeaker(
+                    Self.maxPromptUtterances,
+                    utterances: utterances,
+                    boostedIDs: boostedUtteranceIDs
+                )
+                promptUtterances = utterances.filter { topIDs.contains($0.id) }
+            }
             truncatedFrom = utterances.count
         } else {
             promptUtterances = utterances
@@ -103,7 +145,12 @@ public actor AppleFMSummarizer: SessionSummarizer {
             .joined(separator: "\n")
         let truncationNote: String
         if let total = truncatedFrom {
-            truncationNote = "\n\n(Showing the most recent \(promptUtterances.count) of \(total) utterances; frame overall mood as the trailing portion.)"
+            switch selection {
+            case .trailing:
+                truncationNote = "\n\n(Showing the most recent \(promptUtterances.count) of \(total) utterances; frame overall mood as the trailing portion.)"
+            case .heuristicTopN:
+                truncationNote = "\n\n(Showing the \(promptUtterances.count) most distinctive of \(total) utterances by session-relative TF-IDF, in chronological order; frame overall mood as a representative sample, not a continuous trailing segment.)"
+            }
         } else {
             truncationNote = ""
         }
@@ -164,7 +211,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
                 perSpeaker: perSpeaker,
                 model: modelIdentifier,
                 generatedAt: Date(),
-                mode: .fast
+                mode: mode
             )
         } catch let error as SummarizerError {
             throw error
@@ -199,10 +246,16 @@ public actor AppleFMSummarizer: SessionSummarizer {
         )
         // Short-circuit when the session fits in one window — no
         // benefit to a merge pass over a single intermediate.
+        // Stamp as `.deep` so the sheet footer reflects the
+        // user's intent even though the actual selection was
+        // trailing.
         if chunks.count <= 1 {
-            return try await summarizeFast(
+            return try await summarizeSinglePass(
                 utterances: utterances,
-                speakerNames: speakerNames
+                speakerNames: speakerNames,
+                selection: .trailing,
+                mode: .deep,
+                boostedUtteranceIDs: []
             )
         }
 
