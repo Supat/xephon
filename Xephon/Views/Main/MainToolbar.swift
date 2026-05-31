@@ -21,12 +21,26 @@ struct MainToolbar: ToolbarContent {
 
     @ViewBuilder
     private var summarize: some View {
+        // Mirrors the per-section summary button's two-stage
+        // visual: outline `text.book.closed` when no cached
+        // session summary yet (tap to generate), filled
+        // `text.book.closed.fill` when one exists (tap to open
+        // the cached result). The action is identical in both
+        // states — `presentSummary` opens the sheet and auto-
+        // fires generation only when there's nothing cached
+        // and the summarizer is ready — but the glyph + a11y
+        // label tell the user which path the tap will take.
+        let hasCachedSummary = recorder.lastSessionSummary != nil
         Button {
             llmCoord.presentSummary(recorder: recorder)
         } label: {
             Label(
-                String(localized: "summary.summarize"),
-                systemImage: "text.book.closed"
+                String(localized: hasCachedSummary
+                    ? "summary.openSummary"
+                    : "summary.summarize"),
+                systemImage: hasCachedSummary
+                    ? "text.book.closed.fill"
+                    : "text.book.closed"
             )
         }
         .disabled(!recorder.isIdleWithTranscript || recorder.summarizerInferenceRunning)
@@ -34,12 +48,30 @@ struct MainToolbar: ToolbarContent {
 
     @ViewBuilder
     private var review: some View {
+        // Two-stage visual mirroring the Summarize button:
+        // outline `exclamationmark.bubble` when the issue list
+        // is empty (tap to run review), filled
+        // `exclamationmark.bubble.fill` when issues exist (tap
+        // to open the cached list). The exclamation-bubble pair
+        // reads as "alerts about the text" — outline = no alert
+        // pending, fill = alerts exist — which matches the
+        // semantics of the review flow more directly than a
+        // generic magnifying glass.
+        //
+        // Reset is wired through the underlying data: a new
+        // session calls `resetSessionState` → `clearIssues`,
+        // which flips this back to the outline state.
+        let hasIssues = !recorder.transcriptionIssues.isEmpty
         Button {
             llmCoord.presentReview(recorder: recorder)
         } label: {
             Label(
-                String(localized: "review.toolbar"),
-                systemImage: "text.magnifyingglass"
+                String(localized: hasIssues
+                    ? "review.openReview"
+                    : "review.toolbar"),
+                systemImage: hasIssues
+                    ? "exclamationmark.bubble.fill"
+                    : "exclamationmark.bubble"
             )
         }
         .disabled(
