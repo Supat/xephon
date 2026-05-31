@@ -19,6 +19,9 @@
 "settings.summarizer.backend.appleFM" = "Apple FM";
 "settings.summarizer.backend.qwen" = "Qwen3 8B";
 "settings.summarizer.backend.llamaSwallow" = "Llama-3 Swallow 8B";
+"settings.summarizer.backend.appleFM.caption" = "ダウンロード不要、内蔵モデル。短めの会話に最適です。";
+"settings.summarizer.backend.qwen.caption" = "発話の内容と感情データの両方を参照し、声と言葉のズレを指摘できます。";
+"settings.summarizer.backend.llamaSwallow.caption" = "発話の内容のみを参照し、自然な日本語で要約します。感情分析は行いません。";
 "settings.summarizer.downloading" = "Qwen3をダウンロード中 (約4.6 GB)…";
 "settings.summarizer.downloading.bytes" = "Qwen3をダウンロード中 · %@ / %@";
 "settings.summarizer.ready" = "準備完了";

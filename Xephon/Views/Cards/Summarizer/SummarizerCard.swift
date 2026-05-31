@@ -50,6 +50,7 @@ struct SummarizerCard: View {
                     Spacer(minLength: 0)
                     summarizerBackendPicker
                 }
+                backendDescriptionLine
                 summarizerStatusLine
                 summaryModePickerRow
             }
@@ -57,6 +58,30 @@ struct SummarizerCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// One-line description of the currently selected backend.
+    /// Sits directly under the backend picker so the user can
+    /// see at the moment of choice what they're picking
+    /// (model size, source, headline tradeoff) without having
+    /// to dig into ModelsCard or the docs.
+    @ViewBuilder
+    private var backendDescriptionLine: some View {
+        Text(captionForCurrentBackend)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var captionForCurrentBackend: String {
+        switch recorder.summarizerBackend {
+        case .appleFM:
+            return String(localized: "settings.summarizer.backend.appleFM.caption")
+        case .qwen:
+            return String(localized: "settings.summarizer.backend.qwen.caption")
+        case .llamaSwallow:
+            return String(localized: "settings.summarizer.backend.llamaSwallow.caption")
+        }
     }
 
     /// Three-way summary-mode picker — Fast (trailing window),

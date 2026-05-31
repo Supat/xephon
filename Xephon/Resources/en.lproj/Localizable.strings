@@ -19,6 +19,9 @@
 "settings.summarizer.backend.appleFM" = "Apple FM";
 "settings.summarizer.backend.qwen" = "Qwen3 8B";
 "settings.summarizer.backend.llamaSwallow" = "Llama-3 Swallow 8B";
+"settings.summarizer.backend.appleFM.caption" = "Built-in, no download. Works best on shorter conversations.";
+"settings.summarizer.backend.qwen.caption" = "Reads transcripts and emotion data; can flag when tone and words don't match.";
+"settings.summarizer.backend.llamaSwallow.caption" = "Reads only transcripts; writes natural Japanese summaries. No emotion analysis.";
 "settings.summarizer.downloading" = "Downloading Qwen3 (~4.6 GB)…";
 "settings.summarizer.downloading.bytes" = "Downloading Qwen3 · %@ of %@";
 "settings.summarizer.ready" = "Ready";
