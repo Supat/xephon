@@ -67,12 +67,12 @@ public actor AppleFMSummarizer: SessionSummarizer {
             )
         }
         switch mode {
-        case .fast:
+        case .trailing:
             return try await summarizeSinglePass(
                 utterances: utterances,
                 speakerNames: speakerNames,
                 selection: .trailing,
-                mode: .fast,
+                mode: .trailing,
                 boostedUtteranceIDs: boostedUtteranceIDs
             )
         case .heuristic:
@@ -91,7 +91,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
         }
     }
 
-    /// Selection strategy for single-pass modes (`.fast` and
+    /// Selection strategy for single-pass modes (`.trailing` and
     /// `.heuristic`). Determines how the prompt window is
     /// filled when the session exceeds `maxPromptUtterances`.
     private enum Selection {
@@ -101,7 +101,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
 
     /// Single-pass summary over a `maxPromptUtterances`-sized
     /// window. Content of the window depends on `selection`:
-    /// trailing N (`.fast`) or top-N by informativeness
+    /// trailing N (`.trailing`) or top-N by informativeness
     /// (`.heuristic`). Same inference call, same output schema
     /// — only the slice changes.
     private func summarizeSinglePass(

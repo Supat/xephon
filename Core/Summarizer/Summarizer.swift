@@ -41,17 +41,23 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
     /// — matches the historical behavior. Best when the
     /// trailing edge of the conversation carries the most
     /// actionable arc (typical).
-    case fast
+    ///
+    /// New persisted value is `"trailing"` (matching the case
+    /// name). The custom `init?(rawValue:)` below also accepts
+    /// the legacy `"fast"` string so existing UserDefaults
+    /// preferences, `.xph` bundles, and JSON exports decode
+    /// cleanly; new encodes write `"trailing"`.
+    case trailing
     /// Single pass over a HEURISTICALLY-SELECTED window —
-    /// same context budget as `.fast`, but the selection is
+    /// same context budget as `.trailing`, but the selection is
     /// `Informativeness.topN` instead of `suffix(...)`. Picks
     /// the N most distinctive utterances by session-relative
     /// TF-IDF, with a Japanese backchannel/filler penalty
     /// down-weighting "うん"/"そう"/"えーと"-heavy rows. Same
-    /// wall time as `.fast`; better content coverage on long
+    /// wall time as `.trailing`; better content coverage on long
     /// sessions where the trailing window would drop a
     /// meaningful prefix. Tradeoff vs `.deep`: same speed as
-    /// `.fast` (one inference pass), but the LLM only ever
+    /// `.trailing` (one inference pass), but the LLM only ever
     /// sees a curated subset, not every utterance.
     case heuristic
     /// Map-reduce across EVERY utterance. Implementations
@@ -59,10 +65,26 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
     /// compact intermediate, then merge intermediates into the
     /// final `SessionSummary`. Wall time scales with session
     /// length (roughly `numChunks × per-chunk inference + one
-    /// merge pass`); peak memory matches `.fast` because only
+    /// merge pass`); peak memory matches `.trailing` because only
     /// one chunk is in the KV cache at any time. Chosen when
     /// the user values complete coverage over latency.
     case deep
+
+    /// Custom rawValue initializer for backward compatibility.
+    /// Accepts the legacy `"fast"` string (used before the case
+    /// was renamed from `.fast` to `.trailing`) and maps it to
+    /// `.trailing`. New writes go through the default rawValue
+    /// path and emit `"trailing"`, so over time persisted state
+    /// migrates forward without an explicit migration step.
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "trailing":  self = .trailing
+        case "heuristic": self = .heuristic
+        case "deep":      self = .deep
+        case "fast":      self = .trailing   // legacy
+        default:          return nil
+        }
+    }
 }
 
 /// Abstract interface a session summarizer conforms to. Decouples
@@ -104,7 +126,7 @@ public protocol SessionSummarizer: Sendable {
     ///
     /// `mode` lets the caller trade wall time for completeness —
     /// see `SummarizeMode`. Backends that don't support a deep
-    /// path may treat `.deep` as `.fast` (the protocol contract
+    /// path may treat `.deep` as `.trailing` (the protocol contract
     /// is "best-effort honor"); the MLX-backed implementation is
     /// the load-bearing one for long-session deep summaries.
     ///
@@ -114,7 +136,7 @@ public protocol SessionSummarizer: Sendable {
     /// `.heuristic` mode's `Informativeness` ranker, which
     /// applies a heavy multiplicative boost so these rows
     /// reliably land in the heuristic-selected prompt window.
-    /// `.fast` and `.deep` ignore the set: `.fast` always picks
+    /// `.trailing` and `.deep` ignore the set: `.trailing` always picks
     /// the trailing window regardless of content, and `.deep`
     /// processes every utterance so no selection bias applies.
     /// Default empty (no boost).
@@ -127,7 +149,7 @@ public protocol SessionSummarizer: Sendable {
 }
 
 extension SessionSummarizer {
-    /// Convenience overload defaulting to `.fast` with no
+    /// Convenience overload defaulting to `.trailing` with no
     /// keyword boost. Keeps existing call sites (tests, the
     /// reviewer's parallel `review(...)` pathway, etc.)
     /// compiling unchanged; new callers that care about the
@@ -139,7 +161,7 @@ extension SessionSummarizer {
         try await summarize(
             utterances: utterances,
             speakerNames: speakerNames,
-            mode: .fast,
+            mode: .trailing,
             boostedUtteranceIDs: []
         )
     }

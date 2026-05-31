@@ -105,11 +105,11 @@ struct SummarizerCard: View {
                         }
                     )
                 ) {
-                    Text(String(localized: "summary.footer.mode.fast"))
-                        .tag(SummarizeMode.fast)
-                    Text(String(localized: "summary.footer.mode.heuristic"))
+                    Text(String(localized: "settings.summarizer.mode.trailing"))
+                        .tag(SummarizeMode.trailing)
+                    Text(String(localized: "settings.summarizer.mode.heuristic"))
                         .tag(SummarizeMode.heuristic)
-                    Text(String(localized: "summary.footer.mode.deep"))
+                    Text(String(localized: "settings.summarizer.mode.deep"))
                         .tag(SummarizeMode.deep)
                 }
                 .pickerStyle(.menu)
@@ -124,8 +124,8 @@ struct SummarizerCard: View {
 
     private var captionForCurrentMode: String {
         switch recorder.summarizerMode {
-        case .fast:
-            return String(localized: "settings.summarizer.mode.fast.caption")
+        case .trailing:
+            return String(localized: "settings.summarizer.mode.trailing.caption")
         case .heuristic:
             return String(localized: "settings.summarizer.mode.heuristic.caption")
         case .deep:

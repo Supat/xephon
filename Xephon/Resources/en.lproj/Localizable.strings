@@ -33,10 +33,15 @@
 "settings.summarizer.notInstalled" = "Model not installed yet";
 "settings.summarizer.appleFM.unavailable" = "Apple Foundation Models unavailable on this device";
 "settings.summarizer.mode" = "Summary mode";
-"settings.summarizer.mode.fast.caption" = "Single pass over the most recent utterances (trailing window). Fastest; drops the prefix of long sessions.";
-"settings.summarizer.mode.heuristic.caption" = "Single pass over the most distinctive utterances picked by session-relative TF-IDF (backchannels and fillers downweighted). Same speed as Fast; better coverage on long sessions.";
+"settings.summarizer.mode.trailing" = "Trailing";
+"settings.summarizer.mode.heuristic" = "Heuristic";
+"settings.summarizer.mode.deep" = "Deep";
+"settings.summarizer.mode.trailing.caption" = "Single pass over the most recent utterances (trailing window). Same speed as Heuristic; drops the prefix of long sessions.";
+"settings.summarizer.mode.heuristic.caption" = "Single pass over the most distinctive utterances picked by session-relative TF-IDF (backchannels and fillers downweighted). Same speed as Trailing; better coverage on long sessions.";
 "settings.summarizer.mode.deep.caption" = "Map-reduce over every utterance. Takes longer (scales with session length); peak memory unchanged.";
 "summary.summarize" = "Summarize";
+"summary.openSummary" = "Open summary";
+"review.openReview" = "Open review";
 "summary.regenerate" = "Regenerate";
 "summary.exportMarkdown" = "Export Markdown";
 "review.toolbar" = "Review Transcription";
@@ -84,7 +89,7 @@
 "summary.section.overallMood" = "Overall Mood";
 "summary.section.perSpeaker" = "Per Speaker";
 "summary.footer.model" = "Model: %@";
-"summary.footer.mode.fast" = "Fast summary";
+"summary.footer.mode.trailing" = "Trailing summary";
 "summary.footer.mode.heuristic" = "Heuristic summary";
 "summary.footer.mode.deep" = "Deep summary";
 "summary.footer.aiGenerated" = "AI-generated";

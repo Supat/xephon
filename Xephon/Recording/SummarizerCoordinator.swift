@@ -21,11 +21,11 @@ final class SummarizerCoordinator {
 
     private(set) var enabled: Bool
     private(set) var backend: SummarizerBackend
-    /// User's pick of `SummarizeMode`. `.fast` truncates to a
-    /// trailing window, `.heuristic` picks the top-N most
+    /// User's pick of `SummarizeMode`. `.trailing` truncates to
+    /// a trailing window, `.heuristic` picks the top-N most
     /// distinctive utterances by TF-IDF, `.deep` runs map-reduce
     /// over every utterance. Persisted via
-    /// `xephon.summarizerMode`. Defaults to `.fast` for fresh
+    /// `xephon.summarizerMode`. Defaults to `.trailing` for fresh
     /// installs and for the historical `deepMode = false` users
     /// (we don't migrate from the legacy boolean — opting back
     /// into deep is a one-tap action in the picker).
@@ -106,7 +106,7 @@ final class SummarizerCoordinator {
         let rawBackend = UserDefaults.standard.string(forKey: Self.backendKey) ?? ""
         self.backend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
         let rawMode = UserDefaults.standard.string(forKey: Self.modeKey) ?? ""
-        self.mode = SummarizeMode(rawValue: rawMode) ?? .fast
+        self.mode = SummarizeMode(rawValue: rawMode) ?? .trailing
         self.appleFMAvailable = SystemLanguageModel.default.isAvailable
     }
 

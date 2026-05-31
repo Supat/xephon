@@ -68,7 +68,7 @@ public struct SessionSummary: Sendable, Hashable, Codable {
     /// Wall-clock time the summary was generated. ISO-8601 in JSON.
     public let generatedAt: Date
     /// Which summarization mode produced this summary —
-    /// `.fast` (single-pass trailing window) vs `.deep`
+    /// `.trailing` (single-pass trailing window) vs `.deep`
     /// (map-reduce across every utterance). Optional so older
     /// `.xph` bundles whose `SessionSummary` predates this field
     /// decode cleanly; the sheet footer just omits the mode

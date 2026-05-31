@@ -48,7 +48,7 @@ internal protocol MLXLLMSpec: Sendable {
     var family: LLMModelFamily { get }
 
     /// Cap on prompt utterances for single-pass modes
-    /// (`.fast` / `.heuristic`). When the session exceeds
+    /// (`.trailing` / `.heuristic`). When the session exceeds
     /// this, the caller's selection strategy (trailing /
     /// heuristic top-N) decides which window to keep.
     var maxPromptUtterances: Int { get }
@@ -61,7 +61,7 @@ internal protocol MLXLLMSpec: Sendable {
     /// in `.deep` mode.
     var deepWindowOutputTokens: Int { get }
 
-    /// Output-token cap for fast / heuristic / merge passes
+    /// Output-token cap for trailing / heuristic / merge passes
     /// (i.e. anything that emits a full `SessionSummary`).
     var maxOutputTokens: Int { get }
 
@@ -82,7 +82,7 @@ internal protocol MLXLLMSpec: Sendable {
     var repetitionPenalty: Float? { get }
 
     /// Single-pass prompt: the chat-style message body the
-    /// model receives for `.fast` and `.heuristic` modes.
+    /// model receives for `.trailing` and `.heuristic` modes.
     func buildPrompt(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
@@ -102,7 +102,7 @@ internal protocol MLXLLMSpec: Sendable {
 
     /// Merge prompt for `.deep` mode. Output schema MUST be
     /// the canonical `SessionSummary` JSON so the same parser
-    /// works for fast / heuristic / merge.
+    /// works for trailing / heuristic / merge.
     func buildDeepMergePrompt(
         intermediates: [MLXLLMDeepWindowIntermediate],
         allUtterances: [UtteranceEstimate],
@@ -126,7 +126,7 @@ internal protocol MLXLLMSpec: Sendable {
 /// when the session exceeds `maxPromptUtterances`.
 internal enum MLXLLMSelection {
     /// Most-recent N utterances (`utterances.suffix(N)`).
-    /// Default for `.fast` mode.
+    /// Default for `.trailing` mode.
     case trailing
     /// Top-N by `Informativeness.topNBalancedBySpeaker`,
     /// restored to chronological order at the call site.
@@ -184,14 +184,14 @@ internal enum MLXLLMSummarizerCore {
             )
         }
         switch mode {
-        case .fast:
+        case .trailing:
             return try await summarizeSinglePass(
                 container: container,
                 modelIdentifier: modelIdentifier,
                 utterances: utterances,
                 speakerNames: speakerNames,
                 selection: .trailing,
-                mode: .fast,
+                mode: .trailing,
                 boostedUtteranceIDs: boostedUtteranceIDs,
                 spec: spec
             )
