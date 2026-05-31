@@ -41,36 +41,73 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         }
         guard !utterances.isEmpty else { return [] }
 
-        let promptUtterances: [UtteranceEstimate]
-        let truncatedFrom: Int?
-        if utterances.count > Self.maxPromptUtterances {
-            promptUtterances = Array(utterances.suffix(Self.maxPromptUtterances))
-            truncatedFrom = utterances.count
-        } else {
-            promptUtterances = utterances
-            truncatedFrom = nil
+        // Always-chunk: review's purpose is per-utterance
+        // proofreading, so every utterance must get a chance
+        // to be flagged. The trailing-window truncation we
+        // used before silently skipped the prefix of long
+        // sessions. We pay multiple `session.respond` calls
+        // on long sessions to keep the per-utterance guarantee.
+        let chunks = stride(from: 0, to: utterances.count, by: Self.maxPromptUtterances).map {
+            offset -> [UtteranceEstimate] in
+            let end = min(offset + Self.maxPromptUtterances, utterances.count)
+            return Array(utterances[offset..<end])
         }
-        // 1-based row index → utterance id. The LLM's output refers
-        // back to these indices; we look them up to construct
-        // `TranscriptionIssue`s keyed by the canonical UUID.
+        AppLog.app.info(
+            "AppleFMTranscriptionReviewer reviewing \(utterances.count, privacy: .public) utterances in \(chunks.count, privacy: .public) chunk(s)"
+        )
+
+        var allIssues: [TranscriptionIssue] = []
+        for (chunkIndex, chunk) in chunks.enumerated() {
+            if Task.isCancelled { throw CancellationError() }
+            let issues = try await reviewChunk(
+                chunk: chunk,
+                speakerNames: speakerNames,
+                language: language,
+                chunkIndex: chunkIndex,
+                totalChunks: chunks.count
+            )
+            allIssues.append(contentsOf: issues)
+            AppLog.app.info(
+                "AppleFMTranscriptionReviewer chunk \(chunkIndex + 1, privacy: .public)/\(chunks.count, privacy: .public) yielded \(issues.count, privacy: .public) issue(s)"
+            )
+        }
+        return allIssues
+    }
+
+    /// Inference on a single chunk. Row indices are 1-based
+    /// local to the chunk; the per-chunk `indexToID` remaps
+    /// back to the session-wide utterance UUIDs the
+    /// `TranscriptionIssue` carries. Fresh
+    /// `LanguageModelSession` per chunk so the 4 k context
+    /// doesn't accumulate across calls.
+    private func reviewChunk(
+        chunk: [UtteranceEstimate],
+        speakerNames: [String: String],
+        language: ReviewLanguage,
+        chunkIndex: Int,
+        totalChunks: Int
+    ) async throws -> [TranscriptionIssue] {
         let indexToID: [Int: UUID] = Dictionary(
-            uniqueKeysWithValues: promptUtterances
+            uniqueKeysWithValues: chunk
                 .enumerated()
                 .map { ($0.offset + 1, $0.element.id) }
         )
-
-        let lines = promptUtterances.enumerated().map { idx, u in
+        let lines = chunk.enumerated().map { idx, u in
             Self.compactLine(rowIndex: idx + 1, for: u, speakerNames: speakerNames)
         }.joined(separator: "\n")
+        // Tell the model this is one chunk of a longer pass
+        // when there's more than one — keeps it from treating
+        // "missing prior topic context" as a non-sequitur
+        // signal. Single-chunk sessions skip the preface.
         let preface: String
-        if let total = truncatedFrom {
-            preface = "Showing the most recent \(promptUtterances.count) of \(total) utterances; review only these.\n\n"
+        if totalChunks > 1 {
+            preface = "This is chunk \(chunkIndex + 1) of \(totalChunks) of the conversation's review pass. Earlier and later utterances are reviewed separately; do not flag rows as non-sequitur just because broader topic context isn't visible here.\n\n"
         } else {
             preface = ""
         }
-        // Reason in the conversation's language so meaning + homophone
-        // analysis works, but emit the `reason` field in the user's
-        // app-language pick so it reads naturally in the review sheet.
+        // Reason in the conversation's language so meaning +
+        // homophone analysis works, but emit the `reason`
+        // field in the user's app-language pick.
         let userMessage = """
             The conversation is in \(language.label). Reason about meaning and homophones in \(language.label) only.
             Write each issue's "reason" field in \(SummarizerLocale.responseLanguageNameInEnglish). Use no other language for the reason text.
@@ -79,9 +116,6 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
             \(lines)
             """
 
-        AppLog.app.info(
-            "AppleFMTranscriptionReviewer reviewing \(promptUtterances.count, privacy: .public) utterances"
-        )
         let session = LanguageModelSession(instructions: Self.instructions)
         let response: LanguageModelSession.Response<GenerableIssueList>
         do {
@@ -92,9 +126,11 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
             )
         } catch let error as TranscriptionReviewError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             AppLog.app.error(
-                "AppleFMTranscriptionReviewer.respond failed: \(String(describing: error), privacy: .public)"
+                "AppleFMTranscriptionReviewer chunk \(chunkIndex + 1, privacy: .public)/\(totalChunks, privacy: .public) respond failed: \(String(describing: error), privacy: .public)"
             )
             throw TranscriptionReviewError.inferenceFailed(
                 reason: String(describing: error)
