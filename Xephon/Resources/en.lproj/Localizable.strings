@@ -80,6 +80,8 @@
 "summary.section.overallMood" = "Overall Mood";
 "summary.section.perSpeaker" = "Per Speaker";
 "summary.footer.model" = "Model: %@";
+"summary.footer.mode.fast" = "Fast summary";
+"summary.footer.mode.deep" = "Deep summary";
 "summary.footer.aiGenerated" = "AI-generated";
 "summary.footer.aiCaveat" = "May contain mistakes";
 "transcript.empty.title" = "No Utterances Yet";

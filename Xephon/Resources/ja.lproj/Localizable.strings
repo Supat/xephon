@@ -80,6 +80,8 @@
 "summary.section.overallMood" = "全体の雰囲気";
 "summary.section.perSpeaker" = "話者ごと";
 "summary.footer.model" = "モデル: %@";
+"summary.footer.mode.fast" = "ファスト要約";
+"summary.footer.mode.deep" = "ディープ要約";
 "summary.footer.aiGenerated" = "AI生成";
 "summary.footer.aiCaveat" = "誤りを含む可能性があります";
 "transcript.empty.title" = "まだ発話がありません";

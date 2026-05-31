@@ -130,7 +130,11 @@ struct SessionSummarySheet: View {
                         }
                     }
                 }
-                footer(model: summary.model, generatedAt: summary.generatedAt)
+                footer(
+                    model: summary.model,
+                    mode: summary.mode,
+                    generatedAt: summary.generatedAt
+                )
             }
             .padding(20)
         }
@@ -256,10 +260,29 @@ struct SessionSummarySheet: View {
     }
 
     @ViewBuilder
-    private func footer(model: String, generatedAt: Date) -> some View {
+    private func footer(
+        model: String,
+        mode: SummarizeMode?,
+        generatedAt: Date
+    ) -> some View {
+        // "Model: qwen3-8b-4bit · Deep summary" — the mode suffix
+        // is dropped for legacy summaries persisted before the
+        // mode field was added (decoded as nil), so the footer
+        // doesn't render "(unknown)" or similar awkwardness on
+        // older `.xph` bundles.
+        let modelLine: String = {
+            let base = String(format: String(localized: "summary.footer.model"), model)
+            guard let mode else { return base }
+            let modeLabel: String
+            switch mode {
+            case .fast: modeLabel = String(localized: "summary.footer.mode.fast")
+            case .deep: modeLabel = String(localized: "summary.footer.mode.deep")
+            }
+            return "\(base) · \(modeLabel)"
+        }()
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: String(localized: "summary.footer.model"), model))
+                Text(modelLine)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Text(generatedAt.formatted(date: .abbreviated, time: .shortened))
