@@ -8,7 +8,7 @@
 "settings.textSER" = "テキスト SER";
 "settings.textSER.deberta" = "WRIME";
 "settings.textSER.foundationModels" = "Apple FM";
-"settings.offlineASR" = "オフラインASR";
+"settings.offlineASR" = "ASRバックエンド";
 "settings.offlineASR.speechAnalyzer" = "Apple Speech";
 "settings.offlineASR.qwen3ASR" = "Qwen3-ASR";
 "textSER.appleFMViolation" = "Apple FM ✕";

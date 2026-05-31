@@ -1,13 +1,20 @@
 import Foundation
 
-/// User-selectable offline ASR backend. Drives the `Transcriber`
-/// instance held by `AnalysisPipeline` for the non-streaming paths:
-/// file-mode analysis, per-utterance re-evaluation, and the
-/// Edit Utterance sheet's Transcribe Range. The live recording
-/// path uses Apple's `StreamingTranscriber` and is unaffected
-/// by this choice — Qwen3-ASR doesn't conform to the streaming
-/// protocol so live can't switch without a chunked wrapper that
-/// doesn't exist yet.
+/// User-selectable ASR backend. Drives both the `Transcriber`
+/// instance held by `AnalysisPipeline` for non-streaming paths
+/// (file analysis, per-utterance re-evaluation, the Edit
+/// Utterance sheet's Transcribe Range) AND the
+/// `StreamingTranscriber` instance held by `RecordingController`
+/// for live recording. Qwen3 in live mode goes through
+/// `StreamingQwen3ASRTranscriber` — an actor that buffers
+/// incoming audio into ~8 s chunks and transcribes them
+/// serially via Qwen3's one-shot API (with the latency trade-off
+/// documented there).
+///
+/// The type and UserDefaults key keep their legacy
+/// `offlineASRBackend` name for backward compatibility (the
+/// pick used to only affect offline paths); user-facing labels
+/// are language-neutral.
 ///
 /// Persisted via `UserDefaults` so the user's pick survives app
 /// restarts. Defaults to `.speechAnalyzer` (Apple) so existing

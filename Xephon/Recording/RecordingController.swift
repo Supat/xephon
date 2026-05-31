@@ -600,13 +600,40 @@ final class RecordingController {
         } else {
             self.diarizerClusteringThreshold = FluidAudioDiarizer.defaultClusteringThreshold
         }
-        if let raw = UserDefaults.standard.string(forKey: Self.offlineASRBackendKey),
-           let backend = OfflineASRBackend(rawValue: raw) {
-            self.currentOfflineASRBackend = backend
-        }
+        // Resolve the persisted ASR backend pick once, into a
+        // local, so the streaming-transcriber factory below
+        // doesn't have to read `self.currentOfflineASRBackend`
+        // mid-init (Swift 6 strict concurrency rejects member
+        // access via `self` before every stored property has
+        // been set, even for properties already assigned).
+        let initialASRBackend: OfflineASRBackend = {
+            if let raw = UserDefaults.standard.string(forKey: Self.offlineASRBackendKey),
+               let backend = OfflineASRBackend(rawValue: raw) {
+                return backend
+            }
+            return .speechAnalyzer
+        }()
+        self.currentOfflineASRBackend = initialASRBackend
         self.canRecreateStreamingTranscriber = (streamingTranscriber == nil)
-        self.streamingTranscriber = streamingTranscriber
-            ?? StreamingSpeechAnalyzerTranscriber(locale: initialLanguage.locale)
+        // Build the streaming transcriber per the resolved
+        // backend. Inlined (rather than calling a static factory
+        // method via `Self.` / `RecordingController.`) so the
+        // compiler's init-isolation analysis doesn't flag
+        // partial-self access.
+        let resolvedStreamingTranscriber: any StreamingTranscriber
+        if let injected = streamingTranscriber {
+            resolvedStreamingTranscriber = injected
+        } else {
+            switch initialASRBackend {
+            case .speechAnalyzer:
+                resolvedStreamingTranscriber =
+                    StreamingSpeechAnalyzerTranscriber(locale: initialLanguage.locale)
+            case .qwen3ASR:
+                resolvedStreamingTranscriber =
+                    StreamingQwen3ASRTranscriber(locale: initialLanguage.locale)
+            }
+        }
+        self.streamingTranscriber = resolvedStreamingTranscriber
         self.pipeline = pipeline
         // ModelDownloadState is @MainActor — RecordingController is too,
         // so it's built here (synchronously) and shared with the
@@ -1598,15 +1625,25 @@ final class RecordingController {
         await syncTextSERStateFromPipeline(from: pipeline)
     }
 
-    /// Persist the user's offline ASR backend pick and push it
-    /// into the pipeline. Live recording is unaffected — that
-    /// path always uses Apple's `StreamingTranscriber`. Subsequent
-    /// re-evaluation / file analysis / Transcribe Range calls go
-    /// through the freshly-swapped offline transcriber.
+    /// Persist the user's ASR backend pick and push it into the
+    /// pipeline. The pick now drives BOTH paths: live recording
+    /// (`streamingTranscriber`) and re-evaluation / file analysis /
+    /// Transcribe Range (the pipeline's offline transcriber).
+    /// Qwen3 in live mode uses `StreamingQwen3ASRTranscriber`,
+    /// a chunked wrapper around the one-shot transcribe API —
+    /// see that file for the latency trade-off. The setting key
+    /// keeps the legacy `offlineASRBackend` name for UserDefaults
+    /// compatibility; user-facing strings are language-neutral.
     func setOfflineASRBackend(_ backend: OfflineASRBackend) async {
         guard backend != currentOfflineASRBackend else { return }
         currentOfflineASRBackend = backend
         UserDefaults.standard.set(backend.rawValue, forKey: Self.offlineASRBackendKey)
+        if canRecreateStreamingTranscriber, phase == .idle {
+            streamingTranscriber = Self.makeStreamingTranscriber(
+                backend: backend,
+                locale: sessionLanguage.locale
+            )
+        }
         if let pipeline {
             pipeline.setOfflineASRBackend(
                 backend,
@@ -1616,6 +1653,24 @@ final class RecordingController {
         AppLog.app.info(
             "offlineASRBackend → \(backend.rawValue, privacy: .public)"
         )
+    }
+
+    /// Factory for the per-backend streaming transcriber.
+    /// Centralizes the switch so init, `setOfflineASRBackend`,
+    /// and `setSessionLanguage` all build the same instance for
+    /// a given (backend, locale) pair. `nonisolated` so callers
+    /// can build during init before MainActor isolation
+    /// completes.
+    private nonisolated static func makeStreamingTranscriber(
+        backend: OfflineASRBackend,
+        locale: Locale
+    ) -> any StreamingTranscriber {
+        switch backend {
+        case .speechAnalyzer:
+            return StreamingSpeechAnalyzerTranscriber(locale: locale)
+        case .qwen3ASR:
+            return StreamingQwen3ASRTranscriber(locale: locale)
+        }
     }
 
     /// Replay the active glossary against every utterance with a
@@ -1681,7 +1736,8 @@ final class RecordingController {
         sessionLanguage = language
         language.saveToDefaults()
         if canRecreateStreamingTranscriber {
-            streamingTranscriber = StreamingSpeechAnalyzerTranscriber(
+            streamingTranscriber = Self.makeStreamingTranscriber(
+                backend: currentOfflineASRBackend,
                 locale: language.locale
             )
         }
