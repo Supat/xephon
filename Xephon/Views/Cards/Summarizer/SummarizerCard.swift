@@ -51,11 +51,49 @@ struct SummarizerCard: View {
                     summarizerBackendPicker
                 }
                 summarizerStatusLine
+                deepModeToggleRow
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// "Deep summary" toggle. When on, the MLX backends process
+    /// every utterance via map-reduce (windows of 50 + a merge
+    /// pass) instead of truncating to the trailing 100. Apple FM
+    /// can't honor this — its 4096-token context makes the chunk
+    /// count impractical — and the caption surfaces that so the
+    /// user knows the toggle is no-op for that backend.
+    @ViewBuilder
+    private var deepModeToggleRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text(String(localized: "settings.summarizer.deepMode"))
+                    .font(.callout)
+                Spacer(minLength: 0)
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { recorder.summarizerDeepMode },
+                        set: { newValue in
+                            recorder.setSummarizerDeepMode(newValue)
+                        }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(recorder.summarizerBackend == .appleFM)
+            }
+            Text(
+                recorder.summarizerBackend == .appleFM
+                ? String(localized: "settings.summarizer.deepMode.unsupported")
+                : String(localized: "settings.summarizer.deepMode.caption")
+            )
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder

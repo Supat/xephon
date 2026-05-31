@@ -61,7 +61,18 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         // 128 MB rationale (SER actors torn down before this runs).
         MLX.GPU.set(cacheLimit: 128 * 1024 * 1024)
         do {
-            let configuration = ModelConfiguration(directory: modelDirectory)
+            // Family-specific `extraEOSTokens` — without all three
+            // Llama 3.1 stop tokens (`<|end_of_text|>`,
+            // `<|eom_id|>`, `<|eot_id|>`) generation runs to the
+            // 4096-token cap because MLX-LM only honors a single
+            // `eos_token` from tokenizer_config.json while
+            // Llama-Swallow has been observed emitting the base-
+            // model EOS instead of the chat EOT. See
+            // `LLMModelFamily.extraEOSTokens`.
+            let configuration = ModelConfiguration(
+                directory: modelDirectory,
+                extraEOSTokens: family.extraEOSTokens
+            )
             container = try await LLMModelFactory.shared.loadContainer(
                 configuration: configuration
             )
@@ -116,27 +127,62 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
         )
 
         let raw: String
+        let family = self.family
         do {
             raw = try await container.perform { context -> String in
                 let userInput = UserInput(prompt: prompt)
                 let lmInput = try await context.processor.prepare(input: userInput)
+                AppLog.app.info(
+                    "MLXQwenTranscriptionReviewer prepared input: \(lmInput.text.tokens.size, privacy: .public) prompt tokens"
+                )
                 var parameters = GenerateParameters(
                     maxTokens: Self.maxOutputTokens,
                     temperature: 0.2
                 )
+                // Llama-Swallow's Japanese fine-tune occasionally
+                // loops on English-language JSON instructions —
+                // see the matching note in `MLXQwenSummarizer`.
+                if family == .llama {
+                    parameters.repetitionPenalty = 1.05
+                }
                 // Matches MLXQwenSummarizer — see its generate
                 // block for the 128-vs-64 watchdog rationale.
                 parameters.prefillStepSize = 128
+                let startTime = Date()
+                var firstTokenTime: Date? = nil
                 let result = try MLXLMCommon.generate(
                     input: lmInput,
                     parameters: parameters,
                     context: context,
                     // Cooperative cancellation — see the matching
                     // hook in `MLXQwenSummarizer` for the rationale.
-                    didGenerate: { (_: [Int]) -> GenerateDisposition in
-                        Task.isCancelled ? .stop : .more
+                    didGenerate: { (tokens: [Int]) -> GenerateDisposition in
+                        if firstTokenTime == nil {
+                            firstTokenTime = Date()
+                            let prefillSec = firstTokenTime!.timeIntervalSince(startTime)
+                            let msg = String(
+                                format: "MLXQwenTranscriptionReviewer prefill done in %.2f s; starting decode",
+                                prefillSec
+                            )
+                            AppLog.app.info("\(msg, privacy: .public)")
+                        } else if tokens.count.isMultiple(of: 64) {
+                            let elapsed = Date().timeIntervalSince(firstTokenTime!)
+                            let tps = elapsed > 0 ? Double(tokens.count) / elapsed : 0
+                            let msg = String(
+                                format: "MLXQwenTranscriptionReviewer decode: %d tokens in %.1f s (%.1f t/s)",
+                                tokens.count, elapsed, tps
+                            )
+                            AppLog.app.info("\(msg, privacy: .public)")
+                        }
+                        return Task.isCancelled ? .stop : .more
                     }
                 )
+                let totalSec = Date().timeIntervalSince(startTime)
+                let finishMsg = String(
+                    format: "MLXQwenTranscriptionReviewer generate finished: %d tokens in %.1f s total",
+                    result.tokens.count, totalSec
+                )
+                AppLog.app.info("\(finishMsg, privacy: .public)")
                 return result.output
             }
         } catch let error as TranscriptionReviewError {
@@ -170,45 +216,90 @@ public actor MLXQwenTranscriptionReviewer: TranscriptionReviewer {
     ) -> String {
         var lines: [String] = []
         lines.reserveCapacity(utterances.count + 24)
-        lines.append("You are a transcription proofreader for a multi-speaker conversation.")
-        // Language anchoring up front — Qwen3 was trained on a
-        // Chinese-dominant corpus and otherwise reads kanji as
-        // Mandarin (suggesting Chinese-style replacements that are
-        // meaningless to the user). Putting this above the task
-        // description biases the rest of the prompt into the right
-        // language frame from the first token.
-        lines.append(language.qwenAnchor)
-        lines.append("")
-        lines.append("Each utterance below has a 1-based row index, speaker id, time, and transcript.")
-        lines.append("Find rows whose transcript is likely WRONG because of:")
-        lines.append("  - a misrecognized homophone or near-homophone,")
-        lines.append("  - a sentence that does not fit the session context (non-sequitur),")
-        lines.append("  - a clear grammar slip that reads as an ASR error, not a stylistic choice.")
-        lines.append("Do NOT flag rows that are merely informal, dialectal, or unusual but coherent.")
-        lines.append("")
-        lines.append("Return ONLY a JSON object with one field:")
-        lines.append("  \"issues\": array of { \"rowIndex\": int, \"kind\": one of \"homophone\"|\"contextual\"|\"grammar\"|\"other\", \"reason\": one short sentence describing what looks wrong, \"confidence\": number 0.0–1.0 }")
-        lines.append("DO NOT propose a corrected transcript — the human user will edit the row themselves. Just identify which rows look wrong and why.")
-        lines.append("Omit rows that read correctly.")
-        lines.append("Return ONLY valid JSON, no prose before or after.")
-        // Pin the freeform `reason` field's language to the user's
-        // iPadOS app-language pick. Qwen3 will otherwise drift to
-        // Chinese when reviewing Japanese transcripts.
-        lines.append("The \"reason\" text in each issue MUST be written in this language: \(SummarizerLocale.responseLanguageNameInEnglish). No other language is acceptable.")
-        // Family-gated: Qwen3 has the `/no_think` directive to
-        // skip its <think> chain-of-thought block; Llama 3 would
-        // emit the literal token, corrupting the JSON output.
+        // Instruction language follows the model family — Llama-
+        // Swallow (Japanese fine-tune) is more concise + reliable
+        // when prompted in Japanese; the JSON keys and "kind"
+        // enum values stay English in both copies because they
+        // are parsed back by Swift. The `language.qwenAnchor`
+        // line stays anchored regardless — that's about the
+        // transcript content's language, not the prompt's.
+        switch family {
+        case .qwen:
+            lines.append("You are a transcription proofreader for a multi-speaker conversation.")
+            // Language anchoring up front — Qwen3 was trained on
+            // a Chinese-dominant corpus and otherwise reads kanji
+            // as Mandarin (suggesting Chinese-style replacements
+            // that are meaningless to the user). Putting this
+            // above the task description biases the rest of the
+            // prompt into the right language frame from the
+            // first token.
+            lines.append(language.qwenAnchor)
+            lines.append("")
+            lines.append("Each utterance below has a 1-based row index, speaker id, time, and transcript.")
+            lines.append("Find rows whose transcript is likely WRONG because of:")
+            lines.append("  - a misrecognized homophone or near-homophone,")
+            lines.append("  - a sentence that does not fit the session context (non-sequitur),")
+            lines.append("  - a clear grammar slip that reads as an ASR error, not a stylistic choice.")
+            lines.append("Do NOT flag rows that are merely informal, dialectal, or unusual but coherent.")
+            lines.append("")
+            lines.append("Return ONLY a JSON object with one field:")
+            lines.append("  \"issues\": array of { \"rowIndex\": int, \"kind\": one of \"homophone\"|\"contextual\"|\"grammar\"|\"other\", \"reason\": one short sentence describing what looks wrong, \"confidence\": number 0.0–1.0 }")
+            lines.append("DO NOT propose a corrected transcript — the human user will edit the row themselves. Just identify which rows look wrong and why.")
+            lines.append("Omit rows that read correctly.")
+            lines.append("Return ONLY valid JSON, no prose before or after.")
+            // Pin the freeform `reason` field's language to the
+            // user's iPadOS app-language pick.
+            lines.append("The \"reason\" text in each issue MUST be written in this language: \(SummarizerLocale.responseLanguageNameInEnglish). No other language is acceptable.")
+        case .llama:
+            lines.append("あなたは複数話者の会話の文字起こし校正者です。")
+            lines.append(language.qwenAnchor)
+            lines.append("")
+            lines.append("以下の各発話には、1始まりの行インデックス、話者ID、時刻、文字起こしが含まれています。")
+            lines.append("次の理由で文字起こしが誤っている可能性が高い行を見つけてください：")
+            lines.append("  - 同音異義語または類似音の誤認識、")
+            lines.append("  - セッションの文脈に合わない文（non sequitur）、")
+            lines.append("  - スタイル的選択ではなくASRエラーと読める明確な文法ミス。")
+            lines.append("単にカジュアル、方言、または異例だが整合性のある行はフラグしないでください。")
+            lines.append("")
+            lines.append("次の1つのフィールドを持つJSONオブジェクトのみを返してください：")
+            lines.append("  \"issues\": { \"rowIndex\": int, \"kind\": \"homophone\"|\"contextual\"|\"grammar\"|\"other\" のいずれか, \"reason\": 何が間違って見えるかを1文で, \"confidence\": 0.0〜1.0 の数値 } の配列")
+            lines.append("修正後の文字起こしを提案しないでください — 人間ユーザーが自分で行を編集します。どの行が間違って見えるか、なぜそう思うかだけを特定してください。")
+            lines.append("正しく読める行は省略してください。")
+            lines.append("有効なJSONのみを返し、前後に散文を含めないでください。")
+            lines.append("各issueの \"reason\" テキストは必ず次の言語で書いてください：\(SummarizerLocale.responseLanguageNameInEnglish)。他の言語は許容されません。")
+        }
         if family == .qwen {
             lines.append("/no_think")
         }
         if let total = truncatedFromTotal {
             lines.append("")
-            lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Review only these rows.")
+            switch family {
+            case .qwen:
+                lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Review only these rows.")
+            case .llama:
+                lines.append("注意：この会話は全体で\(total)発話ありますが、以下には最新の\(utterances.count)発話のみが表示されています。これらの行のみを校閲してください。")
+            }
         }
         lines.append("")
-        lines.append("Utterances:")
+        switch family {
+        case .qwen:  lines.append("Utterances:")
+        case .llama: lines.append("発話：")
+        }
         for (idx, u) in utterances.enumerated() {
             lines.append(compactLine(rowIndex: idx + 1, for: u, speakerNames: speakerNames))
+        }
+        // Instruction sandwich — restate the directive after the
+        // utterance list so the model's recent attention has
+        // "produce JSON" rather than the last utterance line. See
+        // `MLXQwenSummarizer.buildPrompt` for the failure mode
+        // this prevents (Llama echoing the input format).
+        lines.append("")
+        lines.append("---")
+        switch family {
+        case .qwen:
+            lines.append("IMPORTANT: Follow the instructions above and produce exactly one valid JSON object with an `issues` field. The FIRST character of your output MUST be `{`. Do NOT echo the utterance list above; do NOT add any prose. Omit rows that read correctly.")
+        case .llama:
+            lines.append("重要：上記の指示に従い、issuesフィールドを持つ有効なJSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記の発話リストをエコーしないでください。散文も一切含めないでください。正しく読める行は省略してください。")
         }
         return lines.joined(separator: "\n")
     }

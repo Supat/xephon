@@ -38,8 +38,21 @@ public actor AppleFMSummarizer: SessionSummarizer {
 
     public func summarize(
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        mode: SummarizeMode
     ) async throws -> SessionSummary {
+        // Apple FM's 4096-token context window makes a true
+        // map-reduce deep pass impractical here — at 15
+        // utterances per window the chunk count for a 600-
+        // utterance session approaches 40, each requiring a fresh
+        // `LanguageModelSession` plus its own
+        // GenerableSpeakerSummary schema overhead. We document
+        // the limitation in the UI ("Deep mode requires Qwen or
+        // Llama") and fall through to the trailing-window path so
+        // the toggle being on doesn't break Apple FM users.
+        if mode == .deep {
+            AppLog.app.info("AppleFMSummarizer: deep mode requested but not supported on this backend; using fast path")
+        }
         guard SystemLanguageModel.default.isAvailable else {
             throw SummarizerError.modelNotInstalled
         }

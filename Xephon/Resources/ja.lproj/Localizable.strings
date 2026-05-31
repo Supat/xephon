@@ -29,6 +29,9 @@
 "settings.summarizer.removeConfirm.cancel" = "キャンセル";
 "settings.summarizer.notInstalled" = "モデル未インストール";
 "settings.summarizer.appleFM.unavailable" = "Apple Foundation Modelsはこのデバイスで利用できません";
+"settings.summarizer.deepMode" = "ディープ要約";
+"settings.summarizer.deepMode.caption" = "末尾100件への切り詰めではなく、全発話をマップ・リデュースで処理します。セッションの長さに比例して時間がかかりますが、ピークメモリは変わりません。";
+"settings.summarizer.deepMode.unsupported" = "ディープ要約はQwenまたはLlamaが必要です（Apple FMのコンテキストウィンドウは分割するには狭すぎます）。";
 "summary.summarize" = "要約";
 "summary.regenerate" = "再生成";
 "summary.exportMarkdown" = "Markdownで書き出す";

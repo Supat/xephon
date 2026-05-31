@@ -29,6 +29,9 @@
 "settings.summarizer.removeConfirm.cancel" = "Cancel";
 "settings.summarizer.notInstalled" = "Model not installed yet";
 "settings.summarizer.appleFM.unavailable" = "Apple Foundation Models unavailable on this device";
+"settings.summarizer.deepMode" = "Deep summary";
+"settings.summarizer.deepMode.caption" = "Process every utterance via map-reduce instead of truncating to the trailing 100. Takes longer (scales with session length); peak memory unchanged.";
+"settings.summarizer.deepMode.unsupported" = "Deep summary requires Qwen or Llama (Apple FM's context window is too small to chunk).";
 "summary.summarize" = "Summarize";
 "summary.regenerate" = "Regenerate";
 "summary.exportMarkdown" = "Export Markdown";

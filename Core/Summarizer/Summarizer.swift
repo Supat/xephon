@@ -28,6 +28,29 @@ public enum SummarizerError: Error, CustomStringConvertible {
     }
 }
 
+/// How a `SessionSummarizer` should weigh time vs. completeness.
+/// Persisted via UserDefaults under `xephon.summarizeMode` so the
+/// user's pick survives app relaunches.
+public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
+    /// Single pass over a trailing window. Implementations
+    /// truncate to whatever fits comfortably in their context
+    /// budget (100 for MLX, 15 for Apple FM). Wall time on the
+    /// order of minutes; memory: just the model + one prompt's
+    /// KV cache. Default — matches the historical behavior.
+    case fast
+    /// Map-reduce across every utterance. Implementations split
+    /// the session into windows, summarize each into a compact
+    /// intermediate, then merge intermediates into the final
+    /// `SessionSummary`. Wall time scales with session length
+    /// (roughly `numChunks × per-chunk inference + one merge
+    /// pass`); peak memory matches `.fast` because only one
+    /// chunk is in the KV cache at any time. Chosen when the
+    /// user values completeness over latency — long sessions
+    /// (200+ utterances) where the trailing-100 window would
+    /// drop a meaningful prefix of the conversation.
+    case deep
+}
+
 /// Abstract interface a session summarizer conforms to. Decouples
 /// the consumer (`RecordingController` will eventually call
 /// `summarize(_:)` from the "Summarize session" UI action) from the
@@ -64,10 +87,34 @@ public protocol SessionSummarizer: Sendable {
     /// name in its output, and stamp them into
     /// `SessionSummary.perSpeaker.speakerName` directly so the
     /// JSON carries the canonical id + friendly name pair.
+    ///
+    /// `mode` lets the caller trade wall time for completeness —
+    /// see `SummarizeMode`. Backends that don't support a deep
+    /// path may treat `.deep` as `.fast` (the protocol contract
+    /// is "best-effort honor"); the MLX-backed implementation is
+    /// the load-bearing one for long-session deep summaries.
     func summarize(
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        mode: SummarizeMode
     ) async throws -> SessionSummary
+}
+
+extension SessionSummarizer {
+    /// Convenience overload defaulting to `.fast`. Keeps existing
+    /// call sites (tests, the reviewer's parallel `review(...)`
+    /// pathway, etc.) compiling unchanged; new callers that care
+    /// about the mode opt in explicitly.
+    public func summarize(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) async throws -> SessionSummary {
+        try await summarize(
+            utterances: utterances,
+            speakerNames: speakerNames,
+            mode: .fast
+        )
+    }
 }
 
 /// Which on-device backend powers the session summarizer. The
@@ -105,4 +152,26 @@ public enum SummarizerBackend: String, Sendable, Hashable, Codable, CaseIterable
 public enum LLMModelFamily: String, Sendable, Hashable, Codable, CaseIterable {
     case qwen
     case llama
+
+    /// Additional stop tokens to pass into MLX-LM's
+    /// `ModelConfiguration.extraEOSTokens`. MLX-LM only honors a
+    /// single `eosTokenId` from `tokenizer_config.json#eos_token`,
+    /// but Llama 3.1's `config.json` declares three valid stop
+    /// tokens (`<|end_of_text|>`, `<|eom_id|>`, `<|eot_id|>`) and
+    /// the Swallow Japanese fine-tune has been observed to emit
+    /// the base-model `<|end_of_text|>` to end its turn instead
+    /// of the chat-template `<|eot_id|>` — without this set MLX
+    /// runs the model all the way to `maxOutputTokens` because
+    /// the stop signal it does emit isn't on the recognized list.
+    /// Qwen3 stops cleanly on `<|im_end|>` (its tokenizer's
+    /// `eos_token`) but we add `<|endoftext|>` defensively in
+    /// case a future quant drops the chat template.
+    public var extraEOSTokens: Set<String> {
+        switch self {
+        case .qwen:
+            return ["<|endoftext|>"]
+        case .llama:
+            return ["<|end_of_text|>", "<|eom_id|>", "<|eot_id|>"]
+        }
+    }
 }

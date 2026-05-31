@@ -20,6 +20,14 @@ final class SummarizerCoordinator {
 
     private(set) var enabled: Bool
     private(set) var backend: SummarizerBackend
+    /// Opt-in toggle for `.deep` map-reduce summarization. When
+    /// true, the MLX backend processes EVERY utterance in windows
+    /// of `MLXQwenSummarizer.deepWindowSize` and fuses them in a
+    /// final merge pass; when false, it truncates to the trailing
+    /// 100 utterances in a single pass. Apple FM treats this as
+    /// always-fast (see `AppleFMSummarizer.summarize`). Persisted
+    /// via `xephon.summarizerDeepMode`.
+    private(set) var deepMode: Bool
     /// Apple's `SystemLanguageModel.default` availability snapshot.
     /// Refreshed at init and on backend change. Folded into `ready`.
     private(set) var appleFMAvailable: Bool = false
@@ -69,13 +77,25 @@ final class SummarizerCoordinator {
 
     private static let enabledKey = "xephon.summarizerEnabled"
     private static let backendKey = "xephon.summarizerBackend"
+    private static let deepModeKey = "xephon.summarizerDeepMode"
 
     init(parent: RecordingController) {
         self.parent = parent
         self.enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         let rawBackend = UserDefaults.standard.string(forKey: Self.backendKey) ?? ""
         self.backend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
+        self.deepMode = UserDefaults.standard.bool(forKey: Self.deepModeKey)
         self.appleFMAvailable = SystemLanguageModel.default.isAvailable
+    }
+
+    /// Persist + apply a new deep-mode preference. No side
+    /// effects beyond the persist + state update — the next
+    /// `summarize` call reads `deepMode` and picks `.deep` vs
+    /// `.fast`.
+    func setDeepMode(_ on: Bool) {
+        guard deepMode != on else { return }
+        deepMode = on
+        UserDefaults.standard.set(on, forKey: Self.deepModeKey)
     }
 
     /// True iff the chosen backend is ready to summarize. Apple FM
@@ -265,10 +285,12 @@ final class SummarizerCoordinator {
             scheduleUnloadAndPipelineRewarm()
         }
         logAvailableMemory(label: "summarize Apple FM (before respond)")
+        let mode: SummarizeMode = deepMode ? .deep : .fast
         do {
             let summary = try await backend.summarize(
                 utterances: parent.utterances,
-                speakerNames: parent.speakerNameOverrides
+                speakerNames: parent.speakerNameOverrides,
+                mode: mode
             )
             logAvailableMemory(label: "summarize Apple FM (after respond)")
             lastSessionSummary = summary
@@ -315,10 +337,12 @@ final class SummarizerCoordinator {
             inferenceStart = nil
             scheduleUnloadAndPipelineRewarm()
         }
+        let mode: SummarizeMode = deepMode ? .deep : .fast
         do {
             let summary = try await actor.summarize(
                 utterances: parent.utterances,
-                speakerNames: parent.speakerNameOverrides
+                speakerNames: parent.speakerNameOverrides,
+                mode: mode
             )
             lastSessionSummary = summary
             return summary
