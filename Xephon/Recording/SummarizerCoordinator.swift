@@ -1,6 +1,7 @@
 import Foundation
 import os
 import FoundationModels
+import Fusion
 import Summarizer
 import XephonLogging
 
@@ -55,6 +56,16 @@ final class SummarizerCoordinator {
     /// Last successful summary, cached so the result sheet survives
     /// re-presentation. Cleared on session start.
     private(set) var lastSessionSummary: SessionSummary?
+    /// ID of the section currently being summarized, or nil
+    /// when no per-section pass is in flight. Distinct from
+    /// `inferenceRunning` (which also covers the overall
+    /// session summary and the reviewer) so the Sections card
+    /// can pick out exactly which row is mid-run and render
+    /// the spinner on that row only. The wider
+    /// `inferenceRunning` gate still applies — only one
+    /// summary (overall OR section) can run at a time because
+    /// they share the same MLX actor + GPU.
+    private(set) var summarizingSectionID: UUID?
 
     /// True while `review` is in flight.
     private(set) var reviewRunning: Bool = false
@@ -253,49 +264,140 @@ final class SummarizerCoordinator {
     func summarize() async -> SessionSummary? {
         guard !inferenceRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
+        // Set the gate eagerly (before pipeline release) so a
+        // concurrent `summarizeSection` tap can't slip through
+        // the `!inferenceRunning` check while the pipeline-
+        // release await is yielding.
+        inferenceRunning = true
+        inferenceStart = Date()
+        defer {
+            inferenceRunning = false
+            inferenceStart = nil
+        }
+        return await runSummarize(
+            utterances: parent.utterances,
+            logLabelPrefix: "summarize",
+            writeback: { [weak self] summary in
+                self?.lastSessionSummary = summary
+            }
+        )
+    }
+
+    /// Run the summarizer over a single user-defined section's
+    /// utterance range. Returns the same `SessionSummary` shape as
+    /// the overall summary — the LLM is told the conversation IS
+    /// the slice, not a sub-clip of a larger session, so the
+    /// "topic" / "overall mood" etc. read as a focused snapshot
+    /// rather than "this section of the larger conversation."
+    /// Caches the result on the section itself (via
+    /// `SectionStore.setSummary(forSectionID:summary:)`) so the
+    /// per-section sheet reopens with the same result, and the
+    /// summary persists into the `.xph` bundle as part of the
+    /// section's `Codable` payload.
+    func summarizeSection(id: UUID) async -> SessionSummary? {
+        guard !inferenceRunning else { return nil }
+        guard let section = parent.sections.section(id: id),
+              section.isComplete,
+              let startID = section.startUtteranceID,
+              let endID = section.endUtteranceID,
+              let startIdx = parent.utterances.firstIndex(where: { $0.id == startID }),
+              let endIdx = parent.utterances.firstIndex(where: { $0.id == endID }),
+              startIdx <= endIdx
+        else { return nil }
+        let slice = Array(parent.utterances[startIdx...endIdx])
+        guard !slice.isEmpty else { return nil }
+        // Same eager-gate rationale as `summarize()` — close
+        // the window where a second tap (on this row or on
+        // another) could pass the `!inferenceRunning` check
+        // while pipeline release is yielding.
+        inferenceRunning = true
+        inferenceStart = Date()
+        summarizingSectionID = id
+        defer {
+            inferenceRunning = false
+            inferenceStart = nil
+            summarizingSectionID = nil
+        }
+        return await runSummarize(
+            utterances: slice,
+            logLabelPrefix: "summarize section",
+            writeback: { [weak self] summary in
+                self?.parent.sections.setSummary(forSectionID: id, summary: summary)
+            }
+        )
+    }
+
+    /// Shared dispatch entry for both overall-session and per-
+    /// section summarization. Handles the pipeline release /
+    /// memory log envelope, then routes to the per-backend
+    /// runner. `writeback` is invoked synchronously on the
+    /// MainActor before the runner returns the success result,
+    /// so callers can cache the summary wherever they want
+    /// (controller-level `lastSessionSummary`, per-section
+    /// `setSummary`, etc.) without the runner needing to know
+    /// the destination.
+    private func runSummarize(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor @escaping (SessionSummary) -> Void
+    ) async -> SessionSummary? {
         // Both backends benefit from releasing the analysis pipeline
         // before invoking — even Apple FM, light on RAM in our
         // process, can trip Jetsam under device pressure (2-3 GB of
         // resident ONNX models + fat speaker DB before we allocate
         // anything for the summary). The pipeline lazy-rewarms in
         // the deferred cleanup.
-        logAvailableMemory(label: "summarize start (before pipeline release)")
+        logAvailableMemory(label: "\(logLabelPrefix) start (before pipeline release)")
         await releasePipelineForSummarization()
-        logAvailableMemory(label: "summarize start (after pipeline release)")
+        logAvailableMemory(label: "\(logLabelPrefix) start (after pipeline release)")
         switch backend {
-        case .appleFM:                  return await summarizeWithAppleFM()
-        case .qwen, .llamaSwallow:      return await summarizeWithMLX()
+        case .appleFM:
+            return await summarizeWithAppleFM(
+                utterances: utterances,
+                logLabelPrefix: logLabelPrefix,
+                writeback: writeback
+            )
+        case .qwen, .llamaSwallow:
+            return await summarizeWithMLX(
+                utterances: utterances,
+                logLabelPrefix: logLabelPrefix,
+                writeback: writeback
+            )
         }
     }
 
-    private func summarizeWithAppleFM() async -> SessionSummary? {
+    private func summarizeWithAppleFM(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor (SessionSummary) -> Void
+    ) async -> SessionSummary? {
         guard SystemLanguageModel.default.isAvailable else {
             parent.errorMessage = String(describing: SummarizerError.modelNotInstalled)
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
         let backend = AppleFMSummarizer()
-        inferenceRunning = true
-        inferenceStart = Date()
-        defer {
-            inferenceRunning = false
-            inferenceStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
-        logAvailableMemory(label: "summarize Apple FM (before respond)")
+        // Inference gating (`inferenceRunning` / `inferenceStart`)
+        // is owned by the public entry method (`summarize` /
+        // `summarizeSection`) so a section pass and an overall
+        // pass can't slip past each other's checks during the
+        // pipeline-release yield. This method only schedules
+        // the post-run pipeline rewarm.
+        defer { scheduleUnloadAndPipelineRewarm() }
+        logAvailableMemory(label: "\(logLabelPrefix) Apple FM (before respond)")
         let mode: SummarizeMode = self.mode
         let boostedIDs = mode == .heuristic
-            ? Self.keywordBoostedIDs(in: parent)
+            ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
         do {
             let summary = try await backend.summarize(
-                utterances: parent.utterances,
+                utterances: utterances,
                 speakerNames: parent.speakerNameOverrides,
                 mode: mode,
                 boostedUtteranceIDs: boostedIDs
             )
-            logAvailableMemory(label: "summarize Apple FM (after respond)")
-            lastSessionSummary = summary
+            logAvailableMemory(label: "\(logLabelPrefix) Apple FM (after respond)")
+            writeback(summary)
             return summary
         } catch is CancellationError {
             AppLog.app.info("summarizeWithAppleFM cancelled by user")
@@ -309,7 +411,11 @@ final class SummarizerCoordinator {
         }
     }
 
-    private func summarizeWithMLX() async -> SessionSummary? {
+    private func summarizeWithMLX(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor (SessionSummary) -> Void
+    ) async -> SessionSummary? {
         guard let modelStore = parent.modelStore,
               let modelID = mlxModelID else {
             scheduleUnloadAndPipelineRewarm()
@@ -323,7 +429,7 @@ final class SummarizerCoordinator {
         // Pick the right per-family actor type. `backend` is
         // checked at the call site so the switch is exhaustive
         // over the MLX backends (Apple FM is routed through
-        // `summarizeWithAppleFM` in `summarize()`).
+        // `summarizeWithAppleFM` in `runSummarize`).
         let actor: any MLXLLMSummarizerActor
         if let existing = summarizerActor {
             actor = existing
@@ -341,31 +447,27 @@ final class SummarizerCoordinator {
                 )
             case .appleFM:
                 // Unreachable — Apple FM is routed via
-                // `summarizeWithAppleFM` from `summarize()`.
+                // `summarizeWithAppleFM` from `runSummarize`.
                 scheduleUnloadAndPipelineRewarm()
                 return nil
             }
             summarizerActor = actor
         }
-        inferenceRunning = true
-        inferenceStart = Date()
-        defer {
-            inferenceRunning = false
-            inferenceStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
+        // Inference gating owned by the public entry method
+        // (see comment in `summarizeWithAppleFM`).
+        defer { scheduleUnloadAndPipelineRewarm() }
         let mode: SummarizeMode = self.mode
         let boostedIDs = mode == .heuristic
-            ? Self.keywordBoostedIDs(in: parent)
+            ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
         do {
             let summary = try await actor.summarize(
-                utterances: parent.utterances,
+                utterances: utterances,
                 speakerNames: parent.speakerNameOverrides,
                 mode: mode,
                 boostedUtteranceIDs: boostedIDs
             )
-            lastSessionSummary = summary
+            writeback(summary)
             return summary
         } catch is CancellationError {
             AppLog.app.info("summarizeWithMLX cancelled by user")
@@ -635,8 +737,15 @@ final class SummarizerCoordinator {
     /// keyword-occurrence counters use, so cross-script
     /// matching (kanji ↔ kana ↔ romaji) behaves consistently
     /// with what the user sees in the transcript pane.
-    static func keywordBoostedIDs(in parent: RecordingController) -> Set<UUID> {
-        let keywords = parent.keywords.keywords
+    ///
+    /// Pure-data overload: callers pass in the utterance slice
+    /// they care about so the helper works for both the whole
+    /// session (overall summary) and a single section's range
+    /// (per-section summary).
+    static func keywordBoostedIDs(
+        keywords: [Keyword],
+        in utterances: [UtteranceEstimate]
+    ) -> Set<UUID> {
         guard !keywords.isEmpty else { return [] }
         let normalizedKeywords: [String] = keywords.compactMap {
             let n = JapaneseSearchNormalizer.normalize($0.text)
@@ -644,14 +753,14 @@ final class SummarizerCoordinator {
         }
         guard !normalizedKeywords.isEmpty else { return [] }
         var hits: Set<UUID> = []
-        for u in parent.utterances {
+        for u in utterances {
             let normalizedText = JapaneseSearchNormalizer.normalize(u.transcript)
             if normalizedKeywords.contains(where: { normalizedText.contains($0) }) {
                 hits.insert(u.id)
             }
         }
         AppLog.app.info(
-            "keyword boost: \(hits.count, privacy: .public) of \(parent.utterances.count, privacy: .public) utterances match \(normalizedKeywords.count, privacy: .public) keyword(s)"
+            "keyword boost: \(hits.count, privacy: .public) of \(utterances.count, privacy: .public) utterances match \(normalizedKeywords.count, privacy: .public) keyword(s)"
         )
         return hits
     }

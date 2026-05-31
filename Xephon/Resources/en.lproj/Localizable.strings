@@ -91,6 +91,15 @@
 "summary.footer.aiCaveat" = "May contain mistakes";
 "sections.header" = "Sections";
 "sections.add" = "Add Section";
+"sections.addStart" = "Add Section Start";
+"sections.addEnd" = "Add Section End";
+"sections.row.setStart" = "Set focused utterance as start";
+"sections.row.setEnd" = "Set focused utterance as end";
+"sections.row.openSummary" = "Open section summary";
+"sections.row.generateSummary" = "Generate section summary";
+"sections.summary.generating" = "Generating section summary on-device. This can take a minute on the first run.";
+"sections.summary.empty" = "No section summary yet. Enable the summarizer and tap Summarize.";
+"sections.edit" = "Edit";
 "sections.delete" = "Delete";
 "sections.deleteConfirm.title" = "Delete \"%@\"?";
 "sections.deleteConfirm.message" = "This removes the section. The utterances themselves stay intact.";
@@ -100,8 +109,8 @@
 "sections.empty" = "No sections yet. Tap Add Section to bookmark a portion of the conversation.";
 "sections.emptyNoUtterances" = "Record or open a session first — sections are anchored to utterances.";
 "sections.rangeFormat" = "%@ → %@   %@ total";
-"sections.rangeStartOnly" = "Starts at %@   end not set";
-"sections.rangeEndOnly" = "Ends at %@   start not set";
+"sections.rangeStartOnly" = "%@ → ?";
+"sections.rangeEndOnly" = "? → %@";
 "sections.rangeMissing" = "Range not set";
 "sections.incomplete.a11y" = "Incomplete section";
 "sections.editor.newTitle" = "New Section";

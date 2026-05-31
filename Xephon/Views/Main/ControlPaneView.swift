@@ -14,6 +14,14 @@ struct ControlPaneView: View {
     let filterModel: TranscriptFilterModel
     let fileCoord: SessionFileCoordinator
     let filePicker: FilePickerCoordinator
+    /// Drives the per-section summary sheet presentation —
+    /// the only LLM-adjacent sheet that originates from a
+    /// card rather than from the top-of-window toolbar. The
+    /// existing overall-summary / review / search-replace
+    /// sheets are still raised by `LLMToolbar` in the main
+    /// chrome, so this prop only carries the section
+    /// presentation path through to `SectionsCard`.
+    let llmCoord: LLMSheetCoordinator
     @Binding var selectedUtteranceID: UUID?
     @Binding var scrollRequestUtteranceID: UUID?
     @Binding var showingDiscardConfirm: Bool
@@ -314,7 +322,14 @@ struct ControlPaneView: View {
             VStack(spacing: 16) {
                 SectionsCard(
                     recorder: recorder,
-                    store: recorder.sections
+                    store: recorder.sections,
+                    selectedUtteranceID: selectedUtteranceID,
+                    onSummarize: { section in
+                        llmCoord.presentSectionSummary(
+                            section: section,
+                            recorder: recorder
+                        )
+                    }
                 )
             }
             .frame(maxWidth: .infinity)

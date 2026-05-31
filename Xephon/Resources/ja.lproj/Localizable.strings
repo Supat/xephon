@@ -91,6 +91,15 @@
 "summary.footer.aiCaveat" = "誤りを含む可能性があります";
 "sections.header" = "セクション";
 "sections.add" = "セクションを追加";
+"sections.addStart" = "セクション開始を追加";
+"sections.addEnd" = "セクション終了を追加";
+"sections.row.setStart" = "フォーカス中の発話を開始に設定";
+"sections.row.setEnd" = "フォーカス中の発話を終了に設定";
+"sections.row.openSummary" = "セクション要約を開く";
+"sections.row.generateSummary" = "セクション要約を生成";
+"sections.summary.generating" = "デバイス上でセクション要約を生成中です。初回は1分ほどかかることがあります。";
+"sections.summary.empty" = "セクション要約はまだありません。要約機能を有効にして「要約」をタップしてください。";
+"sections.edit" = "編集";
 "sections.delete" = "削除";
 "sections.deleteConfirm.title" = "「%@」を削除しますか？";
 "sections.deleteConfirm.message" = "セクションを削除します。発話自体はそのまま残ります。";
@@ -100,8 +109,8 @@
 "sections.empty" = "まだセクションがありません。「セクションを追加」をタップして会話の一部分をブックマークしてください。";
 "sections.emptyNoUtterances" = "まず録音またはセッションを開いてください — セクションは発話に紐付きます。";
 "sections.rangeFormat" = "%@ → %@   合計 %@";
-"sections.rangeStartOnly" = "開始：%@   終了未設定";
-"sections.rangeEndOnly" = "終了：%@   開始未設定";
+"sections.rangeStartOnly" = "%@ → ?";
+"sections.rangeEndOnly" = "? → %@";
 "sections.rangeMissing" = "範囲未設定";
 "sections.incomplete.a11y" = "未完了のセクション";
 "sections.editor.newTitle" = "新しいセクション";

@@ -117,6 +117,7 @@ struct ContentView: View {
                             filterModel: filterModel,
                             fileCoord: fileCoord,
                             filePicker: filePicker,
+                            llmCoord: llmCoord,
                             selectedUtteranceID: $selectedUtteranceID,
                             scrollRequestUtteranceID: $scrollRequestUtteranceID,
                             showingDiscardConfirm: $showingDiscardConfirm

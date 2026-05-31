@@ -1,4 +1,5 @@
 import Foundation
+import Summarizer
 
 /// User-managed list of `ConversationSection`s for the
 /// current session. Lives in memory only — sections reference
@@ -28,6 +29,27 @@ public final class SectionStore {
 
     public func remove(id: UUID) {
         sections.removeAll { $0.id == id }
+    }
+
+    /// Stamp a fresh summary onto the section with the given
+    /// id. No-op when the id has since been removed (race
+    /// against a user-initiated delete while a summarization
+    /// task was in flight). The summary lands as part of the
+    /// section's own `Codable` payload so it survives a
+    /// save / load round trip via the same opaque blob the
+    /// rest of the section state uses.
+    public func setSummary(forSectionID id: UUID, summary: SessionSummary?) {
+        guard let idx = sections.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        sections[idx].cachedSummary = summary
+    }
+
+    /// Look up a section by id. Used by the summarizer
+    /// coordinator after a Task completes to find the live
+    /// (possibly user-edited) row to stamp the result onto.
+    public func section(id: UUID) -> ConversationSection? {
+        sections.first { $0.id == id }
     }
 
     public func clear() {

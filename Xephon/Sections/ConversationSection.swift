@@ -1,4 +1,5 @@
 import Foundation
+import Summarizer
 
 /// One user-defined section of the conversation — a named
 /// portion bounded by a start and / or end utterance. Named
@@ -42,17 +43,28 @@ public struct ConversationSection: Sendable, Hashable, Identifiable, Codable {
     /// Nil when the user has only marked the start so far
     /// (incomplete state).
     public var endUtteranceID: UUID?
+    /// Cached on-device summary scoped to this section's
+    /// utterance range. Only populated on complete sections
+    /// after the user taps the row's summary button; nil
+    /// means "never generated yet" (or invalidated by a
+    /// re-encode that dropped the field — codable-optional so
+    /// older `.xph` bundles decode cleanly). Persisted as
+    /// part of the section blob so the per-section sheet
+    /// reopens with the same result across save / load.
+    public var cachedSummary: SessionSummary?
 
     public init(
         id: UUID = UUID(),
         title: String,
         startUtteranceID: UUID?,
-        endUtteranceID: UUID?
+        endUtteranceID: UUID?,
+        cachedSummary: SessionSummary? = nil
     ) {
         self.id = id
         self.title = title
         self.startUtteranceID = startUtteranceID
         self.endUtteranceID = endUtteranceID
+        self.cachedSummary = cachedSummary
     }
 
     /// True iff both bounds are set. Incomplete sections

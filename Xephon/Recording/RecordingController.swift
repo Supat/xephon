@@ -133,6 +133,12 @@ final class RecordingController {
     var summarizerDownloading: Bool { summarizer.downloading }
     var summarizerInferenceRunning: Bool { summarizer.inferenceRunning }
     var summarizerInferenceStart: Date? { summarizer.inferenceStart }
+    /// ID of the section whose summary is currently being
+    /// generated, or nil when no per-section summarization is
+    /// in flight. Lets the Sections card render the spinner /
+    /// "generating" state on exactly the row whose button the
+    /// user tapped (and only that row).
+    var summarizingSectionID: UUID? { summarizer.summarizingSectionID }
     var summarizerReady: Bool { summarizer.ready }
     var lastSessionSummary: SessionSummary? { summarizer.lastSessionSummary }
     var transcriptionReviewRunning: Bool { summarizer.reviewRunning }
@@ -145,6 +151,9 @@ final class RecordingController {
     func setSummarizerBackend(_ backend: SummarizerBackend) async { await summarizer.setBackend(backend) }
     func setSummarizerMode(_ mode: SummarizeMode) { summarizer.setMode(mode) }
     func summarizeSession() async -> SessionSummary? { await summarizer.summarize() }
+    func summarizeSection(id: UUID) async -> SessionSummary? {
+        await summarizer.summarizeSection(id: id)
+    }
     func reviewSession() async -> [TranscriptionIssue]? { await summarizer.review() }
     func removeSummarizerModel() async { await summarizer.removeModel() }
     func dismissTranscriptionIssue(id: UUID) { summarizer.dismissIssue(id: id) }
