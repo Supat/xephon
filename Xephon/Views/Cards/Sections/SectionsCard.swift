@@ -439,39 +439,61 @@ private struct SectionsCardRow: View {
     }
 
     /// Three rendering paths:
-    /// - Both bounds set → "0:12 → 1:45   1:33 total"
-    /// - Start only → "Starts at 0:12 — end not set"
-    /// - End only → "Ends at 1:45 — start not set"
+    /// - Both bounds set → "#3 0:12 → #8 1:45   1:33 total"
+    /// - Start only → "#3 0:12 → ?"
+    /// - End only → "? → #8 1:45"
     /// (The neither-bound-set case can't occur — the editor
     /// rejects it — but `rangeMissing` is the safe fallback.)
+    ///
+    /// Utterance numbers are 1-based row indices in the
+    /// current session's utterance list, matching the
+    /// `#N [time]` convention `SectionEditorSheet`'s picker
+    /// uses for option labels. Showing them alongside the time
+    /// gives the user a stable, sortable handle into the
+    /// transcript pane — clearer than "the one at 0:12" when
+    /// two utterances share a timestamp prefix.
     private var rangeDescription: String {
-        let startTime = section.startUtteranceID.flatMap { id in
-            utterances.first(where: { $0.id == id })?.start
-        }
-        let endTime = section.endUtteranceID.flatMap { id in
-            utterances.first(where: { $0.id == id })?.end
-        }
-        switch (startTime, endTime) {
+        let start = utterance(forID: section.startUtteranceID)
+        let end = utterance(forID: section.endUtteranceID)
+        switch (start, end) {
         case (let s?, let e?):
             return String(
                 format: String(localized: "sections.rangeFormat"),
-                formatTime(s),
-                formatTime(e),
-                formatTime(max(0, e - s))
+                String(s.index),
+                formatTime(s.utterance.start),
+                String(e.index),
+                formatTime(e.utterance.end),
+                formatTime(max(0, e.utterance.end - s.utterance.start))
             )
         case (let s?, nil):
             return String(
                 format: String(localized: "sections.rangeStartOnly"),
-                formatTime(s)
+                String(s.index),
+                formatTime(s.utterance.start)
             )
         case (nil, let e?):
             return String(
                 format: String(localized: "sections.rangeEndOnly"),
-                formatTime(e)
+                String(e.index),
+                formatTime(e.utterance.end)
             )
         case (nil, nil):
             return String(localized: "sections.rangeMissing")
         }
+    }
+
+    /// Look up a section bound's utterance plus its 1-based
+    /// row index in the current session list. Returns nil
+    /// when the bound is unset or stale (utterance no longer
+    /// in the session — shouldn't happen after
+    /// `pruneDangling`, but the optional chain is the safe
+    /// fallback path).
+    private func utterance(forID id: UUID?) -> (utterance: UtteranceEstimate, index: Int)? {
+        guard let id else { return nil }
+        guard let idx = utterances.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+        return (utterances[idx], idx + 1)
     }
 
     private func formatTime(_ t: Double) -> String {

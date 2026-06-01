@@ -244,7 +244,12 @@ struct SummarizerCard: View {
                             role: .cancel
                         ) {}
                     } message: {
-                        Text(String(localized: "settings.summarizer.removeConfirm.message"))
+                        Text(
+                            String(
+                                format: String(localized: "settings.summarizer.removeConfirm.message"),
+                                Self.summarizerModelName(for: recorder.summarizerBackend)
+                            )
+                        )
                     }
                 }
             } else {
@@ -257,18 +262,43 @@ struct SummarizerCard: View {
 
     /// "Downloading Qwen3 · 412 MB of 4.6 GB" or similar — the
     /// fraction comes from the circular indicator next to it, so
-    /// the text is byte counts, not a percent.
+    /// the text is byte counts, not a percent. Model name comes
+    /// from the active summarizer backend so a Llama-Swallow
+    /// install doesn't read as "Downloading Qwen3 …".
     private var downloadProgressText: String {
         let downloaded = recorder.modelDownload.downloadedBytes
         let total = recorder.modelDownload.totalBytes
+        let modelName = Self.summarizerModelName(for: recorder.summarizerBackend)
         if total > 0, downloaded > 0 {
             return String(
                 format: String(localized: "settings.summarizer.downloading.bytes"),
+                modelName,
                 Self.formatBytes(downloaded),
                 Self.formatBytes(total)
             )
         }
-        return String(localized: "settings.summarizer.downloading")
+        return String(
+            format: String(localized: "settings.summarizer.downloading"),
+            modelName
+        )
+    }
+
+    /// Short model name keyed off the active backend. Used in
+    /// the downloading / remove-confirm copy so the user always
+    /// sees the name of the model they're actually acting on.
+    /// Apple FM has no on-disk install path so it can't reach
+    /// either of those strings — return a sensible fallback
+    /// anyway so a future code change that does pipe it in
+    /// doesn't crash on a missing key.
+    static func summarizerModelName(for backend: SummarizerBackend) -> String {
+        switch backend {
+        case .qwen:
+            return String(localized: "settings.summarizer.modelName.qwen")
+        case .llamaSwallow:
+            return String(localized: "settings.summarizer.modelName.llamaSwallow")
+        case .appleFM:
+            return String(localized: "settings.summarizer.backend.appleFM")
+        }
     }
 
     /// `1.7 GB`, `412 MB`, etc. — tracks Apple's convention for
