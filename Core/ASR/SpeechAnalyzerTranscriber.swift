@@ -220,28 +220,37 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         )?
         for try await result in transcriber.results {
             let plainText = String(result.text.characters)
+            // Read start and end DIRECTLY from `result.range`
+            // rather than computing `end = start + duration`.
+            // A NaN/inf `start` propagates through the addition
+            // (`NaN + anything = NaN`), then the `.isFinite ? end
+            // : 0` check silently coerces to 0 — producing a
+            // `[0, 0)` segment instead of a detectable bad-time
+            // signal. Mirrors `StreamingSpeechAnalyzerTranscriber`
+            // which already reads both bounds directly. Each
+            // bound is `.isFinite`-checked independently so one
+            // poisoned coordinate can't drag the other to 0.
+            let rawStart = result.range.start.seconds
+            let rawEnd = result.range.end.seconds
+            let start = rawStart.isFinite ? rawStart : 0
+            let end = rawEnd.isFinite ? rawEnd : 0
             if !result.isFinal {
                 if let handler = onVolatileText {
                     await handler(plainText)
                 }
-                let start = result.range.start.seconds
-                let end = start + result.range.duration.seconds
                 lastVolatile = (
                     text: plainText,
-                    start: start.isFinite ? start : 0,
-                    end: end.isFinite ? end : 0,
+                    start: start,
+                    end: end,
                     confidence: SpeechAttributes.averageConfidence(in: result.text),
                     tokens: SpeechAttributes.tokens(in: result.text)
                 )
                 continue
             }
-            let start = result.range.start.seconds
-            let duration = result.range.duration.seconds
-            let end = start + duration
             segments.append(ASRSegment(
                 text: plainText,
-                start: start.isFinite ? start : 0,
-                end: end.isFinite ? end : 0,
+                start: start,
+                end: end,
                 confidence: SpeechAttributes.averageConfidence(in: result.text),
                 tokens: SpeechAttributes.tokens(in: result.text)
             ))

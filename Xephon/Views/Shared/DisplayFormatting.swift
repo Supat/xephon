@@ -6,7 +6,7 @@ extension SwitchingTextSER.Backend {
     /// Short tag rendered on each utterance row's text-backend badge.
     var badgeLabel: String {
         switch self {
-        case .deberta:          return "DeBERTa"
+        case .deberta:          return "WRIME"
         case .foundationModels: return "Apple FM"
         }
     }

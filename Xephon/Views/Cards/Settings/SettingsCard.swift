@@ -1,4 +1,5 @@
 import SwiftUI
+import ASR
 import Diarization
 import SERText
 
@@ -14,7 +15,7 @@ import SERText
 /// left pane shrinks to ~1/3 of screen width — they stack vertically
 /// and switch to an *inline* row layout (label on the leading edge,
 /// menu pinned to the trailing edge) so each row reads "Language →
-/// Japanese", "Text SER → DeBERTa" without truncation. `ViewThatFits`
+/// Japanese", "Text SER → WRIME" without truncation. `ViewThatFits`
 /// picks the first variant whose horizontal extent fits.
 ///
 /// Speech-boost (a toggle, distinct affordance) sits below on its
@@ -34,16 +35,22 @@ struct SettingsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Row 1: language + offline ASR live together —
+            // they're both "what audio gets transcribed as" knobs
+            // and benefit from sitting side-by-side. Text SER
+            // moves to its own row (different concern: emotion
+            // classifier choice, independent of ASR pipeline).
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
                     languagePicker(layout: .stacked)
-                    textSERPicker(layout: .stacked)
+                    offlineASRPicker(layout: .stacked)
                 }
                 VStack(spacing: 12) {
                     languagePicker(layout: .inline)
-                    textSERPicker(layout: .inline)
+                    offlineASRPicker(layout: .inline)
                 }
             }
+            textSERPicker
             speechBoostToggle
             diarizerSensitivitySlider
             customGlossaryButton
@@ -94,7 +101,7 @@ struct SettingsCard: View {
     }
 
     /// Session-language picker. Drives the ASR locale (Apple
-    /// SpeechTranscriber) and the text-SER gating (DeBERTa-WRIME is
+    /// SpeechTranscriber) and the text-SER gating (the WRIME-tuned text SER is
     /// Japanese-only and hides for non-Japanese sessions). Disabled
     /// while a session is active because the streaming transcriber
     /// is locked to its start-time locale — the user can still see
@@ -123,8 +130,24 @@ struct SettingsCard: View {
         layoutPair(label: label, control: control, layout: layout)
     }
 
+    /// Text SER picker lives on its own row — distinct concern
+    /// from Language / Offline ASR (it's the emotion classifier,
+    /// not the transcriber).
+    ///
+    /// Layout depends on pane width (proxy for orientation):
+    /// - Landscape (pane wide enough): `.stacked` — label on top,
+    ///   picker on the row below, LEFT-aligned filling the row.
+    /// - Portrait (pane narrower): `.inline` — label on top,
+    ///   picker on the row below, RIGHT-aligned (matches the
+    ///   Language / Offline ASR portrait layout).
+    ///
+    /// The 340pt threshold roughly tracks where the
+    /// Language/Offline ASR `ViewThatFits` flips between its
+    /// two-column HStack and the stacked VStack, so all three
+    /// pickers in the card switch alignment together as the user
+    /// rotates the device.
     @ViewBuilder
-    private func textSERPicker(layout: PickerLayout) -> some View {
+    private var textSERPicker: some View {
         if recorder.availableTextSERBackends.count > 1 {
             let label = Text(String(localized: "settings.textSER"))
                 .font(.caption)
@@ -144,7 +167,11 @@ struct SettingsCard: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            layoutPair(label: label, control: control, layout: layout)
+            ViewThatFits(in: .horizontal) {
+                layoutPair(label: label, control: control, layout: .stacked)
+                    .frame(minWidth: 340)
+                layoutPair(label: label, control: control, layout: .inline)
+            }
         }
     }
 
@@ -178,6 +205,45 @@ struct SettingsCard: View {
         switch backend {
         case .deberta:          return String(localized: "settings.textSER.deberta")
         case .foundationModels: return String(localized: "settings.textSER.foundationModels")
+        }
+    }
+
+    /// Picker for the offline ASR backend used by file analysis,
+    /// re-evaluation, and Transcribe Range. Live recording stays
+    /// on Apple's `StreamingTranscriber` regardless of this pick
+    /// (Qwen3-ASR isn't streaming-capable in the current wiring).
+    /// Disabled while a session is in flight to avoid swapping
+    /// the transcriber mid-analysis.
+    @ViewBuilder
+    private func offlineASRPicker(layout: PickerLayout) -> some View {
+        if recorder.availableOfflineASRBackends.count > 1 {
+            let label = Text(String(localized: "settings.offlineASR"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            let control = Picker(
+                String(localized: "settings.offlineASR"),
+                selection: Binding(
+                    get: { recorder.currentOfflineASRBackend },
+                    set: { newValue in
+                        Task { await recorder.setOfflineASRBackend(newValue) }
+                    }
+                )
+            ) {
+                ForEach(recorder.availableOfflineASRBackends, id: \.self) { backend in
+                    Text(Self.offlineASRLabel(for: backend)).tag(backend)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .disabled(recorder.isRecording || recorder.isAnalyzing)
+            layoutPair(label: label, control: control, layout: layout)
+        }
+    }
+
+    private static func offlineASRLabel(for backend: OfflineASRBackend) -> String {
+        switch backend {
+        case .speechAnalyzer: return String(localized: "settings.offlineASR.speechAnalyzer")
+        case .qwen3ASR:       return String(localized: "settings.offlineASR.qwen3ASR")
         }
     }
 

@@ -22,11 +22,26 @@ final class LLMSheetCoordinator {
     var showingSummary = false
     var showingReview = false
     var showingSearchReplace = false
+    /// ID of the section whose per-section summary sheet is
+    /// currently presented, or nil when no section sheet is
+    /// open. Driven by `presentSectionSummary(id:)` / dismissed
+    /// via `dismissSectionSummary()` — never set directly from
+    /// the view layer so the inflight Task cancellation stays
+    /// paired with the presentation flag.
+    var presentingSectionSummaryID: UUID?
 
     @ObservationIgnored
     private var inflightSummarization: Task<Void, Never>?
     @ObservationIgnored
     private var inflightReview: Task<Void, Never>?
+    /// In-flight per-section summarization Task. Same role as
+    /// `inflightSummarization` for the overall summary — kept
+    /// so the dismiss-while-running path can `.cancel()` and
+    /// MLX stops spending tokens on a result the user has
+    /// already walked away from. Only one section sheet can
+    /// be presented at a time, so a single slot is enough.
+    @ObservationIgnored
+    private var inflightSectionSummarization: Task<Void, Never>?
 
     // MARK: - Summary
 
@@ -61,6 +76,49 @@ final class LLMSheetCoordinator {
         inflightSummarization?.cancel()
         inflightSummarization = nil
         showingSummary = false
+    }
+
+    // MARK: - Section Summary
+
+    /// Open the per-section summary sheet for `section`. Same
+    /// auto-fire policy as the overall summarize entry: kick
+    /// off generation immediately if the section has no cached
+    /// summary AND the summarizer is fully configured;
+    /// otherwise just raise the sheet so the user can see the
+    /// cached result (or the empty / not-configured state) and
+    /// decide whether to regenerate.
+    func presentSectionSummary(
+        section: ConversationSection,
+        recorder: RecordingController
+    ) {
+        presentingSectionSummaryID = section.id
+        if section.cachedSummary == nil
+            && recorder.summarizerEnabled
+            && recorder.summarizerReady {
+            startSectionSummarization(sectionID: section.id, recorder: recorder)
+        }
+    }
+
+    /// Start (or re-start) the per-section summarization.
+    /// Cancels the prior in-flight section task first so re-
+    /// tapping Regenerate while a pass is still running
+    /// supersedes it cleanly.
+    func startSectionSummarization(
+        sectionID: UUID,
+        recorder: RecordingController
+    ) {
+        inflightSectionSummarization?.cancel()
+        inflightSectionSummarization = Task {
+            _ = await recorder.summarizeSection(id: sectionID)
+        }
+    }
+
+    /// Sheet-dismiss path. Cancel in-flight generation — same
+    /// reasoning as `dismissSummary`.
+    func dismissSectionSummary() {
+        inflightSectionSummarization?.cancel()
+        inflightSectionSummarization = nil
+        presentingSectionSummaryID = nil
     }
 
     // MARK: - Review
@@ -121,5 +179,7 @@ final class LLMSheetCoordinator {
         inflightSummarization = nil
         inflightReview?.cancel()
         inflightReview = nil
+        inflightSectionSummarization?.cancel()
+        inflightSectionSummarization = nil
     }
 }

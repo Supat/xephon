@@ -67,6 +67,13 @@ public struct SessionSummary: Sendable, Hashable, Codable {
     public let model: String
     /// Wall-clock time the summary was generated. ISO-8601 in JSON.
     public let generatedAt: Date
+    /// Which summarization mode produced this summary —
+    /// `.trailing` (single-pass trailing window) vs `.deep`
+    /// (map-reduce across every utterance). Optional so older
+    /// `.xph` bundles whose `SessionSummary` predates this field
+    /// decode cleanly; the sheet footer just omits the mode
+    /// parenthetical when nil.
+    public let mode: SummarizeMode?
 
     public init(
         inferredSetting: String? = nil,
@@ -74,7 +81,8 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         overallMood: String,
         perSpeaker: [SpeakerSummary],
         model: String,
-        generatedAt: Date
+        generatedAt: Date,
+        mode: SummarizeMode? = nil
     ) {
         self.inferredSetting = inferredSetting
         self.topic = topic
@@ -82,6 +90,39 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         self.perSpeaker = perSpeaker
         self.model = model
         self.generatedAt = generatedAt
+        self.mode = mode
+    }
+
+    /// Append placeholder entries for any speaker in
+    /// `expectedSpeakerIDs` that's missing from `perSpeaker`,
+    /// preserving the input order for the appended entries.
+    /// Used right after parsing the LLM output so the
+    /// `SessionSummary.perSpeaker` roster always matches the
+    /// input speaker set even when the model dropped someone
+    /// (Llama-Swallow in particular is loose about the "one
+    /// entry per speaker" schema; this guarantees completeness
+    /// at the data layer so callers don't have to defend).
+    /// Returns the input unchanged when no speakers are
+    /// missing. Logs a one-line warning when fills happen so
+    /// model-side schema slippage is visible in the field.
+    public static func fillMissingPerSpeaker(
+        _ perSpeaker: [SpeakerSummary],
+        expectedSpeakerIDs: [String],
+        speakerNames: [String: String]
+    ) -> [SpeakerSummary] {
+        let present = Set(perSpeaker.map { $0.speakerID })
+        let missing = expectedSpeakerIDs.filter { !present.contains($0) }
+        guard !missing.isEmpty else { return perSpeaker }
+        var filled = perSpeaker
+        for speakerID in missing {
+            filled.append(SpeakerSummary(
+                speakerID: speakerID,
+                speakerName: speakerNames[speakerID],
+                summary: SummarizerLocale.missingSpeakerSummary,
+                dominantMood: SummarizerLocale.missingSpeakerMood
+            ))
+        }
+        return filled
     }
 
     /// Render the summary as a portable Markdown document. The
@@ -128,7 +169,11 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         }
         lines.append("")
         lines.append("---")
-        lines.append("Model: \(model)")
+        if let mode {
+            lines.append("Model: \(model) (\(mode.rawValue))")
+        } else {
+            lines.append("Model: \(model)")
+        }
         let stamp = generatedAt.formatted(date: .abbreviated, time: .shortened)
         lines.append("Generated: \(stamp)")
         return lines.joined(separator: "\n") + "\n"

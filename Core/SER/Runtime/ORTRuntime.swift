@@ -5,7 +5,7 @@ import OnnxRuntimeBindings
 /// states that `ORTEnv` should exist as a single instance per process
 /// — multiple instances duplicate native logging state and threadpool
 /// configuration without any benefit. Before this module each ORT
-/// session built (W2V2, emotion2vec, DeBERTa, plus every CoreML-EP →
+/// session built (W2V2, emotion2vec, WRIME text SER, plus every CoreML-EP →
 /// CPU rebuild on the failure path) constructed its own `ORTEnv`,
 /// silently leaking native state on each rebuild.
 ///

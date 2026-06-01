@@ -54,7 +54,7 @@ let package = Package(
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
         // `swift-transformers` pinned to 1.0.x because mlx-swift-examples
         // hasn't moved past that line yet — see resolver notes when bumping.
-        // DeBERTaWRIME uses `AutoTokenizer.from(tokenizerConfig:tokenizerData:)`,
+        // WRIMETextSER uses `AutoTokenizer.from(tokenizerConfig:tokenizerData:)`,
         // which exists in 1.0.x.
         .package(url: "https://github.com/huggingface/swift-transformers.git", "1.0.0"..<"1.1.0"),
         // On-device LLM runtime for the session summarizer (Qwen2.5-Instruct

@@ -577,14 +577,22 @@ final class ModelDownloadState {
     }
 
     func fileSatisfied(name: String, source: String) {
-        fileStatus[name] = .satisfied(source: source)
+        var next = fileStatus
+        next[name] = .satisfied(source: source)
+        fileStatus = next
     }
 
     func startFile(name: String, expectedBytes: Int64) {
         currentFile = name
-        fileExpected[name] = expectedBytes
-        fileBytes[name] = 0
-        fileStatus[name] = .downloading
+        var nextExpected = fileExpected
+        nextExpected[name] = expectedBytes
+        fileExpected = nextExpected
+        var nextBytes = fileBytes
+        nextBytes[name] = 0
+        fileBytes = nextBytes
+        var nextStatus = fileStatus
+        nextStatus[name] = .downloading
+        fileStatus = nextStatus
     }
 
     /// Called from `ModelStore.download`'s URLSessionDownload-
@@ -594,17 +602,35 @@ final class ModelDownloadState {
     /// safetensors download. `totalExpected` from the URL session
     /// is authoritative once the response lands — overwrites the
     /// best-effort `approximateBytes` from the manifest.
+    ///
+    /// Reassigns the whole dict rather than mutating via subscript
+    /// because Swift's `@Observable` macro instruments the
+    /// property's setter (not the in-place modify path). Dict-
+    /// subscript assignment was observed to suppress UI updates
+    /// during long downloads (the circular progress stayed at 0
+    /// until the file landed) — the full reassignment forces the
+    /// setter to fire on every KVO tick.
     func updateFileProgress(name: String, bytesWritten: Int64, totalExpected: Int64) {
-        fileBytes[name] = bytesWritten
+        var nextBytes = fileBytes
+        nextBytes[name] = bytesWritten
+        fileBytes = nextBytes
         if totalExpected > 0 {
-            fileExpected[name] = totalExpected
+            var nextExpected = fileExpected
+            nextExpected[name] = totalExpected
+            fileExpected = nextExpected
         }
     }
 
     func completeFile(name: String, bytes: Int64) {
-        fileBytes[name] = bytes
-        fileExpected[name] = bytes
-        fileStatus[name] = .completed
+        var nextBytes = fileBytes
+        nextBytes[name] = bytes
+        fileBytes = nextBytes
+        var nextExpected = fileExpected
+        nextExpected[name] = bytes
+        fileExpected = nextExpected
+        var nextStatus = fileStatus
+        nextStatus[name] = .completed
+        fileStatus = nextStatus
     }
 
     func markCompleted() {

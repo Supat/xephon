@@ -54,6 +54,11 @@ enum ModelManifest {
     /// with sane headroom and meaningfully better instruction-
     /// following than the 3B.
     static let summarizerID = "qwen3-8b-4bit"
+    /// Optional manifest id for the Llama-3.1-Swallow alternative
+    /// summarizer backend. Same install machinery as Qwen — the
+    /// user opts in via the SummarizerCard backend picker; first
+    /// switch triggers the download.
+    static let summarizerLlamaID = "llama-3-1-swallow-8b-4bit"
 
     /// Base URL for the pre-quantized Qwen MLX repo on Hugging Face.
     /// We can't host the safetensors on GitHub Releases (Free tier
@@ -70,6 +75,21 @@ enum ModelManifest {
 
     private static func qwenRemote(_ filename: String) -> URL {
         qwenHFBaseURL.appendingPathComponent(filename)
+    }
+
+    /// Base URL for the pre-quantized Llama-3.1-Swallow MLX repo
+    /// on Hugging Face. Same Free-tier-cap rationale as Qwen
+    /// rules out GitHub Releases hosting. Sourced from
+    /// `mlx-community/Llama-3.1-Swallow-8B-Instruct-v0.3-4bit`
+    /// (verify the exact path on first integration — community
+    /// uploads sometimes get renamed). Public anonymous read;
+    /// inference is strictly on-device.
+    private static let llamaSwallowHFBaseURL = URL(
+        string: "https://huggingface.co/mlx-community/Llama-3.1-Swallow-8B-Instruct-v0.3-4bit/resolve/main/"
+    )!
+
+    private static func llamaSwallowRemote(_ filename: String) -> URL {
+        llamaSwallowHFBaseURL.appendingPathComponent(filename)
     }
 
     /// Optional model entries the user has to deliberately opt into
@@ -161,7 +181,71 @@ enum ModelManifest {
                     directRemoteURL: qwenRemote("model.safetensors.index.json")
                 ),
             ]
-        )
+        ),
+        // Llama-3.1-Swallow alternative summarizer backend.
+        //
+        // Sourced from `mlx-community/Llama-3.1-Swallow-8B-Instruct-v0.3-4bit`
+        // on Hugging Face. Same Free-tier-cap rationale as the
+        // Qwen entry rules out GitHub Releases hosting. SHA-256s
+        // computed via `shasum -a 256` on the files fetched by
+        // `scripts/fetch_models.sh --with-summarizer-llama`
+        // (2026-05-30). Llama 3's tokenizer is self-contained in
+        // `tokenizer.json` — no `added_tokens.json`, no separate
+        // `merges.txt` / `vocab.json` (those are Qwen-only).
+        ModelEntry(
+            id: summarizerLlamaID,
+            displayName: "Llama-3.1-Swallow-8B (4-bit MLX)",
+            files: [
+                ModelFile(
+                    assetName: "llama-3-1-swallow-8b-4bit-config.json",
+                    installPath: "llama-3-1-swallow-8b-4bit/config.json",
+                    bundleResource: BundleLookup(name: "config", ext: "json", subdirectory: "llama-3-1-swallow-8b-4bit"),
+                    approximateBytes: 1_116,
+                    sha256: "54dc0a0692a6747c6a3203c8a351feb00fd65d82da3b420706e376b6af818599",
+                    directRemoteURL: llamaSwallowRemote("config.json")
+                ),
+                ModelFile(
+                    assetName: "llama-3-1-swallow-8b-4bit-tokenizer.json",
+                    installPath: "llama-3-1-swallow-8b-4bit/tokenizer.json",
+                    bundleResource: BundleLookup(name: "tokenizer", ext: "json", subdirectory: "llama-3-1-swallow-8b-4bit"),
+                    approximateBytes: 17_209_958,
+                    sha256: "268aef6511a866fd03104209ff6592ded093172c0cdaf8885ff9c97d62e32869",
+                    directRemoteURL: llamaSwallowRemote("tokenizer.json")
+                ),
+                ModelFile(
+                    assetName: "llama-3-1-swallow-8b-4bit-tokenizer_config.json",
+                    installPath: "llama-3-1-swallow-8b-4bit/tokenizer_config.json",
+                    bundleResource: BundleLookup(name: "tokenizer_config", ext: "json", subdirectory: "llama-3-1-swallow-8b-4bit"),
+                    approximateBytes: 51_018,
+                    sha256: "5fc59176282eb49afcfb1e56e1cbf86190fabf01f57ac5ad30077e2d53ae639b",
+                    directRemoteURL: llamaSwallowRemote("tokenizer_config.json")
+                ),
+                ModelFile(
+                    assetName: "llama-3-1-swallow-8b-4bit-special_tokens_map.json",
+                    installPath: "llama-3-1-swallow-8b-4bit/special_tokens_map.json",
+                    bundleResource: BundleLookup(name: "special_tokens_map", ext: "json", subdirectory: "llama-3-1-swallow-8b-4bit"),
+                    approximateBytes: 454,
+                    sha256: "94e708c3f5e64acf85bbe5ad01467a1248faadb73e83b41793087ecced586e8f",
+                    directRemoteURL: llamaSwallowRemote("special_tokens_map.json")
+                ),
+                ModelFile(
+                    assetName: "llama-3-1-swallow-8b-4bit-model.safetensors",
+                    installPath: "llama-3-1-swallow-8b-4bit/model.safetensors",
+                    bundleResource: BundleLookup(name: "model", ext: "safetensors", subdirectory: "llama-3-1-swallow-8b-4bit"),
+                    approximateBytes: 4_517_489_037,
+                    sha256: "0ecb431f8a63e731e18a00696d6c511003f0b6272941f2f5fb8a06cf3704c557",
+                    directRemoteURL: llamaSwallowRemote("model.safetensors")
+                ),
+                ModelFile(
+                    assetName: "llama-3-1-swallow-8b-4bit-model.safetensors.index.json",
+                    installPath: "llama-3-1-swallow-8b-4bit/model.safetensors.index.json",
+                    bundleResource: BundleLookup(name: "model.safetensors", ext: "index.json", subdirectory: "llama-3-1-swallow-8b-4bit"),
+                    approximateBytes: 52_381,
+                    sha256: "9a76e05055778bb04cacb7aff616b378da0e57c87a181c932037a943efba5997",
+                    directRemoteURL: llamaSwallowRemote("model.safetensors.index.json")
+                ),
+            ]
+        ),
     ]
 
     static let entries: [ModelEntry] = [

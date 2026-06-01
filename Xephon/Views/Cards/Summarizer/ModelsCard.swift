@@ -32,69 +32,110 @@ struct ModelsCard: View {
     }
 
     private var rows: [ModelStatusRow] {
+        // License values mirror `docs/models.md`. `restricted = true`
+        // flags weights whose terms preclude commercial use (the
+        // audEERING dim V/A/D and age/gender heads are CC-BY-NC);
+        // those render in orange so a user surveying the pipeline
+        // sees the redistribution constraint at a glance instead of
+        // having to consult the docs. Apple SDK / Apache / MIT
+        // licenses render in secondary tint — informational only.
         var out: [ModelStatusRow] = []
         out.append(ModelStatusRow(
             id: "speech",
             title: String(localized: "models.speech.title"),
             detail: String(localized: "models.speech.detail"),
+            license: "Apple SDK",
+            licenseIsRestricted: false,
             status: SpeechTranscriber.isAvailable ? .ready : .unavailable
         ))
         out.append(ModelStatusRow(
             id: "diarizer",
             title: String(localized: "models.diarizer.title"),
             detail: String(localized: "models.diarizer.detail"),
+            license: "Apache-2.0 (Sortformer) · MIT (Silero VAD)",
+            licenseIsRestricted: false,
             status: recorder.pipelineHasDiarizer ? .ready : .failed
         ))
         out.append(ModelStatusRow(
             id: "acousticVAD",
             title: String(localized: "models.dimensional.title"),
             detail: String(localized: "models.dimensional.detail"),
+            license: "CC-BY-NC 4.0 (research-only)",
+            licenseIsRestricted: true,
             status: recorder.pipelineHasDimensionalSER ? .ready : .failed
         ))
         out.append(ModelStatusRow(
             id: "acousticCategorical",
             title: String(localized: "models.categorical.title"),
             detail: String(localized: "models.categorical.detail"),
+            license: "Apache-2.0",
+            licenseIsRestricted: false,
             status: recorder.pipelineHasCategoricalSER ? .ready : .failed
         ))
         out.append(ModelStatusRow(
             id: "textSER",
             title: String(localized: "models.textSER.title"),
             detail: String(localized: "models.textSER.detail"),
+            license: "MIT (base) · WRIME fine-tune TBD",
+            licenseIsRestricted: false,
             status: recorder.pipelineHasDeBERTaTextSER ? .ready : .failed
         ))
         out.append(ModelStatusRow(
             id: "demographics",
             title: String(localized: "models.demographics.title"),
             detail: String(localized: "models.demographics.detail"),
+            license: "CC-BY-NC 4.0 (research-only)",
+            licenseIsRestricted: true,
             status: recorder.pipelineHasAgeGenderSER ? .ready : .failed
         ))
         out.append(ModelStatusRow(
             id: "summarizerAppleFM",
             title: String(localized: "models.summarizerAppleFM.title"),
             detail: String(localized: "models.summarizerAppleFM.detail"),
+            license: "Apple SDK",
+            licenseIsRestricted: false,
             status: recorder.summarizerAppleFMAvailable ? .ready : .unavailable
         ))
         out.append(ModelStatusRow(
             id: "summarizerQwen",
             title: String(localized: "models.summarizerQwen.title"),
             detail: String(localized: "models.summarizerQwen.detail"),
-            status: qwenStatus
+            license: "Apache-2.0",
+            licenseIsRestricted: false,
+            status: mlxStatus(installed: recorder.summarizerQwenInstalled, isActiveBackend: recorder.summarizerBackend == .qwen)
+        ))
+        out.append(ModelStatusRow(
+            id: "summarizerLlamaSwallow",
+            title: String(localized: "models.summarizerLlamaSwallow.title"),
+            detail: String(localized: "models.summarizerLlamaSwallow.detail"),
+            license: "Llama 3 Community License · tokyotech-llm terms",
+            licenseIsRestricted: false,
+            status: mlxStatus(installed: recorder.summarizerLlamaSwallowInstalled, isActiveBackend: recorder.summarizerBackend == .llamaSwallow)
         ))
         return out
     }
 
-    private var qwenStatus: ModelStatus {
-        if recorder.summarizerDownloading { return .downloading }
-        return recorder.summarizerModelInstalled ? .ready : .notInstalled
+    /// Per-MLX-backend status. The `downloading` flag on the
+    /// coordinator is global (only one backend can be downloading
+    /// at a time), so we only paint a row "downloading" when it
+    /// matches the currently-active backend.
+    private func mlxStatus(installed: Bool, isActiveBackend: Bool) -> ModelStatus {
+        if isActiveBackend, recorder.summarizerDownloading { return .downloading }
+        return installed ? .ready : .notInstalled
     }
 }
 
-/// One row in the models card.
+/// One row in the models card. `license` is the canonical
+/// short-form string (e.g. "Apache-2.0", "CC-BY-NC 4.0"); when
+/// `licenseIsRestricted` is true the row paints the license line
+/// in orange so the user sees at a glance that the weights aren't
+/// available for commercial reuse.
 struct ModelStatusRow: Identifiable, Equatable {
     let id: String
     let title: String
     let detail: String
+    let license: String
+    let licenseIsRestricted: Bool
     let status: ModelStatus
 }
 
@@ -152,6 +193,25 @@ private struct ModelStatusRowView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(2)
+                HStack(spacing: 4) {
+                    Image(systemName: row.licenseIsRestricted
+                        ? "exclamationmark.shield.fill"
+                        : "scale.3d"
+                    )
+                    .font(.caption2)
+                    Text(row.license)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+                .foregroundStyle(row.licenseIsRestricted ? Color.orange : Color.secondary)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(
+                    String(
+                        format: String(localized: "models.license.a11y"),
+                        row.license
+                    )
+                )
             }
             Spacer(minLength: 6)
             HStack(spacing: 4) {

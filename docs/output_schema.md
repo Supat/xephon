@@ -77,7 +77,7 @@ sets no `keyEncodingStrategy`, so the JSON output is what synthesized
   `Core/SER/Acoustic/W2V2AgeGenderSER.swift` documents the gotcha that
   the order is `[female, male, child]` per the audeering tutorial repo
   — not the order the Hugging Face model card's prose suggests.
-- **`plutchik`** — DeBERTa-WRIME 8-class softmax; missing labels imply 0.
+- **`plutchik`** — WRIME-tuned text SER 8-class softmax; missing labels imply 0.
 - **`textBackend`** — identifier for the text-SER backend that produced
   `plutchik` (e.g. `"deberta"`, `"foundationModels"`). Nil when text SER
   was skipped.

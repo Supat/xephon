@@ -28,6 +28,65 @@ public enum SummarizerError: Error, CustomStringConvertible {
     }
 }
 
+/// How a `SessionSummarizer` should pick utterances and run
+/// inference. Persisted via UserDefaults under
+/// `xephon.summarizerMode` so the user's pick survives
+/// app relaunches.
+public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
+    /// Single pass over a TRAILING window. Implementations
+    /// truncate to whatever fits comfortably in their context
+    /// budget (100 for MLX, 15 for Apple FM), keeping the most
+    /// recent utterances. Wall time on the order of minutes;
+    /// memory: just the model + one prompt's KV cache. Default
+    /// — matches the historical behavior. Best when the
+    /// trailing edge of the conversation carries the most
+    /// actionable arc (typical).
+    ///
+    /// New persisted value is `"trailing"` (matching the case
+    /// name). The custom `init?(rawValue:)` below also accepts
+    /// the legacy `"fast"` string so existing UserDefaults
+    /// preferences, `.xph` bundles, and JSON exports decode
+    /// cleanly; new encodes write `"trailing"`.
+    case trailing
+    /// Single pass over a HEURISTICALLY-SELECTED window —
+    /// same context budget as `.trailing`, but the selection is
+    /// `Informativeness.topN` instead of `suffix(...)`. Picks
+    /// the N most distinctive utterances by session-relative
+    /// TF-IDF, with a Japanese backchannel/filler penalty
+    /// down-weighting "うん"/"そう"/"えーと"-heavy rows. Same
+    /// wall time as `.trailing`; better content coverage on long
+    /// sessions where the trailing window would drop a
+    /// meaningful prefix. Tradeoff vs `.deep`: same speed as
+    /// `.trailing` (one inference pass), but the LLM only ever
+    /// sees a curated subset, not every utterance.
+    case heuristic
+    /// Map-reduce across EVERY utterance. Implementations
+    /// split the session into windows, summarize each into a
+    /// compact intermediate, then merge intermediates into the
+    /// final `SessionSummary`. Wall time scales with session
+    /// length (roughly `numChunks × per-chunk inference + one
+    /// merge pass`); peak memory matches `.trailing` because only
+    /// one chunk is in the KV cache at any time. Chosen when
+    /// the user values complete coverage over latency.
+    case deep
+
+    /// Custom rawValue initializer for backward compatibility.
+    /// Accepts the legacy `"fast"` string (used before the case
+    /// was renamed from `.fast` to `.trailing`) and maps it to
+    /// `.trailing`. New writes go through the default rawValue
+    /// path and emit `"trailing"`, so over time persisted state
+    /// migrates forward without an explicit migration step.
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "trailing":  self = .trailing
+        case "heuristic": self = .heuristic
+        case "deep":      self = .deep
+        case "fast":      self = .trailing   // legacy
+        default:          return nil
+        }
+    }
+}
+
 /// Abstract interface a session summarizer conforms to. Decouples
 /// the consumer (`RecordingController` will eventually call
 /// `summarize(_:)` from the "Summarize session" UI action) from the
@@ -64,10 +123,65 @@ public protocol SessionSummarizer: Sendable {
     /// name in its output, and stamp them into
     /// `SessionSummary.perSpeaker.speakerName` directly so the
     /// JSON carries the canonical id + friendly name pair.
+    ///
+    /// `mode` lets the caller trade wall time for completeness —
+    /// see `SummarizeMode`. Backends that don't support a deep
+    /// path may treat `.deep` as `.trailing` (the protocol contract
+    /// is "best-effort honor"); the MLX-backed implementation is
+    /// the load-bearing one for long-session deep summaries.
+    ///
+    /// `boostedUtteranceIDs` — IDs the caller has flagged as
+    /// containing user-curated keywords (matched per the
+    /// caller's preferred normalizer). Only consulted by the
+    /// `.heuristic` mode's `Informativeness` ranker, which
+    /// applies a heavy multiplicative boost so these rows
+    /// reliably land in the heuristic-selected prompt window.
+    /// `.trailing` and `.deep` ignore the set: `.trailing` always picks
+    /// the trailing window regardless of content, and `.deep`
+    /// processes every utterance so no selection bias applies.
+    /// Default empty (no boost).
     func summarize(
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        mode: SummarizeMode,
+        boostedUtteranceIDs: Set<UUID>
     ) async throws -> SessionSummary
+}
+
+extension SessionSummarizer {
+    /// Convenience overload defaulting to `.trailing` with no
+    /// keyword boost. Keeps existing call sites (tests, the
+    /// reviewer's parallel `review(...)` pathway, etc.)
+    /// compiling unchanged; new callers that care about the
+    /// mode / keyword boost opt in explicitly.
+    public func summarize(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) async throws -> SessionSummary {
+        try await summarize(
+            utterances: utterances,
+            speakerNames: speakerNames,
+            mode: .trailing,
+            boostedUtteranceIDs: []
+        )
+    }
+
+    /// Convenience overload that omits the keyword-boost set
+    /// (callers without curated keywords). Forwards an empty
+    /// set so backends always see the canonical four-arg
+    /// signature.
+    public func summarize(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        mode: SummarizeMode
+    ) async throws -> SessionSummary {
+        try await summarize(
+            utterances: utterances,
+            speakerNames: speakerNames,
+            mode: mode,
+            boostedUtteranceIDs: []
+        )
+    }
 }
 
 /// Which on-device backend powers the session summarizer. The
@@ -80,9 +194,29 @@ public enum SummarizerBackend: String, Sendable, Hashable, Codable, CaseIterable
     /// long sessions need aggressive truncation. Default backend
     /// because it Just Works once the feature is enabled.
     case appleFM
-    /// Qwen2.5-7B-Instruct (4-bit MLX, ~4.3 GB on disk). Higher-
-    /// quality multi-speaker reasoning, 32k context. Opt-in
-    /// download; release the analysis pipeline before invoking
-    /// to fit under iOS's per-app memory ceiling.
+    /// Qwen3-8B-Instruct (4-bit MLX, ~4.6 GB on disk). Multilingual
+    /// generalist with strong JSON adherence; 32k context. Opt-in
+    /// download; release the analysis pipeline before invoking to
+    /// fit under iOS's per-app memory ceiling.
     case qwen
+    /// Llama-3.1-Swallow-8B-Instruct (4-bit MLX, ~4.6 GB on disk).
+    /// Tokyo Tech's Japanese fine-tune of Llama 3.1; aimed at
+    /// stronger conversational JP at the cost of slightly weaker
+    /// JSON discipline vs Qwen3. Same opt-in download + memory
+    /// orchestration as `qwen`. Falls under Llama 3 Community
+    /// License + tokyotech-llm terms — both permissive for
+    /// research use.
+    case llamaSwallow
+}
+
+/// Which model architecture a `SessionSummarizer` / reviewer is
+/// pointed at. Used by the MLX-backed implementations to toggle a
+/// few prompt-token differences (e.g. Qwen3's `/no_think` line is
+/// literal text for Llama and would corrupt its output). The
+/// architectural model loading itself is family-agnostic —
+/// `LLMModelFactory` introspects `config.json`'s `model_type` and
+/// picks the right MLX module.
+public enum LLMModelFamily: String, Sendable, Hashable, Codable, CaseIterable {
+    case qwen
+    case llama
 }

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
+import XephonLogging
 
 /// App-level singleton for routing every file-import / file-export
 /// request through one `.fileImporter` and one `.fileExporter`
@@ -67,10 +68,23 @@ public final class FilePickerCoordinator {
     /// the URL in `startAccessingSecurityScopedResource` /
     /// `stopAccessingSecurityScopedResource` before reading) or
     /// `.failure(error)` for user cancel / framework error.
+    ///
+    /// Drops the call when an importer is already on screen —
+    /// the previous in-flight `onResult` closure can't be cleanly
+    /// swapped out from under the system picker. The first
+    /// caller's picker stays up and resolves with the URL the
+    /// user picks; the second caller can retry after the first
+    /// finishes.
     public func presentImport(
         allowedTypes: [UTType],
         onResult: @escaping (Result<URL, any Error>) -> Void
     ) {
+        guard !isImporterPresented else {
+            AppLog.app.warning(
+                "FilePickerCoordinator.presentImport ignored: importer already presented"
+            )
+            return
+        }
         importRequest = ImportRequest(
             allowedTypes: allowedTypes,
             onResult: onResult
@@ -81,13 +95,20 @@ public final class FilePickerCoordinator {
     /// Show the system file exporter with `data` written as the
     /// file contents. `contentType` and `defaultFilename` map
     /// straight through to the picker. `onResult` mirrors the
-    /// import contract.
+    /// import contract. Same re-entry guard as `presentImport` —
+    /// a second exporter call while one is up is dropped (logged).
     public func presentExport(
         data: Data,
         contentType: UTType,
         defaultFilename: String,
         onResult: @escaping (Result<URL, any Error>) -> Void
     ) {
+        guard !isExporterPresented else {
+            AppLog.app.warning(
+                "FilePickerCoordinator.presentExport ignored: exporter already presented"
+            )
+            return
+        }
         exportRequest = ExportRequest(
             document: DataFileDocument(data: data, contentType: contentType),
             contentType: contentType,

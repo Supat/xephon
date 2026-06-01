@@ -117,12 +117,22 @@ struct ContentView: View {
                             filterModel: filterModel,
                             fileCoord: fileCoord,
                             filePicker: filePicker,
+                            llmCoord: llmCoord,
                             selectedUtteranceID: $selectedUtteranceID,
                             scrollRequestUtteranceID: $scrollRequestUtteranceID,
                             showingDiscardConfirm: $showingDiscardConfirm
                         )
                         .frame(width: geo.size.width / 3)
+                        // Extend the divider through the bottom
+                        // home-indicator zone so it reads as one
+                        // continuous line from the toolbar to the
+                        // screen edge, matching the pane backgrounds
+                        // on either side (both pane content extends
+                        // through the home-indicator zone via their
+                        // own `.ignoresSafeArea(.container, edges:
+                        // .bottom)` modifiers).
                         Divider()
+                            .ignoresSafeArea(.container, edges: .bottom)
                         TranscriptPaneView(
                             recorder: recorder,
                             filterModel: filterModel,

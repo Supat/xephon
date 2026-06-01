@@ -117,6 +117,58 @@ near-default outputs for polite/declarative content. The
 This affects `fusedValence` and through it `dominantSpeaker` /
 trajectory plots, but not the categorical top label directly.
 
+## Related — Plutchik intensities are not a probability distribution
+
+`PlutchikScore.probabilities` is shaped like a probability dict but
+its values aren't drawn from one. Both text-SER backends emit per-
+label intensities in `[0, 1]` independently, with **no constraint
+that the eight values sum to 1**:
+
+- `Core/SER/Text/WRIMETextSER.swift::classify` reads eight regression
+  heads, each scaled and clamped to `[0, 1]` separately:
+  ```swift
+  let normalized = (raw[i] / intensityScale).clamped(to: 0...1)
+  dict[Self.LABEL_ORDER[i]] = normalized
+  ```
+- `Core/SER/Text/FoundationModelsSER.swift`'s prompt is explicit:
+  > "estimate how strongly each Plutchik emotion is present, as
+  > independent probabilities in [0, 1] (they do NOT need to sum to 1)."
+
+So an utterance's text-side total can land anywhere in `[0, 8]`.
+A wildly-firing classification produces a much larger
+text-side contribution to the fusion sums than a focused one,
+even though both express equal certainty *per label*. The
+downstream consequences:
+
+- **`plutchikToValence` / `plutchikToArousal`** sum the intensities
+  with conservative coefficients and map the raw sum through
+  `(0.5 + raw × k).clamped(to: 0...1)`. The coefficients (`0.25`
+  for V, `0.3` for A) were chosen against the current intensity
+  scale. Plutchik dicts that sum to `~0.5` produce V/A near
+  `0.5` (neutral); dicts summing to `~4` saturate the clamp at
+  `0` or `1`. Comparability across utterances is approximate.
+- **`topLabel` / `labelFusionScores`** are argmax / share-of-total
+  computations within a single utterance. Order-invariant within
+  the utterance, but the text-side total `Σv × textWeight` varies
+  with the Plutchik dict's sum — so the effective text-vs-acoustic
+  balance drifts utterance-to-utterance independently of
+  `asrConfidence`.
+
+This is intentional in the sense that the formulas were
+calibrated against unnormalized intensities — normalizing the
+dict to sum to `1` at the source would change the input scale
+the V/A coefficients were tuned for and force a recalibration.
+But it's a semantic ambiguity worth knowing: the dict reads
+like a probability distribution at every call site, isn't one,
+and that shapes which fixes are safe.
+
+A clean fix waits on the same calibration set the rest of this
+document points to (`docs/eval_log.md`): retune the V/A
+coefficients against a labelled Japanese corpus with a defined
+normalization convention (sum-to-1 vs sum-bounded vs raw), then
+enforce that convention at the SER backend boundary so
+downstream consumers can rely on it.
+
 ## Why this is hard to fix cleanly
 
 The "right" fix would be a Japanese-specific calibration set —
@@ -163,7 +215,7 @@ change.
 
 Trade-off: arbitrary coefficients. The right values depend on the
 text SER's empirical Plutchik distribution on real input, which
-varies by backend (DeBERTa vs Foundation Models) and by speech
+varies by backend (WRIME text SER vs Foundation Models) and by speech
 register (formal vs casual). Conservative defaults are guesses.
 
 ### B. Add a `.neutral` path for low-confidence Plutchik

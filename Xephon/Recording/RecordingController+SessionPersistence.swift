@@ -112,6 +112,24 @@ extension RecordingController {
         // the other optional maps.
         let segmentIDsForExport = utteranceObservationSegmentIDs.filter { liveIDs.contains($0.key) }
         let segmentIDs = segmentIDsForExport.isEmpty ? nil : segmentIDsForExport
+        // Persist user-defined sections alongside the
+        // utterances they reference. Filter dangling entries
+        // (a section whose start/end no longer exist in the
+        // current utterance list — shouldn't happen at save
+        // time but cheap defense). Empty round-trips as nil so
+        // sessions that never defined any sections stay
+        // byte-clean in the bundle. JSON-encoded so this
+        // Export layer doesn't need an upward dependency on
+        // the app target.
+        let liveSections = sections.sections.filter { sec in
+            if let s = sec.startUtteranceID, !liveIDs.contains(s) { return false }
+            if let e = sec.endUtteranceID,   !liveIDs.contains(e) { return false }
+            return true
+        }
+        let sectionsBlob: Data? = {
+            guard !liveSections.isEmpty else { return nil }
+            return try? JSONEncoder().encode(liveSections)
+        }()
         if let url = playbackSourceURL {
             let stillScoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -133,7 +151,8 @@ extension RecordingController {
                     transcriptionIssues: issuesBlob,
                     transcriptionIssueTranscriptSnapshots: issueSnapshots,
                     utteranceEmbeddings: embeddings,
-                    utteranceObservationSegmentIDs: segmentIDs
+                    utteranceObservationSegmentIDs: segmentIDs,
+                    sections: sectionsBlob
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -155,7 +174,8 @@ extension RecordingController {
             transcriptionIssues: issuesBlob,
             transcriptionIssueTranscriptSnapshots: issueSnapshots,
             utteranceEmbeddings: embeddings,
-            utteranceObservationSegmentIDs: segmentIDs
+            utteranceObservationSegmentIDs: segmentIDs,
+            sections: sectionsBlob
         )
     }
 
@@ -232,6 +252,24 @@ extension RecordingController {
             restoredIssues = []
         }
         summarizer.restore(issues: restoredIssues)
+        // Restore user-defined sections from the bundle. UUIDs
+        // were saved alongside the utterances in the same
+        // bundle so all references resolve by construction.
+        // Belt-and-braces prune: any section whose start or
+        // end doesn't match a live utterance (e.g. a future
+        // partial-load path drops some rows) gets dropped.
+        // v1 bundles / sessions without sections decode the
+        // blob as nil and the store stays empty.
+        if let sectionsBlob = document.sections,
+           let restoredSections = try? JSONDecoder().decode(
+               [ConversationSection].self,
+               from: sectionsBlob
+           ) {
+            sections.replaceAll(restoredSections)
+            sections.pruneDangling(validIDs: Set(document.utterances.map(\.id)))
+        } else {
+            sections.clear()
+        }
         if let saved = document.originalSnapshots {
             preReevaluationSnapshots = saved
         }

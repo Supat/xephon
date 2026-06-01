@@ -46,6 +46,7 @@ Fill rows in as `scripts/fetch_models.sh` is implemented and benchmarks run.
 | Model | Source | License | Notes |
 |---|---|---|---|
 | Qwen3-8B (4-bit MLX) | `mlx-community/Qwen3-8B-4bit` (HF direct) | Apache 2.0 | On-device, opt-in. Runs through `mlx-swift-examples` (`MLXLLM` + `MLXLMCommon`). ~4.6 GB on disk, ~5 GB resident. Requires the `com.apple.developer.kernel.increased-memory-limit` entitlement on the app target so iOS's per-app Jetsam ceiling on a 16 GB iPad lifts from ~5 GB to ~10–11 GB — without that, the Qwen weights + analysis pipeline trip Jetsam during prefill. Sourced from Hugging Face directly (GitHub Releases' 2 GB Free-tier asset cap rules out the safetensors). Developer-side pull via `scripts/fetch_models.sh --with-summarizer`. |
+| Llama-3.1-Swallow-8B-Instruct (4-bit MLX) | `mlx-community/Llama-3.1-Swallow-8B-Instruct-v0.3-4bit` (HF direct) | Llama 3 Community License · tokyotech-llm terms (research-permissive) | Opt-in alternative to Qwen3 — Tokyo Tech's Japanese fine-tune of Llama 3.1. Same MLX runtime, ~4.5 GB on-disk, same memory orchestration as Qwen. Family-gated prompt differences (Qwen3's `/no_think` directive is dropped for Llama, which would emit it as literal text). User picks via SummarizerCard backend picker; one MLX model resident at a time. Developer-side pull via `scripts/fetch_models.sh --with-summarizer-llama`. SHA-256s captured 2026-05-30; refresh if the HF repo gets re-uploaded. |
 
 ## License obligations to track
 

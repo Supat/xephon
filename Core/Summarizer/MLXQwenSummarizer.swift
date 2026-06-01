@@ -7,46 +7,30 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 
-/// MLX-backed summarizer using a Qwen2.5-Instruct 4-bit model
-/// hydrated under `ModelStore`'s install directory. All inference
-/// runs on-device — no network calls, no cloud fallback.
+/// MLX-backed summarizer for the Qwen3-8B-Instruct (4-bit)
+/// family. Pairs with `MLXLlamaSummarizer` for the Llama 3.1
+/// Swallow family. Both are thin actors over the shared
+/// orchestration in `MLXLLMSummarizerCore`; this file
+/// supplies the Qwen-specific spec (prompts, EOS tokens,
+/// row format) and owns the per-actor lifecycle (load /
+/// unload of the `ModelContainer`).
 ///
 /// Lifecycle:
-///   1. Construct with the resolved model directory + identifier.
-///   2. Call `load()` (or let `summarize(...)` lazy-load on first
-///      use) to bring the weights into memory. Loading 4-bit 7B is
-///      ~5–10 s on M4 iPad Pro.
-///   3. Call `summarize(utterances:speakerNames:)` to generate.
-///   4. Call `unload()` to release the ~4 GB working set when the
-///      summarize UI dismisses — keeping the model resident across
-///      a recording session would push memory pressure too hard
-///      next to W2V2 + emotion2vec + DeBERTa.
-public actor MLXQwenSummarizer: SessionSummarizer {
+///   1. Construct with `modelIdentifier` + `modelDirectory`
+///      (handled by `SummarizerCoordinator` against the
+///      `ModelStore`).
+///   2. `load()` brings the 4-bit weights into memory
+///      (~5–10 s on M4 iPad Pro). Idempotent; lazy-called
+///      by `summarize(...)` on first use.
+///   3. `summarize(...)` runs one of the three
+///      `SummarizeMode` paths via `MLXLLMSummarizerCore`.
+///   4. `unload()` releases the ~4.6 GB working set when the
+///      summary sheet dismisses.
+public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
     public let modelIdentifier: String
     private let modelDirectory: URL
     private var container: ModelContainer?
-
-    /// Hard cap on tokens the LLM may emit per summary. The output
-    /// JSON is topic + overall mood + a per-speaker paragraph for
-    /// every speaker in the input; a busy session with 4–6 speakers
-    /// can want 3–4k tokens of output to fully populate. 2048 was
-    /// landing the parser at "Unexpected end of file" on
-    /// real-world conversations. 4096 fits the realistic max; the
-    /// tolerant parser below salvages the prefix when the model
-    /// still runs over.
-    private static let maxOutputTokens = 4096
-
-    /// Cap on the number of utterances we feed into a single
-    /// summary pass. Each row carries the full acoustic 9-class
-    /// softmax + Plutchik 8-class intensity in addition to the
-    /// fused label/V/A/D — ~2.3× the per-row token cost vs. a
-    /// fused-only line. 100 utterances at this richer format ≈
-    /// 10–14k input tokens, comfortably inside Qwen3's context
-    /// window and inside the increased-memory-limit entitlement's
-    /// per-app budget. Sessions longer than this take the most
-    /// recent window — emotion arcs concentrate at the trailing
-    /// edge of a conversation.
-    private static let maxPromptUtterances = 100
+    private let spec = MLXQwenSpec()
 
     public init(modelIdentifier: String, modelDirectory: URL) {
         self.modelIdentifier = modelIdentifier
@@ -57,32 +41,27 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         container != nil
     }
 
-    /// Bring the weights into memory. Idempotent. Surfaces
-    /// `SummarizerError.modelLoadFailed` on any underlying MLX
-    /// error (corrupted weights, format mismatch, etc.).
     public func load() async throws {
         if container != nil { return }
         AppLog.app.info(
             "MLXQwenSummarizer loading from \(self.modelDirectory.path, privacy: .public)"
         )
-        // Cap MLX's buffer cache to keep the working set tight.
-        // The default is bounded by Metal's recommendedMaxWorking-
-        // SetSize, which on a 16 GB iPad sits high enough to push
-        // the process over the Jetsam ceiling once Qwen weights
-        // and the SER pipeline coexist. The mlx-swift docs recommend
-        // 32 MB for LLM eval on iOS, but the SER actors are torn
-        // down before `summarize` runs so we have headroom — 128 MB
-        // lets MLX keep more prefill/decode scratch buffers resident,
+        // Cap MLX's buffer cache to keep the working set
+        // tight. The default is bounded by Metal's
+        // recommendedMaxWorkingSetSize, which on a 16 GB iPad
+        // sits high enough to push the process over the
+        // Jetsam ceiling once Qwen weights and the SER
+        // pipeline coexist. 128 MB lets MLX keep more
+        // prefill/decode scratch buffers resident,
         // measurably improving generation throughput without
-        // re-introducing Jetsam pressure.
+        // re-introducing Jetsam pressure (the SER actors are
+        // torn down by `SummarizerCoordinator` before
+        // `summarize` runs, so we have the headroom).
         MLX.GPU.set(cacheLimit: 128 * 1024 * 1024)
         do {
-            // MLXLMCommon resolves a directory containing
-            // `config.json`, `tokenizer.json`, and the safetensors
-            // shards into a `ModelContainer` that owns the loaded
-            // weights + tokenizer for the duration of the actor.
             let configuration = ModelConfiguration(
-                directory: modelDirectory
+                directory: modelDirectory,
+                extraEOSTokens: spec.extraEOSTokens
             )
             container = try await LLMModelFactory.shared.loadContainer(
                 configuration: configuration
@@ -102,161 +81,93 @@ public actor MLXQwenSummarizer: SessionSummarizer {
 
     public func summarize(
         utterances: [UtteranceEstimate],
-        speakerNames: [String: String]
+        speakerNames: [String: String],
+        mode: SummarizeMode,
+        boostedUtteranceIDs: Set<UUID>
     ) async throws -> SessionSummary {
         try await load()
         guard let container else {
             throw SummarizerError.modelNotInstalled
         }
-        guard !utterances.isEmpty else {
-            return SessionSummary(
-                inferredSetting: nil,
-                topic: "",
-                overallMood: "",
-                perSpeaker: [],
-                model: modelIdentifier,
-                generatedAt: Date()
-            )
-        }
-
-        // Truncate to the most recent window when the session
-        // exceeds `maxPromptUtterances` — see the constant's doc
-        // comment for the memory rationale.
-        let promptUtterances: [UtteranceEstimate]
-        let truncatedFrom: Int?
-        if utterances.count > Self.maxPromptUtterances {
-            promptUtterances = Array(utterances.suffix(Self.maxPromptUtterances))
-            truncatedFrom = utterances.count
-        } else {
-            promptUtterances = utterances
-            truncatedFrom = nil
-        }
-        let prompt = Self.buildPrompt(
-            utterances: promptUtterances,
+        return try await MLXLLMSummarizerCore.summarize(
+            container: container,
+            modelIdentifier: modelIdentifier,
+            utterances: utterances,
             speakerNames: speakerNames,
-            truncatedFromTotal: truncatedFrom
-        )
-        if let truncatedFrom {
-            AppLog.app.info(
-                "MLXQwenSummarizer truncating \(truncatedFrom, privacy: .public) → \(promptUtterances.count, privacy: .public) utterances"
-            )
-        }
-        AppLog.app.info(
-            "MLXQwenSummarizer summarizing \(promptUtterances.count, privacy: .public) utterances (prompt \(prompt.count, privacy: .public) chars)"
-        )
-        let raw: String
-        do {
-            raw = try await container.perform { context -> String in
-                let userInput = UserInput(prompt: prompt)
-                let lmInput = try await context.processor.prepare(input: userInput)
-                // `generate(...)` runs synchronously to completion
-                // inside the actor and returns a `GenerateResult`.
-                // We cap `maxTokens` because the default is nil
-                // (unbounded), and Qwen will happily keep producing
-                // tokens until EOS — combined with the 4.3 GB
-                // resident weights, an unbounded run can push the
-                // app over its memory budget and trip a SIGKILL.
-                // 2048 tokens (~1500 words) is comfortable headroom
-                // for a topic + overall mood + several per-speaker
-                // paragraphs without risking OOM.
-                // Two `generate(input:parameters:context:didGenerate:)`
-                // overloads exist with different didGenerate arities
-                // (`(Int) -> .` and `([Int]) -> .`). Pin the closure
-                // parameter type so the compiler picks the `[Int]`
-                // variant — the one whose return is `GenerateResult`
-                // with `.output` already decoded for us.
-                var parameters = GenerateParameters(
-                    maxTokens: Self.maxOutputTokens,
-                    // Deterministic for reproducibility — the
-                    // summary is a derived artifact of the
-                    // session, not creative writing.
-                    temperature: 0.2
-                )
-                // Default prefill step is 512 tokens — packing
-                // hundreds of tokens into a single Metal command
-                // buffer was tripping the GPU watchdog
-                // (`kIOGPUCommandBufferCallbackErrorTimeout` →
-                // mlx::core::gpu::check_error SIGABRT) on real
-                // iPad hardware. 128 sits comfortably inside the
-                // watchdog window (32 sustained-prefill kernels for
-                // a 4k-token prompt vs. 64 at the prior step size)
-                // and roughly halves prefill wall time on long
-                // sessions. Drop back to 64 if the timeout SIGABRT
-                // re-appears on any hardware revision.
-                parameters.prefillStepSize = 128
-                let result = try MLXLMCommon.generate(
-                    input: lmInput,
-                    parameters: parameters,
-                    context: context,
-                    // Cooperative cancellation: the user dismissing
-                    // the summary sheet cancels the View-owned Task
-                    // that's driving this call, which propagates
-                    // here as `Task.isCancelled`. Returning `.stop`
-                    // makes the generate loop bail at the next token
-                    // boundary instead of running to EOS — without
-                    // this hook a dismiss leaves the LLM grinding
-                    // away in the background on a result no one will
-                    // see.
-                    didGenerate: { (_: [Int]) -> GenerateDisposition in
-                        Task.isCancelled ? .stop : .more
-                    }
-                )
-                return result.output
-            }
-        } catch let error as SummarizerError {
-            throw error
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            AppLog.app.error(
-                "MLXQwenSummarizer.generate failed: \(String(describing: error), privacy: .public)"
-            )
-            throw SummarizerError.inferenceFailed(
-                reason: String(describing: error)
-            )
-        }
-        // If generation was cancelled mid-stream the partial output
-        // won't parse as the structured JSON we asked for — bail
-        // before the parser has a chance to surface a misleading
-        // decode error to the user.
-        if Task.isCancelled { throw CancellationError() }
-        AppLog.app.info(
-            "MLXQwenSummarizer raw output: \(raw.count, privacy: .public) chars"
-        )
-
-        return try Self.parse(
-            raw: raw,
-            speakerNames: speakerNames,
-            modelIdentifier: modelIdentifier
+            mode: mode,
+            boostedUtteranceIDs: boostedUtteranceIDs,
+            spec: spec
         )
     }
+}
 
-    // MARK: - Prompt + parser
+// MARK: - Qwen spec
 
-    /// Build the chat-style prompt the model sees. Compact JSON-ish
-    /// per-utterance lines keep the token budget bounded — every
-    /// numerical score is preserved (the whole point of going
-    /// beyond Apple FM was to keep these) but we elide the V/A/D
-    /// detail when it's nil and round floats to 2 decimals.
-    /// `truncatedFromTotal` is the original session size when the
-    /// caller has narrowed `utterances` to a tail window for
-    /// memory reasons — we inform the model so it knows the
-    /// passage isn't the whole conversation and can frame its
-    /// "overall mood" accordingly.
-    private static func buildPrompt(
+/// Qwen3-specific configuration + prompt builders. Used by
+/// `MLXQwenSummarizer` and consumed by
+/// `MLXLLMSummarizerCore`.
+internal struct MLXQwenSpec: MLXLLMSpec {
+    let family: LLMModelFamily = .qwen
+
+    /// Cap on the number of utterances we feed into a single
+    /// summary pass. Each row carries the full acoustic
+    /// 9-class softmax + Plutchik 8-class intensity in
+    /// addition to the fused label/V/A/D — ~2.3× the per-row
+    /// token cost vs. a fused-only line. 100 utterances at
+    /// this richer format ≈ 10–14k input tokens, comfortably
+    /// inside Qwen3's context window and the per-app memory
+    /// budget. Sessions longer than this go through the
+    /// `.heuristic` or `.deep` paths to handle the surplus.
+    let maxPromptUtterances = 100
+
+    /// Per-window utterance count for `.deep` mode. Smaller
+    /// than `maxPromptUtterances` because deep mode runs many
+    /// windows back-to-back; tight windows bound per-call
+    /// prefill cost and give the merge pass uniformly-sized
+    /// inputs. 50 lands at ~5–7k prompt tokens per window.
+    let deepWindowSize = 50
+
+    /// Output-token cap for per-window intermediate summaries.
+    /// Bumped from 768 → 1280 after a 5-speaker window
+    /// saturated the prior cap mid-emit and forced placeholder
+    /// synthesis. 1280 fits verbose windows with headroom;
+    /// `MLXLLMSummarizerCore.recoverTruncatedWindowIntermediate`
+    /// salvages anything that still spills.
+    let deepWindowOutputTokens = 1280
+
+    /// Hard cap on tokens the LLM may emit per fast /
+    /// heuristic / merge summary. 4096 fits the realistic max
+    /// for a busy session's per-speaker arcs; the tolerant
+    /// parser salvages the prefix when the model still runs
+    /// over.
+    let maxOutputTokens = 4096
+
+    /// Qwen3's tokenizer already has `<|im_end|>` as
+    /// `eos_token`, which handles the chat-template stop.
+    /// `<|endoftext|>` is added defensively in case a future
+    /// quant drops the chat template.
+    let extraEOSTokens: Set<String> = ["<|endoftext|>"]
+
+    /// Qwen3's instruction tuning is strong enough at 0.2
+    /// temperature; no repetition-penalty needed.
+    let repetitionPenalty: Float? = nil
+
+    func buildPrompt(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
-        truncatedFromTotal: Int?
+        truncatedFromTotal: Int?,
+        selection: MLXLLMSelection
     ) -> String {
         let speakers = utterances.orderedSpeakerIDs
+        let speakerList = speakers.joined(separator: ", ")
         var lines: [String] = []
-        lines.reserveCapacity(utterances.count + 12)
+        lines.reserveCapacity(utterances.count + 14)
         lines.append("You are an analyst summarizing a multi-speaker conversation.")
         lines.append("Read every utterance below and produce a JSON object with four fields:")
         lines.append("  \"setting\" — one short sentence identifying the conversation's setting / situation / register (e.g. 'casual phone catchup between friends', 'job interview', 'classroom discussion'). Stay general — do not invent specific locations or institutions. Emit this FIRST so the rest stays consistent with it.")
         lines.append("  \"topic\" — one or two sentences on what the conversation is about.")
         lines.append("  \"overallMood\" — one paragraph on the session's overall emotional tone, consistent with the inferred setting.")
-        lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakers.joined(separator: ", ")).")
+        lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakerList).")
         lines.append("Each perSpeaker entry has: { \"speakerID\": <id>, \"summary\": <one paragraph>, \"dominantMood\": <one short phrase> }.")
         lines.append("Each row carries: fused label and fused V/A/D (valence/arousal/dominance, 0–1), plus the raw per-modality probability vectors:")
         lines.append("  aP = acoustic 9-class softmax (angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown)")
@@ -264,30 +175,21 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         lines.append("Use these to judge confidence and to flag modality disagreement — e.g. a row where aP says sad but tP says joy is worth calling out per-speaker; the fused label hides that signal.")
         lines.append("When the speaker demographics block below lists a gender, use it as the canonical pronoun for that speaker throughout the summary — 'she/her' for female, 'he/him' for male, 'they/them' for child or when no gender is listed. (Moot for languages that drop pronouns, like Japanese.)")
         lines.append("Return ONLY valid JSON, no prose before or after.")
-        // Pin the output language to whatever the user picked in
-        // iPadOS Settings → Xephon → Language. Qwen3 has been
-        // observed to drift to Chinese on Japanese-transcript
-        // sessions; the explicit directive overrides that.
         lines.append(SummarizerLocale.responseLanguageInstruction)
         // Qwen3 ships with a "thinking" mode that emits a
-        // `<think>...</think>` chain-of-thought block before the
-        // actual response. That blows our 2048-token output cap and
-        // confuses any "find the first '{'" parser since the
-        // thinking text often contains braces. The `/no_think`
-        // directive is Qwen3's documented switch to disable
-        // reasoning for a single turn — it must appear in the user
-        // prompt (system instructions are routed through Jinja
-        // template logic that doesn't honor it the same way).
+        // `<think>...</think>` chain-of-thought block before
+        // the actual response. The `/no_think` directive
+        // disables it for a single turn.
         lines.append("/no_think")
         if let total = truncatedFromTotal {
             lines.append("")
-            lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Frame the overall mood as the trailing portion of the session, not the whole arc.")
+            switch selection {
+            case .trailing:
+                lines.append("NOTE: This conversation has \(total) utterances total; only the most recent \(utterances.count) are shown below. Frame the overall mood as the trailing portion of the session, not the whole arc.")
+            case .heuristicTopN:
+                lines.append("NOTE: This conversation has \(total) utterances total; the \(utterances.count) most distinctive utterances (chosen by session-relative TF-IDF, NOT the most recent) are shown below in chronological order. Frame the overall mood as a representative sample of the whole session, not a continuous trailing segment — gaps between rows are expected.")
+            }
         }
-        // Per-speaker demographic roster, ordered by `speakers` so
-        // the model reads it in the same order as the utterance
-        // list. Empty string when no row carried age-gender output
-        // (model not installed / clips too short to score) — the
-        // join skips it cleanly.
         let demographics = SpeakerDemographicsDigest
             .build(from: utterances)
             .renderForPrompt(speakerIDs: speakers, speakerNames: speakerNames)
@@ -300,15 +202,148 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         for u in utterances {
             lines.append(compactLine(for: u, speakerNames: speakerNames))
         }
+        // Instruction sandwich — restate the directive right
+        // before generation so the model's recent attention
+        // has the "produce JSON" cue, not the last
+        // utterance's `- speaker=…` line.
+        lines.append("")
+        lines.append("---")
+        lines.append("IMPORTANT: Follow the instructions above and produce exactly one valid JSON object with fields setting, topic, overallMood, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the utterance list above; do NOT add any prose.")
         return lines.joined(separator: "\n")
     }
 
-    /// One per-utterance line. Order stable so the model sees
-    /// consistent positional cues across rows: speaker → time →
-    /// fused → per-modality probability vectors → transcript.
-    /// The transcript field is named `text` so to avoid collision
-    /// with the text-SER's Plutchik vector we name that `tP`.
-    private static func compactLine(
+    func buildDeepWindowPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        windowIndex: Int,
+        totalWindows: Int
+    ) -> String {
+        let speakers = utterances.orderedSpeakerIDs
+        let speakerList = speakers.joined(separator: ", ")
+        let timeStart = utterances.first?.start ?? 0
+        let timeEnd = utterances.last?.end ?? 0
+        let tStartStr = String(format: "%.1f", timeStart)
+        let tEndStr = String(format: "%.1f", timeEnd)
+        var lines: [String] = []
+        lines.reserveCapacity(utterances.count + 20)
+        lines.append("You are an analyst summarizing ONE WINDOW of a longer multi-speaker conversation.")
+        lines.append("This is window \(windowIndex + 1) of \(totalWindows), covering utterances from t=\(tStartStr)s to t=\(tEndStr)s.")
+        lines.append("Produce a JSON object — NOT the final summary, just a compact intermediate that a merge pass will combine with the other windows.")
+        lines.append("Fields:")
+        lines.append("  \"windowIndex\": \(windowIndex) (copy this number),")
+        lines.append("  \"timeStart\": \(tStartStr),")
+        lines.append("  \"timeEnd\": \(tEndStr),")
+        lines.append("  \"topicSnapshot\": one short phrase on this window's topic,")
+        lines.append("  \"moodSnapshot\": one short phrase on this window's emotional tone,")
+        lines.append("  \"perSpeaker\": array of { \"speakerID\": <id>, \"notes\": three to five sentences fleshing out this speaker's contribution in this window (notable statements, topics, emotional shifts — give the merge pass enough material to write a real per-speaker arc), \"dominantMood\": short phrase }, one entry per speaker in: \(speakerList),")
+        lines.append("  \"modalityFlags\": array of short strings, each flagging one row where the acoustic and text classifiers notably disagreed (e.g. \"S03 at 42.3s: acoustic=sad, text=joy\"). Empty array if no notable disagreement.")
+        lines.append("Each row carries: fused label and fused V/A/D (valence/arousal/dominance, 0–1), plus the raw per-modality probability vectors:")
+        lines.append("  aP = acoustic 9-class softmax (angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown)")
+        lines.append("  tP = text 8-class Plutchik intensity (joy, sadness, anticipation, surprise, anger, fear, disgust, trust)")
+        lines.append("Return ONLY valid JSON, no prose before or after.")
+        lines.append(SummarizerLocale.responseLanguageInstruction)
+        lines.append("/no_think")
+        let demographics = SpeakerDemographicsDigest
+            .build(from: utterances)
+            .renderForPrompt(speakerIDs: speakers, speakerNames: speakerNames)
+        if !demographics.isEmpty {
+            lines.append("")
+            lines.append(demographics)
+        }
+        lines.append("")
+        lines.append("Utterances:")
+        for u in utterances {
+            lines.append(compactLine(for: u, speakerNames: speakerNames))
+        }
+        lines.append("")
+        lines.append("---")
+        lines.append("IMPORTANT: Follow the instructions above and produce exactly one window-intermediate JSON object with fields windowIndex, timeStart, timeEnd, topicSnapshot, moodSnapshot, perSpeaker, modalityFlags. The FIRST character of your output MUST be `{`. Do NOT echo the utterance list above; do NOT add any prose.")
+        return lines.joined(separator: "\n")
+    }
+
+    func buildDeepMergePrompt(
+        intermediates: [MLXLLMDeepWindowIntermediate],
+        allUtterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> String {
+        let allSpeakers = allUtterances.orderedSpeakerIDs
+        let speakerList = allSpeakers.joined(separator: ", ")
+        var lines: [String] = []
+        lines.reserveCapacity(intermediates.count + 24)
+        lines.append("You are an analyst producing the FINAL summary of a multi-speaker conversation.")
+        lines.append("Below you'll see two complementary inputs: (a) JSON summaries of \(intermediates.count) consecutive windows of the conversation (in chronological order), and (b) a sample of the most distinctive raw utterances from across the session. The conversation has \(allUtterances.count) utterances total.")
+        lines.append("Synthesize the window summaries into a single structured per-speaker arc — each speaker treated as one person across windows, not split into per-window sections — and lean on the raw utterances for verbatim quotes and specific phrasing when writing the per-speaker summaries.")
+        lines.append("")
+        lines.append("Produce a JSON object with four fields:")
+        lines.append("  \"setting\" — one short sentence identifying the conversation's setting / situation / register (e.g. 'casual phone catchup between friends', 'job interview', 'classroom discussion'). Stay general — do not invent specific locations or institutions. Emit this FIRST so the rest stays consistent with it.")
+        lines.append("  \"topic\" — one or two sentences on what the conversation is about (factor topic snapshots across all windows).")
+        lines.append("  \"overallMood\" — one paragraph on the session's overall emotional tone — describe the arc, not just the trailing window.")
+        lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakerList).")
+        lines.append("Each perSpeaker entry has: { \"speakerID\": <id>, \"summary\": <one paragraph spanning the whole session>, \"dominantMood\": <one short phrase> }.")
+        lines.append("The window intermediates include a \"modalityFlags\" array — surface meaningful acoustic↔text disagreements in the per-speaker write-ups when they recur or look notable. Don't enumerate every flag.")
+        lines.append("When the speaker demographics block below lists a gender, use it as the canonical pronoun for that speaker throughout the summary — 'she/her' for female, 'he/him' for male, 'they/them' for child or when no gender is listed. (Moot for languages that drop pronouns, like Japanese.)")
+        lines.append("Return ONLY valid JSON, no prose before or after.")
+        lines.append(SummarizerLocale.responseLanguageInstruction)
+        lines.append("/no_think")
+        let demographics = SpeakerDemographicsDigest
+            .build(from: allUtterances)
+            .renderForPrompt(speakerIDs: allSpeakers, speakerNames: speakerNames)
+        if !demographics.isEmpty {
+            lines.append("")
+            lines.append(demographics)
+        }
+        lines.append("")
+        lines.append("Window summaries (each is a JSON object):")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        for intermediate in intermediates {
+            if let data = try? encoder.encode(intermediate),
+               let json = String(data: data, encoding: .utf8) {
+                lines.append(json)
+            }
+        }
+        // Hybrid merge: also feed the top-N most informative
+        // RAW utterances as quoted-detail context. Window
+        // intermediates are already summaries; without raw
+        // signal the merge's per-speaker write-ups are
+        // "summarizing summaries" and lose verbatim quotes /
+        // specific phrasing. Top-N selected by the same
+        // speaker-balanced TF-IDF ranker heuristic mode uses,
+        // so every speaker is represented.
+        let supplementalCap = Self.deepMergeSupplementalUtterances
+        let topIDs = Informativeness.topNBalancedBySpeaker(
+            supplementalCap,
+            utterances: allUtterances
+        )
+        let supplemental = allUtterances.filter { topIDs.contains($0.id) }
+        if !supplemental.isEmpty {
+            lines.append("")
+            lines.append("Key raw utterances (\(supplemental.count) of \(allUtterances.count), chosen for distinctiveness — use these for verbatim quotes and specific detail in the per-speaker write-ups):")
+            for u in supplemental {
+                lines.append(compactLine(for: u, speakerNames: speakerNames))
+            }
+        }
+        lines.append("")
+        lines.append("---")
+        lines.append("IMPORTANT: Follow the instructions above and produce exactly one final-summary JSON object with fields setting, topic, overallMood, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the window summaries or raw utterances above; do NOT add any prose.")
+        return lines.joined(separator: "\n")
+    }
+
+    /// Count of raw utterances to append to the deep-merge
+    /// prompt as quoted-detail context (alongside the window
+    /// intermediates). Half of `maxPromptUtterances` keeps
+    /// the merge prompt's total token budget comfortably
+    /// below Qwen3's 32k context even when combined with
+    /// per-window intermediates.
+    private static let deepMergeSupplementalUtterances = 50
+
+    /// Qwen rows carry the FULL SER block (label + V/A/D +
+    /// aP + tP). Qwen3-8B can actually use this signal to
+    /// flag cross-modality disagreement in its per-speaker
+    /// summaries; the verbose row format pays for itself.
+    /// (Llama gets a stripped version — see
+    /// `MLXLlamaSpec.compactLine`.)
+    func compactLine(
         for u: UtteranceEstimate,
         speakerNames: [String: String]
     ) -> String {
@@ -323,250 +358,12 @@ public actor MLXQwenSummarizer: SessionSummarizer {
         if let a = u.fusedArousal { fields.append(String(format: "A=%.2f", a)) }
         if let d = u.fusedDominance { fields.append(String(format: "D=%.2f", d)) }
         if let acoustic = u.acousticCategorical {
-            fields.append("aP={\(renderAcoustic(acoustic))}")
+            fields.append("aP={\(MLXLLMRendering.acoustic(acoustic))}")
         }
         if let plutchik = u.plutchik {
-            fields.append("tP={\(renderPlutchik(plutchik))}")
+            fields.append("tP={\(MLXLLMRendering.plutchik(plutchik))}")
         }
-        let escaped = u.transcript
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        fields.append("text=\"\(escaped)\"")
+        fields.append("text=\"\(MLXLLMRendering.escapedTranscript(u.transcript))\"")
         return "- " + fields.joined(separator: " ")
-    }
-
-    /// Render the acoustic 9-class softmax in `Label.allCases`
-    /// order so every row's vector lines up by position — easier
-    /// for the LLM to compare rows column-wise. Missing classes
-    /// fall back to 0.00 rather than being omitted, so the schema
-    /// stays uniform across rows.
-    private static func renderAcoustic(_ score: CategoricalEmotion) -> String {
-        CategoricalEmotion.Label.allCases.map { label in
-            let p = score.probabilities[label] ?? 0
-            return String(format: "%@=%.2f", label.rawValue, p)
-        }.joined(separator: " ")
-    }
-
-    /// Render the text 8-class Plutchik intensity vector in
-    /// `Label.allCases` order. Same uniform-schema rationale as
-    /// `renderAcoustic` — and note these are intensities, not a
-    /// softmax (WRIME is multi-label), so they need not sum to 1.
-    private static func renderPlutchik(_ score: PlutchikScore) -> String {
-        PlutchikScore.Label.allCases.map { label in
-            let p = score.probabilities[label] ?? 0
-            return String(format: "%@=%.2f", label.rawValue, p)
-        }.joined(separator: " ")
-    }
-
-    /// Decode the LLM's JSON output. Tolerates `<think>` blocks
-    /// (defensive even though `/no_think` is in the prompt),
-    /// ```fence``` wrappers, AND truncated output — when the model
-    /// ran past the output-token cap mid-`perSpeaker` array we
-    /// recover the per-speaker entries it managed to complete
-    /// rather than throwing the whole summary away.
-    private static func parse(
-        raw: String,
-        speakerNames: [String: String],
-        modelIdentifier: String
-    ) throws -> SessionSummary {
-        // Belt-and-braces: even with `/no_think` in the prompt some
-        // Qwen3 builds still emit an (often empty) `<think></think>`
-        // pair, and any chain-of-thought inside can carry braces
-        // that mislead "first '{'" scanning. Strip the block before
-        // any other processing.
-        let dethought = stripThinkBlocks(raw)
-        let stripped = stripCodeFence(dethought)
-        guard let braceStart = stripped.firstIndex(of: "{") else {
-            throw SummarizerError.decodeFailed(reason: "no JSON object found")
-        }
-        struct Wire: Decodable {
-            struct PerSpeaker: Decodable {
-                let speakerID: String
-                let summary: String
-                let dominantMood: String
-            }
-            // Optional so a model that legitimately couldn't infer a
-            // setting (or an older prompt that didn't ask for one)
-            // decodes cleanly instead of failing the whole summary.
-            let setting: String?
-            let topic: String
-            let overallMood: String
-            let perSpeaker: [PerSpeaker]
-        }
-        // Strict path: the substring between the first `{` and the
-        // last `}` parses as our schema whenever the model closed
-        // the JSON cleanly.
-        let strict: String? = {
-            guard let braceEnd = stripped.lastIndex(of: "}") else { return nil }
-            return String(stripped[braceStart...braceEnd])
-        }()
-        let decoded: Wire
-        if let strict, let data = strict.data(using: .utf8),
-           let ok = try? JSONDecoder().decode(Wire.self, from: data) {
-            decoded = ok
-        } else {
-            // Truncated output: walk the `perSpeaker` array forward
-            // from its `[`, find the last balanced entry object, and
-            // close the array + outer object manually. The in-flight
-            // (broken) entry is discarded; every complete one — plus
-            // `topic` and `overallMood` from earlier in the buffer —
-            // is preserved.
-            guard let recovered = recoverTruncatedSummary(
-                stripped: String(stripped[braceStart...])
-            ) else {
-                throw SummarizerError.decodeFailed(reason: "no JSON object found")
-            }
-            guard let data = recovered.data(using: .utf8) else {
-                throw SummarizerError.decodeFailed(reason: "non-utf8 output")
-            }
-            AppLog.app.info(
-                "MLXQwenSummarizer recovered truncated JSON (\(data.count, privacy: .public) bytes)"
-            )
-            do {
-                decoded = try JSONDecoder().decode(Wire.self, from: data)
-            } catch {
-                throw SummarizerError.decodeFailed(
-                    reason: String(describing: error)
-                )
-            }
-        }
-        let perSpeaker = decoded.perSpeaker.map { entry in
-            SessionSummary.SpeakerSummary(
-                speakerID: entry.speakerID,
-                speakerName: speakerNames[entry.speakerID],
-                summary: entry.summary,
-                dominantMood: entry.dominantMood
-            )
-        }
-        return SessionSummary(
-            inferredSetting: decoded.setting?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            topic: decoded.topic,
-            overallMood: decoded.overallMood,
-            perSpeaker: perSpeaker,
-            model: modelIdentifier,
-            generatedAt: Date()
-        )
-    }
-
-    /// Salvage a truncated `{"topic":..., "overallMood":...,
-    /// "perSpeaker":[...]}` blob by scanning the `perSpeaker` array,
-    /// tracking string-literal and brace-nesting state, and
-    /// remembering the position immediately after the *most recent
-    /// top-level object that closed* inside the array. When the scan
-    /// hits end-of-input mid-entry, we cut at that remembered
-    /// position and synthesize `]}` to close the array and outer
-    /// object. `setting`, `topic`, and `overallMood` appear before
-    /// `perSpeaker` in the prompt's schema description, so the
-    /// model emits them first and they survive intact inside the
-    /// prefix we keep.
-    ///
-    /// Returns nil when the input doesn't look like our expected
-    /// shape — let the caller surface the original parse error in
-    /// that case rather than silently returning an empty summary.
-    private static func recoverTruncatedSummary(stripped: String) -> String? {
-        guard let perSpeakerKey = stripped.range(of: "\"perSpeaker\"") else {
-            return nil
-        }
-        guard let arrayOpenRange = stripped.range(
-            of: "[",
-            range: perSpeakerKey.upperBound..<stripped.endIndex
-        ) else {
-            return nil
-        }
-
-        var depth = 0
-        var inString = false
-        var escape = false
-        var lastCompleteEntryEnd: String.Index? = nil
-
-        var i = arrayOpenRange.upperBound
-        while i < stripped.endIndex {
-            let ch = stripped[i]
-            if escape {
-                escape = false
-            } else if inString {
-                if ch == "\\" {
-                    escape = true
-                } else if ch == "\"" {
-                    inString = false
-                }
-            } else {
-                switch ch {
-                case "\"":
-                    inString = true
-                case "{":
-                    depth += 1
-                case "}":
-                    depth -= 1
-                    if depth == 0 {
-                        lastCompleteEntryEnd = stripped.index(after: i)
-                    }
-                case "]" where depth == 0:
-                    // Array closed normally — the strict parser
-                    // should have handled this; bail so the caller
-                    // surfaces the original error.
-                    return nil
-                default:
-                    break
-                }
-            }
-            i = stripped.index(after: i)
-        }
-
-        // Cap the prefix at the end of the last complete entry; if
-        // no entry completed, cap at the array opener so we still
-        // emit a valid empty-array summary that carries topic and
-        // overallMood.
-        let cutEnd = lastCompleteEntryEnd ?? arrayOpenRange.upperBound
-        var truncated = String(stripped[..<cutEnd])
-        while let last = truncated.last,
-              last == "," || last.isWhitespace {
-            truncated.removeLast()
-        }
-        truncated.append("]}")
-        return truncated
-    }
-
-    /// Remove any `<think>...</think>` reasoning blocks Qwen3 emits
-    /// when its thinking mode is engaged. Greedy across newlines.
-    /// Also drops a stray closing `</think>` if the model elided
-    /// the opening tag (occasionally seen with `/no_think`).
-    private static func stripThinkBlocks(_ raw: String) -> String {
-        var s = raw
-        while let openRange = s.range(of: "<think>") {
-            if let closeRange = s.range(
-                of: "</think>",
-                range: openRange.upperBound..<s.endIndex
-            ) {
-                s.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
-            } else {
-                // Unterminated block — drop everything from the
-                // opener forward; the JSON, if any, was supposed
-                // to come after a `</think>` we never saw.
-                s.removeSubrange(openRange.lowerBound..<s.endIndex)
-                break
-            }
-        }
-        // Tolerate a stray closing tag without an opener.
-        if let strayClose = s.range(of: "</think>") {
-            s.removeSubrange(s.startIndex..<strayClose.upperBound)
-        }
-        return s
-    }
-
-    /// Strip ```json ... ``` fences a chat-tuned model might emit
-    /// even after being told "JSON only." Leaves bare JSON alone.
-    private static func stripCodeFence(_ raw: String) -> String {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.hasPrefix("```") {
-            if let firstNewline = s.firstIndex(of: "\n") {
-                s = String(s[s.index(after: firstNewline)...])
-            }
-        }
-        if s.hasSuffix("```") {
-            s = String(s.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return s
     }
 }

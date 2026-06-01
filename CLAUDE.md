@@ -14,6 +14,28 @@ and **dimensional** (valence, arousal, dominance).
 - **Primary device:** iPad Pro M4/M5 (16 GB SKU strongly preferred).
 - **License of the source code:** TBD (do not assume MIT).
 
+## Minimum viable scope
+
+Three load-bearing capabilities — without any one of these the project
+doesn't serve its purpose:
+
+1. **Speech transcription** — Japanese audio → text per utterance.
+2. **Speaker diarization** — attribute each utterance to a specific speaker.
+3. **On-device LLM summarization** — turn the per-utterance stream into a
+   session-level read.
+
+Affect estimation (Plutchik / V/A/D / age-gender) sits above this floor — a
+session is still useful without it; the three above aren't. When triaging,
+picking between fixes, or recommending a tradeoff, weight these three first
+— prefer the option that keeps them working (or fixes them) over the
+locally-cleaner option that weakens any of them.
+
+**Local-first, remote-open.** On-device stays the default (privacy, offline,
+no API-key plumbing). When a remote/cloud solution is genuinely the right
+fit, propose it openly with the tradeoff (latency, privacy posture, dep) —
+don't reflexively rule it out. The "no cloud without UI toggle + privacy
+note" rule under Always / Never still governs anything that ships.
+
 ## Architecture (the canonical pipeline)
 
 ```
@@ -27,7 +49,8 @@ AVAudioEngine (16 kHz mono Float32)
        audeering wav2vec2-large-robust-12-ft-emotion-msp-dim  → V/A/D
        emotion2vec_plus_large                                  → 9-class softmax
   → Text SER
-       fine-tuned Japanese DeBERTa-v3-large on WRIME           → 8-Plutchik
+       WRIME-tuned text classifier (RoBERTa-base today;        → 8-Plutchik
+         DeBERTa-v3-large is the long-term target)
        (optional) Apple Foundation Models 3B                   → structured V/A
   → Late fusion (weighted, ASR-confidence-aware)
   → Per-utterance JSON export (see `docs/output_schema.md`)
@@ -46,7 +69,7 @@ Core/
   Diarization/        FluidAudio adapter
   SER/
     Acoustic/         W2V2 + emotion2vec inference (Core ML / ONNX)
-    Text/             DeBERTa-WRIME inference, Foundation Models adapter
+    Text/             WRIME text SER inference (RoBERTa today, DeBERTa-v3-large target), Foundation Models adapter
   Fusion/             Late-fusion logic, calibration, V/A/D mapping
   Export/             JSON / CSV writers
 Models/               *.mlpackage and *.onnx (git-lfs, see below)

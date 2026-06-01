@@ -2,8 +2,8 @@ import Foundation
 import SERRuntime
 import XephonLogging
 
-/// Runtime-switchable text SER. Holds both the bundled DeBERTa-WRIME
-/// (`RoBERTa-base` today, see `DeBERTaWRIME.swift`) and the Apple Foundation
+/// Runtime-switchable text SER. Holds both the bundled WRIME-tuned
+/// classifier (`RoBERTa-base` today, see `WRIMETextSER.swift`) and the Apple Foundation
 /// Models fallback, and forwards `classify(_:)` to whichever backend is
 /// currently selected. Backend changes are honored on the next call.
 public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
@@ -24,7 +24,7 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     private let deberta: (any TextSER)?
     private let foundationModels: any TextSER
     /// ISO-639 language code the current session is targeting (e.g.
-    /// `"ja"`, `"en"`). DeBERTa-WRIME is Japanese-only, so when the
+    /// `"ja"`, `"en"`). The WRIME-tuned text SER is Japanese-only, so when the
     /// language is anything else, it drops out of `availableBackends`
     /// and `currentBackend` falls back to `.foundationModels`
     /// regardless of `preferredBackend`. Nil treats the session as
@@ -37,11 +37,14 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     /// snapshot was current at the moment `classifyBiased` ran.
     private var lexicon: LexiconBias = .init()
 
-    /// Whether the language-specific text SER (DeBERTa-WRIME) is
-    /// usable for the active session. DeBERTa is fine-tuned on
-    /// Japanese tweet emotion data and doesn't transfer to other
-    /// languages; gating it here keeps the rest of the pipeline
-    /// agnostic to that fact.
+    /// Whether the WRIME-tuned text SER is usable for the active
+    /// session. The bundled artifact is fine-tuned on Japanese
+    /// tweet emotion data and doesn't transfer to other languages;
+    /// gating it here keeps the rest of the pipeline agnostic to
+    /// that fact. (Property name `deberta` is the historical
+    /// identifier — kept because its `String` rawValue is persisted
+    /// in `UtteranceEstimate.textBackend` across `.xph` bundles and
+    /// JSON exports.)
     private var debertaIsLanguageMatched: Bool {
         guard let code = sessionLanguageCode else { return true }
         return code.lowercased() == "ja"
@@ -94,7 +97,7 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     /// Tell the switcher which language the current session is in.
     /// Forwards to `FoundationModelsSER.setLanguage` so the prompt
     /// opener follows along (Japanese, English, …), and re-evaluates
-    /// the DeBERTa gating on the next `availableBackends` /
+    /// the WRIME-language gating on the next `availableBackends` /
     /// `currentBackend` query. Pass `nil` to revert to the legacy
     /// "treat as Japanese" behavior.
     public func setLanguage(code: String?, label: String?) async {
@@ -114,7 +117,7 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     /// glossary term strings that matched the input. Both are
     /// stamped onto `UtteranceEstimate` so a later glossary edit
     /// can replay `lexicon.apply(rawScore, to: text)` without
-    /// re-running DeBERTa / Apple FM.
+    /// re-running the WRIME text SER / Apple FM.
     public func classifyBiased(
         _ text: String
     ) async throws -> (score: PlutchikScore, rawScore: PlutchikScore, matchedTerms: [String]) {
@@ -145,8 +148,8 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
             } catch {
                 // Apple Foundation Models runs on the ANE/GPU; when
                 // the app is backgrounded iOS revokes that access
-                // and `respond(...)` throws. If DeBERTa is loaded
-                // and the session language matches it, transparently
+                // and `respond(...)` throws. If the WRIME text SER
+                // is loaded and the session language matches it, transparently
                 // fall back so background-captured rows still get
                 // text SER — losing Plutchik for a third of a
                 // recording because the user tabbed away is the
@@ -155,7 +158,7 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
                 // returns to FM automatically.
                 if let deberta, debertaIsLanguageMatched {
                     AppLog.serText.warning(
-                        "FoundationModels classify failed (\(String(describing: error), privacy: .public)); falling through to DeBERTa for this row"
+                        "FoundationModels classify failed (\(String(describing: error), privacy: .public)); falling through to the WRIME text SER for this row"
                     )
                     return try await deberta.classify(text)
                 }
@@ -165,7 +168,7 @@ public actor SwitchingTextSER: TextSER, BackgroundAwareSER {
     }
 
     /// Forward the lifecycle transition to whichever backend
-    /// implements it (DeBERTa today; Apple FoundationModels has no
+    /// implements it (the WRIME text SER today; Apple FoundationModels has no
     /// user-visible EP toggle, so its conformer is a no-op).
     public func setBackgroundMode(_ inBackground: Bool) async {
         if let m = deberta as? any BackgroundAwareSER {

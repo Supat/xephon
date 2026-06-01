@@ -50,12 +50,87 @@ struct SummarizerCard: View {
                     Spacer(minLength: 0)
                     summarizerBackendPicker
                 }
+                backendDescriptionLine
                 summarizerStatusLine
+                summaryModePickerRow
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// One-line description of the currently selected backend.
+    /// Sits directly under the backend picker so the user can
+    /// see at the moment of choice what they're picking
+    /// (model size, source, headline tradeoff) without having
+    /// to dig into ModelsCard or the docs.
+    @ViewBuilder
+    private var backendDescriptionLine: some View {
+        Text(captionForCurrentBackend)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var captionForCurrentBackend: String {
+        switch recorder.summarizerBackend {
+        case .appleFM:
+            return String(localized: "settings.summarizer.backend.appleFM.caption")
+        case .qwen:
+            return String(localized: "settings.summarizer.backend.qwen.caption")
+        case .llamaSwallow:
+            return String(localized: "settings.summarizer.backend.llamaSwallow.caption")
+        }
+    }
+
+    /// Three-way summary-mode picker — Fast (trailing window),
+    /// Heuristic (top-N most distinctive utterances by TF-IDF),
+    /// Deep (map-reduce over every utterance). Caption beneath
+    /// changes per selection so the wall-time / coverage
+    /// tradeoff is visible at the moment of choice.
+    @ViewBuilder
+    private var summaryModePickerRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text(String(localized: "settings.summarizer.mode"))
+                    .font(.callout)
+                Spacer(minLength: 0)
+                Picker(
+                    String(localized: "settings.summarizer.mode"),
+                    selection: Binding(
+                        get: { recorder.summarizerMode },
+                        set: { newValue in
+                            recorder.setSummarizerMode(newValue)
+                        }
+                    )
+                ) {
+                    Text(String(localized: "settings.summarizer.mode.trailing"))
+                        .tag(SummarizeMode.trailing)
+                    Text(String(localized: "settings.summarizer.mode.heuristic"))
+                        .tag(SummarizeMode.heuristic)
+                    Text(String(localized: "settings.summarizer.mode.deep"))
+                        .tag(SummarizeMode.deep)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+            Text(captionForCurrentMode)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var captionForCurrentMode: String {
+        switch recorder.summarizerMode {
+        case .trailing:
+            return String(localized: "settings.summarizer.mode.trailing.caption")
+        case .heuristic:
+            return String(localized: "settings.summarizer.mode.heuristic.caption")
+        case .deep:
+            return String(localized: "settings.summarizer.mode.deep.caption")
+        }
     }
 
     @ViewBuilder
@@ -73,6 +148,8 @@ struct SummarizerCard: View {
                 .tag(SummarizerBackend.appleFM)
             Text(String(localized: "settings.summarizer.backend.qwen"))
                 .tag(SummarizerBackend.qwen)
+            Text(String(localized: "settings.summarizer.backend.llamaSwallow"))
+                .tag(SummarizerBackend.llamaSwallow)
         }
         .pickerStyle(.menu)
         .labelsHidden()
@@ -96,7 +173,7 @@ struct SummarizerCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        case .qwen:
+        case .qwen, .llamaSwallow:
             if recorder.summarizerDownloading {
                 HStack(spacing: 8) {
                     CircularDownloadProgress(

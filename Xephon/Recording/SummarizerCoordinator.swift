@@ -1,6 +1,7 @@
 import Foundation
 import os
 import FoundationModels
+import Fusion
 import Summarizer
 import XephonLogging
 
@@ -20,12 +21,30 @@ final class SummarizerCoordinator {
 
     private(set) var enabled: Bool
     private(set) var backend: SummarizerBackend
+    /// User's pick of `SummarizeMode`. `.trailing` truncates to
+    /// a trailing window, `.heuristic` picks the top-N most
+    /// distinctive utterances by TF-IDF, `.deep` runs map-reduce
+    /// over every utterance. Persisted via
+    /// `xephon.summarizerMode`. Defaults to `.trailing` for fresh
+    /// installs and for the historical `deepMode = false` users
+    /// (we don't migrate from the legacy boolean — opting back
+    /// into deep is a one-tap action in the picker).
+    private(set) var mode: SummarizeMode
     /// Apple's `SystemLanguageModel.default` availability snapshot.
     /// Refreshed at init and on backend change. Folded into `ready`.
     private(set) var appleFMAvailable: Bool = false
-    /// True iff every file declared by the summarizer's optional
-    /// manifest entry is present on disk.
+    /// True iff every file declared by the CURRENTLY-SELECTED
+    /// MLX backend's manifest entry is present on disk. Apple FM
+    /// reads as `true` (no install needed). Drives the picker's
+    /// `ready` check and the SummarizerCard's "Downloading / Ready"
+    /// status line.
     private(set) var modelInstalled: Bool = false
+    /// Per-MLX-backend install flags, refreshed alongside
+    /// `modelInstalled` whenever `syncInstallState` runs. Lets the
+    /// ModelsCard show both rows (Qwen + Llama) with their own
+    /// status independent of which one is the active backend.
+    private(set) var qwenInstalled: Bool = false
+    private(set) var llamaSwallowInstalled: Bool = false
     /// True while `ModelStore.ensureOptional` is in flight.
     private(set) var downloading: Bool = false
     /// True while `summarize` is generating tokens. Disables the
@@ -37,6 +56,16 @@ final class SummarizerCoordinator {
     /// Last successful summary, cached so the result sheet survives
     /// re-presentation. Cleared on session start.
     private(set) var lastSessionSummary: SessionSummary?
+    /// ID of the section currently being summarized, or nil
+    /// when no per-section pass is in flight. Distinct from
+    /// `inferenceRunning` (which also covers the overall
+    /// session summary and the reviewer) so the Sections card
+    /// can pick out exactly which row is mid-run and render
+    /// the spinner on that row only. The wider
+    /// `inferenceRunning` gate still applies — only one
+    /// summary (overall OR section) can run at a time because
+    /// they share the same MLX actor + GPU.
+    private(set) var summarizingSectionID: UUID?
 
     /// True while `review` is in flight.
     private(set) var reviewRunning: Bool = false
@@ -45,14 +74,23 @@ final class SummarizerCoordinator {
     /// edits or dismisses them. Cleared on session start.
     private(set) var issues: [TranscriptionIssue] = []
 
-    /// Resident Qwen weights. Lazy-created on first `summarize` and
-    /// dropped when the user disables the summarizer or starts a new
-    /// session, so the ~4 GB working set doesn't linger.
-    private var summarizerActor: MLXQwenSummarizer?
-    /// Qwen reviewer's actor — separate `ModelContainer`. The
-    /// coordinator ensures only one of the two is loaded at a time
-    /// (both = ~9 GB resident, well over the per-app ceiling).
-    private var reviewerActor: MLXQwenTranscriptionReviewer?
+    /// Resident MLX summarizer (Qwen or Llama, depending on
+    /// `backend`). Lazy-created on first `summarize` and dropped
+    /// when the user disables the summarizer or starts a new
+    /// session so the ~4 GB working set doesn't linger.
+    /// `MLXLLMSummarizerActor` is the small protocol both
+    /// `MLXQwenSummarizer` and `MLXLlamaSummarizer` conform to
+    /// (lifecycle + `summarize`), letting one slot hold either.
+    private var summarizerActor: (any MLXLLMSummarizerActor)?
+    /// Resident MLX reviewer (Qwen or Llama, depending on
+    /// `backend`). Separate `ModelContainer` from the
+    /// summarizer — the coordinator ensures only one of the
+    /// two is loaded at a time (both = ~9 GB resident, well
+    /// over the per-app ceiling). `MLXLLMReviewerActor` is
+    /// the small protocol both `MLXQwenTranscriptionReviewer`
+    /// and `MLXLlamaTranscriptionReviewer` conform to so one
+    /// slot holds either.
+    private var reviewerActor: (any MLXLLMReviewerActor)?
     /// Snapshot of the FluidAudio diarizer's speaker DB captured
     /// right before the pipeline is released for summarization, so
     /// embedding-based matching survives the rebuild.
@@ -60,28 +98,55 @@ final class SummarizerCoordinator {
 
     private static let enabledKey = "xephon.summarizerEnabled"
     private static let backendKey = "xephon.summarizerBackend"
+    private static let modeKey    = "xephon.summarizerMode"
 
     init(parent: RecordingController) {
         self.parent = parent
         self.enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         let rawBackend = UserDefaults.standard.string(forKey: Self.backendKey) ?? ""
         self.backend = SummarizerBackend(rawValue: rawBackend) ?? .appleFM
+        let rawMode = UserDefaults.standard.string(forKey: Self.modeKey) ?? ""
+        self.mode = SummarizeMode(rawValue: rawMode) ?? .trailing
         self.appleFMAvailable = SystemLanguageModel.default.isAvailable
+    }
+
+    /// Persist + apply a new mode preference. No side effects
+    /// beyond the persist + state update — the next `summarize`
+    /// call reads `mode` and dispatches to the matching path.
+    func setMode(_ newMode: SummarizeMode) {
+        guard mode != newMode else { return }
+        mode = newMode
+        UserDefaults.standard.set(newMode.rawValue, forKey: Self.modeKey)
     }
 
     /// True iff the chosen backend is ready to summarize. Apple FM
     /// is "ready" when the system model is available on this device;
-    /// Qwen is "ready" when its 4.3 GB on-disk install is complete.
+    /// the MLX backends are "ready" when their on-disk install is
+    /// complete.
     var ready: Bool {
         switch backend {
-        case .appleFM: return appleFMAvailable
-        case .qwen:    return modelInstalled
+        case .appleFM:      return appleFMAvailable
+        case .qwen:         return modelInstalled
+        case .llamaSwallow: return modelInstalled
+        }
+    }
+
+    /// Model id of the MLX backend selected (Qwen or Llama). Nil
+    /// for Apple FM (no install needed). Drives `ModelStore` calls
+    /// — install / directory lookup / removal — so a single switch
+    /// statement here centralizes the per-backend manifest mapping.
+    private var mlxModelID: String? {
+        switch backend {
+        case .appleFM:      return nil
+        case .qwen:         return ModelManifest.summarizerID
+        case .llamaSwallow: return ModelManifest.summarizerLlamaID
         }
     }
 
     /// Flip the enabled flag. Persist + refresh backend-specific
-    /// readiness. Turning Qwen on with weights missing kicks off the
-    /// download; turning off unloads the resident Qwen actor.
+    /// readiness. Turning an MLX backend on with weights missing
+    /// kicks off the download; turning off unloads the resident
+    /// MLX actor.
     func setEnabled(_ value: Bool) async {
         guard enabled != value else { return }
         enabled = value
@@ -93,26 +158,39 @@ final class SummarizerCoordinator {
             return
         }
         syncAppleFMAvailability()
-        syncInstallState()
-        if backend == .qwen, !modelInstalled, !downloading {
+        await syncInstallState()
+        if mlxModelID != nil, !modelInstalled, !downloading {
             await triggerDownload()
         }
     }
 
-    /// Switch backend. Apple FM has no install step; Qwen kicks off
-    /// the download when weights are missing.
+    /// Switch backend. Apple FM has no install step; MLX backends
+    /// kick off the download when weights are missing AND drop the
+    /// previously-resident MLX actor so the new family's weights
+    /// can claim the memory.
     func setBackend(_ value: SummarizerBackend) async {
         guard backend != value else { return }
         backend = value
         UserDefaults.standard.set(value.rawValue, forKey: Self.backendKey)
         AppLog.app.info("summarizer backend → \(value.rawValue, privacy: .public)")
-        if value == .qwen, enabled, !modelInstalled, !downloading {
+        // Switching backend always tears down the prior MLX actor.
+        // Even Qwen → Llama (or vice versa) requires this because
+        // the two would otherwise co-exist at ~9 GB resident, and
+        // both reviewer + summarizer of the prior family would
+        // also drift out of sync with the picker.
+        await summarizerActor?.unload()
+        summarizerActor = nil
+        await reviewerActor?.unload()
+        reviewerActor = nil
+        // Re-sync install state against the new backend's model id
+        // before deciding whether to download. `await` is load-
+        // bearing: without it, `modelInstalled` still reflects the
+        // PRIOR backend's state and the download trigger below
+        // would skip when switching from Qwen (installed) → Llama
+        // (not installed).
+        await syncInstallState()
+        if mlxModelID != nil, enabled, !modelInstalled, !downloading {
             await triggerDownload()
-        }
-        if value == .appleFM {
-            // Reclaim Qwen's RAM if it was loaded.
-            await summarizerActor?.unload()
-            summarizerActor = nil
         }
         syncAppleFMAvailability()
     }
@@ -121,33 +199,52 @@ final class SummarizerCoordinator {
         appleFMAvailable = SystemLanguageModel.default.isAvailable
     }
 
-    /// Recheck `modelInstalled` against the filesystem. Cheap — just
-    /// an existence check per declared file.
-    func syncInstallState() {
+    /// Recheck install state against the filesystem for BOTH MLX
+    /// backends (so the ModelsCard's per-row badges stay accurate
+    /// regardless of which one is the active picker selection)
+    /// AND for the currently-selected backend (so the SummarizerCard
+    /// status line + the `ready` check stay in sync). Apple FM has
+    /// no on-disk install so its `modelInstalled` reads as `true`.
+    /// Cheap — just an existence check per declared file.
+    ///
+    /// `async` so callers that immediately read `modelInstalled` /
+    /// `qwenInstalled` / `llamaSwallowInstalled` see the refreshed
+    /// values (the pre-async fire-and-forget version had setBackend
+    /// reading stale state on every backend switch and skipping
+    /// the auto-download trigger).
+    func syncInstallState() async {
         guard let modelStore = parent.modelStore else {
-            modelInstalled = false
+            modelInstalled = mlxModelID == nil
+            qwenInstalled = false
+            llamaSwallowInstalled = false
             return
         }
-        Task {
-            let installed = await modelStore.isOptionalInstalled(
-                id: ModelManifest.summarizerID
-            )
-            await MainActor.run {
-                self.modelInstalled = installed
-            }
+        let qwen = await modelStore.isOptionalInstalled(
+            id: ModelManifest.summarizerID
+        )
+        let llama = await modelStore.isOptionalInstalled(
+            id: ModelManifest.summarizerLlamaID
+        )
+        qwenInstalled = qwen
+        llamaSwallowInstalled = llama
+        switch backend {
+        case .appleFM:      modelInstalled = true
+        case .qwen:         modelInstalled = qwen
+        case .llamaSwallow: modelInstalled = llama
         }
     }
 
-    /// Drive the on-demand download via `ModelStore.ensureOptional`.
-    /// Wraps the call in `downloading` so the Settings card can
-    /// render an inline progress indicator.
+    /// Drive the on-demand download via `ModelStore.ensureOptional`
+    /// for the current MLX backend. Wraps the call in `downloading`
+    /// so the Settings card can render an inline progress indicator.
     private func triggerDownload() async {
-        guard let modelStore = parent.modelStore else { return }
+        guard let id = mlxModelID,
+              let modelStore = parent.modelStore else { return }
         downloading = true
         defer { downloading = false }
         do {
-            try await modelStore.ensureOptional(id: ModelManifest.summarizerID)
-            syncInstallState()
+            try await modelStore.ensureOptional(id: id)
+            await syncInstallState()
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
@@ -166,44 +263,149 @@ final class SummarizerCoordinator {
     /// the user has their result.
     func summarize() async -> SessionSummary? {
         guard !inferenceRunning else { return nil }
+        guard !reviewRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
+        return await withInferenceGate {
+            await runSummarize(
+                utterances: parent.utterances,
+                logLabelPrefix: "summarize",
+                writeback: { summary in self.lastSessionSummary = summary }
+            )
+        }
+    }
+
+    /// Run the summarizer over a single user-defined section's
+    /// utterance range. Returns the same `SessionSummary` shape as
+    /// the overall summary — the LLM is told the conversation IS
+    /// the slice, not a sub-clip of a larger session, so the
+    /// "topic" / "overall mood" etc. read as a focused snapshot
+    /// rather than "this section of the larger conversation."
+    /// Caches the result on the section itself (via
+    /// `SectionStore.setSummary(forSectionID:summary:)`) so the
+    /// per-section sheet reopens with the same result, and the
+    /// summary persists into the `.xph` bundle as part of the
+    /// section's `Codable` payload.
+    func summarizeSection(id: UUID) async -> SessionSummary? {
+        guard !inferenceRunning else { return nil }
+        guard !reviewRunning else { return nil }
+        guard let section = parent.sections.section(id: id),
+              section.isComplete,
+              let startID = section.startUtteranceID,
+              let endID = section.endUtteranceID,
+              let startIdx = parent.utterances.firstIndex(where: { $0.id == startID }),
+              let endIdx = parent.utterances.firstIndex(where: { $0.id == endID }),
+              startIdx <= endIdx
+        else { return nil }
+        let slice = Array(parent.utterances[startIdx...endIdx])
+        guard !slice.isEmpty else { return nil }
+        return await withInferenceGate(sectionID: id) {
+            await runSummarize(
+                utterances: slice,
+                logLabelPrefix: "summarize section",
+                writeback: { summary in
+                    self.parent.sections.setSummary(forSectionID: id, summary: summary)
+                }
+            )
+        }
+    }
+
+    /// Set the inference gate eagerly (before any await inside
+    /// `body` yields), run the body, and clear the gate on
+    /// return. Bundles `inferenceRunning` + `inferenceStart` +
+    /// `summarizingSectionID` so all three flip together; the
+    /// summarizer card's "in flight" UI then can't observe one
+    /// without the others. `sectionID` non-nil marks a per-
+    /// section run so the Sections card knows which row owns
+    /// the active pass. Closing the gate eagerly closes the
+    /// race window where a second tap could pass the
+    /// `!inferenceRunning` precondition during the pipeline-
+    /// release yield.
+    private func withInferenceGate(
+        sectionID: UUID? = nil,
+        body: () async -> SessionSummary?
+    ) async -> SessionSummary? {
+        inferenceRunning = true
+        inferenceStart = Date()
+        summarizingSectionID = sectionID
+        defer {
+            inferenceRunning = false
+            inferenceStart = nil
+            summarizingSectionID = nil
+        }
+        return await body()
+    }
+
+    /// Shared dispatch entry for both overall-session and per-
+    /// section summarization. Handles the pipeline release /
+    /// memory log envelope, then routes to the per-backend
+    /// runner. `writeback` is invoked synchronously on the
+    /// MainActor before the runner returns the success result,
+    /// so callers can cache the summary wherever they want
+    /// (controller-level `lastSessionSummary`, per-section
+    /// `setSummary`, etc.) without the runner needing to know
+    /// the destination.
+    private func runSummarize(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor (SessionSummary) -> Void
+    ) async -> SessionSummary? {
         // Both backends benefit from releasing the analysis pipeline
         // before invoking — even Apple FM, light on RAM in our
         // process, can trip Jetsam under device pressure (2-3 GB of
         // resident ONNX models + fat speaker DB before we allocate
         // anything for the summary). The pipeline lazy-rewarms in
         // the deferred cleanup.
-        logAvailableMemory(label: "summarize start (before pipeline release)")
+        logAvailableMemory(label: "\(logLabelPrefix) start (before pipeline release)")
         await releasePipelineForSummarization()
-        logAvailableMemory(label: "summarize start (after pipeline release)")
+        logAvailableMemory(label: "\(logLabelPrefix) start (after pipeline release)")
         switch backend {
-        case .appleFM: return await summarizeWithAppleFM()
-        case .qwen:    return await summarizeWithQwen()
+        case .appleFM:
+            return await summarizeWithAppleFM(
+                utterances: utterances,
+                logLabelPrefix: logLabelPrefix,
+                writeback: writeback
+            )
+        case .qwen, .llamaSwallow:
+            return await summarizeWithMLX(
+                utterances: utterances,
+                logLabelPrefix: logLabelPrefix,
+                writeback: writeback
+            )
         }
     }
 
-    private func summarizeWithAppleFM() async -> SessionSummary? {
+    private func summarizeWithAppleFM(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor (SessionSummary) -> Void
+    ) async -> SessionSummary? {
         guard SystemLanguageModel.default.isAvailable else {
             parent.errorMessage = String(describing: SummarizerError.modelNotInstalled)
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
         let backend = AppleFMSummarizer()
-        inferenceRunning = true
-        inferenceStart = Date()
-        defer {
-            inferenceRunning = false
-            inferenceStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
-        logAvailableMemory(label: "summarize Apple FM (before respond)")
+        // Inference gating (`inferenceRunning` / `inferenceStart`)
+        // is owned by the public entry method (`summarize` /
+        // `summarizeSection`) so a section pass and an overall
+        // pass can't slip past each other's checks during the
+        // pipeline-release yield. This method only schedules
+        // the post-run pipeline rewarm.
+        defer { scheduleUnloadAndPipelineRewarm() }
+        logAvailableMemory(label: "\(logLabelPrefix) Apple FM (before respond)")
+        let mode: SummarizeMode = self.mode
+        let boostedIDs = mode == .heuristic
+            ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
+            : Set<UUID>()
         do {
             let summary = try await backend.summarize(
-                utterances: parent.utterances,
-                speakerNames: parent.speakerNameOverrides
+                utterances: utterances,
+                speakerNames: parent.speakerNameOverrides,
+                mode: mode,
+                boostedUtteranceIDs: boostedIDs
             )
-            logAvailableMemory(label: "summarize Apple FM (after respond)")
-            lastSessionSummary = summary
+            logAvailableMemory(label: "\(logLabelPrefix) Apple FM (after respond)")
+            writeback(summary)
             return summary
         } catch is CancellationError {
             AppLog.app.info("summarizeWithAppleFM cancelled by user")
@@ -217,49 +419,71 @@ final class SummarizerCoordinator {
         }
     }
 
-    private func summarizeWithQwen() async -> SessionSummary? {
-        guard let modelStore = parent.modelStore else {
+    private func summarizeWithMLX(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor (SessionSummary) -> Void
+    ) async -> SessionSummary? {
+        guard let modelStore = parent.modelStore,
+              let modelID = mlxModelID else {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        guard let directory = await modelStore.optionalDirectory(
-            id: ModelManifest.summarizerID
-        ) else {
+        guard let directory = await modelStore.optionalDirectory(id: modelID) else {
             parent.errorMessage = String(describing: SummarizerError.modelNotInstalled)
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        let actor: MLXQwenSummarizer
+        // Pick the right per-family actor type. `backend` is
+        // checked at the call site so the switch is exhaustive
+        // over the MLX backends (Apple FM is routed through
+        // `summarizeWithAppleFM` in `runSummarize`).
+        let actor: any MLXLLMSummarizerActor
         if let existing = summarizerActor {
             actor = existing
         } else {
-            actor = MLXQwenSummarizer(
-                modelIdentifier: ModelManifest.summarizerID,
-                modelDirectory: directory
-            )
+            switch backend {
+            case .qwen:
+                actor = MLXQwenSummarizer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .llamaSwallow:
+                actor = MLXLlamaSummarizer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .appleFM:
+                // Unreachable — Apple FM is routed via
+                // `summarizeWithAppleFM` from `runSummarize`.
+                scheduleUnloadAndPipelineRewarm()
+                return nil
+            }
             summarizerActor = actor
         }
-        inferenceRunning = true
-        inferenceStart = Date()
-        defer {
-            inferenceRunning = false
-            inferenceStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
+        // Inference gating owned by the public entry method
+        // (see comment in `summarizeWithAppleFM`).
+        defer { scheduleUnloadAndPipelineRewarm() }
+        let mode: SummarizeMode = self.mode
+        let boostedIDs = mode == .heuristic
+            ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
+            : Set<UUID>()
         do {
             let summary = try await actor.summarize(
-                utterances: parent.utterances,
-                speakerNames: parent.speakerNameOverrides
+                utterances: utterances,
+                speakerNames: parent.speakerNameOverrides,
+                mode: mode,
+                boostedUtteranceIDs: boostedIDs
             )
-            lastSessionSummary = summary
+            writeback(summary)
             return summary
         } catch is CancellationError {
-            AppLog.app.info("summarizeWithQwen cancelled by user")
+            AppLog.app.info("summarizeWithMLX cancelled by user")
             return nil
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
-                "summarizeWithQwen failed: \(String(describing: error), privacy: .public)"
+                "summarizeWithMLX failed: \(String(describing: error), privacy: .public)"
             )
             return nil
         }
@@ -272,13 +496,33 @@ final class SummarizerCoordinator {
         guard !reviewRunning else { return nil }
         guard !inferenceRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
-        logAvailableMemory(label: "review start (before pipeline release)")
-        await releasePipelineForSummarization()
-        logAvailableMemory(label: "review start (after pipeline release)")
-        switch backend {
-        case .appleFM: return await reviewWithAppleFM()
-        case .qwen:    return await reviewWithQwen()
+        return await withReviewGate {
+            logAvailableMemory(label: "review start (before pipeline release)")
+            await releasePipelineForSummarization()
+            logAvailableMemory(label: "review start (after pipeline release)")
+            switch backend {
+            case .appleFM:              return await reviewWithAppleFM()
+            case .qwen, .llamaSwallow:  return await reviewWithMLX()
+            }
         }
+    }
+
+    /// Reviewer-side counterpart of `withInferenceGate`. Sets
+    /// `reviewRunning` + `reviewStart` eagerly so a second
+    /// review tap (or, with the summarize check we ALSO want
+    /// in place, a summarize tap) can't slip past the
+    /// precondition during the pipeline-release yield, then
+    /// clears them on return.
+    private func withReviewGate(
+        body: () async -> [TranscriptionIssue]?
+    ) async -> [TranscriptionIssue]? {
+        reviewRunning = true
+        reviewStart = Date()
+        defer {
+            reviewRunning = false
+            reviewStart = nil
+        }
+        return await body()
     }
 
     private func reviewWithAppleFM() async -> [TranscriptionIssue]? {
@@ -288,13 +532,12 @@ final class SummarizerCoordinator {
             return nil
         }
         let backend = AppleFMTranscriptionReviewer()
-        reviewRunning = true
-        reviewStart = Date()
-        defer {
-            reviewRunning = false
-            reviewStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
+        // Review gating (`reviewRunning` / `reviewStart`) is
+        // owned by `review()` via `withReviewGate` so it can't
+        // race with itself during the pipeline-release yield.
+        // This method only schedules the post-run pipeline
+        // rewarm.
+        defer { scheduleUnloadAndPipelineRewarm() }
         logAvailableMemory(label: "review Apple FM (before respond)")
         do {
             let issues = try await backend.review(
@@ -317,41 +560,52 @@ final class SummarizerCoordinator {
         }
     }
 
-    private func reviewWithQwen() async -> [TranscriptionIssue]? {
-        guard let modelStore = parent.modelStore else {
+    private func reviewWithMLX() async -> [TranscriptionIssue]? {
+        guard let modelStore = parent.modelStore,
+              let modelID = mlxModelID else {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        guard let directory = await modelStore.optionalDirectory(
-            id: ModelManifest.summarizerID
-        ) else {
+        guard let directory = await modelStore.optionalDirectory(id: modelID) else {
             parent.errorMessage = String(describing: TranscriptionReviewError.modelNotInstalled)
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
         // Belt-and-braces: drop the summarizer actor before the
-        // reviewer comes up. Both share Qwen3-8B's 4.6 GB weights;
-        // holding both = ~9 GB resident and a guaranteed Jetsam.
+        // reviewer comes up. Both share an MLX model's ~4.6 GB
+        // weights (Qwen3 or Llama-3-Swallow); holding both =
+        // ~9 GB resident and a guaranteed Jetsam.
         await summarizerActor?.unload()
         summarizerActor = nil
 
-        let actor: MLXQwenTranscriptionReviewer
+        // Pick the right per-family reviewer actor. Same
+        // pattern as `summarizeWithMLX` — Apple FM is routed
+        // via `reviewWithAppleFM` so the switch is exhaustive
+        // over the MLX backends.
+        let actor: any MLXLLMReviewerActor
         if let existing = reviewerActor {
             actor = existing
         } else {
-            actor = MLXQwenTranscriptionReviewer(
-                modelIdentifier: ModelManifest.summarizerID,
-                modelDirectory: directory
-            )
+            switch backend {
+            case .qwen:
+                actor = MLXQwenTranscriptionReviewer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .llamaSwallow:
+                actor = MLXLlamaTranscriptionReviewer(
+                    modelIdentifier: modelID,
+                    modelDirectory: directory
+                )
+            case .appleFM:
+                scheduleUnloadAndPipelineRewarm()
+                return nil
+            }
             reviewerActor = actor
         }
-        reviewRunning = true
-        reviewStart = Date()
-        defer {
-            reviewRunning = false
-            reviewStart = nil
-            scheduleUnloadAndPipelineRewarm()
-        }
+        // Review gating owned by `review()` via `withReviewGate`
+        // (see comment in `reviewWithAppleFM`).
+        defer { scheduleUnloadAndPipelineRewarm() }
         do {
             let issues = try await actor.review(
                 utterances: parent.utterances,
@@ -361,12 +615,12 @@ final class SummarizerCoordinator {
             self.issues = issues
             return issues
         } catch is CancellationError {
-            AppLog.app.info("reviewWithQwen cancelled by user")
+            AppLog.app.info("reviewWithMLX cancelled by user")
             return nil
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
-                "reviewWithQwen failed: \(String(describing: error), privacy: .public)"
+                "reviewWithMLX failed: \(String(describing: error), privacy: .public)"
             )
             return nil
         }
@@ -411,21 +665,23 @@ final class SummarizerCoordinator {
         self.issues = issues
     }
 
-    /// Remove the on-disk model. Toggle state is preserved so the
-    /// user's preference survives.
+    /// Remove the on-disk model for the currently-selected backend.
+    /// Toggle state is preserved so the user's preference survives.
+    /// No-op for Apple FM (no on-disk install).
     func removeModel() async {
         await summarizerActor?.unload()
         summarizerActor = nil
         await reviewerActor?.unload()
         reviewerActor = nil
+        guard let id = mlxModelID else { return }
         do {
-            try await parent.modelStore?.removeOptional(id: ModelManifest.summarizerID)
+            try await parent.modelStore?.removeOptional(id: id)
         } catch {
             AppLog.app.warning(
                 "removeOptional failed: \(String(describing: error), privacy: .public)"
             )
         }
-        syncInstallState()
+        await syncInstallState()
     }
 
     /// Drop strong refs to the analysis pipeline so ARC can reclaim
@@ -492,5 +748,43 @@ final class SummarizerCoordinator {
         AppLog.app.info(
             "memory available [\(label, privacy: .public)]: \(mb, privacy: .public) MB"
         )
+    }
+
+    /// Build the set of utterance IDs whose normalized
+    /// transcript contains at least one normalized user-
+    /// keyword. Drives the heuristic summarizer's
+    /// keyword-boost so user-curated terms reliably surface in
+    /// the prompt window. Returns empty when the keyword list
+    /// is empty (most users won't have one). Uses the same
+    /// `JapaneseSearchNormalizer` the transcript-filter +
+    /// keyword-occurrence counters use, so cross-script
+    /// matching (kanji ↔ kana ↔ romaji) behaves consistently
+    /// with what the user sees in the transcript pane.
+    ///
+    /// Pure-data overload: callers pass in the utterance slice
+    /// they care about so the helper works for both the whole
+    /// session (overall summary) and a single section's range
+    /// (per-section summary).
+    static func keywordBoostedIDs(
+        keywords: [Keyword],
+        in utterances: [UtteranceEstimate]
+    ) -> Set<UUID> {
+        guard !keywords.isEmpty else { return [] }
+        let normalizedKeywords: [String] = keywords.compactMap {
+            let n = JapaneseSearchNormalizer.normalize($0.text)
+            return n.isEmpty ? nil : n
+        }
+        guard !normalizedKeywords.isEmpty else { return [] }
+        var hits: Set<UUID> = []
+        for u in utterances {
+            let normalizedText = JapaneseSearchNormalizer.normalize(u.transcript)
+            if normalizedKeywords.contains(where: { normalizedText.contains($0) }) {
+                hits.insert(u.id)
+            }
+        }
+        AppLog.app.info(
+            "keyword boost: \(hits.count, privacy: .public) of \(utterances.count, privacy: .public) utterances match \(normalizedKeywords.count, privacy: .public) keyword(s)"
+        )
+        return hits
     }
 }

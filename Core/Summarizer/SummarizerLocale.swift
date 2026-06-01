@@ -35,4 +35,28 @@ public enum SummarizerLocale {
     public static var responseLanguageInstruction: String {
         "Respond in \(responseLanguageNameInEnglish). Use no other language under any circumstance, regardless of the language of the input transcript."
     }
+
+    /// Localized one-line placeholder used when the LLM omits a
+    /// per-speaker entry that was in the input — synthesized by
+    /// `SessionSummary.fillMissingPerSpeaker` so the
+    /// `SessionSummary.perSpeaker` roster always matches the
+    /// input speaker set even when the model (Llama-Swallow in
+    /// particular) silently drops marginal-contribution
+    /// speakers. Branches on response language so the
+    /// synthesized text reads in the same language as the rest
+    /// of the LLM's output.
+    public static var missingSpeakerSummary: String {
+        switch responseLanguageNameInEnglish {
+        case "Japanese":
+            return "（モデルがこの話者の要約を省略しました — トランスクリプトを参照してください）"
+        default:
+            return "(Model omitted this speaker; refer to the transcript.)"
+        }
+    }
+
+    /// Dominant-mood field placeholder for the same case.
+    /// Em-dash works across all languages; kept as a single
+    /// glyph so the UI's mood chip doesn't grow awkwardly long
+    /// for the synthesized entries.
+    public static var missingSpeakerMood: String { "—" }
 }

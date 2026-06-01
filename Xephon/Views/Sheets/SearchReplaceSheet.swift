@@ -189,7 +189,7 @@ struct SearchReplaceSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(!coord.hasStagedAny)
+                .disabled(!coord.canCommitAll)
             }
         }
         .padding(20)

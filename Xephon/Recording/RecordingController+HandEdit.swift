@@ -171,6 +171,7 @@ extension RecordingController {
                 diarChunk: diarChunk,
                 serChunk: serChunk,
                 fallbackSpeaker: fallbackSpeaker,
+                originalConfidence: original.asrConfidence,
                 pipeline: pipeline
             )
             return
@@ -181,6 +182,7 @@ extension RecordingController {
             diarChunk: diarChunk,
             url: url,
             fallbackSpeaker: fallbackSpeaker,
+            originalConfidence: original.asrConfidence,
             pipeline: pipeline
         )
         guard !freshResults.isEmpty else { return }
@@ -300,7 +302,19 @@ extension RecordingController {
             start: plan.start,
             end: plan.end,
             transcript: plan.text,
-            asrConfidence: 1.0,
+            // Preserve the original confidence rather than
+            // stamping 1.0. A hand edit changes the TEXT
+            // content the text-SER side consumes; it doesn't
+            // change the audio the acoustic-SER side consumes,
+            // so the original signal quality (which is what
+            // `asrConfidence` represents in fusion) still
+            // governs the text-vs-acoustic balance. Forcing
+            // 1.0 here used to floor text weight at maximum
+            // regardless of how trustworthy the original
+            // recognition was, which inverted affect on rows
+            // where the acoustic side disagreed with the
+            // original ASR.
+            asrConfidence: original.asrConfidence,
             dimensional: original.dimensional,
             acousticCategorical: original.acousticCategorical,
             plutchik: nil,
@@ -374,6 +388,11 @@ extension RecordingController {
         diarChunk: AudioChunk,
         serChunk: AudioChunk,
         fallbackSpeaker: String,
+        /// Confidence carried by the row before the edit. Fed
+        /// into the synthetic `ASRSegment` so fusion sees the
+        /// same text-vs-acoustic weighting it would have for
+        /// the original — see comment in `inheritedTimeStub`.
+        originalConfidence: Float?,
         pipeline: AnalysisPipeline
     ) async {
         let speakers = await pipeline.resolveSpeakersForRanges(
@@ -387,9 +406,12 @@ extension RecordingController {
                 text: plan.text,
                 start: plan.start,
                 end: plan.end,
-                // User-verified text is presumed correct, so weight
-                // the text side at full confidence in fusion.
-                confidence: 1.0,
+                // Preserve the row's original confidence — see
+                // `inheritedTimeStub`. The user's edit refines
+                // text content but doesn't change the audio,
+                // so the recognition quality the fusion uses
+                // to weight text vs. acoustic stays the same.
+                confidence: originalConfidence,
                 tokens: []
             )
             let (fresh, _) = try await pipeline.processSegment(
@@ -439,6 +461,10 @@ extension RecordingController {
         diarChunk: AudioChunk,
         url: URL,
         fallbackSpeaker: String,
+        /// Confidence carried by the row before the edit;
+        /// propagated to each split's synthetic `ASRSegment`
+        /// for the same reason as in `runSingleSentenceHandEdit`.
+        originalConfidence: Float?,
         pipeline: AnalysisPipeline
     ) async -> [HandEditSplitResult] {
         // Split path: ask the diarizer for verdicts on the
@@ -494,7 +520,7 @@ extension RecordingController {
                     text: plan.text,
                     start: plan.start,
                     end: plan.end,
-                    confidence: 1.0,
+                    confidence: originalConfidence,
                     tokens: []
                 )
                 let (fresh, _) = try await pipeline.processSegment(

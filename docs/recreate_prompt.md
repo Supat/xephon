@@ -138,7 +138,7 @@ Core/
     Acoustic/                  DimensionalSER (W2V2), CategoricalSER
                                (emotion2vec+), AgeGenderSER,
                                VADScore, CategoricalEmotion, AgeGenderEstimate
-    Text/                      TextSER protocol, DeBERTaWRIME,
+    Text/                      TextSER protocol, WRIMETextSER,
                                FoundationModelsSER, SwitchingTextSER,
                                LexiconBias, TextSERError
   Fusion/                      LateFusion (default Fuser),
@@ -248,13 +248,13 @@ scripts/                       generate_project.sh, fetch_models.sh,
 
 - `TextSER` protocol
   (`func classify(_ text: String) async throws -> PlutchikScore`).
-- `SwitchingTextSER` actor holds both DeBERTa-WRIME and Apple
+- `SwitchingTextSER` actor holds both the WRIME-tuned text SER and Apple
   FoundationModelsSER, forwards to `currentBackend`.
-  - DeBERTa-WRIME is Japanese-only; auto-drops from `availableBackends`
+  - The WRIME text SER is Japanese-only; auto-drops from `availableBackends`
     when session language is not `"ja"`.
   - On FoundationModels failure (often happens when app is backgrounded —
-    iOS revokes ANE/GPU access), transparently fall through to DeBERTa
-    for that row if available. Don't flip `preferredBackend`; the next
+    iOS revokes ANE/GPU access), transparently fall through to the WRIME
+    text SER for that row if available. Don't flip `preferredBackend`; the next
     foreground call returns to FM automatically.
   - Apple FM safety-guardrail decline: stamp
     `textBackend = SwitchingTextSER.foundationModelsGuardrailBackend`
