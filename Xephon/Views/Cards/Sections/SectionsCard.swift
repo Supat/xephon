@@ -338,6 +338,22 @@ private struct SectionsCardRow: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
+                    if !section.isComplete {
+                        // Distinctive glyph for the
+                        // incomplete state so the user can
+                        // tell at a glance which sections
+                        // still need their other bound
+                        // filled in. Leading-edge position so
+                        // the indicator reads before the
+                        // title — same convention as warning
+                        // chips elsewhere in the app.
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel(Text(
+                                String(localized: "sections.incomplete.a11y")
+                            ))
+                    }
                     TextField(
                         String(localized: "sections.untitled"),
                         text: $editedTitle
@@ -376,19 +392,6 @@ private struct SectionsCardRow: View {
                         if section.title != newValue {
                             onTitleChange(newValue)
                         }
-                    }
-                    if !section.isComplete {
-                        // Distinctive glyph for the
-                        // incomplete state so the user can
-                        // tell at a glance which sections
-                        // still need their other bound
-                        // filled in.
-                        Image(systemName: "exclamationmark.circle")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                            .accessibilityLabel(Text(
-                                String(localized: "sections.incomplete.a11y")
-                            ))
                     }
                 }
                 Text(rangeDescription)
