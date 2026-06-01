@@ -41,6 +41,7 @@
 "settings.summarizer.mode.trailing.caption" = "Single pass over the most recent utterances (trailing window). Same speed as Heuristic; drops the prefix of long sessions.";
 "settings.summarizer.mode.heuristic.caption" = "Single pass over the most distinctive utterances picked by session-relative TF-IDF (backchannels and fillers downweighted). Same speed as Trailing; better coverage on long sessions.";
 "settings.summarizer.mode.deep.caption" = "Map-reduce over every utterance. Takes longer (scales with session length); peak memory unchanged.";
+"chrome.sessionTitle.placeholder" = "Untitled Session";
 "summary.summarize" = "Summarize";
 "summary.openSummary" = "Open summary";
 "review.openReview" = "Open review";

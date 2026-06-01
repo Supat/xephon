@@ -22,20 +22,24 @@ struct MainToolbar: ToolbarContent {
 
     /// Editable session-title field that replaces the static
     /// "Xephon" nav title. Bound to `recorder.sessionTitle`;
-    /// empty value renders the placeholder. Centered, headline
-    /// font, plain field style so it visually matches the nav
-    /// title look. `.frame(maxWidth: 320)` caps the editor width
-    /// so it doesn't grow past the available principal-slot space
-    /// on landscape iPad — without the cap the field stretches and
+    /// empty value renders the localized "Untitled Session"
+    /// placeholder. Centered, headline font, plain field style
+    /// so it visually matches the nav title look.
+    /// `.frame(maxWidth: 320)` caps the editor width so it
+    /// doesn't grow past the available principal-slot space on
+    /// landscape iPad — without the cap the field stretches and
     /// crowds out the trailing toolbar buttons.
     @ViewBuilder
     private var sessionTitleField: some View {
-        TextField("Xephon", text: $recorder.sessionTitle)
-            .font(.headline)
-            .multilineTextAlignment(.center)
-            .textFieldStyle(.plain)
-            .frame(maxWidth: 320)
-            .submitLabel(.done)
+        TextField(
+            String(localized: "chrome.sessionTitle.placeholder"),
+            text: $recorder.sessionTitle
+        )
+        .font(.headline)
+        .multilineTextAlignment(.center)
+        .textFieldStyle(.plain)
+        .frame(maxWidth: 320)
+        .submitLabel(.done)
     }
 
     @ViewBuilder

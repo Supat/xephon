@@ -51,6 +51,13 @@ extension RecordingController {
         availableInputs = []
         currentInputUID = nil
         await start()
+        // Seed the chrome's session-title field with the audio
+        // file's base name so the user has a sensible default.
+        // Set AFTER `start()` returns because `resetSessionState`
+        // (called from inside `start`) clears `sessionTitle` —
+        // ordering the assignment after avoids the wipe. The
+        // user can still edit it freely after.
+        sessionTitle = url.deletingPathExtension().lastPathComponent
     }
 
     /// Restore the microphone as the active source. Called automatically when

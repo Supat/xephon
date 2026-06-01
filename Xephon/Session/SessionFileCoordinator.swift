@@ -60,18 +60,39 @@ final class SessionFileCoordinator {
         .audio, .mp3, .wav, .mpeg4Audio, .aiff,
     ]
 
-    /// Filename suggestion for the Save Session… panel. ISO-8601-ish
-    /// stamp so successive saves don't collide and the user can scan
-    /// the file list chronologically. Locale-pinned to `en_US_POSIX`
-    /// per Apple's guidance for fixed-format strings — without it
-    /// `DateFormatter` would localize digits / separators (e.g.
-    /// Arabic-Indic numerals under ar locale) and break the
-    /// filename scheme.
+    /// Timestamped fallback filename for the Save Session…
+    /// panel — used when the user hasn't set a session title.
+    /// ISO-8601-ish stamp so successive saves don't collide and
+    /// the user can scan the file list chronologically. Locale-
+    /// pinned to `en_US_POSIX` per Apple's guidance for fixed-
+    /// format strings — without it `DateFormatter` would
+    /// localize digits / separators (e.g. Arabic-Indic numerals
+    /// under ar locale) and break the filename scheme.
     var defaultSessionFilename: String {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd_HHmm"
         return "xephon-\(fmt.string(from: Date())).xph"
+    }
+
+    /// Suggested Save Session… filename for the given title.
+    /// Sanitized so the file picker accepts it as-is (the user
+    /// can still edit it in the dialog before confirming);
+    /// otherwise falls back to `defaultSessionFilename` when the
+    /// title is empty or sanitizes to empty (whitespace-only).
+    ///
+    /// Sanitization replaces the two characters macOS / iOS
+    /// reject in filenames — `/` and `:` — with `-`. Everything
+    /// else (Unicode, spaces, emoji, punctuation) the system
+    /// allows in a filename, so we leave it alone.
+    func sessionFilename(forTitle title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return defaultSessionFilename }
+        let sanitized = trimmed
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        guard !sanitized.isEmpty else { return defaultSessionFilename }
+        return "\(sanitized).xph"
     }
 
     // MARK: - Menu-command entry points
@@ -121,13 +142,28 @@ final class SessionFileCoordinator {
         do {
             let doc = try await recorder.makeSessionDocument()
             let data = try SessionBundle.encode(doc)
-            let filename = defaultSessionFilename
+            let filename = sessionFilename(forTitle: recorder.sessionTitle)
             filePicker.presentExport(
                 data: data,
                 contentType: .xephonSession,
                 defaultFilename: filename
-            ) { [weak self] result in
-                if case .failure(let error) = result {
+            ) { [weak self, weak recorder] result in
+                switch result {
+                case .success(let savedURL):
+                    // Track the user's rename in the save dialog.
+                    // If they edited the suggested filename before
+                    // confirming, the chrome's title field should
+                    // follow — otherwise the visible title would
+                    // diverge from what's on disk for the rest of
+                    // the session and confuse the next save.
+                    guard let recorder else { return }
+                    let savedBase = savedURL
+                        .deletingPathExtension()
+                        .lastPathComponent
+                    if !savedBase.isEmpty {
+                        recorder.sessionTitle = savedBase
+                    }
+                case .failure(let error):
                     self?.sessionIOError = String(describing: error)
                 }
             }
@@ -250,6 +286,15 @@ final class SessionFileCoordinator {
             let data = try Data(contentsOf: url)
             let document = try SessionBundle.decode(data)
             try await recorder.loadSession(document)
+            // Fall back to the .xph file's base name when the
+            // bundle didn't carry a saved `sessionTitle` (e.g.
+            // it was created before the field existed, or the
+            // user never named the session). Bundles that DO
+            // carry a title keep it — the user's deliberate
+            // name wins over the filename.
+            if recorder.sessionTitle.isEmpty {
+                recorder.sessionTitle = url.deletingPathExtension().lastPathComponent
+            }
         } catch {
             sessionIOError = String(describing: error)
         }

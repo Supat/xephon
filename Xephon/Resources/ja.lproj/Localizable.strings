@@ -41,6 +41,7 @@
 "settings.summarizer.mode.trailing.caption" = "末尾の発話（直近のウィンドウ）を1回でまとめます。ヒューリスティックと同じ速度ですが、長いセッションでは冒頭が落ちます。";
 "settings.summarizer.mode.heuristic.caption" = "セッション内TF-IDFで最も特徴的な発話を1回でまとめます（あいづちやフィラーは減点）。末尾と同じ速度で、長いセッションの全体像をより捉えます。";
 "settings.summarizer.mode.deep.caption" = "全発話をマップ・リデュースで処理します。セッションの長さに比例して時間がかかりますが、ピークメモリは変わりません。";
+"chrome.sessionTitle.placeholder" = "無題のセッション";
 "summary.summarize" = "要約";
 "summary.openSummary" = "要約を開く";
 "review.openReview" = "レビューを開く";
