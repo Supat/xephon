@@ -163,28 +163,13 @@ struct ContentView: View {
                     }
                 }
             }
-            // Wire the session title both ways:
-            //   • On iPad, `MainToolbar`'s principal slot renders
-            //     an editable `TextField` (placeholder "Xephon"
-            //     when empty); the `.navigationTitle` here is the
-            //     same value, used for accessibility / back-button
-            //     fallbacks but visually replaced by the principal
-            //     item.
-            //   • On "Designed for iPad" on Apple Silicon Mac, the
-            //     host system always renders a macOS title bar
-            //     above the iPad chrome — there's no way to hide
-            //     it from iPad code (Mac Catalyst is disabled per
-            //     project.yml). `MainToolbar` gates the principal
-            //     TextField on `!isiOSAppOnMac` so the iPad-style
-            //     row stays untitled and the macOS title bar
-            //     becomes the only title surface. `.navigationTitle`
-            //     with a `Binding<String>` lets the user click the
-            //     macOS title to rename inline via the system's
-            //     proxy-icon menu.
-            .navigationTitle(Binding(
-                get: { recorder.sessionTitle },
-                set: { recorder.sessionTitle = $0 }
-            ))
+            // Chrome title comes from `MainToolbar`'s principal
+            // item — a `TextField` bound to `recorder.sessionTitle`
+            // so the user can name the session inline. No
+            // `.navigationTitle("Xephon")` here because that would
+            // render alongside the custom title view; the principal
+            // item replaces it. Placeholder "Xephon" shows on the
+            // TextField when sessionTitle is empty.
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 MainToolbar(
