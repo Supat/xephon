@@ -70,6 +70,24 @@ struct SectionsCard: View {
                             && !recorder.summarizerInferenceRunning,
                         isSummarizing: recorder.summarizingSectionID == section.id,
                         hasCachedSummary: section.cachedSummary != nil,
+                        // Bind the inline title TextField on the
+                        // row directly to the store: get returns
+                        // the latest title; set rebuilds the
+                        // section with the new title and routes
+                        // through `store.update`. Every keystroke
+                        // triggers `update` so the store stays
+                        // authoritative (no row-local draft state
+                        // to reconcile on Save), and the .xph
+                        // bundle persistence picks the latest
+                        // title up on next save.
+                        titleBinding: Binding(
+                            get: { section.title },
+                            set: { newValue in
+                                var updated = section
+                                updated.title = newValue
+                                store.update(updated)
+                            }
+                        ),
                         onCompleteWithFocus: {
                             completeSection(section, withFocusedID: validFocusedID)
                         },
@@ -284,6 +302,16 @@ private struct SectionsCardRow: View {
     /// the action itself is the same in both cases — open
     /// the sheet, which auto-fires generation when empty.
     let hasCachedSummary: Bool
+    /// Two-way binding to the section's title. Wired by the
+    /// parent through `store.update` so every keystroke
+    /// becomes a fresh `store.update(section)` call — keeps
+    /// the store authoritative and gives the .xph save path
+    /// the latest text without a separate commit step. The
+    /// row renders this as an inline `TextField` instead of
+    /// the previous static `Text(displayTitle)`; placeholder
+    /// is the localized "Untitled section" string so an empty
+    /// title still hints at the slot's purpose.
+    let titleBinding: Binding<String>
     /// Stamp the focused id onto this section's missing
     /// bound. Driven by the parent so the mutation routes
     /// through `store.update`; the row just signals intent.
@@ -301,10 +329,15 @@ private struct SectionsCardRow: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(displayTitle)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    TextField(
+                        String(localized: "sections.untitled"),
+                        text: titleBinding
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1)
+                    .submitLabel(.done)
                     if !section.isComplete {
                         // Distinctive glyph for the
                         // incomplete state so the user can
