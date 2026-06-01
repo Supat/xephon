@@ -207,6 +207,32 @@ struct ContentView: View {
             .onChange(of: menuCommands.findToken) { _, _ in
                 searchFieldFocused = true
             }
+            // View → Summary / Review / Find & Replace: open the
+            // sheets the chrome's toolbar buttons would. Each
+            // token is a fresh UUID per fire so re-selecting the
+            // menu item re-presents the sheet even if it was
+            // already showing-then-dismissed in the same tick.
+            .onChange(of: menuCommands.presentSummaryToken) { _, _ in
+                llmCoord.presentSummary(recorder: recorder)
+            }
+            .onChange(of: menuCommands.presentReviewToken) { _, _ in
+                llmCoord.presentReview(recorder: recorder)
+            }
+            .onChange(of: menuCommands.presentSearchReplaceToken) { _, _ in
+                llmCoord.presentSearchReplace()
+            }
+            // Push the toolbar's enable gates into menuCommands
+            // so the View menu's `.disabled(...)` mirrors what
+            // the trailing toolbar buttons show. Same conditions
+            // expressed in `MainToolbar` — kept in sync by hand
+            // because the menu builder doesn't have a recorder
+            // reference. `.onAppear` seeds initial values;
+            // each `.onChange` rebroadcasts when its input
+            // moves.
+            .onAppear { syncMenuItemGates() }
+            .onChange(of: recorder.isIdleWithTranscript) { _, _ in syncMenuItemGates() }
+            .onChange(of: recorder.summarizerInferenceRunning) { _, _ in syncMenuItemGates() }
+            .onChange(of: recorder.transcriptionReviewRunning) { _, _ in syncMenuItemGates() }
             // Recorder rotates `sessionToken` whenever its utterance
             // list changes identity (new recording, new file
             // analysis, imported `.xph`). Drop every view-side
@@ -353,6 +379,28 @@ struct ContentView: View {
         }
     }
 
+    /// Push the toolbar's enable conditions into `menuCommands`
+    /// so the View → Summary / Review / Find & Replace items
+    /// disable in lockstep with the chrome buttons in
+    /// `MainToolbar`. The two sites express the same predicate
+    /// — kept in sync by hand because the menu builder up in
+    /// `XephonApp` doesn't hold a recorder reference and
+    /// shouldn't grow one just for gate readout. Watchers on
+    /// `recorder.isIdleWithTranscript`,
+    /// `recorder.summarizerInferenceRunning`, and
+    /// `recorder.transcriptionReviewRunning` call this whenever
+    /// an input flips.
+    private func syncMenuItemGates() {
+        let idleWithTranscript = recorder.isIdleWithTranscript
+        let summarizing = recorder.summarizerInferenceRunning
+        let reviewing = recorder.transcriptionReviewRunning
+        menuCommands.canPresentSummary =
+            idleWithTranscript && !summarizing
+        menuCommands.canPresentReview =
+            idleWithTranscript && !summarizing && !reviewing
+        menuCommands.canPresentSearchReplace =
+            idleWithTranscript
+    }
 }
 
 #Preview {

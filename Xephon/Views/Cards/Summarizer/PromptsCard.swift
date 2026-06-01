@@ -22,6 +22,13 @@ import Summarizer
 /// what reaches the model. Apple FM entries surface the
 /// static instruction constants the same path uses.
 struct PromptsCard: View {
+    /// Live session state. Passed into the detail sheet so the
+    /// "Generate Real Prompt" button can build the actual
+    /// prompt the model would receive (with the session's
+    /// utterances + speaker names) and present a share sheet
+    /// for export.
+    let recorder: RecordingController
+
     /// Groups loaded once on appearance. Computing prompts is
     /// cheap (string concatenation against a 2-utterance
     /// sample) but doing it every body re-render would be
@@ -72,9 +79,11 @@ struct PromptsCard: View {
             }
         }
         .sheet(item: $presentedPrompt) { entry in
-            PromptDetailSheet(entry: entry) {
-                presentedPrompt = nil
-            }
+            PromptDetailSheet(
+                entry: entry,
+                recorder: recorder,
+                onDismiss: { presentedPrompt = nil }
+            )
         }
     }
 
@@ -117,11 +126,12 @@ struct PromptsCard: View {
 
 /// Modal sheet that displays one prompt's full body in
 /// monospaced selectable text. Hosts its own NavigationStack
-/// so it gets a title bar with Copy + Done buttons — the
-/// card stays out of the modal's chrome, and the prompt text
-/// gets the full screen.
+/// so it gets a title bar with Copy + Real Prompt + Done
+/// buttons — the card stays out of the modal's chrome, and the
+/// prompt text gets the full screen.
 private struct PromptDetailSheet: View {
     let entry: PromptCatalog.PromptEntry
+    let recorder: RecordingController
     let onDismiss: () -> Void
 
     /// Flips true for ~1.2 s right after the user taps the
@@ -131,6 +141,24 @@ private struct PromptDetailSheet: View {
     /// the implicit animation on the `systemImage`.
     @State private var justCopied = false
     @State private var copyResetTask: Task<Void, Never>?
+    /// Set when the user taps Real Prompt and the catalog
+    /// returns nil (entry can't be fully realized — e.g.
+    /// deep-merge needs live model intermediates). Drives an
+    /// alert so the user understands why the export didn't fire.
+    @State private var unsupportedAlert = false
+    /// Temp-file URL for the real-prompt `.txt` export. Set
+    /// when the Export Real Prompt button writes the prompt
+    /// to the temp dir; the nested `.sheet(item:)` below
+    /// raises a `ShareSheet` over it.
+    ///
+    /// `ShareSheet` rather than `FilePickerCoordinator.presentExport`
+    /// because the file exporter modifier lives at
+    /// `ContentView`'s root and SwiftUI can't reliably raise it
+    /// while a child sheet (this one) is already presented —
+    /// the singleton file picker is reserved for top-level
+    /// chrome flows (Save Session, Open, Export JSON). Same
+    /// precedent as `SessionSummarySheet`'s Markdown export.
+    @State private var realPromptExportURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -163,9 +191,38 @@ private struct PromptDetailSheet: View {
                     }
                     .accessibilityLabel(Text(String(localized: "prompts.copy")))
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        exportRealPrompt()
+                    } label: {
+                        Label(
+                            String(localized: "prompts.generateReal"),
+                            systemImage: "square.and.arrow.up.on.square"
+                        )
+                    }
+                    // Empty utterance list means nothing to
+                    // inject — disable so the user doesn't get
+                    // an export with just the static
+                    // instructions (which they could already
+                    // copy via the Copy button).
+                    .disabled(recorder.utterances.isEmpty)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "summary.done"), action: onDismiss)
                 }
+            }
+            .alert(
+                String(localized: "prompts.generateReal.unsupported.title"),
+                isPresented: $unsupportedAlert
+            ) {
+                Button(String(localized: "summary.done")) {
+                    unsupportedAlert = false
+                }
+            } message: {
+                Text(String(localized: "prompts.generateReal.unsupported.message"))
+            }
+            .sheet(item: $realPromptExportURL) { url in
+                ShareSheet(items: [url])
             }
         }
     }
@@ -182,6 +239,51 @@ private struct PromptDetailSheet: View {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard !Task.isCancelled else { return }
             withAnimation { justCopied = false }
+        }
+    }
+
+    /// Build the real prompt(s) for this entry using the live
+    /// session's utterances + speaker names, concatenate when
+    /// the live path would send multiple (chunked reviewer,
+    /// per-window deep summarizer), write a `.txt` into the
+    /// temp dir, and raise a `ShareSheet` (system "Save to
+    /// Files" / share targets) over the prompt sheet. Surfaces
+    /// an alert when the catalog returns nil (deep-merge
+    /// entries can't be fully realized without running the live
+    /// model first).
+    private func exportRealPrompt() {
+        let language: ReviewLanguage = recorder.sessionLanguage == .japanese
+            ? .japanese
+            : .english
+        guard let prompts = PromptCatalog.realPrompts(
+            forEntryID: entry.id,
+            utterances: recorder.utterances,
+            speakerNames: recorder.speakerNameOverrides,
+            language: language
+        ) else {
+            unsupportedAlert = true
+            return
+        }
+        let body: String
+        if prompts.count == 1 {
+            body = prompts[0]
+        } else {
+            body = prompts.enumerated().map { idx, prompt in
+                "########## Prompt \(idx + 1) of \(prompts.count) ##########\n\n\(prompt)"
+            }.joined(separator: "\n\n")
+        }
+        let slug = entry.id.replacingOccurrences(of: ".", with: "-")
+        let stamp = Int(Date().timeIntervalSince1970)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xephon-prompt-\(slug)-\(stamp).txt")
+        do {
+            try body.write(to: url, atomically: true, encoding: .utf8)
+            realPromptExportURL = url
+        } catch {
+            // Temp-dir writes are essentially infallible on
+            // iOS; if it fails the share sheet not appearing
+            // is the user-visible signal that something went
+            // wrong, same as `SessionSummarySheet.exportMarkdown`.
         }
     }
 }

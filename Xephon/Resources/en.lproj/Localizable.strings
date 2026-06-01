@@ -49,6 +49,9 @@
 "prompts.section.textSER" = "Text SER";
 "prompts.copy" = "Copy";
 "prompts.copied" = "Copied";
+"prompts.generateReal" = "Export Real Prompt";
+"prompts.generateReal.unsupported.title" = "Real prompt unavailable";
+"prompts.generateReal.unsupported.message" = "This prompt depends on intermediate output that only exists after the model runs (e.g. deep-merge needs per-window summaries). Run the summarizer once, then export from the per-window or single-pass entries instead.";
 "summary.summarize" = "Summarize";
 "summary.openSummary" = "Open summary";
 "review.openReview" = "Open review";
@@ -174,6 +177,16 @@
 "menu.saveSession" = "Save Session…";
 "menu.importSession" = "Open Session…";
 "menu.findInUtterances" = "Find in Utterances…";
+"menu.view" = "View";
+"menu.view.settings" = "Settings & Pipeline";
+"menu.view.affect" = "Affect";
+"menu.view.speakers" = "Speakers";
+"menu.view.sections" = "Sections";
+"menu.view.keywords" = "Keywords";
+"menu.view.summarizer" = "Summarizer";
+"menu.view.summary" = "Overview Summary…";
+"menu.view.review" = "Transcription Review…";
+"menu.view.searchReplace" = "Find and Replace…";
 "file.analyzing" = "Analyzing %@";
 "summary.header" = "Mood";
 "summary.calibrating" = "Calibrating…";

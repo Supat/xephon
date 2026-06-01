@@ -49,6 +49,9 @@
 "prompts.section.textSER" = "テキストSER";
 "prompts.copy" = "コピー";
 "prompts.copied" = "コピー完了";
+"prompts.generateReal" = "実プロンプトを書き出す";
+"prompts.generateReal.unsupported.title" = "実プロンプトを書き出せません";
+"prompts.generateReal.unsupported.message" = "このプロンプトは、モデル実行後にしか存在しない中間出力に依存しています（例: deep mergeは各ウィンドウの要約結果を必要とします）。要約器を一度実行してから、各ウィンドウまたは単発のエントリから書き出してください。";
 "summary.summarize" = "要約";
 "summary.openSummary" = "要約を開く";
 "review.openReview" = "レビューを開く";
@@ -174,6 +177,16 @@
 "menu.saveSession" = "セッションを保存…";
 "menu.importSession" = "セッションを開く…";
 "menu.findInUtterances" = "発話を検索…";
+"menu.view" = "表示";
+"menu.view.settings" = "設定とパイプライン";
+"menu.view.affect" = "感情";
+"menu.view.speakers" = "話者";
+"menu.view.sections" = "セクション";
+"menu.view.keywords" = "キーワード";
+"menu.view.summarizer" = "要約";
+"menu.view.summary" = "全体要約…";
+"menu.view.review" = "文字起こしレビュー…";
+"menu.view.searchReplace" = "検索と置換…";
 "file.analyzing" = "%@ を解析中";
 "summary.header" = "ムード";
 "summary.calibrating" = "校正中…";

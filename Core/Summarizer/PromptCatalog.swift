@@ -187,6 +187,373 @@ public enum PromptCatalog {
         ]
     }
 
+    // MARK: - Real-prompt generation
+
+    /// Build the prompt(s) that would actually be sent to the
+    /// model for `entryID` using `utterances` from the live
+    /// session. Returns multiple strings when the live path
+    /// chunks (reviewer per-chunk, summarizer deep-window per-
+    /// window); the caller concatenates them with separators.
+    /// Returns nil when the entry can't be fully realized
+    /// without running the live model (summarizer deep-merge
+    /// needs per-window intermediates from a real generate
+    /// pass).
+    ///
+    /// MLX entries call the same spec types' `buildPrompt`
+    /// methods the inference path uses, after applying the
+    /// same selection (trailing / heuristic) or
+    /// chunking / windowing the live path applies. Apple FM
+    /// entries reproduce the user message that the live
+    /// `summarize` / `review` constructs inline (formatting
+    /// helpers + speakers roster + utterance lines + language
+    /// directive).
+    public static func realPrompts(
+        forEntryID entryID: String,
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        language: ReviewLanguage
+    ) -> [String]? {
+        switch entryID {
+        // Apple FM
+        case "appleFM.summarizer.singlePass":
+            return [appleFMSinglePassRealPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames
+            )]
+        case "appleFM.summarizer.deepWindow":
+            return appleFMDeepWindowRealPrompts(
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        case "appleFM.summarizer.deepMerge":
+            // Live merge prompt depends on per-window
+            // intermediates that only exist after a real
+            // generate pass — can't construct deterministically.
+            return nil
+        case "appleFM.reviewer":
+            return appleFMReviewerRealPrompts(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                language: language
+            )
+        case "foundationModels.textSER":
+            return foundationModelsTextSERRealPrompts(
+                utterances: utterances
+            )
+
+        // Qwen3
+        case "qwen.summarizer.singlePass":
+            return [mlxSinglePassRealPrompt(
+                spec: MLXQwenSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames
+            )]
+        case "qwen.summarizer.deepWindow":
+            return mlxDeepWindowRealPrompts(
+                spec: MLXQwenSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        case "qwen.summarizer.deepMerge":
+            return nil
+        case "qwen.reviewer":
+            return mlxReviewerRealPrompts(
+                spec: MLXQwenReviewerSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames,
+                language: language
+            )
+
+        // Llama-3-Swallow
+        case "llama.summarizer.singlePass":
+            return [mlxSinglePassRealPrompt(
+                spec: MLXLlamaSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames
+            )]
+        case "llama.summarizer.deepWindow":
+            return mlxDeepWindowRealPrompts(
+                spec: MLXLlamaSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        case "llama.summarizer.deepMerge":
+            return nil
+        case "llama.reviewer":
+            return mlxReviewerRealPrompts(
+                spec: MLXLlamaReviewerSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames,
+                language: language
+            )
+
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - MLX real-prompt builders
+
+    private static func mlxSinglePassRealPrompt(
+        spec: any MLXLLMSpec,
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> String {
+        let (selected, truncatedFromTotal) = applySinglePassSelection(
+            utterances: utterances,
+            cap: spec.maxPromptUtterances,
+            selection: .trailing
+        )
+        return spec.buildPrompt(
+            utterances: selected,
+            speakerNames: speakerNames,
+            truncatedFromTotal: truncatedFromTotal,
+            selection: .trailing
+        )
+    }
+
+    private static func mlxDeepWindowRealPrompts(
+        spec: any MLXLLMSpec,
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> [String] {
+        let windows = splitWindows(utterances, size: spec.deepWindowSize)
+        return windows.enumerated().map { idx, window in
+            spec.buildDeepWindowPrompt(
+                utterances: window,
+                speakerNames: speakerNames,
+                windowIndex: idx,
+                totalWindows: windows.count
+            )
+        }
+    }
+
+    private static func mlxReviewerRealPrompts(
+        spec: any MLXLLMReviewerSpec,
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        language: ReviewLanguage
+    ) -> [String] {
+        let chunks = splitWindows(utterances, size: spec.maxPromptUtterances)
+        return chunks.enumerated().map { idx, chunk in
+            spec.buildPrompt(
+                utterances: chunk,
+                speakerNames: speakerNames,
+                language: language,
+                chunkIndex: idx,
+                totalChunks: chunks.count
+            )
+        }
+    }
+
+    // MARK: - Apple FM real-prompt builders
+
+    /// Mirrors `AppleFMSummarizer.summarizeSinglePass`'s prompt
+    /// construction: instructions + user message with speakers
+    /// roster + utterance lines + truncation note. Selection is
+    /// `.trailing` for the preview (the live path uses the
+    /// mode the user picked; we don't have access to the user's
+    /// pick from this static call site, and trailing is the
+    /// default mode so it's the representative case).
+    private static func appleFMSinglePassRealPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> String {
+        let cap = 15
+        let (selected, truncatedFromTotal) = applySinglePassSelection(
+            utterances: utterances,
+            cap: cap,
+            selection: .trailing
+        )
+        let speakers = orderedSpeakerIDs(selected)
+        let lines = selected
+            .map { appleFMCompactLine(for: $0, speakerNames: speakerNames) }
+            .joined(separator: "\n")
+        var trunc = ""
+        if let total = truncatedFromTotal {
+            trunc = "\n\n(Showing the most recent \(selected.count) of \(total) utterances; frame overall mood as the trailing portion.)"
+        }
+        let userMessage = """
+            <language-directive>
+
+            Speakers present: \(speakers.joined(separator: ", ")).
+
+            Utterances:
+            \(lines)\(trunc)
+            """
+        return [
+            "=== SYSTEM (instructions) ===",
+            AppleFMSummarizer.instructions,
+            "",
+            "=== USER (per-call message) ===",
+            userMessage
+        ].joined(separator: "\n")
+    }
+
+    private static func appleFMDeepWindowRealPrompts(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> [String] {
+        let windows = splitWindows(utterances, size: 15)
+        return windows.enumerated().map { idx, window in
+            let lines = window
+                .map { appleFMCompactLine(for: $0, speakerNames: speakerNames) }
+                .joined(separator: "\n")
+            let userMessage = """
+                Window \(idx + 1) of \(windows.count).
+
+                Utterances:
+                \(lines)
+                """
+            return [
+                "=== SYSTEM (instructions) ===",
+                AppleFMSummarizer.windowInstructions,
+                "",
+                "=== USER (per-window message) ===",
+                userMessage
+            ].joined(separator: "\n")
+        }
+    }
+
+    private static func appleFMReviewerRealPrompts(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        language: ReviewLanguage
+    ) -> [String] {
+        let cap = 20
+        let chunks = splitWindows(utterances, size: cap)
+        return chunks.enumerated().map { idx, chunk in
+            let lines = chunk.enumerated().map { rowIdx, u in
+                appleFMReviewerCompactLine(
+                    rowIndex: rowIdx + 1,
+                    for: u,
+                    speakerNames: speakerNames
+                )
+            }.joined(separator: "\n")
+            let preface = chunks.count > 1
+                ? "This is chunk \(idx + 1) of \(chunks.count) of the conversation's review pass. Earlier and later utterances are reviewed separately; do not flag rows as non-sequitur just because broader topic context isn't visible here.\n\n"
+                : ""
+            let userMessage = """
+                The conversation is in \(language.label). Reason about meaning and homophones in \(language.label) only.
+
+                \(preface)Utterances (rowIndex speaker t=time text):
+                \(lines)
+                """
+            return [
+                "=== SYSTEM (instructions) ===",
+                AppleFMTranscriptionReviewer.instructions,
+                "",
+                "=== USER (per-chunk message) ===",
+                userMessage
+            ].joined(separator: "\n")
+        }
+    }
+
+    private static func foundationModelsTextSERRealPrompts(
+        utterances: [UtteranceEstimate]
+    ) -> [String] {
+        // The live path sends one prompt per utterance —
+        // instructions + "Utterance: <text>". Empty / filler
+        // rows are skipped upstream in `AnalysisPipeline.runText`;
+        // we mirror that here so the export reflects what's
+        // actually sent.
+        let instructions = "You are a <language>-language affect annotator.\n\n"
+            + FoundationModelsSER.instructionsBody
+        return utterances.compactMap { u in
+            let trimmed = u.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return [
+                "=== SYSTEM (instructions) ===",
+                instructions,
+                "",
+                "=== USER (per-utterance message) ===",
+                "Utterance: \(trimmed)"
+            ].joined(separator: "\n")
+        }
+    }
+
+    // MARK: - Shared helpers
+
+    private static func applySinglePassSelection(
+        utterances: [UtteranceEstimate],
+        cap: Int,
+        selection: MLXLLMSelection
+    ) -> (selected: [UtteranceEstimate], truncatedFromTotal: Int?) {
+        guard utterances.count > cap else { return (utterances, nil) }
+        switch selection {
+        case .trailing:
+            return (Array(utterances.suffix(cap)), utterances.count)
+        case .heuristicTopN:
+            let ids = Informativeness.topNBalancedBySpeaker(
+                cap, utterances: utterances
+            )
+            return (utterances.filter { ids.contains($0.id) }, utterances.count)
+        }
+    }
+
+    private static func splitWindows(
+        _ utterances: [UtteranceEstimate],
+        size: Int
+    ) -> [[UtteranceEstimate]] {
+        guard size > 0, !utterances.isEmpty else {
+            return utterances.isEmpty ? [] : [utterances]
+        }
+        return stride(from: 0, to: utterances.count, by: size).map { offset in
+            let end = min(offset + size, utterances.count)
+            return Array(utterances[offset..<end])
+        }
+    }
+
+    private static func orderedSpeakerIDs(
+        _ utterances: [UtteranceEstimate]
+    ) -> [String] {
+        var seen: Set<String> = []
+        var ordered: [String] = []
+        for u in utterances where !seen.contains(u.speakerID) {
+            seen.insert(u.speakerID)
+            ordered.append(u.speakerID)
+        }
+        return ordered
+    }
+
+    /// Mirrors `AppleFMSummarizer.compactLine` (the same line
+    /// format the live summarizer feeds into its user message).
+    private static func appleFMCompactLine(
+        for u: UtteranceEstimate,
+        speakerNames: [String: String]
+    ) -> String {
+        let speaker: String
+        if let name = speakerNames[u.speakerID]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            speaker = "\(u.speakerID)(\(name))"
+        } else {
+            speaker = u.speakerID
+        }
+        let label = u.fusedTopLabel ?? "—"
+        let v = u.fusedValence.map { String(format: "%.2f", $0) } ?? "—"
+        let a = u.fusedArousal.map { String(format: "%.2f", $0) } ?? "—"
+        return "\(speaker) t=\(String(format: "%.1f", u.start)) \(label) V=\(v) A=\(a) \(u.transcript)"
+    }
+
+    /// Mirrors `AppleFMTranscriptionReviewer.compactLine`.
+    private static func appleFMReviewerCompactLine(
+        rowIndex: Int,
+        for u: UtteranceEstimate,
+        speakerNames: [String: String]
+    ) -> String {
+        let speaker: String
+        if let name = speakerNames[u.speakerID], !name.isEmpty {
+            speaker = "\(u.speakerID)(\(name))"
+        } else {
+            speaker = u.speakerID
+        }
+        let escaped = u.transcript
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\(rowIndex) \(speaker) t=\(String(format: "%.1f", u.start)) \"\(escaped)\""
+    }
+
     // MARK: - Sample data
 
     /// Two-utterance sample used to render the dynamic

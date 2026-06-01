@@ -226,6 +226,13 @@ struct ControlPaneView: View {
                 + "-\(recorder.inputChannelLevels.count)"
                 + "-\(recorder.errorMessage != nil ? 1 : 0)"
             )
+            // View menu (⌘1–⌘6) dispatch lives in a sibling
+            // ViewModifier so the chained `.onChange` handlers
+            // don't pile onto the same type-check expression as
+            // the `.id` / `.onPreferenceChange` chain (which
+            // already pushed the body past SwiftUI's type-check
+            // budget when they lived inline).
+            .modifier(ViewMenuTabDispatch(selectedTab: $selectedTab))
         }
     }
 
@@ -419,7 +426,7 @@ struct ControlPaneView: View {
             VStack(spacing: 16) {
                 SummarizerCard(recorder: recorder)
                 ModelsCard(recorder: recorder)
-                PromptsCard()
+                PromptsCard(recorder: recorder)
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)
@@ -639,6 +646,27 @@ struct ControlPaneView: View {
     /// the cluster scatter card uses for observation ids.
     private var linkedSpeakerIDs: Set<String> {
         Set(recorder.utterances.map(\.speakerID))
+    }
+}
+
+/// Listens for the six View-menu page tokens on
+/// `MenuCommands` and writes the matching index to a bound
+/// `selectedTab`. Extracted as a ViewModifier so the chain of
+/// `.onChange` handlers doesn't collide with the parent body's
+/// already-heavy `.id` / `.onPreferenceChange` chain inside
+/// SwiftUI's type-checker budget.
+private struct ViewMenuTabDispatch: ViewModifier {
+    @Environment(MenuCommands.self) private var menuCommands
+    @Binding var selectedTab: Int
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: menuCommands.viewSettingsToken)   { _, _ in selectedTab = 0 }
+            .onChange(of: menuCommands.viewAffectToken)     { _, _ in selectedTab = 1 }
+            .onChange(of: menuCommands.viewSpeakersToken)   { _, _ in selectedTab = 2 }
+            .onChange(of: menuCommands.viewSectionsToken)   { _, _ in selectedTab = 3 }
+            .onChange(of: menuCommands.viewKeywordsToken)   { _, _ in selectedTab = 4 }
+            .onChange(of: menuCommands.viewSummarizerToken) { _, _ in selectedTab = 5 }
     }
 }
 
