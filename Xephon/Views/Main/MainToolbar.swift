@@ -13,7 +13,19 @@ struct MainToolbar: ToolbarContent {
     let fileCoord: SessionFileCoordinator
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) { sessionTitleField }
+        // Skip the principal TextField when running as
+        // "Designed for iPad" on Apple Silicon Mac. The macOS
+        // host always renders its own title bar above the iPad
+        // chrome (Mac Catalyst is disabled — see project.yml —
+        // so we can't suppress the macOS bar from iPad code).
+        // The session title surfaces through
+        // `.navigationTitle(Binding<String>)` in ContentView,
+        // which maps to the macOS window title and lets the
+        // user rename via the proxy-icon menu. On iPad the
+        // principal item is the only title surface.
+        if !ProcessInfo.processInfo.isiOSAppOnMac {
+            ToolbarItem(placement: .principal) { sessionTitleField }
+        }
         ToolbarItem(placement: .topBarTrailing) { summarize }
         ToolbarItem(placement: .topBarTrailing) { review }
         ToolbarItem(placement: .topBarTrailing) { searchReplace }
