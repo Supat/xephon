@@ -9,6 +9,10 @@ import SERText
 /// configure how the pipeline runs but aren't part of the live stage
 /// visualization itself. The session-summarizer controls live on
 /// `SessionSummarySheet` so they sit next to the artifact they affect.
+/// The Custom Glossary button has moved to `FusionLegendCard` since
+/// its sole effect is biasing the text-SER side of fusion — it now
+/// sits alongside the fusion-weight sliders that govern the same
+/// signal.
 ///
 /// Language and Text SER share a row when there's enough horizontal
 /// space (landscape, regular iPad layout). In portrait — where the
@@ -23,8 +27,6 @@ import SERText
 /// full-width controls that don't share a row with the pickers.
 struct SettingsCard: View {
     let recorder: RecordingController
-
-    @State private var showingGlossary = false
 
     /// Picker layout style. Landscape gets `.stacked` (label above
     /// control). Portrait gets `.inline` so the label hugs the leading
@@ -53,51 +55,10 @@ struct SettingsCard: View {
             textSERPicker
             speechBoostToggle
             diarizerSensitivitySlider
-            customGlossaryButton
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .sheet(isPresented: $showingGlossary) {
-            CustomGlossarySheet(
-                store: recorder.glossary,
-                onDismiss: {
-                    showingGlossary = false
-                    Task { await recorder.reapplyGlossaryBias() }
-                }
-            )
-        }
-    }
-
-    /// Settings row that raises the Custom Glossary sheet. Trailing
-    /// count chip so the user sees at a glance how loaded their
-    /// glossary is, and whether the bias is currently armed (the
-    /// chip dims when `isEnabled` is false).
-    @ViewBuilder
-    private var customGlossaryButton: some View {
-        Button {
-            showingGlossary = true
-        } label: {
-            HStack(spacing: 8) {
-                Label(
-                    String(localized: "glossary.title"),
-                    systemImage: "book.closed"
-                )
-                Spacer(minLength: 8)
-                if !recorder.glossary.entries.isEmpty {
-                    Text("\(recorder.glossary.entries.count)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .opacity(recorder.glossary.isEnabled ? 1.0 : 0.4)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal)
     }
 
     /// Session-language picker. Drives the ASR locale (Apple

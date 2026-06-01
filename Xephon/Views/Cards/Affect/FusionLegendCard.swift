@@ -13,7 +13,11 @@ import SERText
 ///   2. Two labeled rows naming the endpoint modalities.
 ///   3. Adjustable controls — sliders for `acousticWeight` and
 ///      `textWeightFloor`, plus a Reset affordance.
-///   4. Footnote covering the color-mapping math and the ASR-
+///   4. Custom Glossary entry — raises a sheet for editing the
+///      per-term Plutchik bias that nudges the text-SER side of
+///      fusion. Sits next to the fusion sliders because that's
+///      what it affects.
+///   5. Footnote covering the color-mapping math and the ASR-
 ///      confidence coupling.
 ///
 /// Slider changes hit the controller immediately and propagate
@@ -22,6 +26,8 @@ import SERText
 /// keep their cached fused V/A/D until manually re-evaluated.
 struct FusionLegendCard: View {
     let recorder: RecordingController
+
+    @State private var showingGlossary = false
     /// Palette endpoint tints — pulled from the strip's own RGB
     /// constants so the legend can't drift out of sync with the
     /// rendering it explains.
@@ -87,6 +93,8 @@ struct FusionLegendCard: View {
             Divider()
             controlsSection
 
+            customGlossaryButton
+
             Text(String(localized: "fusion.legend.footnote"))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -96,6 +104,49 @@ struct FusionLegendCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .sheet(isPresented: $showingGlossary) {
+            CustomGlossarySheet(
+                store: recorder.glossary,
+                onDismiss: {
+                    showingGlossary = false
+                    Task { await recorder.reapplyGlossaryBias() }
+                }
+            )
+        }
+    }
+
+    /// Custom Glossary entry row. Trailing count chip so the user
+    /// sees at a glance how loaded their glossary is, and whether
+    /// the bias is currently armed (the chip dims when `isEnabled`
+    /// is false). Sheet dismissal triggers
+    /// `recorder.reapplyGlossaryBias()` so every cached utterance
+    /// re-evaluates against the updated lexicon — the user sees
+    /// their edits propagate immediately rather than only on the
+    /// next ASR pass.
+    @ViewBuilder
+    private var customGlossaryButton: some View {
+        Button {
+            showingGlossary = true
+        } label: {
+            HStack(spacing: 8) {
+                Label(
+                    String(localized: "glossary.title"),
+                    systemImage: "book.closed"
+                )
+                Spacer(minLength: 8)
+                if !recorder.glossary.entries.isEmpty {
+                    Text("\(recorder.glossary.entries.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .opacity(recorder.glossary.isEnabled ? 1.0 : 0.4)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// The Plutchik → acoustic-9-class translation table used by
