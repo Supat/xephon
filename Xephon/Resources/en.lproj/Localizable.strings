@@ -98,9 +98,9 @@
 "summary.footer.aiGenerated" = "AI-generated";
 "summary.footer.aiCaveat" = "May contain mistakes";
 "sections.header" = "Sections";
-"sections.add" = "Add Section";
-"sections.addStart" = "Add Section Start";
-"sections.addEnd" = "Add Section End";
+"sections.add" = "Create Section";
+"sections.addStart" = "Create Section Start";
+"sections.addEnd" = "Create Section End";
 "sections.row.setStart" = "Set focused utterance as start";
 "sections.row.setEnd" = "Set focused utterance as end";
 "sections.row.openSummary" = "Open section summary";

@@ -98,9 +98,9 @@
 "summary.footer.aiGenerated" = "AI生成";
 "summary.footer.aiCaveat" = "誤りを含む可能性があります";
 "sections.header" = "セクション";
-"sections.add" = "セクションを追加";
-"sections.addStart" = "セクション開始を追加";
-"sections.addEnd" = "セクション終了を追加";
+"sections.add" = "セクションを作成";
+"sections.addStart" = "セクション開始を作成";
+"sections.addEnd" = "セクション終了を作成";
 "sections.row.setStart" = "フォーカス中の発話を開始に設定";
 "sections.row.setEnd" = "フォーカス中の発話を終了に設定";
 "sections.row.openSummary" = "セクション要約を開く";
