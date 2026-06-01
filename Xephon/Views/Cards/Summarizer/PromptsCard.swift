@@ -6,12 +6,12 @@ import Summarizer
 /// `ModelsCard` so users can see exactly what each model is
 /// being asked to do, without having to crack open the source.
 ///
-/// Each prompt is rendered inside a `DisclosureGroup` to keep
-/// the card compact — many prompts are several hundred lines
-/// of instructions and would overwhelm the scroll if all
-/// expanded. The body text is monospaced + selectable so a
-/// curious user can copy a prompt into their notes; editing
-/// is intentionally not wired (would require runtime prompt
+/// Each prompt is a tap target that raises a modal sheet
+/// holding the prompt's full body. The card surface itself
+/// stays compact — even on iPad portrait where the summarizer
+/// column is ~1/3 width, the row labels read fine and the
+/// sheet uses the full screen for prompt content. Editing is
+/// intentionally not wired (would require runtime prompt
 /// override plumbing in every spec).
 ///
 /// Source of truth: `PromptCatalog` in the Summarizer module.
@@ -29,6 +29,11 @@ struct PromptsCard: View {
     @State private var summarizerEntries: [PromptCatalog.PromptEntry] = []
     @State private var reviewerEntries: [PromptCatalog.PromptEntry] = []
     @State private var textSEREntries: [PromptCatalog.PromptEntry] = []
+    /// Currently-presented prompt. Non-nil drives the
+    /// `.sheet(item:)` modal. Tapping a row sets it; the
+    /// sheet's Done button clears it. `PromptEntry` already
+    /// conforms to `Identifiable` via its stable `id` field.
+    @State private var presentedPrompt: PromptCatalog.PromptEntry?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -66,6 +71,11 @@ struct PromptsCard: View {
                 textSEREntries = PromptCatalog.textSERPrompts()
             }
         }
+        .sheet(item: $presentedPrompt) { entry in
+            PromptDetailSheet(entry: entry) {
+                presentedPrompt = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -73,27 +83,64 @@ struct PromptsCard: View {
         heading: String,
         entries: [PromptCatalog.PromptEntry]
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(heading)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.tertiary)
                 .textCase(.uppercase)
                 .padding(.top, 6)
             ForEach(entries) { entry in
-                DisclosureGroup(entry.title) {
-                    Text(entry.body)
-                        .font(.system(.caption2, design: .monospaced))
-                        .textSelection(.enabled)
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.secondary.opacity(0.08))
-                        )
-                        .padding(.top, 4)
+                Button {
+                    presentedPrompt = entry
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(entry.title)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 4)
                 }
-                .font(.caption)
+                .buttonStyle(.plain)
+                if entry.id != entries.last?.id {
+                    Divider()
+                }
+            }
+        }
+    }
+}
+
+/// Modal sheet that displays one prompt's full body in
+/// monospaced selectable text. Hosts its own NavigationStack
+/// so it gets a title bar with a Done button — the card stays
+/// out of the modal's chrome, and the prompt text gets the
+/// full screen.
+private struct PromptDetailSheet: View {
+    let entry: PromptCatalog.PromptEntry
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(entry.body)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+            }
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle(entry.title)
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(String(localized: "summary.done"), action: onDismiss)
+                }
             }
         }
     }
