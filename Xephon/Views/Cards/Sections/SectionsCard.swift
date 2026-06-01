@@ -70,24 +70,20 @@ struct SectionsCard: View {
                             && !recorder.summarizerInferenceRunning,
                         isSummarizing: recorder.summarizingSectionID == section.id,
                         hasCachedSummary: section.cachedSummary != nil,
-                        // Bind the inline title TextField on the
-                        // row directly to the store: get returns
-                        // the latest title; set rebuilds the
-                        // section with the new title and routes
-                        // through `store.update`. Every keystroke
-                        // triggers `update` so the store stays
-                        // authoritative (no row-local draft state
-                        // to reconcile on Save), and the .xph
-                        // bundle persistence picks the latest
-                        // title up on next save.
-                        titleBinding: Binding(
-                            get: { section.title },
-                            set: { newValue in
-                                var updated = section
-                                updated.title = newValue
-                                store.update(updated)
-                            }
-                        ),
+                        // Commit a title change by rewriting the
+                        // section through `store.update`. Called
+                        // by the row when its local draft text
+                        // changes; the row owns the TextField's
+                        // `@State` (a stable Binding identity
+                        // UIKit's text-input layer needs) and
+                        // pushes the new text back here, where
+                        // the captured `section` is the row's
+                        // current value at parent-render time.
+                        onTitleChange: { newTitle in
+                            var updated = section
+                            updated.title = newTitle
+                            store.update(updated)
+                        },
                         onCompleteWithFocus: {
                             completeSection(section, withFocusedID: validFocusedID)
                         },
@@ -302,16 +298,22 @@ private struct SectionsCardRow: View {
     /// the action itself is the same in both cases — open
     /// the sheet, which auto-fires generation when empty.
     let hasCachedSummary: Bool
-    /// Two-way binding to the section's title. Wired by the
-    /// parent through `store.update` so every keystroke
-    /// becomes a fresh `store.update(section)` call — keeps
-    /// the store authoritative and gives the .xph save path
-    /// the latest text without a separate commit step. The
-    /// row renders this as an inline `TextField` instead of
-    /// the previous static `Text(displayTitle)`; placeholder
-    /// is the localized "Untitled section" string so an empty
-    /// title still hints at the slot's purpose.
-    let titleBinding: Binding<String>
+    /// Commit a new title to the store. Called by the row
+    /// when its local draft `editedTitle` changes.
+    ///
+    /// The row keeps title text in `@State` rather than
+    /// binding the `TextField` straight to the section model:
+    /// a fresh `Binding(get:set:)` constructed in the parent
+    /// closure changes identity on every parent re-render
+    /// (every keystroke triggers `store.update` which re-renders
+    /// the parent), and UIKit's text-input / undo-manager
+    /// layer chokes on that mid-edit with
+    /// `-[__NSArrayM insertObject:atIndex:]: object cannot be
+    /// nil`. Stable local @State keeps the TextField's binding
+    /// identity stable; this callback funnels the change to
+    /// the parent on every keystroke (still per-keystroke
+    /// commit, no debounce needed).
+    let onTitleChange: (String) -> Void
     /// Stamp the focused id onto this section's missing
     /// bound. Driven by the parent so the mutation routes
     /// through `store.update`; the row just signals intent.
@@ -324,6 +326,13 @@ private struct SectionsCardRow: View {
     let onDelete: () -> Void
 
     @State private var showingDeleteConfirm: Bool = false
+    /// Row-local draft for the inline title TextField.
+    /// Seeded from `section.title` on first appearance, kept
+    /// in sync via `.onChange(of: section.title)` so external
+    /// mutations (editor sheet save, .xph reload) refresh
+    /// the field. Mirrored back through `onTitleChange` on
+    /// every local edit so the store sees per-keystroke commits.
+    @State private var editedTitle: String = ""
 
     var body: some View {
         HStack(spacing: 8) {
@@ -331,13 +340,43 @@ private struct SectionsCardRow: View {
                 HStack(spacing: 6) {
                     TextField(
                         String(localized: "sections.untitled"),
-                        text: titleBinding
+                        text: $editedTitle
                     )
                     .font(.callout)
                     .foregroundStyle(.primary)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .submitLabel(.done)
+                    .onAppear {
+                        // Seed the local draft from the store
+                        // the first time the row appears. Later
+                        // external mutations re-sync via
+                        // `.onChange(of: section.title)` below.
+                        if editedTitle.isEmpty, !section.title.isEmpty {
+                            editedTitle = section.title
+                        }
+                    }
+                    .onChange(of: section.title) { _, newValue in
+                        // External mutation (editor sheet save,
+                        // .xph reload, or another writer) — pull
+                        // it into the local draft, but only when
+                        // it actually differs to avoid bouncing
+                        // back into the `onChange(of: editedTitle)`
+                        // handler below.
+                        if editedTitle != newValue {
+                            editedTitle = newValue
+                        }
+                    }
+                    .onChange(of: editedTitle) { _, newValue in
+                        // Local edit — push to the store. Same
+                        // diff guard so external syncs don't
+                        // round-trip through `onTitleChange` (a
+                        // no-op `store.update` would still fire
+                        // an @Observable invalidation and re-render).
+                        if section.title != newValue {
+                            onTitleChange(newValue)
+                        }
+                    }
                     if !section.isComplete {
                         // Distinctive glyph for the
                         // incomplete state so the user can
