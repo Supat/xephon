@@ -457,7 +457,7 @@ actor ModelStore {
         let sessionHolder = DownloadSessionHolder()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+                (continuation: CheckedContinuation<(URL, URLResponse), any Error>) in
                 let delegate = DownloadProgressDelegate(
                     onProgress: { written, total in
                         Task { @MainActor in
@@ -515,7 +515,7 @@ private final class DownloadProgressDelegate:
 {
     private let onProgress: @Sendable (Int64, Int64) -> Void
     private let onFinish: @Sendable (URL, URLResponse) -> Void
-    private let onError: @Sendable (Error) -> Void
+    private let onError: @Sendable (any Error) -> Void
     /// One-shot guard so `didCompleteWithError` doesn't
     /// double-resume the continuation after a successful
     /// `didFinishDownloadingTo`.
@@ -524,7 +524,7 @@ private final class DownloadProgressDelegate:
     init(
         onProgress: @escaping @Sendable (Int64, Int64) -> Void,
         onFinish: @escaping @Sendable (URL, URLResponse) -> Void,
-        onError: @escaping @Sendable (Error) -> Void
+        onError: @escaping @Sendable (any Error) -> Void
     ) {
         self.onProgress = onProgress
         self.onFinish = onFinish
@@ -562,7 +562,7 @@ private final class DownloadProgressDelegate:
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
-        didCompleteWithError error: Error?
+        didCompleteWithError error: (any Error)?
     ) {
         if let error, !didResume {
             didResume = true
