@@ -47,6 +47,8 @@
 "prompts.section.summarizer" = "Summarizer";
 "prompts.section.reviewer" = "Transcription Reviewer";
 "prompts.section.textSER" = "Text SER";
+"prompts.copy" = "Copy";
+"prompts.copied" = "Copied";
 "summary.summarize" = "Summarize";
 "summary.openSummary" = "Open summary";
 "review.openReview" = "Open review";

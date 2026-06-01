@@ -47,6 +47,8 @@
 "prompts.section.summarizer" = "要約";
 "prompts.section.reviewer" = "文字起こしレビュー";
 "prompts.section.textSER" = "テキストSER";
+"prompts.copy" = "コピー";
+"prompts.copied" = "コピー完了";
 "summary.summarize" = "要約";
 "summary.openSummary" = "要約を開く";
 "review.openReview" = "レビューを開く";

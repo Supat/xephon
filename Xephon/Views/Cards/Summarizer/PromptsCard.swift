@@ -117,12 +117,20 @@ struct PromptsCard: View {
 
 /// Modal sheet that displays one prompt's full body in
 /// monospaced selectable text. Hosts its own NavigationStack
-/// so it gets a title bar with a Done button — the card stays
-/// out of the modal's chrome, and the prompt text gets the
-/// full screen.
+/// so it gets a title bar with Copy + Done buttons — the
+/// card stays out of the modal's chrome, and the prompt text
+/// gets the full screen.
 private struct PromptDetailSheet: View {
     let entry: PromptCatalog.PromptEntry
     let onDismiss: () -> Void
+
+    /// Flips true for ~1.2 s right after the user taps the
+    /// Copy toolbar button, swapping the icon to a checkmark
+    /// so the otherwise-silent system pasteboard write gets
+    /// visible confirmation. SwiftUI handles cross-fade via
+    /// the implicit animation on the `systemImage`.
+    @State private var justCopied = false
+    @State private var copyResetTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -138,10 +146,42 @@ private struct PromptDetailSheet: View {
             .navigationTitle(entry.title)
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        copyToClipboard()
+                    } label: {
+                        Label(
+                            String(
+                                localized: justCopied
+                                    ? "prompts.copied"
+                                    : "prompts.copy"
+                            ),
+                            systemImage: justCopied
+                                ? "checkmark"
+                                : "doc.on.doc"
+                        )
+                    }
+                    .accessibilityLabel(Text(String(localized: "prompts.copy")))
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "summary.done"), action: onDismiss)
                 }
             }
+        }
+    }
+
+    /// Write the prompt body to the system pasteboard and flip
+    /// `justCopied` for 1.2 s. The reset is scheduled on a
+    /// detached Task that we cancel on each new tap so rapid
+    /// re-taps don't cause the checkmark to flicker back early.
+    private func copyToClipboard() {
+        UIPasteboard.general.string = entry.body
+        copyResetTask?.cancel()
+        withAnimation { justCopied = true }
+        copyResetTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { justCopied = false }
         }
     }
 }
