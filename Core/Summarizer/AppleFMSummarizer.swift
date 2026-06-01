@@ -482,7 +482,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
 
     // MARK: - Prompt + helpers
 
-    private static let instructions = """
+    internal static let instructions = """
         Summarize a multi-speaker conversation. Each input line has
         speaker, time, fused emotion label, valence V (0..1, 0.5 = neutral),
         and arousal A (0..1, higher = stronger affect), then the transcript.
@@ -504,7 +504,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
     /// output is a compact intermediate (topic + mood snapshot +
     /// per-speaker notes), NOT a full `SessionSummary` — the merge
     /// pass synthesizes those into the final answer.
-    private static let windowInstructions = """
+    internal static let windowInstructions = """
         Summarize ONE WINDOW of a longer multi-speaker conversation.
         Each input line has speaker, time, fused emotion label,
         valence V (0..1, 0.5 = neutral), and arousal A (0..1, higher
@@ -522,7 +522,7 @@ public actor AppleFMSummarizer: SessionSummarizer {
     /// the same — `GenerableSummary`) so downstream consumers
     /// don't care which mode produced the summary, but the input is
     /// per-window intermediate text rather than raw utterances.
-    private static let mergeInstructions = """
+    internal static let mergeInstructions = """
         Produce the FINAL summary of a multi-speaker conversation by
         synthesizing per-window intermediate summaries (provided in
         chronological order). Each speaker should be treated as one

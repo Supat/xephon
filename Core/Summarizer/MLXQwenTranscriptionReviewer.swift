@@ -133,6 +133,8 @@ internal struct MLXQwenReviewerSpec: MLXLLMReviewerSpec {
         lines.append("  - a clear grammar slip that reads as an ASR error, not a stylistic choice.")
         lines.append("Do NOT flag rows that are merely informal, dialectal, or unusual but coherent.")
         lines.append("")
+        lines.append("A flagged row MUST have a SPECIFIC plausible alternative reading in mind — a different word or phrase the ASR could have confused with what's written. If no specific alternative comes to mind, OMIT the row entirely. NEVER write a reason of the form \"X may be a misinterpretation of X\" where X is the same phrase as the row's transcript — that's a tautology and not an issue. Omitting rows is ALWAYS preferred over flagging without a real candidate.")
+        lines.append("")
         lines.append("Return ONLY a JSON object with one field:")
         lines.append("  \"issues\": array of { \"rowIndex\": int, \"kind\": one of \"homophone\"|\"contextual\"|\"grammar\"|\"other\", \"reason\": one short sentence describing what looks wrong, \"confidence\": number 0.0–1.0 }")
         lines.append("DO NOT propose a corrected transcript — the human user will edit the row themselves. Just identify which rows look wrong and why.")

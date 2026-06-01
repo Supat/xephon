@@ -419,6 +419,7 @@ struct ControlPaneView: View {
             VStack(spacing: 16) {
                 SummarizerCard(recorder: recorder)
                 ModelsCard(recorder: recorder)
+                PromptsCard()
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)

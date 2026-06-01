@@ -10,7 +10,7 @@ public actor FoundationModelsSER: TextSER {
     // 4096-token context window doesn't fill up across utterances. Reusing a
     // session accumulates conversation history and eventually overflows
     // (LanguageModelSession.GenerationError.exceededContextWindowSize).
-    private static let instructionsBody = """
+    public static let instructionsBody = """
         Read the utterance and estimate how strongly each Plutchik emotion
         is present, as independent probabilities in [0, 1] (they do NOT
         need to sum to 1).

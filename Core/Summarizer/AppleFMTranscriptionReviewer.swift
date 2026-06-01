@@ -150,12 +150,21 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
 
     // MARK: - Prompt + helpers
 
-    private static let instructions = """
+    internal static let instructions = """
         You are a transcription proofreader for a multi-speaker conversation.
         Find rows whose transcript is likely wrong because of (a) a
         misrecognized homophone or near-homophone, (b) a sentence that does
         not fit the session context, or (c) a clear grammar slip. Do not
         flag rows that are merely informal or unusual but coherent.
+
+        A flagged row MUST have a SPECIFIC plausible alternative reading in
+        mind — a different word or phrase the ASR could have confused with
+        what's written. If no specific alternative comes to mind, OMIT the
+        row entirely. NEVER write a reason of the form "X may be a
+        misinterpretation of X" where X is the same phrase as the row's
+        transcript — that's a tautology and not an issue. Omitting rows is
+        ALWAYS preferred over flagging without a real candidate.
+
         For each issue, return rowIndex, a short kind tag from
         ["homophone","contextual","grammar","other"], a one-sentence reason
         explaining what looks wrong, and a 0.0–1.0 confidence. DO NOT

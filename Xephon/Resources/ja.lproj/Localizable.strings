@@ -42,6 +42,11 @@
 "settings.summarizer.mode.heuristic.caption" = "セッション内TF-IDFで最も特徴的な発話を1回でまとめます（あいづちやフィラーは減点）。末尾と同じ速度で、長いセッションの全体像をより捉えます。";
 "settings.summarizer.mode.deep.caption" = "全発話をマップ・リデュースで処理します。セッションの長さに比例して時間がかかりますが、ピークメモリは変わりません。";
 "chrome.sessionTitle.placeholder" = "無題のセッション";
+"prompts.header" = "LLMプロンプト";
+"prompts.subtitle" = "デバイス上の言語モデルに送信されるすべてのプロンプトを読み取り専用で表示します。行をタップして展開してください。編集はできません。";
+"prompts.section.summarizer" = "要約";
+"prompts.section.reviewer" = "文字起こしレビュー";
+"prompts.section.textSER" = "テキストSER";
 "summary.summarize" = "要約";
 "summary.openSummary" = "要約を開く";
 "review.openReview" = "レビューを開く";

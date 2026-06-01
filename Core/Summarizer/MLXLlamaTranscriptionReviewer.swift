@@ -126,6 +126,8 @@ internal struct MLXLlamaReviewerSpec: MLXLLMReviewerSpec {
         lines.append("  - スタイル的選択ではなくASRエラーと読める明確な文法ミス。")
         lines.append("単にカジュアル、方言、または異例だが整合性のある行はフラグしないでください。")
         lines.append("")
+        lines.append("フラグする行には、必ず具体的な代替読みを念頭に置いてください — ASRが書かれている内容と混同した可能性のある別の単語またはフレーズです。具体的な代替が思い浮かばない場合は、行を完全に省略してください。「XはXの誤認識かもしれない」(Xは同じフレーズ) のような同義反復の理由は絶対に書かないでください。具体的な候補がない場合は省略を優先してください。")
+        lines.append("")
         lines.append("次の1つのフィールドを持つJSONオブジェクトのみを返してください：")
         lines.append("  \"issues\": { \"rowIndex\": int, \"kind\": \"homophone\"|\"contextual\"|\"grammar\"|\"other\" のいずれか, \"reason\": 何が間違って見えるかを1文で, \"confidence\": 0.0〜1.0 の数値 } の配列")
         lines.append("修正後の文字起こしを提案しないでください — 人間ユーザーが自分で行を編集します。どの行が間違って見えるか、なぜそう思うかだけを特定してください。")
