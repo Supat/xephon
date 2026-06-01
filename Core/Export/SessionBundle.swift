@@ -154,6 +154,14 @@ public struct SessionDocument: Codable, Sendable {
     /// trips for sessions that never defined any sections.
     public let sections: Data?
 
+    /// User-supplied session title rendered in the chrome's
+    /// nav bar. Free-form text; empty / nil for sessions that
+    /// the user never named. Optional for backward compat —
+    /// bundles saved before this field existed decode with
+    /// nil, the controller treats nil and empty identically
+    /// (placeholder "Xephon" shows in the TextField).
+    public let sessionTitle: String?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -181,7 +189,8 @@ public struct SessionDocument: Codable, Sendable {
         transcriptionIssueTranscriptSnapshots: [UUID: String]? = nil,
         utteranceEmbeddings: [UUID: [Float]]? = nil,
         utteranceObservationSegmentIDs: [UUID: UUID]? = nil,
-        sections: Data? = nil
+        sections: Data? = nil,
+        sessionTitle: String? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -200,6 +209,7 @@ public struct SessionDocument: Codable, Sendable {
         self.utteranceEmbeddings = utteranceEmbeddings
         self.utteranceObservationSegmentIDs = utteranceObservationSegmentIDs
         self.sections = sections
+        self.sessionTitle = sessionTitle
     }
 }
 

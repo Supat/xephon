@@ -8,15 +8,34 @@ import SwiftUI
 /// pushed the body's type-checker past its budget when they lived
 /// inline).
 struct MainToolbar: ToolbarContent {
-    let recorder: RecordingController
+    @Bindable var recorder: RecordingController
     let llmCoord: LLMSheetCoordinator
     let fileCoord: SessionFileCoordinator
 
     var body: some ToolbarContent {
+        ToolbarItem(placement: .principal) { sessionTitleField }
         ToolbarItem(placement: .topBarTrailing) { summarize }
         ToolbarItem(placement: .topBarTrailing) { review }
         ToolbarItem(placement: .topBarTrailing) { searchReplace }
         ToolbarItem(placement: .topBarTrailing) { export }
+    }
+
+    /// Editable session-title field that replaces the static
+    /// "Xephon" nav title. Bound to `recorder.sessionTitle`;
+    /// empty value renders the placeholder. Centered, headline
+    /// font, plain field style so it visually matches the nav
+    /// title look. `.frame(maxWidth: 320)` caps the editor width
+    /// so it doesn't grow past the available principal-slot space
+    /// on landscape iPad — without the cap the field stretches and
+    /// crowds out the trailing toolbar buttons.
+    @ViewBuilder
+    private var sessionTitleField: some View {
+        TextField("Xephon", text: $recorder.sessionTitle)
+            .font(.headline)
+            .multilineTextAlignment(.center)
+            .textFieldStyle(.plain)
+            .frame(maxWidth: 320)
+            .submitLabel(.done)
     }
 
     @ViewBuilder

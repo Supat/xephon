@@ -152,7 +152,8 @@ extension RecordingController {
                     transcriptionIssueTranscriptSnapshots: issueSnapshots,
                     utteranceEmbeddings: embeddings,
                     utteranceObservationSegmentIDs: segmentIDs,
-                    sections: sectionsBlob
+                    sections: sectionsBlob,
+                    sessionTitle: sessionTitle.isEmpty ? nil : sessionTitle
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -175,7 +176,8 @@ extension RecordingController {
             transcriptionIssueTranscriptSnapshots: issueSnapshots,
             utteranceEmbeddings: embeddings,
             utteranceObservationSegmentIDs: segmentIDs,
-            sections: sectionsBlob
+            sections: sectionsBlob,
+            sessionTitle: sessionTitle.isEmpty ? nil : sessionTitle
         )
     }
 
@@ -205,6 +207,11 @@ extension RecordingController {
         // with the view-side visibility set) can render wrong.
         sessionToken = UUID()
         utterances = document.utterances
+        // Restore the user's session title if the bundle carries
+        // one. Bundles saved before the field existed decode it
+        // as nil; treat nil and empty identically so the chrome
+        // TextField just shows its "Xephon" placeholder.
+        sessionTitle = document.sessionTitle ?? ""
         // Restore the pre-edit revert state from the bundle so a
         // long-press on a row's Edited / completed marker after
         // Open Session still rolls the row back to its original

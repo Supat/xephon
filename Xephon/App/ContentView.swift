@@ -163,7 +163,13 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("Xephon")
+            // Chrome title comes from `MainToolbar`'s principal
+            // item — a `TextField` bound to `recorder.sessionTitle`
+            // so the user can name the session inline. No
+            // `.navigationTitle("Xephon")` here because that would
+            // render alongside the custom title view; the principal
+            // item replaces it. Placeholder "Xephon" shows on the
+            // TextField when sessionTitle is empty.
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 MainToolbar(

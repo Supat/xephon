@@ -105,6 +105,13 @@ final class RecordingController {
     /// session utterance IDs); the Sections page card on the
     /// left pane is the only surface that touches it.
     let sections: SectionStore = SectionStore()
+    /// User-supplied session title rendered in the chrome's
+    /// nav bar as a `TextField` (placeholder "Xephon" when
+    /// empty). Free-form text — no validation, no uniqueness
+    /// check. Cleared on session start, restored from `.xph`
+    /// on `loadSession`. Persisted in the bundle so a named
+    /// session keeps its label across save/reopen.
+    var sessionTitle: String = ""
     /// Active session language. Drives the ASR locale (Apple
     /// SpeechTranscriber + offline transcriber), the FoundationModels
     /// prompt opener, and the DeBERTa-WRIME availability gate
@@ -1047,6 +1054,7 @@ final class RecordingController {
         preReevaluationSnapshots.removeAll()
         handEditChildren.removeAll()
         speakerNameOverrides.removeAll()
+        sessionTitle = ""
         conversationSummary.reset()
         capturedAudio.reset()
         diarizationTimeline = []
