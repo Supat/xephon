@@ -121,28 +121,27 @@ struct SummarizerCard: View {
         }
     }
 
-    /// Deep-mode row content. Adds a yellow warning glyph when
+    /// Deep-mode row content. Prefixes the warning emoji when
     /// Llama-Swallow is the active summarizer backend — Llama
     /// Deep is known to lose detail relative to its Trailing /
     /// Heuristic output (the audit-driven hybrid-merge
     /// mitigation in `MLXLlamaSummarizer` narrowed the gap but
     /// didn't close it). Apple FM and Qwen3 Deep work fine, so
-    /// they get the plain text row. Uses the trailing-closure
-    /// `Label(title:icon:)` initializer so
-    /// `.foregroundStyle(.yellow)` applies to the icon alone,
-    /// isolated from the menu's inherited text style.
+    /// they get the plain text row.
+    ///
+    /// Emoji ("⚠️") rather than an SF Symbol with
+    /// `.foregroundStyle(.yellow)` for the same reason as the
+    /// ASR picker's Qwen3 row — UIPickerMenu renders SF Symbol
+    /// icons through template-mode UIImage and strips any color
+    /// modifier; emoji glyphs are text content so their native
+    /// colors survive.
     @ViewBuilder
     private var deepModeRow: some View {
-        let text = Text(String(localized: "settings.summarizer.mode.deep"))
+        let baseLabel = String(localized: "settings.summarizer.mode.deep")
         if recorder.summarizerBackend == .llamaSwallow {
-            Label {
-                text
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow)
-            }
+            Text("⚠️ \(baseLabel)")
         } else {
-            text
+            Text(baseLabel)
         }
     }
 

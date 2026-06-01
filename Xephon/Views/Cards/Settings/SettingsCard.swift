@@ -245,25 +245,26 @@ struct SettingsCard: View {
     }
 
     /// Row content rendered inside each Picker item. Most backends
-    /// are a plain `Text`; `.qwen3ASR` is a `Label` with the
-    /// `exclamationmark.triangle.fill` icon tinted yellow so the
-    /// "subpar today" caveat is visible at the point of choice.
-    /// Uses the trailing-closure `Label(title:icon:)` initializer
-    /// so `.foregroundStyle(.yellow)` can be applied to the icon
-    /// view alone, isolated from the text's inherited menu style.
+    /// are a plain `Text`; `.qwen3ASR` prefixes the warning emoji
+    /// (U+26A0 U+FE0F) to flag that the backend's performance is
+    /// subpar today.
+    ///
+    /// The emoji ("⚠️") is used directly in the Text rather than a
+    /// `Label(systemImage:)` with `.foregroundStyle(.yellow)`
+    /// because the UIPickerMenu rendering routes SF Symbol icons
+    /// through `UIImage.withRenderingMode(.alwaysTemplate)`,
+    /// which strips any SwiftUI color modifier and tints the
+    /// glyph with the menu's text style. Emoji glyphs are text
+    /// content, not template images, so their native colors
+    /// survive.
     @ViewBuilder
     private static func pickerRow(for backend: OfflineASRBackend) -> some View {
-        let text = Text(Self.offlineASRLabel(for: backend))
+        let baseLabel = Self.offlineASRLabel(for: backend)
         switch backend {
         case .qwen3ASR:
-            Label {
-                text
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow)
-            }
+            Text("⚠️ \(baseLabel)")
         default:
-            text
+            Text(baseLabel)
         }
     }
 
