@@ -427,93 +427,152 @@ actor ModelStore {
     /// `URLSession.downloadTask(with:completionHandler:)` in a
     /// continuation so the call stays async-await, and observes
     /// `progress.fractionCompleted` via KVO — the
-    /// `URLSessionDownloadTask.progress` object's
-    /// `completedUnitCount` / `totalUnitCount` are updated by
-    /// URLSession itself as bytes arrive (no delegate plumbing
-    /// required, no async-delegate gotcha).
+    /// Per-download URLSession + `URLSessionDownloadDelegate`.
+    /// The completion-handler form of `downloadTask` (used
+    /// previously) was paired with KVO on `task.progress
+    /// .fractionCompleted`, but URLSession only reliably
+    /// updates `progress.completedUnitCount` for the
+    /// delegate-based path — the completion-handler form
+    /// silently posts a single early KVO event (the user
+    /// reported "17.3 MB then frozen until completion") and
+    /// then no further progress notifications until the
+    /// final callback. The delegate's `didWriteData` fires
+    /// per chunk regardless of how the task was created, so
+    /// switching to it gives smooth byte-level progress.
     ///
-    /// The completion-handler form's temp URL is auto-deleted when
-    /// the callback returns, so we copy to our own temp file inside
-    /// the handler before resuming the continuation. The caller
-    /// removes that copy via its `defer`.
+    /// The download delegate also performs the move out of
+    /// URLSession's auto-deleted temp dir into our own temp
+    /// file (synchronously, before `didFinishDownloadingTo`
+    /// returns — Apple deletes the source immediately after).
+    /// The per-download session is invalidated on completion
+    /// or cancellation to release the retained delegate.
     private func downloadWithProgress(
         url: URL,
         assetName: String,
         state: ModelDownloadState
     ) async throws -> (URL, URLResponse) {
-        // Captured outside the continuation so KVO observation can
-        // be torn down on completion + cancellation paths alike.
-        let urlSession = urlSession
+        // Holder so the session reference survives across the
+        // continuation/onCancel boundary. The cancel handler
+        // invalidates the session to drop the in-flight task.
+        let sessionHolder = DownloadSessionHolder()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let task = urlSession.downloadTask(with: url) {
-                    tempURL, response, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                        return
-                    }
-                    guard let tempURL, let response else {
-                        continuation.resume(
-                            throwing: URLError(.badServerResponse)
-                        )
-                        return
-                    }
-                    // Move out of URLSession's auto-deleted temp dir
-                    // into our own. The callback returns and the
-                    // source file vanishes immediately afterward, so
-                    // a synchronous move is mandatory here.
-                    let dest = FileManager.default.temporaryDirectory
-                        .appendingPathComponent(
-                            "xephon-dl-\(UUID().uuidString)"
-                        )
-                    do {
-                        try FileManager.default.moveItem(at: tempURL, to: dest)
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+                let delegate = DownloadProgressDelegate(
+                    onProgress: { written, total in
+                        Task { @MainActor in
+                            state.updateFileProgress(
+                                name: assetName,
+                                bytesWritten: written,
+                                totalExpected: total
+                            )
+                        }
+                    },
+                    onFinish: { dest, response in
                         continuation.resume(returning: (dest, response))
-                    } catch {
+                    },
+                    onError: { error in
                         continuation.resume(throwing: error)
                     }
-                }
-                // KVO on the task's `progress.fractionCompleted` —
-                // URLSession publishes increments to
-                // `completedUnitCount` directly as bytes arrive.
-                // `Progress` triggers KVO on `fractionCompleted` for
-                // any underlying-count change, so observing this
-                // one key catches everything. The observation token
-                // is retained by the closure capture; invalidating
-                // it on the cancel path stops further callbacks if
-                // the task is cancelled mid-download.
-                let observerHolder = ProgressObserverHolder()
-                observerHolder.observer = task.progress.observe(
-                    \.fractionCompleted
-                ) { progress, _ in
-                    let written = progress.completedUnitCount
-                    let total = progress.totalUnitCount
-                    Task { @MainActor in
-                        state.updateFileProgress(
-                            name: assetName,
-                            bytesWritten: written,
-                            totalExpected: total
-                        )
-                    }
-                }
+                )
+                let session = URLSession(
+                    configuration: .default,
+                    delegate: delegate,
+                    delegateQueue: nil
+                )
+                sessionHolder.session = session
+                let task = session.downloadTask(with: url)
                 task.resume()
             }
         } onCancel: {
-            // Best-effort: cancelling the parent Task should stop
-            // the in-flight download. The completion handler then
-            // resumes the continuation with a cancellation error.
+            // Tear down the session + in-flight task. The
+            // delegate's `didCompleteWithError` then fires
+            // with a cancellation error and resumes the
+            // continuation via `onError`.
+            sessionHolder.session?.invalidateAndCancel()
         }
     }
 }
 
-/// Holder so the KVO `NSKeyValueObservation` token outlives the
-/// closure that created it. The observation is released when this
-/// holder deinits — which happens when the completion handler's
-/// closure captures it goes away, i.e. once the download finishes
-/// or fails.
-private final class ProgressObserverHolder: @unchecked Sendable {
-    var observer: NSKeyValueObservation?
-    deinit { observer?.invalidate() }
+/// Survives the `withTaskCancellationHandler` boundary so the
+/// cancel handler can reach into the in-flight URLSession and
+/// invalidate it. Plain class — only one writer (the
+/// continuation closure) and one reader (onCancel), both
+/// serialized by the URLSession layer.
+private final class DownloadSessionHolder: @unchecked Sendable {
+    var session: URLSession?
+}
+
+/// `URLSessionDownloadDelegate` used by `downloadWithProgress`.
+/// Forwards per-chunk progress to `onProgress`, performs the
+/// move out of URLSession's auto-deleted temp dir
+/// synchronously in `didFinishDownloadingTo` (before returning,
+/// since the source file vanishes immediately after), and
+/// invalidates the session on completion to break the
+/// session → delegate retain cycle.
+private final class DownloadProgressDelegate:
+    NSObject, URLSessionDownloadDelegate, @unchecked Sendable
+{
+    private let onProgress: @Sendable (Int64, Int64) -> Void
+    private let onFinish: @Sendable (URL, URLResponse) -> Void
+    private let onError: @Sendable (Error) -> Void
+    /// One-shot guard so `didCompleteWithError` doesn't
+    /// double-resume the continuation after a successful
+    /// `didFinishDownloadingTo`.
+    private var didResume = false
+
+    init(
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        onFinish: @escaping @Sendable (URL, URLResponse) -> Void,
+        onError: @escaping @Sendable (Error) -> Void
+    ) {
+        self.onProgress = onProgress
+        self.onFinish = onFinish
+        self.onError = onError
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xephon-dl-\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: location, to: dest)
+            let response = downloadTask.response ?? URLResponse()
+            didResume = true
+            onFinish(dest, response)
+        } catch {
+            didResume = true
+            onError(error)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        if let error, !didResume {
+            didResume = true
+            onError(error)
+        }
+        // Release the delegate retain held by the per-download
+        // session so this delegate (and any captured state)
+        // can deinit.
+        session.invalidateAndCancel()
+    }
 }
 
 // MARK: - Observable progress
