@@ -33,87 +33,163 @@ struct XephonApp: App {
             // Open*/Save* and matches the conventional File menu
             // grouping users expect.
             CommandGroup(replacing: .newItem) {
-                Button(String(localized: "menu.openAudioFile")) {
+                Button {
                     menuCommands.openAudioFileToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.openAudioFile"),
+                        systemImage: "waveform.badge.plus"
+                    )
                 }
                 .keyboardShortcut("o", modifiers: .command)
-                Button(String(localized: "menu.importSession")) {
+                Button {
                     menuCommands.importSessionToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.importSession"),
+                        systemImage: "square.and.arrow.down.on.square"
+                    )
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .saveItem) {
-                Button(String(localized: "menu.saveSession")) {
+                Button {
                     menuCommands.saveSessionToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.saveSession"),
+                        systemImage: "square.and.arrow.down"
+                    )
                 }
                 .keyboardShortcut("s", modifiers: .command)
-                Button(String(localized: "menu.exportJSON")) {
+                .disabled(!menuCommands.canSaveSession)
+                Button {
                     menuCommands.exportJSONToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.exportJSON"),
+                        systemImage: "square.and.arrow.up"
+                    )
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(!menuCommands.canExportJSON)
             }
             // ⌘F focuses the utterance search field. Lives in the Edit
             // menu's pasteboard region (which is where Find traditionally
             // sits on Apple platforms). Same UUID-token bridge as the
             // File commands above.
             CommandGroup(after: .pasteboard) {
-                Button(String(localized: "menu.findInUtterances")) {
+                Button {
                     menuCommands.findToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.findInUtterances"),
+                        systemImage: "magnifyingglass"
+                    )
                 }
                 .keyboardShortcut("f", modifiers: .command)
             }
-            // View → <page> items, one per ControlPaneView TabView
-            // page. ⌘1–⌘6 mirror the browser-tab convention so a
-            // hardware keyboard can switch pages without reaching
-            // for the trackpad. Same UUID-token bus as the File /
-            // Edit commands — ControlPaneView's `.onChange` writes
-            // to `selectedTab` on each fire.
-            CommandMenu(String(localized: "menu.view")) {
-                Button(String(localized: "menu.view.settings")) {
+            // View menu additions. Anchored via
+            // `CommandGroup(after: .sidebar)` so the items extend
+            // the system-provided View menu rather than creating
+            // a parallel `CommandMenu("View")` — the latter
+            // showed up as TWO "View" entries in the macOS menu
+            // bar (Designed-for-iPad on Apple Silicon Mac) and
+            // emitted "duplicate identifier" warnings in
+            // `UIMenuBuilder` because SwiftUI's iPadOS 26 bridge
+            // double-registers `CommandMenu` titles.
+            //
+            // ⌘1–⌘6 are page switchers — mirror the browser-tab
+            // convention so a hardware keyboard can move through
+            // the left pane without the trackpad. Sheet items
+            // below the divider mirror the chrome toolbar's
+            // Summarize / Review / Search-and-Replace buttons.
+            CommandGroup(after: .sidebar) {
+                Button {
                     menuCommands.viewSettingsToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.settings"),
+                        systemImage: "slider.horizontal.3"
+                    )
                 }
                 .keyboardShortcut("1", modifiers: .command)
-                Button(String(localized: "menu.view.affect")) {
+                Button {
                     menuCommands.viewAffectToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.affect"),
+                        systemImage: "chart.bar"
+                    )
                 }
                 .keyboardShortcut("2", modifiers: .command)
-                Button(String(localized: "menu.view.speakers")) {
+                Button {
                     menuCommands.viewSpeakersToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.speakers"),
+                        systemImage: "person.2"
+                    )
                 }
                 .keyboardShortcut("3", modifiers: .command)
-                Button(String(localized: "menu.view.sections")) {
+                Button {
                     menuCommands.viewSectionsToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.sections"),
+                        systemImage: "bookmark"
+                    )
                 }
                 .keyboardShortcut("4", modifiers: .command)
-                Button(String(localized: "menu.view.keywords")) {
+                Button {
                     menuCommands.viewKeywordsToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.keywords"),
+                        systemImage: "tag"
+                    )
                 }
                 .keyboardShortcut("5", modifiers: .command)
-                Button(String(localized: "menu.view.summarizer")) {
+                Button {
                     menuCommands.viewSummarizerToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.summarizer"),
+                        systemImage: "wand.and.rays"
+                    )
                 }
                 .keyboardShortcut("6", modifiers: .command)
                 // System-drawn separator between page-switching
                 // items and the sheet-presentation items below.
                 Divider()
-                // Sheet presentations. Mirror the chrome
-                // toolbar's Summarize / Review / Search &
-                // Replace buttons so users who navigate by menu
-                // (hardware keyboard, VoiceOver, etc.) have the
-                // same access. No keyboard shortcuts — File
-                // already claims ⌘S / ⇧⌘S / ⌘F, and adding
-                // modifier combinations here without clear
-                // convention would just be noise.
-                Button(String(localized: "menu.view.summary")) {
+                // Sheet presentations. Glyphs match the chrome
+                // toolbar's buttons so the menu reads as the
+                // same actions.
+                Button {
                     menuCommands.presentSummaryToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.summary"),
+                        systemImage: "text.book.closed"
+                    )
                 }
                 .disabled(!menuCommands.canPresentSummary)
-                Button(String(localized: "menu.view.review")) {
+                Button {
                     menuCommands.presentReviewToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.review"),
+                        systemImage: "exclamationmark.bubble"
+                    )
                 }
                 .disabled(!menuCommands.canPresentReview)
-                Button(String(localized: "menu.view.searchReplace")) {
+                Button {
                     menuCommands.presentSearchReplaceToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.view.searchReplace"),
+                        systemImage: "magnifyingglass.circle"
+                    )
                 }
                 .disabled(!menuCommands.canPresentSearchReplace)
             }
@@ -177,4 +253,14 @@ final class MenuCommands {
     var canPresentSummary: Bool = false
     var canPresentReview: Bool = false
     var canPresentSearchReplace: Bool = false
+    /// Mirror of the chrome-toolbar Export button gate for the
+    /// File → Save Session and File → Export to JSON menu items.
+    /// Both share the same precondition
+    /// (`recorder.isIdleWithTranscript`) so one flag suffices —
+    /// kept as separate properties so a future divergence is a
+    /// one-line edit rather than a refactor. ContentView's
+    /// `syncMenuItemGates()` writes both when the recorder's
+    /// idle / utterance state changes.
+    var canSaveSession: Bool = false
+    var canExportJSON: Bool = false
 }

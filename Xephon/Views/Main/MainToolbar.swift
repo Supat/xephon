@@ -111,7 +111,7 @@ struct MainToolbar: ToolbarContent {
         } label: {
             Label(
                 String(localized: "searchReplace.toolbar"),
-                systemImage: "magnifyingglass"
+                systemImage: "magnifyingglass.circle"
             )
         }
         // Disable during recording / analysis: commitHandEdit

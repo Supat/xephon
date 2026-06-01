@@ -400,6 +400,13 @@ struct ContentView: View {
             idleWithTranscript && !summarizing && !reviewing
         menuCommands.canPresentSearchReplace =
             idleWithTranscript
+        // File → Save Session / Export to JSON: same gate as
+        // the chrome's Export button (`!isIdleWithTranscript`)
+        // since both flows require a finalized transcript that
+        // isn't being mutated by an in-flight recording or file
+        // analysis.
+        menuCommands.canSaveSession = idleWithTranscript
+        menuCommands.canExportJSON = idleWithTranscript
     }
 }
 
