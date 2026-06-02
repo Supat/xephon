@@ -99,6 +99,69 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var paneStack: some View {
+        VStack(spacing: 0) {
+            if !recorder.pipelineDiagnostics.isEmpty {
+                PipelineDiagnosticsBanner(messages: recorder.pipelineDiagnostics)
+            }
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    ControlPaneView(
+                        recorder: recorder,
+                        filterModel: filterModel,
+                        fileCoord: fileCoord,
+                        filePicker: filePicker,
+                        llmCoord: llmCoord,
+                        selectedUtteranceID: $selectedUtteranceID,
+                        scrollRequestUtteranceID: $scrollRequestUtteranceID,
+                        showingDiscardConfirm: $showingDiscardConfirm
+                    )
+                    .frame(width: geo.size.width / 3)
+                    Divider()
+                        .ignoresSafeArea(.container, edges: .bottom)
+                    TranscriptPaneView(
+                        recorder: recorder,
+                        filterModel: filterModel,
+                        selectedUtteranceID: $selectedUtteranceID,
+                        scrollRequestUtteranceID: $scrollRequestUtteranceID,
+                        expandedUtteranceIDs: $expandedUtteranceIDs,
+                        visibleUtteranceIDs: $visibleUtteranceIDs,
+                        hasUnreadUtterance: $hasUnreadUtterance,
+                        searchFieldFocused: $searchFieldFocused,
+                        onRenameSpeaker: { u in
+                            editingSpeakerStored = u.speakerID
+                            editingSpeakerName = recorder
+                                .speakerDisplayName(forStored: u.speakerID) ?? ""
+                        },
+                        onEditTranscript: { u in
+                            guard !recorder.isRecording, !recorder.isAnalyzing else { return }
+                            editingUtterance = u
+                        }
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+    }
+
+    private var eventBridges: some ViewModifier {
+        EventBridgeModifier(
+            scenePhase: scenePhase,
+            menuCommands: menuCommands,
+            recorder: recorder,
+            llmCoord: llmCoord,
+            searchFieldFocused: $searchFieldFocused,
+            visibleUtteranceIDs: $visibleUtteranceIDs,
+            expandedUtteranceIDs: $expandedUtteranceIDs,
+            filterModel: filterModel,
+            selectedUtteranceID: $selectedUtteranceID,
+            scrollRequestUtteranceID: $scrollRequestUtteranceID,
+            hasUnreadUtterance: $hasUnreadUtterance,
+            syncMenuItemGates: syncMenuItemGates
+        )
+    }
+
     private var mainBody: some View {
         // Local @Bindable shadow so the centralized file picker
         // modifiers below can bind to `$filePicker.is*Presented`
@@ -106,63 +169,7 @@ struct ContentView: View {
         // expose `$` syntax for @Observable class properties.
         @Bindable var filePicker = filePicker
         return NavigationStack {
-            VStack(spacing: 0) {
-                if !recorder.pipelineDiagnostics.isEmpty {
-                    PipelineDiagnosticsBanner(messages: recorder.pipelineDiagnostics)
-                }
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        ControlPaneView(
-                            recorder: recorder,
-                            filterModel: filterModel,
-                            fileCoord: fileCoord,
-                            filePicker: filePicker,
-                            llmCoord: llmCoord,
-                            selectedUtteranceID: $selectedUtteranceID,
-                            scrollRequestUtteranceID: $scrollRequestUtteranceID,
-                            showingDiscardConfirm: $showingDiscardConfirm
-                        )
-                        .frame(width: geo.size.width / 3)
-                        // Extend the divider through the bottom
-                        // home-indicator zone so it reads as one
-                        // continuous line from the toolbar to the
-                        // screen edge, matching the pane backgrounds
-                        // on either side (both pane content extends
-                        // through the home-indicator zone via their
-                        // own `.ignoresSafeArea(.container, edges:
-                        // .bottom)` modifiers).
-                        Divider()
-                            .ignoresSafeArea(.container, edges: .bottom)
-                        TranscriptPaneView(
-                            recorder: recorder,
-                            filterModel: filterModel,
-                            selectedUtteranceID: $selectedUtteranceID,
-                            scrollRequestUtteranceID: $scrollRequestUtteranceID,
-                            expandedUtteranceIDs: $expandedUtteranceIDs,
-                            visibleUtteranceIDs: $visibleUtteranceIDs,
-                            hasUnreadUtterance: $hasUnreadUtterance,
-                            searchFieldFocused: $searchFieldFocused,
-                            onRenameSpeaker: { u in
-                                editingSpeakerStored = u.speakerID
-                                editingSpeakerName = recorder
-                                    .speakerDisplayName(forStored: u.speakerID) ?? ""
-                            },
-                            onEditTranscript: { u in
-                                // Editing is allowed in both file
-                                // mode (full pipeline re-run) and
-                                // mic mode (text-only re-run
-                                // inheriting time + acoustic from
-                                // the parent). The only blocker is
-                                // an active recording / analysis
-                                // pass — gated by `phase`.
-                                guard !recorder.isRecording, !recorder.isAnalyzing else { return }
-                                editingUtterance = u
-                            }
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                }
-            }
+            paneStack
             // Chrome title comes from `MainToolbar`'s principal
             // item — a `TextField` bound to `recorder.sessionTitle`
             // so the user can name the session inline. No
@@ -188,73 +195,7 @@ struct ContentView: View {
             // dismiss the sheets here: the user comes back to the
             // empty / partial state with the Regenerate button live,
             // which is the right resume behaviour.
-            .onChange(of: scenePhase) { _, newPhase in
-                // Acoustic SER actors swap their ORT session between
-                // CoreML EP and CPU across the foreground/background
-                // boundary. `.inactive` (notification center pulled,
-                // system alert) is treated as background-ish — iOS
-                // restricts GPU work in that state too, and the swap
-                // is cheap enough that the conservative call is
-                // fine.
-                let inBackground = newPhase != .active
-                Task { await recorder.setBackgroundMode(inBackground) }
-                guard newPhase == .background else { return }
-                llmCoord.cancelInflightTasks()
-            }
-            // Edit → Find (⌘F): move keyboard focus into the search
-            // field. Setting `@FocusState` to true is the only way to
-            // programmatically focus a SwiftUI TextField.
-            .onChange(of: menuCommands.findToken) { _, _ in
-                searchFieldFocused = true
-            }
-            // View → Summary / Review / Find & Replace: open the
-            // sheets the chrome's toolbar buttons would. Each
-            // token is a fresh UUID per fire so re-selecting the
-            // menu item re-presents the sheet even if it was
-            // already showing-then-dismissed in the same tick.
-            .onChange(of: menuCommands.presentSummaryToken) { _, _ in
-                llmCoord.presentSummary(recorder: recorder)
-            }
-            .onChange(of: menuCommands.presentReviewToken) { _, _ in
-                llmCoord.presentReview(recorder: recorder)
-            }
-            .onChange(of: menuCommands.presentSearchReplaceToken) { _, _ in
-                llmCoord.presentSearchReplace()
-            }
-            // Push the toolbar's enable gates into menuCommands
-            // so the View menu's `.disabled(...)` mirrors what
-            // the trailing toolbar buttons show. Same conditions
-            // expressed in `MainToolbar` — kept in sync by hand
-            // because the menu builder doesn't have a recorder
-            // reference. `.onAppear` seeds initial values;
-            // each `.onChange` rebroadcasts when its input
-            // moves.
-            .onAppear { syncMenuItemGates() }
-            .onChange(of: recorder.isIdleWithTranscript) { _, _ in syncMenuItemGates() }
-            .onChange(of: recorder.summarizerInferenceRunning) { _, _ in syncMenuItemGates() }
-            .onChange(of: recorder.transcriptionReviewRunning) { _, _ in syncMenuItemGates() }
-            // Recorder rotates `sessionToken` whenever its utterance
-            // list changes identity (new recording, new file
-            // analysis, imported `.xph`). Drop every view-side
-            // `@State` keyed by the prior session's UUIDs so the
-            // next session's renders aren't poisoned by stale row
-            // ids — `selectedUtteranceRange` (and the timeline
-            // strips that read it) mixes `recorder.utterances` with
-            // `visibleUtteranceIDs`, so a leftover ID is benign in
-            // theory but every set tracked here has its own way of
-            // going wrong (a stale `selectedUtteranceID` carrying
-            // a phantom selection; a stale `expandedUtteranceIDs`
-            // member silently expanding the wrong row if a UUID
-            // ever collides on import; etc). Cheap to wipe; keeps
-            // the surface predictable across session boundaries.
-            .onChange(of: recorder.sessionToken) { _, _ in
-                visibleUtteranceIDs.removeAll()
-                expandedUtteranceIDs.removeAll()
-                filterModel.resetForNewSession()
-                selectedUtteranceID = nil
-                scrollRequestUtteranceID = nil
-                hasUnreadUtterance = false
-            }
+            .modifier(eventBridges)
             .modifier(SessionFileBridge(
                 recorder: recorder,
                 coord: fileCoord,
@@ -431,6 +372,55 @@ private struct SpeakerRenameAlertModifier: ViewModifier {
                 Text(String(format: String(localized: "speaker.rename.message"), stored))
             }
         }
+    }
+}
+
+private struct EventBridgeModifier: ViewModifier {
+    let scenePhase: ScenePhase
+    let menuCommands: MenuCommands
+    let recorder: RecordingController
+    let llmCoord: LLMSheetCoordinator
+    @FocusState.Binding var searchFieldFocused: Bool
+    @Binding var visibleUtteranceIDs: Set<UUID>
+    @Binding var expandedUtteranceIDs: Set<UUID>
+    let filterModel: TranscriptFilterModel
+    @Binding var selectedUtteranceID: UUID?
+    @Binding var scrollRequestUtteranceID: UUID?
+    @Binding var hasUnreadUtterance: Bool
+    let syncMenuItemGates: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: scenePhase) { _, newPhase in
+                let inBackground = newPhase != .active
+                Task { await recorder.setBackgroundMode(inBackground) }
+                guard newPhase == .background else { return }
+                llmCoord.cancelInflightTasks()
+            }
+            .onChange(of: menuCommands.findToken) { _, _ in
+                searchFieldFocused = true
+            }
+            .onChange(of: menuCommands.presentSummaryToken) { _, _ in
+                llmCoord.presentSummary(recorder: recorder)
+            }
+            .onChange(of: menuCommands.presentReviewToken) { _, _ in
+                llmCoord.presentReview(recorder: recorder)
+            }
+            .onChange(of: menuCommands.presentSearchReplaceToken) { _, _ in
+                llmCoord.presentSearchReplace()
+            }
+            .onAppear { syncMenuItemGates() }
+            .onChange(of: recorder.isIdleWithTranscript) { _, _ in syncMenuItemGates() }
+            .onChange(of: recorder.summarizerInferenceRunning) { _, _ in syncMenuItemGates() }
+            .onChange(of: recorder.transcriptionReviewRunning) { _, _ in syncMenuItemGates() }
+            .onChange(of: recorder.sessionToken) { _, _ in
+                visibleUtteranceIDs.removeAll()
+                expandedUtteranceIDs.removeAll()
+                filterModel.resetForNewSession()
+                selectedUtteranceID = nil
+                scrollRequestUtteranceID = nil
+                hasUnreadUtterance = false
+            }
     }
 }
 

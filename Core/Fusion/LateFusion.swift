@@ -287,13 +287,16 @@ public actor LateFusion: Fuser {
     public static func plutchikToValence(_ p: PlutchikScore) -> Float {
         // Russell-style polar mapping. Coefficients are conservative defaults;
         // tune from a calibration set per docs/eval_log.md.
-        let pos = (p.probabilities[.joy] ?? 0)
-                + (p.probabilities[.trust] ?? 0) * 0.6
-                + (p.probabilities[.anticipation] ?? 0) * 0.3
-        let neg = (p.probabilities[.sadness] ?? 0)
-                + (p.probabilities[.fear] ?? 0)
-                + (p.probabilities[.disgust] ?? 0)
-                + (p.probabilities[.anger] ?? 0) * 0.7
+        func prob(_ label: PlutchikScore.Label) -> Float {
+            p.probabilities[label] ?? 0
+        }
+        let pos: Float = prob(.joy)
+                       + prob(.trust) * 0.6
+                       + prob(.anticipation) * 0.3
+        let neg: Float = prob(.sadness)
+                       + prob(.fear)
+                       + prob(.disgust)
+                       + prob(.anger) * 0.7
         let raw = pos - neg
         // Map [-2, +2] → [0, 1] with a soft clamp.
         return (0.5 + raw * 0.25).clamped(to: 0...1)
@@ -301,12 +304,15 @@ public actor LateFusion: Fuser {
 
     public static func plutchikToArousal(_ p: PlutchikScore) -> Float {
         // Anger / fear / surprise / joy are high-arousal; sadness / trust low.
-        let high = (p.probabilities[.anger] ?? 0)
-                 + (p.probabilities[.fear] ?? 0)
-                 + (p.probabilities[.surprise] ?? 0)
-                 + (p.probabilities[.joy] ?? 0) * 0.6
-        let low  = (p.probabilities[.sadness] ?? 0)
-                 + (p.probabilities[.trust] ?? 0) * 0.5
+        func prob(_ label: PlutchikScore.Label) -> Float {
+            p.probabilities[label] ?? 0
+        }
+        let high: Float = prob(.anger)
+                        + prob(.fear)
+                        + prob(.surprise)
+                        + prob(.joy) * 0.6
+        let low: Float = prob(.sadness)
+                       + prob(.trust) * 0.5
         let raw = high - low
         return (0.5 + raw * 0.3).clamped(to: 0...1)
     }

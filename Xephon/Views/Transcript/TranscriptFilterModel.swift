@@ -364,15 +364,16 @@ final class TranscriptFilterModel {
                 return out
             }
             if Task.isCancelled { return }
-            await MainActor.run {
-                guard let self else { return }
-                for (id, raw, normalized) in normalized {
-                    self.normalizedTranscriptCache[id] = NormalizedTranscript(
-                        raw: raw,
-                        normalized: normalized
-                    )
-                }
-            }
+            await self?.mergeNormalizedResults(normalized)
+        }
+    }
+
+    private func mergeNormalizedResults(_ results: [(UUID, String, String)]) {
+        for (id, raw, normalized) in results {
+            normalizedTranscriptCache[id] = NormalizedTranscript(
+                raw: raw,
+                normalized: normalized
+            )
         }
     }
 }
