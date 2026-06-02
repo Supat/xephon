@@ -106,18 +106,69 @@ public actor LMStudioClient {
                 reason: "decode failed: \(error)"
             )
         }
-        guard let first = decoded.choices.first,
-              let content = first.message?.content else {
-            throw LMStudioError.invalidResponse(
-                reason: "no choices[0].message.content in response"
-            )
-        }
         if let usage = decoded.usage {
             AppLog.app.info(
                 "LMStudio chat finished: prompt=\(usage.promptTokens ?? -1, privacy: .public) completion=\(usage.completionTokens ?? -1, privacy: .public) total=\(usage.totalTokens ?? -1, privacy: .public)"
             )
         }
-        return content
+        // Resolve the response text across the known shapes LM
+        // Studio uses depending on server version + mode:
+        //   1. `choices[0].message.content` — the canonical
+        //      OpenAI shape; populated for freeform chat AND
+        //      for `response_format: json_object`.
+        //   2. `choices[0].message.tool_calls[0].function.arguments`
+        //      — some servers route strict `json_schema` output
+        //      through the tool-calling channel even when no
+        //      tools were declared.
+        //   3. `choices[0].message.reasoning_content` —
+        //      reasoning-model variants emit chain-of-thought
+        //      here and leave `content` empty.
+        // The on-device parsers are tolerant of `<think>` blocks
+        // and code fences, so concatenating reasoning + content
+        // is safe; the parser will skip the prose and find the
+        // JSON object.
+        guard let first = decoded.choices.first,
+              let message = first.message else {
+            throw LMStudioError.invalidResponse(
+                reason: "no choices[0].message in response"
+            )
+        }
+        var resolved = ""
+        if let c = message.content, !c.isEmpty {
+            resolved = c
+        } else if let calls = message.toolCalls,
+                  let args = calls.first?.function?.arguments,
+                  !args.isEmpty {
+            AppLog.app.info(
+                "LMStudio: content empty; using tool_calls[0].function.arguments (\(args.count, privacy: .public) chars)"
+            )
+            resolved = args
+        } else if let reasoning = message.reasoningContent,
+                  !reasoning.isEmpty {
+            AppLog.app.info(
+                "LMStudio: content empty; using reasoning_content (\(reasoning.count, privacy: .public) chars)"
+            )
+            resolved = reasoning
+        }
+        if resolved.isEmpty {
+            // Log the raw HTTP body so the next debugger has a
+            // concrete payload to inspect — the parser-side
+            // error ("no JSON object found") is otherwise
+            // indistinguishable from "model emitted prose, not
+            // JSON". 1500-char cap so a giant unexpected
+            // response doesn't flood Console.
+            let bodyPreview = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            let trimmed = bodyPreview.count > 1500
+                ? String(bodyPreview.prefix(1500)) + "…[truncated]"
+                : bodyPreview
+            AppLog.app.error(
+                "LMStudio empty content. Full body preview: \(trimmed, privacy: .public)"
+            )
+            throw LMStudioError.invalidResponse(
+                reason: "response had no usable content in choices[0].message (content/tool_calls/reasoning_content all empty)"
+            )
+        }
+        return resolved
     }
 
     /// GET `/v1/models` — used by the Test Connection button
@@ -219,6 +270,14 @@ public actor LMStudioClient {
             throw CancellationError()
         } catch let urlError as URLError {
             switch urlError.code {
+            case .cancelled:
+                // URLSession returns URLError(.cancelled) when the
+                // calling Task is cancelled — re-emit as the
+                // canonical CancellationError so the coordinator's
+                // `catch is CancellationError` path fires (skipping
+                // the error banner that the generic catch would
+                // raise on intentional user dismiss).
+                throw CancellationError()
             case .timedOut:
                 throw LMStudioError.timeout
             case .cannotConnectToHost,

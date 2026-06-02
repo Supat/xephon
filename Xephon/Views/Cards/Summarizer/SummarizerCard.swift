@@ -118,6 +118,18 @@ struct SummarizerCard: View {
                     Text(String(localized: "settings.summarizer.mode.heuristic"))
                         .tag(SummarizeMode.heuristic)
                     deepModeRow.tag(SummarizeMode.deep)
+                    // `.all` is only viable on the LM Studio
+                    // remote backend — on-device LLMs would
+                    // either OOM or hit their context cap.
+                    // Hide the option otherwise; if a stale
+                    // `.all` selection survives a backend
+                    // switch, the on-device backend's
+                    // `.summarize` demotes to `.trailing` and
+                    // logs.
+                    if recorder.summarizerBackend == .lmStudio {
+                        Text(String(localized: "settings.summarizer.mode.all"))
+                            .tag(SummarizeMode.all)
+                    }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
@@ -161,6 +173,8 @@ struct SummarizerCard: View {
             return String(localized: "settings.summarizer.mode.heuristic.caption")
         case .deep:
             return String(localized: "settings.summarizer.mode.deep.caption")
+        case .all:
+            return String(localized: "settings.summarizer.mode.all.caption")
         }
     }
 

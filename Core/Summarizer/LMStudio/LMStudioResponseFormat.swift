@@ -113,11 +113,16 @@ internal indirect enum JSONSchemaNode: Encodable, Sendable {
 /// pays the construction cost once per launch, not per request.
 internal enum LMStudioSchemas {
     /// Mirrors `MLXLLMSummarizerCore.parse`'s `Wire` struct:
-    /// `{ setting?, topic, overallMood, perSpeaker[] }`, with
+    /// `{ setting, topic, overallMood, perSpeaker[] }`, with
     /// each `perSpeaker` entry being `{ speakerID, summary,
-    /// dominantMood }`. `setting` is omitted from `required` so
-    /// older / lighter models that skip the field still pass
-    /// strict-mode validation.
+    /// dominantMood }`. **Every property listed here is also
+    /// in `required`** — OpenAI's strict-mode JSON-schema
+    /// contract demands it (any optional property silently
+    /// fails strict validation, causing the server to either
+    /// 400 the request or fall back to freeform text that
+    /// can't be parsed). The parser tolerates empty strings
+    /// for `setting`, so requiring it costs nothing on the
+    /// emit side.
     static let summarySchema: JSONSchemaNode = .object(
         properties: [
             ("setting", .string(allowedValues: nil)),
@@ -132,15 +137,16 @@ internal enum LMStudioSchemas {
                 required: ["speakerID", "summary", "dominantMood"]
             )))
         ],
-        required: ["topic", "overallMood", "perSpeaker"]
+        required: ["setting", "topic", "overallMood", "perSpeaker"]
     )
 
     /// Mirrors `MLXLLMReviewerCore.parse`'s `Wire` struct:
-    /// `{ issues: [{ rowIndex, kind, reason, confidence? }] }`.
+    /// `{ issues: [{ rowIndex, kind, reason, confidence }] }`.
     /// `kind` is enum-constrained to the four values the parser
     /// maps onto `TranscriptionIssue.Kind`. `confidence` is
-    /// optional in the wire decoder so we leave it out of
-    /// `required` here too.
+    /// in `required` for strict-mode compliance — the parser's
+    /// Wire decoder accepts whatever number the model emits,
+    /// including 0 when it has no confidence to report.
     static let reviewSchema: JSONSchemaNode = .object(
         properties: [
             ("issues", .array(items: .object(
@@ -152,7 +158,7 @@ internal enum LMStudioSchemas {
                     ("reason", .string(allowedValues: nil)),
                     ("confidence", .number),
                 ],
-                required: ["rowIndex", "kind", "reason"]
+                required: ["rowIndex", "kind", "reason", "confidence"]
             )))
         ],
         required: ["issues"]

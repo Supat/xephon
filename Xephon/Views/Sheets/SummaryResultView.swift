@@ -36,6 +36,23 @@ struct SummaryResultView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Backend badge sits at the top of the body across
+            // all three states (result / generating / empty) so
+            // it's always visible — the result-view footer also
+            // lists the model name, but a top-of-sheet chip
+            // makes the on-device vs remote distinction obvious
+            // before the user reads any content. Particularly
+            // important when the user has LM Studio enabled,
+            // since the remote path has privacy implications
+            // (post-ASR text leaves the device).
+            HStack {
+                LLMBackendBadge(recorder: recorder)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+
             Group {
                 if let summary {
                     resultView(for: summary)
@@ -238,6 +255,7 @@ struct SummaryResultView: View {
             case .trailing:  modeLabel = String(localized: "summary.footer.mode.trailing")
             case .heuristic: modeLabel = String(localized: "summary.footer.mode.heuristic")
             case .deep:      modeLabel = String(localized: "summary.footer.mode.deep")
+            case .all:       modeLabel = String(localized: "summary.footer.mode.all")
             }
             return "\(base) · \(modeLabel)"
         }()

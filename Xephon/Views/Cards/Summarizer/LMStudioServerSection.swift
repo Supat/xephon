@@ -180,16 +180,40 @@ struct LMStudioServerSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(String(format: "%.0f s", settings.requestTimeoutSeconds))
+                Text(timeoutDisplay)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
+            // 30 s minimum (anything less is a Test-Connection
+            // probe budget, not a real-inference budget) up to
+            // 30 min for the deep-mode-on-a-slow-server case.
+            // 30 s step keeps the slider's resolution usable
+            // across the wider range without making it
+            // impossible to hit the common 5-min value.
             Slider(
                 value: $settings.requestTimeoutSeconds,
-                in: 15...600,
-                step: 15
+                in: 30...1800,
+                step: 30
             )
         }
+    }
+
+    /// `2 min 30 s` / `5 min` / `30 min` rather than raw seconds
+    /// once we cross the 60 s mark — the slider's wider range
+    /// makes raw seconds awkward at the high end. Sub-minute
+    /// values stay in seconds for precision near the Test-
+    /// Connection neighborhood.
+    private var timeoutDisplay: String {
+        let total = Int(settings.requestTimeoutSeconds.rounded())
+        if total < 60 {
+            return "\(total) s"
+        }
+        let minutes = total / 60
+        let seconds = total % 60
+        if seconds == 0 {
+            return "\(minutes) min"
+        }
+        return "\(minutes) min \(seconds) s"
     }
 
     @ViewBuilder

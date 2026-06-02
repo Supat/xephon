@@ -94,27 +94,59 @@ public actor LMStudioSummarizer: SessionSummarizer {
         // demotion in the log so the user can correlate a
         // "Summary looks shorter than I expected on a long
         // session" question with the actual selection used.
+        //
+        // `.all` is the LM-Studio-only "no cap, no chunking,
+        // full per-row metadata" mode — the server's context
+        // window is assumed to fit, which the remote backend
+        // is the only one we'd believe that of.
         let resolvedMode: SummarizeMode
         let selection: MLXLLMSelection
+        let promptUtterances: [UtteranceEstimate]
+        let truncatedFrom: Int?
         switch mode {
         case .trailing:
             resolvedMode = .trailing
             selection = .trailing
+            (promptUtterances, truncatedFrom) = selectUtterances(
+                from: utterances,
+                cap: spec.maxPromptUtterances,
+                selection: selection,
+                boostedUtteranceIDs: boostedUtteranceIDs
+            )
         case .heuristic:
             resolvedMode = .heuristic
             selection = .heuristicTopN
+            (promptUtterances, truncatedFrom) = selectUtterances(
+                from: utterances,
+                cap: spec.maxPromptUtterances,
+                selection: selection,
+                boostedUtteranceIDs: boostedUtteranceIDs
+            )
         case .deep:
             AppLog.app.info("LMStudioSummarizer: .deep requested → demoted to .trailing (phase 1)")
             resolvedMode = .trailing
             selection = .trailing
+            (promptUtterances, truncatedFrom) = selectUtterances(
+                from: utterances,
+                cap: spec.maxPromptUtterances,
+                selection: selection,
+                boostedUtteranceIDs: boostedUtteranceIDs
+            )
+        case .all:
+            // No cap, no selection — pass every utterance
+            // through `buildPrompt` with `truncatedFromTotal:
+            // nil` so the prompt skips its "showing only the
+            // most recent N of M" framing note. The model is
+            // told it's seeing the whole conversation, which
+            // is the truth here.
+            AppLog.app.info(
+                "LMStudioSummarizer: .all mode — sending \(utterances.count, privacy: .public) utterances uncapped"
+            )
+            resolvedMode = .all
+            selection = .trailing
+            promptUtterances = utterances
+            truncatedFrom = nil
         }
-
-        let (promptUtterances, truncatedFrom) = selectUtterances(
-            from: utterances,
-            cap: spec.maxPromptUtterances,
-            selection: selection,
-            boostedUtteranceIDs: boostedUtteranceIDs
-        )
         let prompt = spec.buildPrompt(
             utterances: promptUtterances,
             speakerNames: speakerNames,
@@ -147,8 +179,18 @@ public actor LMStudioSummarizer: SessionSummarizer {
             throw SummarizerError.inferenceFailed(reason: String(describing: error))
         }
         if Task.isCancelled { throw CancellationError() }
+        // Log a preview of the raw output (not just the count)
+        // so a downstream parse failure ("no JSON object found",
+        // etc.) is debuggable from Console without having to
+        // rerun against a hand-inspected server. 400 chars is
+        // enough to see the response's opening framing and any
+        // refusal / preamble text that's keeping the parser
+        // from finding the `{`.
+        let preview = raw.count > 400
+            ? String(raw.prefix(400)) + "…[truncated]"
+            : raw
         AppLog.app.info(
-            "LMStudioSummarizer raw output: \(raw.count, privacy: .public) chars"
+            "LMStudioSummarizer raw output: \(raw.count, privacy: .public) chars, preview: \(preview, privacy: .public)"
         )
         return try MLXLLMSummarizerCore.parse(
             raw: raw,

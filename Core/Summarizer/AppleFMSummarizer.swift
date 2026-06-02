@@ -88,6 +88,23 @@ public actor AppleFMSummarizer: SessionSummarizer {
                 utterances: utterances,
                 speakerNames: speakerNames
             )
+        case .all:
+            // `.all` is LM-Studio-only — Apple FM's 4096-token
+            // context window can't fit an uncapped session.
+            // Demote to `.trailing` (best-effort honor per
+            // SessionSummarizer protocol) and log so the
+            // demotion is traceable when the user switches
+            // backend after selecting `.all`.
+            AppLog.app.info(
+                "AppleFMSummarizer: .all unsupported on-device → demoted to .trailing"
+            )
+            return try await summarizeSinglePass(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                selection: .trailing,
+                mode: .trailing,
+                boostedUtteranceIDs: boostedUtteranceIDs
+            )
         }
     }
 
@@ -230,6 +247,12 @@ public actor AppleFMSummarizer: SessionSummarizer {
             )
         } catch let error as SummarizerError {
             throw error
+        } catch is CancellationError {
+            // Task.cancel() from the sheet-dismiss path. Surface
+            // as CancellationError so the coordinator's
+            // `catch is CancellationError` clause runs (skipping
+            // the error banner).
+            throw CancellationError()
         } catch {
             AppLog.app.error(
                 "AppleFMSummarizer.respond failed: \(String(describing: error), privacy: .public)"
@@ -453,6 +476,8 @@ public actor AppleFMSummarizer: SessionSummarizer {
             )
         } catch let error as SummarizerError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             AppLog.app.error(
                 "AppleFMSummarizer deep merge failed: \(String(describing: error), privacy: .public)"

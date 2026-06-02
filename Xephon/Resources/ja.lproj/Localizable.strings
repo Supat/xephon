@@ -39,6 +39,8 @@
 "settings.lmStudio.test.ok.match" = "接続可能 · 指定モデルが読み込まれています";
 "settings.lmStudio.test.ok.noMatch" = "接続可能 · %d 個のモデルが読み込まれていますが、指定IDは含まれていません";
 "settings.lmStudio.privacy" = "プライバシー: 送信されるのはASR後のテキストのみで、音声はサーバーに送信されません。";
+"summary.backend.local" = "オンデバイス";
+"summary.backend.remote" = "リモート";
 "settings.lmStudio.structured" = "厳格なJSONスキーマを要求";
 "settings.lmStudio.structured.caption" = "OpenAI形式のresponse_formatに期待するJSONスキーマを付与して送信します。対応サーバーではパース失敗を減らせますが、未対応サーバーでは400が返ることがあります。既定はオフ。";
 "settings.summarizer.modelName.qwen" = "Qwen3";
@@ -60,6 +62,8 @@
 "settings.summarizer.mode.trailing.caption" = "末尾の発話（直近のウィンドウ）を1回でまとめます。ヒューリスティックと同じ速度ですが、長いセッションでは冒頭が落ちます。";
 "settings.summarizer.mode.heuristic.caption" = "セッション内TF-IDFで最も特徴的な発話を1回でまとめます（あいづちやフィラーは減点）。末尾と同じ速度で、長いセッションの全体像をより捉えます。";
 "settings.summarizer.mode.deep.caption" = "全発話をマップ・リデュースで処理します。セッションの長さに比例して時間がかかりますが、ピークメモリは変わりません。";
+"settings.summarizer.mode.all" = "全て";
+"settings.summarizer.mode.all.caption" = "全発話を完全なメタデータ付きで1回のリクエストでリモートサーバーに送信します。リモートバックエンド専用 — オンデバイスLLMはコンテキストウィンドウに収まりません。";
 "chrome.sessionTitle.placeholder" = "無題のセッション";
 "prompts.header" = "LLMプロンプト";
 "prompts.subtitle" = "デバイス上の言語モデルに送信されるすべてのプロンプトを読み取り専用で表示します。行をタップして展開してください。編集はできません。";
@@ -125,6 +129,7 @@
 "summary.footer.mode.trailing" = "末尾要約";
 "summary.footer.mode.heuristic" = "ヒューリスティック要約";
 "summary.footer.mode.deep" = "ディープ要約";
+"summary.footer.mode.all" = "全発話要約";
 "summary.footer.aiGenerated" = "AI生成";
 "summary.footer.aiCaveat" = "誤りを含む可能性があります";
 "sections.header" = "セクション";

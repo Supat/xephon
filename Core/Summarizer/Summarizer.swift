@@ -69,6 +69,15 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
     /// one chunk is in the KV cache at any time. Chosen when
     /// the user values complete coverage over latency.
     case deep
+    /// Single pass over EVERY utterance with full per-row
+    /// metadata (compact line including fused label, V/A/D,
+    /// acoustic + Plutchik probability vectors, demographics
+    /// block), no cap and no chunking. Only viable on the
+    /// LM Studio remote backend — on-device backends fall back
+    /// to `.trailing` because the prompt routinely exceeds their
+    /// context window. Picker only surfaces this option when
+    /// LM Studio is the active backend.
+    case all
 
     /// Custom rawValue initializer for backward compatibility.
     /// Accepts the legacy `"fast"` string (used before the case
@@ -81,6 +90,7 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
         case "trailing":  self = .trailing
         case "heuristic": self = .heuristic
         case "deep":      self = .deep
+        case "all":       self = .all
         case "fast":      self = .trailing   // legacy
         default:          return nil
         }

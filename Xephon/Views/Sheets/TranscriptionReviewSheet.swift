@@ -36,6 +36,17 @@ struct TranscriptionReviewSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // See SummaryResultView for the rationale —
+                // the backend badge makes on-device vs remote
+                // unambiguous before the user reads any flagged
+                // rows.
+                HStack {
+                    LLMBackendBadge(recorder: recorder)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 Divider()

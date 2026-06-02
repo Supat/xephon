@@ -333,15 +333,58 @@ final class SummarizerCoordinator {
         sectionID: UUID? = nil,
         body: () async -> SessionSummary?
     ) async -> SessionSummary? {
+        inferenceGenerationToken &+= 1
+        let myToken = inferenceGenerationToken
         inferenceRunning = true
         inferenceStart = Date()
         summarizingSectionID = sectionID
         defer {
-            inferenceRunning = false
-            inferenceStart = nil
-            summarizingSectionID = nil
+            // Only clear flags if no later cancel/summarize call
+            // has bumped the generation token past us. The
+            // `userCancelledSummary()` path clears flags eagerly
+            // (so buttons re-enable instantly on Done) and bumps
+            // the token; if a fresh summarize started in the
+            // meantime, our defer must not stomp its in-flight
+            // state.
+            if inferenceGenerationToken == myToken {
+                inferenceRunning = false
+                inferenceStart = nil
+                summarizingSectionID = nil
+            }
         }
         return await body()
+    }
+
+    /// Monotonically-incrementing token used by `withInferenceGate`
+    /// and `userCancelledSummary` to ensure a stale Task's defer
+    /// can't clobber state owned by a newer Task. Bumped on every
+    /// gate entry and on every explicit user-cancellation.
+    private var inferenceGenerationToken: UInt64 = 0
+    /// Same role as `inferenceGenerationToken` for the reviewer
+    /// path. Separate counter because summarize + review have
+    /// independent gates.
+    private var reviewGenerationToken: UInt64 = 0
+
+    /// Sheet-dismiss entry point — clears `inferenceRunning`
+    /// immediately so the toolbar buttons re-enable without
+    /// having to wait for the underlying inference task's cancel
+    /// + cleanup chain to propagate (LM Studio's URLSession
+    /// cancellation, MLX's didGenerate `.stop`, Apple FM's
+    /// CancellationError throw). The actual Task cancellation is
+    /// driven by `LLMSheetCoordinator.dismissSummary`; this just
+    /// makes the UI feel responsive.
+    func userCancelledSummary() {
+        inferenceGenerationToken &+= 1
+        inferenceRunning = false
+        inferenceStart = nil
+        summarizingSectionID = nil
+    }
+
+    /// Reviewer counterpart to `userCancelledSummary`.
+    func userCancelledReview() {
+        reviewGenerationToken &+= 1
+        reviewRunning = false
+        reviewStart = nil
     }
 
     /// Shared dispatch entry for both overall-session and per-
@@ -594,11 +637,18 @@ final class SummarizerCoordinator {
     private func withReviewGate(
         body: () async -> [TranscriptionIssue]?
     ) async -> [TranscriptionIssue]? {
+        reviewGenerationToken &+= 1
+        let myToken = reviewGenerationToken
         reviewRunning = true
         reviewStart = Date()
         defer {
-            reviewRunning = false
-            reviewStart = nil
+            // See `withInferenceGate`'s defer comment — same
+            // staleness check so `userCancelledReview()`'s eager
+            // clear isn't undone by a later defer fire.
+            if reviewGenerationToken == myToken {
+                reviewRunning = false
+                reviewStart = nil
+            }
         }
         return await body()
     }

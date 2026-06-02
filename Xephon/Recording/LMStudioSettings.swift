@@ -59,12 +59,17 @@ final class LMStudioSettings {
         didSet { schedulePersist(\.modelID, key: Self.modelIDKey) }
     }
 
-    /// Per-request timeout in seconds. Defaults to 120 because
-    /// a single Summary pass on a long session can take 60 s+
-    /// even on a beefy Mac, and a too-tight timeout would alias
-    /// "still working" with "broken." Test connection uses a
-    /// shorter implicit timeout (15 s) since GET /v1/models is
-    /// a quick metadata read.
+    /// Per-request timeout in seconds. Defaults to 300 (5 min)
+    /// — `URLRequest.timeoutInterval` measures "time until
+    /// additional data arrives", and a non-streaming LM Studio
+    /// chat completion holds the connection silent for the
+    /// whole generation, so the effective ceiling here is the
+    /// total Summary / Reviewer pass duration. Long sessions
+    /// on Deep mode against a busy server can take several
+    /// minutes; the user can bump the slider up to 30 min for
+    /// pathological cases. Test connection uses a separate
+    /// 15 s implicit timeout since GET /v1/models is a quick
+    /// metadata read.
     var requestTimeoutSeconds: Double {
         didSet { schedulePersist(\.requestTimeoutSeconds, key: Self.timeoutKey) }
     }
@@ -109,7 +114,18 @@ final class LMStudioSettings {
         self.port = storedPort > 0 ? storedPort : 1234
         self.modelID = defaults.string(forKey: Self.modelIDKey) ?? ""
         let storedTimeout = defaults.double(forKey: Self.timeoutKey)
-        self.requestTimeoutSeconds = storedTimeout > 0 ? storedTimeout : 120
+        // Existing installs with the old 120 s default get
+        // migrated up to 300 s on next launch — 120 s was too
+        // tight for real Summary passes (the user-visible bug
+        // report behind this change). New installs land at the
+        // new default directly.
+        if storedTimeout >= 120, storedTimeout <= 120.5 {
+            self.requestTimeoutSeconds = 300
+        } else if storedTimeout > 0 {
+            self.requestTimeoutSeconds = storedTimeout
+        } else {
+            self.requestTimeoutSeconds = 300
+        }
         self.useStructuredOutput = defaults.bool(forKey: Self.structuredKey)
     }
 

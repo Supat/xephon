@@ -21,7 +21,7 @@ struct LLMSheetBridge: ViewModifier {
                     summary: recorder.lastSessionSummary,
                     isGenerating: recorder.summarizerInferenceRunning,
                     onRegenerate: { coord.startSummarization(recorder: recorder) },
-                    onDismiss: { coord.dismissSummary() }
+                    onDismiss: { coord.dismissSummary(recorder: recorder) }
                 )
             }
             .sheet(isPresented: $coord.showingReview) {
@@ -30,7 +30,7 @@ struct LLMSheetBridge: ViewModifier {
                     issues: recorder.transcriptionIssues,
                     isReviewing: recorder.transcriptionReviewRunning,
                     onReview: { coord.startReview(recorder: recorder) },
-                    onDismiss: { coord.dismissReview() }
+                    onDismiss: { coord.dismissReview(recorder: recorder) }
                 )
             }
             .sheet(isPresented: $coord.showingSearchReplace) {
@@ -56,7 +56,7 @@ struct LLMSheetBridge: ViewModifier {
                     },
                     set: { newValue in
                         if newValue == nil {
-                            coord.dismissSectionSummary()
+                            coord.dismissSectionSummary(recorder: recorder)
                         }
                     }
                 )
@@ -73,7 +73,7 @@ struct LLMSheetBridge: ViewModifier {
                             recorder: recorder
                         )
                     },
-                    onDismiss: { coord.dismissSectionSummary() }
+                    onDismiss: { coord.dismissSectionSummary(recorder: recorder) }
                 )
             }
     }

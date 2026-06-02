@@ -119,8 +119,11 @@ public actor LMStudioTranscriptionReviewer: TranscriptionReviewer {
             )
         }
         if Task.isCancelled { throw CancellationError() }
+        let preview = raw.count > 400
+            ? String(raw.prefix(400)) + "…[truncated]"
+            : raw
         AppLog.app.info(
-            "LMStudioReviewer chunk \(chunkIndex + 1, privacy: .public) raw: \(raw.count, privacy: .public) chars"
+            "LMStudioReviewer chunk \(chunkIndex + 1, privacy: .public) raw: \(raw.count, privacy: .public) chars, preview: \(preview, privacy: .public)"
         )
         return try MLXLLMReviewerCore.parse(raw: raw, indexToID: indexToID)
     }

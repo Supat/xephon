@@ -214,6 +214,28 @@ internal enum MLXLLMSummarizerCore {
                 speakerNames: speakerNames,
                 spec: spec
             )
+        case .all:
+            // `.all` is the LM-Studio-only "no cap, no chunking"
+            // mode — on-device backends can't fit it in context
+            // and would OOM or 4096-token-cap mid-emit. Demote
+            // to `.trailing` (best-effort honor per the
+            // SessionSummarizer protocol contract) and log the
+            // demotion so a user who switches backend after
+            // picking `.all` understands why the output looks
+            // truncated.
+            AppLog.app.info(
+                "MLX summarizer (\(spec.family.rawValue, privacy: .public)): .all unsupported on-device → demoted to .trailing"
+            )
+            return try await summarizeSinglePass(
+                container: container,
+                modelIdentifier: modelIdentifier,
+                utterances: utterances,
+                speakerNames: speakerNames,
+                selection: .trailing,
+                mode: .trailing,
+                boostedUtteranceIDs: boostedUtteranceIDs,
+                spec: spec
+            )
         }
     }
 

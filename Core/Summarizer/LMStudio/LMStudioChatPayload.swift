@@ -42,15 +42,31 @@ internal enum LMStudioChatPayload {
         let content: String
     }
 
-    /// Response body. Only `choices[0].message.content` is
-    /// load-bearing; everything else (id, usage, finish_reason)
-    /// is informational for the logs and intentionally optional
-    /// so a leaner proxy response still decodes.
+    /// Response body. `choices[0].message.content` is the
+    /// canonical OpenAI shape, but LM Studio servers using
+    /// strict `response_format: json_schema` mode can route
+    /// the structured output through one of two alternate
+    /// fields depending on version: `tool_calls[].function.arguments`
+    /// (legacy strict-mode pipe) or `reasoning_content`
+    /// (reasoning-model variants). `LMStudioClient.chat`
+    /// resolves across all three; the decoder just needs the
+    /// fields to be present in the type. Everything else
+    /// (id, usage, finish_reason) is informational for the
+    /// logs and stays optional so a leaner proxy response
+    /// still decodes.
     struct Response: Decodable {
         struct Choice: Decodable {
             struct ResponseMessage: Decodable {
                 let role: String?
                 let content: String?
+                let toolCalls: [ToolCall]?
+                let reasoningContent: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case role, content
+                    case toolCalls = "tool_calls"
+                    case reasoningContent = "reasoning_content"
+                }
             }
             let index: Int?
             let message: ResponseMessage?
@@ -59,6 +75,20 @@ internal enum LMStudioChatPayload {
             enum CodingKeys: String, CodingKey {
                 case index, message
                 case finishReason = "finish_reason"
+            }
+        }
+        struct ToolCall: Decodable {
+            let id: String?
+            let type: String?
+            let function: Function?
+
+            struct Function: Decodable {
+                let name: String?
+                /// JSON string body of the tool-call arguments.
+                /// For LM Studio's strict-json_schema route this
+                /// contains the same JSON object that would
+                /// normally land in `message.content`.
+                let arguments: String?
             }
         }
         struct Usage: Decodable {

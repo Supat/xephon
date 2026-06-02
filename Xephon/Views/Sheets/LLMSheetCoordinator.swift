@@ -71,10 +71,17 @@ final class LLMSheetCoordinator {
 
     /// Sheet-dismiss path. Cancel in-flight generation — no point
     /// spending tokens on a result the user has already walked
-    /// away from.
-    func dismissSummary() {
+    /// away from. Caller passes `recorder` so we can flip the
+    /// coordinator's running flags immediately; otherwise the
+    /// toolbar Summary / Review buttons would stay disabled
+    /// until the underlying cancel chain (URLSession cancellation
+    /// for LM Studio, MLX `didGenerate` returning `.stop`, Apple
+    /// FM's CancellationError throw) fully propagates and the
+    /// summarizer's `withInferenceGate` defer fires.
+    func dismissSummary(recorder: RecordingController? = nil) {
         inflightSummarization?.cancel()
         inflightSummarization = nil
+        recorder?.summarizer.userCancelledSummary()
         showingSummary = false
     }
 
@@ -115,9 +122,10 @@ final class LLMSheetCoordinator {
 
     /// Sheet-dismiss path. Cancel in-flight generation — same
     /// reasoning as `dismissSummary`.
-    func dismissSectionSummary() {
+    func dismissSectionSummary(recorder: RecordingController? = nil) {
         inflightSectionSummarization?.cancel()
         inflightSectionSummarization = nil
+        recorder?.summarizer.userCancelledSummary()
         presentingSectionSummaryID = nil
     }
 
@@ -144,9 +152,10 @@ final class LLMSheetCoordinator {
         }
     }
 
-    func dismissReview() {
+    func dismissReview(recorder: RecordingController? = nil) {
         inflightReview?.cancel()
         inflightReview = nil
+        recorder?.summarizer.userCancelledReview()
         showingReview = false
     }
 
