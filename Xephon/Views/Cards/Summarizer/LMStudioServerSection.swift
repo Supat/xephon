@@ -73,20 +73,27 @@ struct LMStudioServerSection: View {
 
     @ViewBuilder
     private var hostPortRow: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
+        // Caption + flat field pattern — keeps the section
+        // visually coherent with the glass-effect card it sits
+        // inside. The rounded-border default TextField style
+        // would compete with the card's own chrome; a subtle
+        // secondary-system-background fill behind a `.plain`
+        // field reads as "input here" without the harder
+        // visual edge.
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(String(localized: "settings.lmStudio.host"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField(
-                    "localhost",
-                    text: $settings.host
-                )
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+                TextField("localhost", text: $settings.host)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(fieldBackground)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(String(localized: "settings.lmStudio.port"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -95,11 +102,24 @@ struct LMStudioServerSection: View {
                     value: $settings.port,
                     formatter: Self.portFormatter
                 )
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .keyboardType(.numberPad)
-                .frame(width: 80)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(fieldBackground)
             }
+            .frame(width: 96)
         }
+    }
+
+    /// Shared rounded-rect fill behind every plain `TextField`
+    /// in this section. Picks up `.secondarySystemBackground` so
+    /// it adapts to light / dark mode without manual handling
+    /// and reads as a subtle "you can tap here" affordance
+    /// against the glass card surface.
+    private var fieldBackground: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color(uiColor: .secondarySystemBackground))
     }
 
     @ViewBuilder
@@ -118,9 +138,12 @@ struct LMStudioServerSection: View {
                     String(localized: "settings.lmStudio.model.placeholder"),
                     text: $settings.modelID
                 )
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(fieldBackground)
             } else {
                 // Discovered-models picker. "" sentinel maps to
                 // "Auto (loaded model)" — LM Studio falls back
