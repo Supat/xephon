@@ -184,6 +184,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             object: engine,
             queue: nil
         ) { [weak self] _ in
+            AppLog.audio.info("AVAudioEngineConfigurationChange received")
             Task { [weak self] in
                 await self?.restartEngineAfterConfigurationChange()
             }
@@ -208,11 +209,22 @@ public actor AVAudioEngineCapture: AudioCapture {
     /// while old-format taps are installed trips -10868), rebuild the
     /// graph against the live HW format, then reinstall taps.
     private func restartEngineAfterConfigurationChange() async {
-        guard let engine, let eq, let processedSink else { return }
-        guard configChangeObserver != nil else { return }
-        guard !engine.isRunning else { return }
+        guard let engine, let eq, let processedSink else {
+            AppLog.audio.info("restartAfterConfigChange: nothing to restart (engine/eq/processedSink nil) — capture already stopped")
+            return
+        }
+        guard configChangeObserver != nil else {
+            AppLog.audio.info("restartAfterConfigChange: observer cleared — capture is stopping; bailing")
+            return
+        }
+        guard !engine.isRunning else {
+            AppLog.audio.info("restartAfterConfigChange: engine still running, skipping rebuild")
+            return
+        }
 
         let input = engine.inputNode
+        let oldFormat = input.outputFormat(forBus: 0)
+        AppLog.audio.info("restartAfterConfigChange: begin (old inputFormat=\(oldFormat.sampleRate, privacy: .public) Hz × \(oldFormat.channelCount, privacy: .public) ch)")
 
         // Old taps gone first — they reference the prior format.
         input.removeTap(onBus: 0)
@@ -245,11 +257,12 @@ public actor AVAudioEngineCapture: AudioCapture {
               let newRawConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
               let newProcessedConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
               let rawCont = rawCont, let processedCont = processedCont else {
-            AppLog.audio.error("capture rebuild after config change: invalid state")
+            AppLog.audio.error("restartAfterConfigChange: invalid state — liveSampleRate=\(liveSampleRate, privacy: .public) liveChannelCount=\(liveChannelCount, privacy: .public) hasRawCont=\(self.rawCont != nil, privacy: .public) hasProcessedCont=\(self.processedCont != nil, privacy: .public); finishing streams (recording will silently stall)")
             rawCont?.finish()
             processedCont?.finish()
             return
         }
+        AppLog.audio.info("restartAfterConfigChange: rebuilding with inputFormat=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
         newRawConverter.primeMethod = .none
         newProcessedConverter.primeMethod = .none
         rawConverter = newRawConverter
@@ -285,7 +298,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             try engine.start()
             AppLog.audio.info("Capture engine restarted after config change: input=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
         } catch {
-            AppLog.audio.error("capture restart after config change failed: \(String(describing: error), privacy: .public)")
+            AppLog.audio.error("restartAfterConfigChange: engine.start() failed — \(String(describing: error), privacy: .public); finishing streams (recording will silently stall)")
             rawCont.finish()
             processedCont.finish()
         }
