@@ -187,6 +187,186 @@ public enum PromptCatalog {
         ]
     }
 
+    // MARK: - Debug (uncapped, single-prompt) builders
+
+    /// Build the full Summary + Reviewer prompt for every model
+    /// using `utterances` as-is — no per-spec cap, no chunking,
+    /// no per-window splitting. Intended for the Prompts card's
+    /// Debug section so the developer can see exactly what each
+    /// model would receive if the live path didn't truncate.
+    /// One entry per (model × {Summary, Reviewer}); returns an
+    /// empty list when `utterances` is empty (nothing to inspect).
+    ///
+    /// The resulting prompts will routinely exceed each model's
+    /// context window — that's expected. These are inspection
+    /// artifacts, not something to feed back into inference.
+    public static func debugPrompts(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        language: ReviewLanguage
+    ) -> [PromptEntry] {
+        guard !utterances.isEmpty else { return [] }
+        var entries: [PromptEntry] = []
+
+        entries.append(PromptEntry(
+            id: "debug.appleFM.summarizer",
+            title: "Apple FM · Summary · All utterances",
+            body: appleFMSummarizerDebugPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames
+            )
+        ))
+        entries.append(PromptEntry(
+            id: "debug.appleFM.reviewer",
+            title: "Apple FM · Reviewer · All utterances",
+            body: appleFMReviewerDebugPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                language: language
+            )
+        ))
+
+        entries.append(PromptEntry(
+            id: "debug.qwen.summarizer",
+            title: "Qwen3 · Summary · All utterances",
+            body: MLXQwenSpec().buildPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                truncatedFromTotal: nil,
+                selection: .trailing
+            )
+        ))
+        entries.append(PromptEntry(
+            id: "debug.qwen.reviewer",
+            title: "Qwen3 · Reviewer · All utterances",
+            body: MLXQwenReviewerSpec().buildPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                language: language,
+                chunkIndex: 0,
+                totalChunks: 1
+            )
+        ))
+
+        entries.append(PromptEntry(
+            id: "debug.llama.summarizer",
+            title: "Llama-3-Swallow · Summary · All utterances",
+            body: MLXLlamaSpec().buildPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                truncatedFromTotal: nil,
+                selection: .trailing
+            )
+        ))
+        entries.append(PromptEntry(
+            id: "debug.llama.reviewer",
+            title: "Llama-3-Swallow · Reviewer · All utterances",
+            body: MLXLlamaReviewerSpec().buildPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                language: language,
+                chunkIndex: 0,
+                totalChunks: 1
+            )
+        ))
+
+        return entries
+    }
+
+    /// Mirrors `AppleFMSummarizer.summarizeSinglePass` exactly, but
+     /// with the per-spec cap bypassed (every utterance fed in
+     /// instead of the trailing / heuristic-selected slice). Same
+     /// language directive, same demographics block, same
+     /// `compactLine` shape, no truncation note (nothing was
+     /// truncated). See [[live-singlepass]] in
+     /// AppleFMSummarizer.swift for the source path.
+    private static func appleFMSummarizerDebugPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> String {
+        let speakers = utterances.orderedSpeakerIDs
+        let utteranceLines = utterances
+            .map { appleFMSummarizerCompactLine(for: $0, speakerNames: speakerNames) }
+            .joined(separator: "\n")
+        let demographicsBlock = SpeakerDemographicsDigest
+            .build(from: utterances)
+            .renderForPrompt(speakerIDs: speakers, speakerNames: speakerNames)
+        let demographicsLine = demographicsBlock.isEmpty
+            ? ""
+            : "\n\n\(demographicsBlock)"
+        let languageDirective = SummarizerLocale.responseLanguageInstruction
+        let userMessage = """
+            \(languageDirective)
+
+            Speakers present: \(speakers.joined(separator: ", ")).\(demographicsLine)
+
+            Utterances:
+            \(utteranceLines)
+            """
+        return [
+            "=== SYSTEM (instructions) ===",
+            AppleFMSummarizer.instructions,
+            "",
+            "=== USER (per-call message) ===",
+            userMessage
+        ].joined(separator: "\n")
+    }
+
+    /// Mirrors `AppleFMTranscriptionReviewer.reviewChunk` with
+     /// `chunkIndex = 0, totalChunks = 1` (so the multi-chunk
+     /// preface stays off) and every utterance in one shot —
+     /// the "as if unlimited" view of what the live path would
+     /// have sent if the 20-utterance chunk cap didn't exist.
+    private static func appleFMReviewerDebugPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        language: ReviewLanguage
+    ) -> String {
+        let lines = utterances.enumerated().map { rowIdx, u in
+            appleFMReviewerCompactLine(
+                rowIndex: rowIdx + 1,
+                for: u,
+                speakerNames: speakerNames
+            )
+        }.joined(separator: "\n")
+        let userMessage = """
+            The conversation is in \(language.label). Reason about meaning and homophones in \(language.label) only.
+            Write each issue's "reason" field in \(SummarizerLocale.responseLanguageNameInEnglish). Use no other language for the reason text.
+
+            Utterances (rowIndex speaker t=time text):
+            \(lines)
+            """
+        return [
+            "=== SYSTEM (instructions) ===",
+            AppleFMTranscriptionReviewer.instructions,
+            "",
+            "=== USER (per-call message) ===",
+            userMessage
+        ].joined(separator: "\n")
+    }
+
+    /// Mirrors the private `AppleFMSummarizer.compactLine`:
+     /// `S01 12.3s joy V0.42 A0.71 "text"` (label / V / A are
+     /// emitted only when present; transcript is quoted and
+     /// backslash/quote-escaped). Reproduced here because the
+     /// summarizer's helper is `private static`.
+    private static func appleFMSummarizerCompactLine(
+        for u: UtteranceEstimate,
+        speakerNames: [String: String]
+    ) -> String {
+        var parts: [String] = []
+        parts.append(u.speakerID)
+        parts.append(String(format: "%.1fs", u.start))
+        if let label = u.fusedTopLabel { parts.append(label) }
+        if let v = u.fusedValence { parts.append(String(format: "V%.2f", v)) }
+        if let a = u.fusedArousal { parts.append(String(format: "A%.2f", a)) }
+        let escaped = u.transcript
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        parts.append("\"\(escaped)\"")
+        return parts.joined(separator: " ")
+    }
+
     // MARK: - Real-prompt generation
 
     /// Build the prompt(s) that would actually be sent to the

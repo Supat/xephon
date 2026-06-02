@@ -36,6 +36,11 @@ struct PromptsCard: View {
     @State private var summarizerEntries: [PromptCatalog.PromptEntry] = []
     @State private var reviewerEntries: [PromptCatalog.PromptEntry] = []
     @State private var textSEREntries: [PromptCatalog.PromptEntry] = []
+    /// Per-model Summary + Reviewer prompts built from the live
+    /// session's full utterance list with no per-spec cap and no
+    /// chunking. Rebuilt whenever `recorder.utterancesVersion`
+    /// flips so the body reflects the current transcript.
+    @State private var debugEntries: [PromptCatalog.PromptEntry] = []
     /// Currently-presented prompt. Non-nil drives the
     /// `.sheet(item:)` modal. Tapping a row sets it; the
     /// sheet's Done button clears it. `PromptEntry` already
@@ -67,6 +72,12 @@ struct PromptsCard: View {
                 heading: String(localized: "prompts.section.textSER"),
                 entries: textSEREntries
             )
+            if !debugEntries.isEmpty {
+                section(
+                    heading: String(localized: "prompts.section.debug"),
+                    entries: debugEntries
+                )
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,6 +88,10 @@ struct PromptsCard: View {
                 reviewerEntries = PromptCatalog.reviewerPrompts()
                 textSEREntries = PromptCatalog.textSERPrompts()
             }
+            refreshDebugEntries()
+        }
+        .onChange(of: recorder.utterancesVersion) { _, _ in
+            refreshDebugEntries()
         }
         .sheet(item: $presentedPrompt) { entry in
             PromptDetailSheet(
@@ -85,6 +100,17 @@ struct PromptsCard: View {
                 onDismiss: { presentedPrompt = nil }
             )
         }
+    }
+
+    private func refreshDebugEntries() {
+        let language: ReviewLanguage = recorder.sessionLanguage == .japanese
+            ? .japanese
+            : .english
+        debugEntries = PromptCatalog.debugPrompts(
+            utterances: recorder.utterances,
+            speakerNames: recorder.speakerNameOverrides,
+            language: language
+        )
     }
 
     @ViewBuilder
@@ -252,17 +278,28 @@ private struct PromptDetailSheet: View {
     /// entries can't be fully realized without running the live
     /// model first).
     private func exportRealPrompt() {
-        let language: ReviewLanguage = recorder.sessionLanguage == .japanese
-            ? .japanese
-            : .english
-        guard let prompts = PromptCatalog.realPrompts(
-            forEntryID: entry.id,
-            utterances: recorder.utterances,
-            speakerNames: recorder.speakerNameOverrides,
-            language: language
-        ) else {
-            unsupportedAlert = true
-            return
+        // Debug entries are already built from the live session's
+        // full utterance list with no cap and no chunking, so
+        // `entry.body` IS the real prompt — skip the catalog
+        // round-trip (which would fall through to `default: nil`
+        // and falsely raise the deep-merge unsupported alert).
+        let prompts: [String]
+        if entry.id.hasPrefix("debug.") {
+            prompts = [entry.body]
+        } else {
+            let language: ReviewLanguage = recorder.sessionLanguage == .japanese
+                ? .japanese
+                : .english
+            guard let real = PromptCatalog.realPrompts(
+                forEntryID: entry.id,
+                utterances: recorder.utterances,
+                speakerNames: recorder.speakerNameOverrides,
+                language: language
+            ) else {
+                unsupportedAlert = true
+                return
+            }
+            prompts = real
         }
         let body: String
         if prompts.count == 1 {

@@ -47,6 +47,7 @@
 "prompts.section.summarizer" = "要約";
 "prompts.section.reviewer" = "文字起こしレビュー";
 "prompts.section.textSER" = "テキストSER";
+"prompts.section.debug" = "デバッグ · 全発話";
 "prompts.copy" = "コピー";
 "prompts.copied" = "コピー完了";
 "prompts.generateReal" = "実プロンプトを書き出す";

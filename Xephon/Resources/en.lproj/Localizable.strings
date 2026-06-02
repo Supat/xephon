@@ -47,6 +47,7 @@
 "prompts.section.summarizer" = "Summarizer";
 "prompts.section.reviewer" = "Transcription Reviewer";
 "prompts.section.textSER" = "Text SER";
+"prompts.section.debug" = "Debug · All Utterances";
 "prompts.copy" = "Copy";
 "prompts.copied" = "Copied";
 "prompts.generateReal" = "Export Real Prompt";
