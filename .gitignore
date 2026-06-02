@@ -48,5 +48,11 @@ Models/*
 !Tests/Fixtures/**/*.wav
 !Tests/Fixtures/**/*.m4a
 
-# Claude Code session state
-.claude/
+# Claude Code session state. Ignore contents of `.claude/` rather
+# than the directory itself, so the negation below can un-ignore
+# the shared `skills/` subtree without git's "parent is excluded"
+# rule swallowing the children.
+.claude/*
+# …except the shared skills, which are project-wide guardrails
+# distilled from CLAUDE.md and should travel with the repo.
+!.claude/skills/
