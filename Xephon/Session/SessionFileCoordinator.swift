@@ -286,15 +286,17 @@ final class SessionFileCoordinator {
             let data = try Data(contentsOf: url)
             let document = try SessionBundle.decode(data)
             try await recorder.loadSession(document)
-            // Fall back to the .xph file's base name when the
-            // bundle didn't carry a saved `sessionTitle` (e.g.
-            // it was created before the field existed, or the
-            // user never named the session). Bundles that DO
-            // carry a title keep it — the user's deliberate
-            // name wins over the filename.
-            if recorder.sessionTitle.isEmpty {
-                recorder.sessionTitle = url.deletingPathExtension().lastPathComponent
-            }
+            // Always override the loaded `sessionTitle` with the
+            // .xph file's base name. The user has just picked
+            // this specific file out of Files / iCloud / wherever
+            // — its on-disk name is the most current intent
+            // (renames in Files happen after Save Session,
+            // so the bundle's persisted title can lag). The
+            // bundle's `sessionTitle` field is still preserved
+            // inside `SessionDocument` for downstream consumers
+            // that care; only the live chrome TextField reads
+            // through `recorder.sessionTitle`.
+            recorder.sessionTitle = url.deletingPathExtension().lastPathComponent
         } catch {
             sessionIOError = String(describing: error)
         }
