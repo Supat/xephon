@@ -95,6 +95,22 @@ public enum PromptCatalog {
             )
         ))
 
+        // LM Studio (remote backend, OpenAI-compatible HTTP).
+        // Uses the same MLXQwenSpec.buildPrompt the on-device
+        // Qwen path uses — LM Studio applies the loaded model's
+        // chat template server-side, so the structure shown
+        // here is what the user message will look like.
+        entries.append(PromptEntry(
+            id: "lmStudio.summarizer.singlePass",
+            title: "LM Studio · Summarize · Trailing / Heuristic",
+            body: qwen.buildPrompt(
+                utterances: sampleUtterances,
+                speakerNames: sampleSpeakerNames,
+                truncatedFromTotal: nil,
+                selection: .trailing
+            )
+        ))
+
         // Llama-3-Swallow (MLX).
         let llama = MLXLlamaSpec()
         entries.append(PromptEntry(
@@ -158,6 +174,20 @@ public enum PromptCatalog {
             id: "llama.reviewer",
             title: "Llama-3-Swallow · Reviewer",
             body: llama.buildPrompt(
+                utterances: sampleUtterances,
+                speakerNames: sampleSpeakerNames,
+                language: .japanese,
+                chunkIndex: 0,
+                totalChunks: 1
+            )
+        ))
+
+        // LM Studio reviewer — same MLXQwenReviewerSpec the
+        // adapter uses at request time.
+        entries.append(PromptEntry(
+            id: "lmStudio.reviewer",
+            title: "LM Studio · Reviewer",
+            body: qwen.buildPrompt(
                 utterances: sampleUtterances,
                 speakerNames: sampleSpeakerNames,
                 language: .japanese,

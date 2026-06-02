@@ -22,6 +22,13 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Xephon can off-load Summary and Reviewer LLM inference to an LM Studio server you run on your local network. Only the post-ASR transcript text is sent; audio never leaves this device.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Xephon records short conversational audio to estimate per-speaker emotion. Audio is processed entirely on this device unless you toggle Cloud ASR fallback.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

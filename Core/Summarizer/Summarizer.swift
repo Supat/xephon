@@ -207,6 +207,15 @@ public enum SummarizerBackend: String, Sendable, Hashable, Codable, CaseIterable
     /// License + tokyotech-llm terms — both permissive for
     /// research use.
     case llamaSwallow
+    /// LM Studio remote backend — off-loads inference to a
+    /// user-configured OpenAI-compatible HTTP server on the
+    /// local network (typically a Mac running LM Studio on
+    /// the same LAN). Audio never leaves the device; only the
+    /// post-ASR transcript text travels to the server. Opt-in
+    /// per CLAUDE.md's local-first / remote-open posture —
+    /// gated by the Settings card's `LMStudioSettings.enabled`
+    /// toggle and the host/port/model fields.
+    case lmStudio
 }
 
 /// Which model architecture a `SessionSummarizer` / reviewer is

@@ -62,6 +62,22 @@ targets:
         LSRequiresIPhoneOS: true
         NSMicrophoneUsageDescription: "Xephon records short conversational audio to estimate per-speaker emotion. Audio is processed entirely on this device unless you toggle Cloud ASR fallback."
         NSSpeechRecognitionUsageDescription: "Xephon transcribes Japanese conversational audio on-device using Apple Speech."
+        # Required for the optional LM Studio remote-LLM backend.
+        # Disabled by default in Settings; when enabled, Xephon
+        # POSTs post-ASR transcript text (no audio) to a user-
+        # configured server on the local network. iOS shows this
+        # string the first time the app initiates a TCP connection
+        # to a local IP.
+        NSLocalNetworkUsageDescription: "Xephon can off-load Summary and Reviewer LLM inference to an LM Studio server you run on your local network. Only the post-ASR transcript text is sent; audio never leaves this device."
+        # `NSAllowsLocalNetworking = true` is a narrowly-scoped ATS
+        # exception that permits plaintext HTTP only to local-
+        # network destinations (link-local, .local Bonjour, RFC
+        # 1918 private IPs). LM Studio's server is HTTP by default
+        # and lives on the LAN, so this is the right grain — much
+        # safer than `NSAllowsArbitraryLoads`, which would also
+        # permit plaintext to the public internet.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UILaunchScreen: {}

@@ -128,6 +128,13 @@ final class SummarizerCoordinator {
         case .appleFM:      return appleFMAvailable
         case .qwen:         return modelInstalled
         case .llamaSwallow: return modelInstalled
+        case .lmStudio:
+            // Settings + reachable URL gate the picker; we don't
+            // verify connectivity here (would fire every body
+            // re-render). The actual chat call surfaces an
+            // error if the server is down.
+            return parent.lmStudioSettings.enabled
+                && parent.lmStudioSettings.baseURL != nil
         }
     }
 
@@ -140,6 +147,7 @@ final class SummarizerCoordinator {
         case .appleFM:      return nil
         case .qwen:         return ModelManifest.summarizerID
         case .llamaSwallow: return ModelManifest.summarizerLlamaID
+        case .lmStudio:     return nil
         }
     }
 
@@ -231,6 +239,7 @@ final class SummarizerCoordinator {
         case .appleFM:      modelInstalled = true
         case .qwen:         modelInstalled = qwen
         case .llamaSwallow: modelInstalled = llama
+        case .lmStudio:     modelInstalled = true
         }
     }
 
@@ -371,6 +380,12 @@ final class SummarizerCoordinator {
                 logLabelPrefix: logLabelPrefix,
                 writeback: writeback
             )
+        case .lmStudio:
+            return await summarizeWithLMStudio(
+                utterances: utterances,
+                logLabelPrefix: logLabelPrefix,
+                writeback: writeback
+            )
         }
     }
 
@@ -453,9 +468,10 @@ final class SummarizerCoordinator {
                     modelIdentifier: modelID,
                     modelDirectory: directory
                 )
-            case .appleFM:
+            case .appleFM, .lmStudio:
                 // Unreachable — Apple FM is routed via
-                // `summarizeWithAppleFM` from `runSummarize`.
+                // `summarizeWithAppleFM` and LM Studio via
+                // `summarizeWithLMStudio` from `runSummarize`.
                 scheduleUnloadAndPipelineRewarm()
                 return nil
             }
@@ -489,6 +505,67 @@ final class SummarizerCoordinator {
         }
     }
 
+    /// Dispatch to the LM Studio remote backend. Same shape as
+    /// `summarizeWithAppleFM` — no on-disk model install + no
+    /// MLX actor lifecycle to orchestrate, just build a client
+    /// from the live settings, run, surface errors. Pipeline
+    /// release still happens upstream in `runSummarize` so the
+    /// ANE + SER actors come down before the network round-trip
+    /// (negligible memory help here vs. MLX, but keeps every
+    /// summarizer path observing the same lifecycle envelope —
+    /// cheaper to keep the pattern uniform than to special-case
+    /// the lighter backends).
+    private func summarizeWithLMStudio(
+        utterances: [UtteranceEstimate],
+        logLabelPrefix: String,
+        writeback: @MainActor (SessionSummary) -> Void
+    ) async -> SessionSummary? {
+        defer { scheduleUnloadAndPipelineRewarm() }
+        guard parent.lmStudioSettings.enabled,
+              let baseURL = parent.lmStudioSettings.baseURL else {
+            parent.errorMessage = String(
+                describing: LMStudioError.notConfigured(reason: "host or port missing")
+            )
+            return nil
+        }
+        let config = LMStudioClient.Configuration(
+            baseURL: baseURL,
+            modelID: parent.lmStudioSettings.modelID,
+            requestTimeoutSeconds: parent.lmStudioSettings.requestTimeoutSeconds
+        )
+        let client = LMStudioClient(configuration: config)
+        let backend = LMStudioSummarizer(
+            modelIdentifier: parent.lmStudioSettings.modelID,
+            client: client,
+            useStructuredOutput: parent.lmStudioSettings.useStructuredOutput
+        )
+        logAvailableMemory(label: "\(logLabelPrefix) LM Studio (before request)")
+        let mode: SummarizeMode = self.mode
+        let boostedIDs = mode == .heuristic
+            ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
+            : Set<UUID>()
+        do {
+            let summary = try await backend.summarize(
+                utterances: utterances,
+                speakerNames: parent.speakerNameOverrides,
+                mode: mode,
+                boostedUtteranceIDs: boostedIDs
+            )
+            logAvailableMemory(label: "\(logLabelPrefix) LM Studio (after request)")
+            writeback(summary)
+            return summary
+        } catch is CancellationError {
+            AppLog.app.info("summarizeWithLMStudio cancelled by user")
+            return nil
+        } catch {
+            parent.errorMessage = String(describing: error)
+            AppLog.app.error(
+                "summarizeWithLMStudio failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
     /// Walk the current utterance list through the on-device LLM and
     /// collect transcription issues. Same orchestration as
     /// `summarize`: release pipeline, run, unload + rewarm.
@@ -503,6 +580,7 @@ final class SummarizerCoordinator {
             switch backend {
             case .appleFM:              return await reviewWithAppleFM()
             case .qwen, .llamaSwallow:  return await reviewWithMLX()
+            case .lmStudio:             return await reviewWithLMStudio()
             }
         }
     }
@@ -597,7 +675,7 @@ final class SummarizerCoordinator {
                     modelIdentifier: modelID,
                     modelDirectory: directory
                 )
-            case .appleFM:
+            case .appleFM, .lmStudio:
                 scheduleUnloadAndPipelineRewarm()
                 return nil
             }
@@ -621,6 +699,53 @@ final class SummarizerCoordinator {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
                 "reviewWithMLX failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Dispatch the reviewer to LM Studio. Same shape as
+    /// `reviewWithAppleFM` — no MLX teardown, no on-disk model
+    /// install, just build a client + run. Pipeline release
+    /// still happens upstream in `review()` for the same
+    /// "uniform envelope" reasoning as `summarizeWithLMStudio`.
+    private func reviewWithLMStudio() async -> [TranscriptionIssue]? {
+        defer { scheduleUnloadAndPipelineRewarm() }
+        guard parent.lmStudioSettings.enabled,
+              let baseURL = parent.lmStudioSettings.baseURL else {
+            parent.errorMessage = String(
+                describing: LMStudioError.notConfigured(reason: "host or port missing")
+            )
+            return nil
+        }
+        let config = LMStudioClient.Configuration(
+            baseURL: baseURL,
+            modelID: parent.lmStudioSettings.modelID,
+            requestTimeoutSeconds: parent.lmStudioSettings.requestTimeoutSeconds
+        )
+        let client = LMStudioClient(configuration: config)
+        let backend = LMStudioTranscriptionReviewer(
+            modelIdentifier: parent.lmStudioSettings.modelID,
+            client: client,
+            useStructuredOutput: parent.lmStudioSettings.useStructuredOutput
+        )
+        logAvailableMemory(label: "review LM Studio (before request)")
+        do {
+            let issues = try await backend.review(
+                utterances: parent.utterances,
+                speakerNames: parent.speakerNameOverrides,
+                language: reviewLanguage()
+            )
+            logAvailableMemory(label: "review LM Studio (after request)")
+            self.issues = issues
+            return issues
+        } catch is CancellationError {
+            AppLog.app.info("reviewWithLMStudio cancelled by user")
+            return nil
+        } catch {
+            parent.errorMessage = String(describing: error)
+            AppLog.app.error(
+                "reviewWithLMStudio failed: \(String(describing: error), privacy: .public)"
             )
             return nil
         }

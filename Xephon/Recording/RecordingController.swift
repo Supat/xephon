@@ -129,6 +129,15 @@ final class RecordingController {
     /// `@Observable` state propagates through these computed reads,
     /// so view tracking stays correct.
     private(set) var summarizer: SummarizerCoordinator!
+    /// User-configured LM Studio (remote LLM) settings. Owned
+    /// here because both the SettingsCard (which mutates host /
+    /// port / model / enabled) and the SummarizerCoordinator
+    /// (which reads them at dispatch time) need to share the
+    /// same `@Observable` instance — otherwise the picker's
+    /// gating wouldn't reflect a toggle flip without a
+    /// round-trip through UserDefaults. Defaults to disabled
+    /// per CLAUDE.md's local-first posture.
+    let lmStudioSettings = LMStudioSettings()
     var summarizerEnabled: Bool { summarizer.enabled }
     var summarizerBackend: SummarizerBackend { summarizer.backend }
     var summarizerAppleFMAvailable: Bool { summarizer.appleFMAvailable }

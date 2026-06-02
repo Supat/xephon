@@ -53,6 +53,12 @@ struct SummarizerCard: View {
                 backendDescriptionLine
                 summarizerStatusLine
                 summaryModePickerRow
+                Divider()
+                // Remote LLM Server controls live here (not on the
+                // Settings card) because they only matter when a
+                // summarizer backend is in use — config is
+                // backend-scoped, not global pipeline configuration.
+                LMStudioServerSection(settings: recorder.lmStudioSettings)
             }
         }
         .padding(12)
@@ -81,6 +87,8 @@ struct SummarizerCard: View {
             return String(localized: "settings.summarizer.backend.qwen.caption")
         case .llamaSwallow:
             return String(localized: "settings.summarizer.backend.llamaSwallow.caption")
+        case .lmStudio:
+            return String(localized: "settings.summarizer.backend.lmStudio.caption")
         }
     }
 
@@ -173,6 +181,16 @@ struct SummarizerCard: View {
                 .tag(SummarizerBackend.qwen)
             Text(String(localized: "settings.summarizer.backend.llamaSwallow"))
                 .tag(SummarizerBackend.llamaSwallow)
+            // LM Studio only shows when the user has enabled
+            // the remote-LLM toggle in Settings + entered a
+            // reachable host. Without the gate the row would
+            // be a footgun — the picker shouldn't offer a
+            // backend that's guaranteed to fail at request time.
+            if recorder.lmStudioSettings.enabled,
+               recorder.lmStudioSettings.baseURL != nil {
+                Text(String(localized: "settings.summarizer.backend.lmStudio"))
+                    .tag(SummarizerBackend.lmStudio)
+            }
         }
         .pickerStyle(.menu)
         .labelsHidden()
@@ -257,6 +275,29 @@ struct SummarizerCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        case .lmStudio:
+            // Status here mirrors the settings gate — no
+            // on-disk install to track. A real connectivity
+            // probe would mean a network round-trip per body
+            // re-render, which is too eager; surface the
+            // failure mode at request time instead via the
+            // banner.
+            if let baseURL = recorder.lmStudioSettings.baseURL {
+                HStack(spacing: 6) {
+                    Image(systemName: "network")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                    Text(verbatim: baseURL.absoluteString)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            } else {
+                Text(String(localized: "settings.summarizer.lmStudio.notConfigured"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -298,6 +339,8 @@ struct SummarizerCard: View {
             return String(localized: "settings.summarizer.modelName.llamaSwallow")
         case .appleFM:
             return String(localized: "settings.summarizer.backend.appleFM")
+        case .lmStudio:
+            return String(localized: "settings.summarizer.backend.lmStudio")
         }
     }
 
