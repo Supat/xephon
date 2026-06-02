@@ -66,7 +66,7 @@
 "settings.summarizer.mode.all.caption" = "全発話を完全なメタデータ付きで1回のリクエストでリモートサーバーに送信します。リモートバックエンド専用 — オンデバイスLLMはコンテキストウィンドウに収まりません。";
 "chrome.sessionTitle.placeholder" = "無題のセッション";
 "prompts.header" = "LLMプロンプト";
-"prompts.subtitle" = "デバイス上の言語モデルに送信されるすべてのプロンプトを読み取り専用で表示します。行をタップして展開してください。編集はできません。";
+"prompts.subtitle" = "パイプラインが言語モデルに送信するすべてのプロンプトを読み取り専用で表示します。行をタップして展開してください。編集はできません。";
 "prompts.section.summarizer" = "要約";
 "prompts.section.reviewer" = "文字起こしレビュー";
 "prompts.section.textSER" = "テキストSER";
@@ -107,7 +107,7 @@
 "review.title" = "文字起こし校閲";
 "review.start" = "文字起こしを校閲";
 "review.rerun" = "再校閲";
-"review.inProgress" = "オンデバイスで校閲中です。初回は1分ほどかかる場合があります。";
+"review.inProgress" = "校閲中です。初回は1分ほどかかる場合があります。";
 "review.empty" = "指摘はありません。校閲をタップして文字起こしをスキャンしてください。";
 "review.commit" = "適用";
 "review.dismiss" = "却下";
@@ -119,7 +119,7 @@
 "review.kind.other" = "その他";
 "summary.title" = "セッション要約";
 "summary.done" = "完了";
-"summary.generating" = "オンデバイスで要約を生成中です。初回は1分ほどかかる場合があります。";
+"summary.generating" = "要約を生成中です。初回は1分ほどかかる場合があります。";
 "summary.empty" = "要約はまだありません。ツールバーの「要約」をタップしてください。";
 "summary.section.setting" = "シチュエーション";
 "summary.section.topic" = "トピック";
@@ -140,7 +140,7 @@
 "sections.row.setEnd" = "フォーカス中の発話を終了に設定";
 "sections.row.openSummary" = "セクション要約を開く";
 "sections.row.generateSummary" = "セクション要約を生成";
-"sections.summary.generating" = "デバイス上でセクション要約を生成中です。初回は1分ほどかかることがあります。";
+"sections.summary.generating" = "セクション要約を生成中です。初回は1分ほどかかることがあります。";
 "sections.summary.empty" = "セクション要約はまだありません。要約機能を有効にして「要約」をタップしてください。";
 "sections.edit" = "編集";
 "sections.delete" = "削除";
