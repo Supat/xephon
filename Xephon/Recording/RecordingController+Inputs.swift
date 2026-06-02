@@ -58,7 +58,7 @@ extension RecordingController {
             try? session.setCategory(priorCategory, mode: priorMode, options: priorOptions)
         }
         #endif
-        AppLog.app.info("refreshInputs: phase=\(String(describing: self.phase), privacy: .public) canReconfigure=\(canReconfigure, privacy: .public) inputs.count=\(inputs.count, privacy: .public) current=\(current?.uid ?? "<nil>", privacy: .public)")
+        AppLog.app.info("refreshInputs[\(self.instanceTag, privacy: .public)]: phase=\(String(describing: self.phase), privacy: .public) canReconfigure=\(canReconfigure, privacy: .public) inputs.count=\(inputs.count, privacy: .public) current=\(current?.uid ?? "<nil>", privacy: .public)")
         // Only commit the refreshed inputs when the query had a chance
         // to enumerate all ports. Without `canReconfigure` we read with
         // whatever category the session happens to be in (mid-record,
@@ -79,7 +79,7 @@ extension RecordingController {
             self.availableInputs = inputs
             self.currentInputUID = current?.uid
         } else {
-            AppLog.app.info("refreshInputs: empty query result; keeping prior list (count=\(self.availableInputs.count, privacy: .public))")
+            AppLog.app.info("refreshInputs[\(self.instanceTag, privacy: .public)]: empty query result; keeping prior list (count=\(self.availableInputs.count, privacy: .public))")
         }
     }
 
@@ -102,7 +102,7 @@ extension RecordingController {
     func handleAudioRouteChange() async {
         #if os(iOS) || targetEnvironment(macCatalyst)
         let reason = (AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "<none>")
-        AppLog.app.info("handleAudioRouteChange fired; currentInput=\(reason, privacy: .public) phase=\(String(describing: self.phase), privacy: .public)")
+        AppLog.app.info("handleAudioRouteChange[\(self.instanceTag, privacy: .public)] fired; currentInput=\(reason, privacy: .public) phase=\(String(describing: self.phase), privacy: .public)")
         #endif
         await refreshInputs()
         if playbackPlayer != nil {

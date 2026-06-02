@@ -575,12 +575,22 @@ final class RecordingController {
     /// per session.
     var teachingDiarizer: Bool = true
 
+    /// Short, stable per-instance identifier used to tag log lines so
+    /// we can tell — when route-change / refresh-inputs handlers fire
+    /// — whether one or several controller instances are coexisting.
+    /// Suspected leak vector behind the USB-C-mic mid-session stall:
+    /// a stale controller's `handleAudioRouteChange` deactivates the
+    /// shared audio session out from under a live recording owned by
+    /// the foreground controller.
+    let instanceTag: String = String(UUID().uuidString.prefix(8))
+
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
         streamingTranscriber: (any StreamingTranscriber)? = nil,
         pipeline: AnalysisPipeline? = nil,
         modelStore: ModelStore? = nil
     ) {
+        AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] init")
         self.capture = capture
         self.micCapture = capture
         let initialLanguage = SessionLanguage.loadFromDefaults()
@@ -997,6 +1007,7 @@ final class RecordingController {
     /// (post-volatile) ASR segment is processed through SER+fusion and appended
     /// to `utterances` live.
     func start() async {
+        AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] start()")
         // Audible cue fires first, before any session-category
         // changes — the chime plays through the speaker while the
         // transcriber and capture spin up. `capture.start()` will
@@ -1030,7 +1041,7 @@ final class RecordingController {
         } catch {
             errorMessage = String(describing: error)
             phase = .idle
-            AppLog.app.error("recording start failed: \(String(describing: error), privacy: .public)")
+            AppLog.app.error("recording start failed[\(self.instanceTag, privacy: .public)]: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -1510,7 +1521,7 @@ final class RecordingController {
 
         let t0 = Date()
         func elapsed() -> Double { Date().timeIntervalSince(t0) }
-        AppLog.app.info("stop(): begin")
+        AppLog.app.info("stop()[\(self.instanceTag, privacy: .public)]: begin")
 
         // Don't await the auto-stop watcher (it's the caller in the
         // file-end path). Cancel it so manual Stop also tears it down.
