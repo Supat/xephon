@@ -346,36 +346,16 @@ struct ContentView: View {
                 )
             }
             // Speaker rename alert — raised by the row's context
-            // menu "Rename Speaker…" action. `editingSpeakerStored`
-            // is the stored speaker id (e.g. `S01`); the bound text
-            // is pre-filled with the current override if any.
-            // Confirming with a blank field clears the override
-            // (reverts to the default `S01`-style label).
-            .alert(
-                String(localized: "speaker.rename.title"),
-                isPresented: Binding(
-                    get: { editingSpeakerStored != nil },
-                    set: { presented in if !presented { editingSpeakerStored = nil } }
-                )
-            ) {
-                TextField(
-                    String(localized: "speaker.rename.placeholder"),
-                    text: $editingSpeakerName
-                )
-                Button(String(localized: "speaker.rename.save")) {
-                    if let stored = editingSpeakerStored {
-                        recorder.renameSpeaker(stored: stored, to: editingSpeakerName)
-                    }
-                    editingSpeakerStored = nil
-                }
-                Button(String(localized: "speaker.rename.cancel"), role: .cancel) {
-                    editingSpeakerStored = nil
-                }
-            } message: {
-                if let stored = editingSpeakerStored {
-                    Text(String(format: String(localized: "speaker.rename.message"), stored))
-                }
-            }
+            // menu "Rename Speaker…" action. Extracted into its own
+            // ViewModifier because inlining it pushed the body's
+            // type-check past 5 s (close to the frontend timeout);
+            // each chained modifier compounds overload-resolution
+            // work and the rename alert was the breaking straw.
+            .modifier(SpeakerRenameAlertModifier(
+                recorder: recorder,
+                editingSpeakerStored: $editingSpeakerStored,
+                editingSpeakerName: $editingSpeakerName
+            ))
         }
     }
 
@@ -407,6 +387,50 @@ struct ContentView: View {
         // analysis.
         menuCommands.canSaveSession = idleWithTranscript
         menuCommands.canExportJSON = idleWithTranscript
+    }
+}
+
+/// Rename-speaker alert lifted out of `ContentView.body` to keep the
+/// view's modifier chain type-check tractable. Bindings flow back into
+/// `ContentView`'s @State so dismissal behaviour is identical to the
+/// previous inline form.
+private struct SpeakerRenameAlertModifier: ViewModifier {
+    let recorder: RecordingController
+    @Binding var editingSpeakerStored: String?
+    @Binding var editingSpeakerName: String
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { editingSpeakerStored != nil },
+            set: { presented in
+                if !presented { editingSpeakerStored = nil }
+            }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content.alert(
+            String(localized: "speaker.rename.title"),
+            isPresented: isPresented
+        ) {
+            TextField(
+                String(localized: "speaker.rename.placeholder"),
+                text: $editingSpeakerName
+            )
+            Button(String(localized: "speaker.rename.save")) {
+                if let stored = editingSpeakerStored {
+                    recorder.renameSpeaker(stored: stored, to: editingSpeakerName)
+                }
+                editingSpeakerStored = nil
+            }
+            Button(String(localized: "speaker.rename.cancel"), role: .cancel) {
+                editingSpeakerStored = nil
+            }
+        } message: {
+            if let stored = editingSpeakerStored {
+                Text(String(format: String(localized: "speaker.rename.message"), stored))
+            }
+        }
     }
 }
 

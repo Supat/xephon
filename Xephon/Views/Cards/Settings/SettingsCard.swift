@@ -275,7 +275,12 @@ struct SettingsCard: View {
                 // value sits outside it (older builds, manual
                 // UserDefaults edits).
                 let clamped = current.clamped(to: lower...upper)
-                return Double(1.0 - (clamped - lower) / (upper - lower))
+                // Keep the arithmetic in Float so the type-checker
+                // doesn't have to weigh every numeric overload of `-`
+                // and `/` against the Double-defaulted `1.0` literal.
+                let span: Float = upper - lower
+                let normalized: Float = (clamped - lower) / span
+                return Double(1.0 - normalized)
             },
             set: { newValue in
                 let clampedSensitivity = Float(newValue.clamped(to: 0.0...1.0))
