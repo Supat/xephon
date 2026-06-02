@@ -97,11 +97,30 @@ struct ControlPaneView: View {
                     statusLine
 
                     if let error = recorder.errorMessage {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal)
-                            .multilineTextAlignment(.center)
+                        // Inline clear button on the trailing
+                        // edge — only present while a message
+                        // is showing, so the trailing column
+                        // doesn't reserve dead space in the
+                        // happy path. Setting the error to
+                        // nil triggers the @Observable re-eval
+                        // and this whole block disappears.
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(error)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                            Button {
+                                recorder.errorMessage = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(Text(String(localized: "errorBanner.clear")))
+                        }
+                        .padding(.horizontal)
                     }
                 }
                 .padding()

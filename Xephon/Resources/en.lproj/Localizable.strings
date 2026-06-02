@@ -40,6 +40,7 @@
 "settings.lmStudio.test.ok.noMatch" = "Reachable · %d model(s) loaded, but the configured ID is not among them";
 "settings.lmStudio.privacy" = "Privacy: Xephon sends only the post-ASR transcript text — no audio — to the configured server.";
 "summary.backend.local" = "On-device";
+"errorBanner.clear" = "Dismiss error";
 "summary.backend.remote" = "Remote";
 "settings.lmStudio.structured" = "Request strict JSON schema";
 "settings.lmStudio.structured.caption" = "Sends an OpenAI-format response_format with the expected JSON shape. Reduces parse failures on servers that honor it; may 400 on servers that don't. Off by default.";

@@ -40,6 +40,7 @@
 "settings.lmStudio.test.ok.noMatch" = "接続可能 · %d 個のモデルが読み込まれていますが、指定IDは含まれていません";
 "settings.lmStudio.privacy" = "プライバシー: 送信されるのはASR後のテキストのみで、音声はサーバーに送信されません。";
 "summary.backend.local" = "オンデバイス";
+"errorBanner.clear" = "エラーを閉じる";
 "summary.backend.remote" = "リモート";
 "settings.lmStudio.structured" = "厳格なJSONスキーマを要求";
 "settings.lmStudio.structured.caption" = "OpenAI形式のresponse_formatに期待するJSONスキーマを付与して送信します。対応サーバーではパース失敗を減らせますが、未対応サーバーでは400が返ることがあります。既定はオフ。";
