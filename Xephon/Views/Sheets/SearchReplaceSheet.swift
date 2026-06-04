@@ -270,6 +270,14 @@ private struct MatchCard: View {
         let similarRanges = staged == nil
             ? coord.similarMatchRanges(for: utterance)
             : []
+        // Single-letter "spoken reading" ranges (ジー / じー for "G").
+        // Folded into the same purple highlight layer as similar
+        // matches — the two never populate together (a single-letter
+        // query is below the fuzzy length floor), so concatenating is
+        // safe and needs no new highlighter parameter.
+        let letterNameRanges = staged == nil
+            ? coord.letterNameMatchRanges(for: utterance)
+            : []
         VStack(alignment: .leading, spacing: 10) {
             cardHeader(
                 staged: staged,
@@ -289,7 +297,7 @@ private struct MatchCard: View {
                 text: displayedText,
                 replaceTerm: coord.replaceTerm,
                 matchRanges: matchRanges,
-                similarRanges: similarRanges,
+                similarRanges: similarRanges + letterNameRanges,
                 selectedIndices: selected,
                 replaced: staged != nil
             ))
@@ -368,6 +376,10 @@ private struct MatchCard: View {
                     .foregroundStyle(.green)
             } else if coord.isSimilarMatch(utterance) {
                 Text(String(localized: "searchReplace.similar"))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.purple)
+            } else if coord.isLetterNameMatch(utterance) {
+                Text(String(localized: "searchReplace.spokenLetter"))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.purple)
             } else if !coord.hasRawMatch(utterance) {

@@ -42,6 +42,11 @@ final class TranscriptFilterModel {
     struct NormalizedTranscript: Sendable {
         let raw: String
         let normalized: String
+        /// Ordered per-token normalized forms. `normalized` is their
+        /// join; the token list is what `NormalizedSearchQuery`'s
+        /// boundary-form mode (single-letter / letter-name queries)
+        /// needs, so we cache both off one tokenizer pass.
+        let tokens: [String]
     }
 
     /// Normalized (Hepburn romaji, lowercased) form of each
@@ -57,12 +62,15 @@ final class TranscriptFilterModel {
     /// (raw text differs from the utterance's current transcript).
     /// Same call site for the filter loop and the keyword-count
     /// computation so they agree on staleness handling.
-    private func normalizedTranscript(for utterance: UtteranceEstimate) -> String {
+    private func normalizedForms(
+        for utterance: UtteranceEstimate
+    ) -> (normalized: String, tokens: [String]) {
         if let entry = normalizedTranscriptCache[utterance.id],
            entry.raw == utterance.transcript {
-            return entry.normalized
+            return (entry.normalized, entry.tokens)
         }
-        return JapaneseSearchNormalizer.normalize(utterance.transcript)
+        let tokens = JapaneseSearchNormalizer.normalizedTokens(utterance.transcript)
+        return (tokens.joined(), tokens)
     }
 
     /// Background task that's currently rebuilding the cache.
@@ -196,16 +204,19 @@ final class TranscriptFilterModel {
             keywordCountsMemo.counts = counts
             return counts
         }
-        // Pre-normalize each keyword once; reuse across every
+        // Pre-build each keyword's query once; reuse across every
         // utterance. Drops empties so a row of whitespace never
-        // inflates every utterance's count to its full length.
-        let normalizedKeywords: [(id: UUID, normalized: String)] = kws.compactMap {
-            let n = JapaneseSearchNormalizer.normalize($0.text)
-            return n.isEmpty ? nil : (id: $0.id, normalized: n)
+        // inflates every utterance's count. A single-letter keyword
+        // expands to its spoken letter-name readings, same as the
+        // search box.
+        let keywordQueries: [(id: UUID, query: NormalizedSearchQuery)] = kws.compactMap {
+            let q = NormalizedSearchQuery.build(from: $0.text)
+            return q.isEmpty ? nil : (id: $0.id, query: q)
         }
         for u in recorder.utterances {
-            let normalizedText = normalizedTranscript(for: u)
-            for entry in normalizedKeywords where normalizedText.contains(entry.normalized) {
+            let forms = normalizedForms(for: u)
+            for entry in keywordQueries
+            where entry.query.matches(normalized: forms.normalized, tokens: forms.tokens) {
                 counts[entry.id, default: 0] += 1
             }
         }
@@ -242,20 +253,21 @@ final class TranscriptFilterModel {
     /// nothing changed — the cached `results` and `summary` are
     /// returned as-is.
     private func refreshFilterMemoIfNeeded(in recorder: RecordingController) {
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Normalize every selected keyword once per refresh, dedupe
-        // (the user can have two keywords with the same surface
-        // form) and sort so the Equatable comparison is stable.
-        let normalizedKeywordFilters: [String] = Set(
+        // Build the search query once per refresh. A single Latin
+        // letter expands to its spoken letter-name readings (G →
+        // ジー / じー) plus the literal letter; everything else stays
+        // a normalized substring match.
+        let searchQuery = NormalizedSearchQuery.build(from: searchText)
+        // Build every selected keyword's query once, deduped (the
+        // user can have two keywords with the same surface form).
+        let keywordQueries: Set<NormalizedSearchQuery> = Set(
             recorder.keywords.selectedKeywords
-                .map { JapaneseSearchNormalizer.normalize($0.text) }
+                .map { NormalizedSearchQuery.build(from: $0.text) }
                 .filter { !$0.isEmpty }
-        ).sorted()
+        )
         let key = FilterDepsKey(
-            normalizedQuery: trimmed.isEmpty
-                ? ""
-                : JapaneseSearchNormalizer.normalize(trimmed),
-            normalizedKeywordFilters: normalizedKeywordFilters,
+            searchQuery: searchQuery,
+            keywordQueries: keywordQueries,
             labelFilter: selectedLabelFilter,
             speakerFilter: selectedSpeakerFilter,
             mismatchOnly: showingMismatchOnly,
@@ -283,26 +295,25 @@ final class TranscriptFilterModel {
                 if key.mismatchOnly, !mismatchSet.contains(u.id) {
                     return nil
                 }
-                // Compute normalized text at most once per row even
+                // Compute normalized forms at most once per row even
                 // when both the search query AND the keyword filter
-                // are active. `normalizedTranscript(for:)` returns
-                // the cached form when the raw text still matches,
-                // and re-normalizes inline when it doesn't (post-
-                // edit, re-eval, or refresh-cache lag).
+                // are active. `normalizedForms(for:)` returns the
+                // cached pair when the raw text still matches, and
+                // re-normalizes inline when it doesn't (post-edit,
+                // re-eval, or refresh-cache lag).
                 let needsNormalized =
-                    !key.normalizedQuery.isEmpty
-                    || !key.normalizedKeywordFilters.isEmpty
-                let normalizedText: String? = needsNormalized
-                    ? normalizedTranscript(for: u)
-                    : nil
-                if !key.normalizedQuery.isEmpty,
-                   let nt = normalizedText,
-                   !nt.contains(key.normalizedQuery) {
+                    !key.searchQuery.isEmpty || !key.keywordQueries.isEmpty
+                let forms = needsNormalized ? normalizedForms(for: u) : nil
+                if !key.searchQuery.isEmpty,
+                   let f = forms,
+                   !key.searchQuery.matches(normalized: f.normalized, tokens: f.tokens) {
                     return nil
                 }
-                if !key.normalizedKeywordFilters.isEmpty,
-                   let nt = normalizedText,
-                   !key.normalizedKeywordFilters.contains(where: { nt.contains($0) }) {
+                if !key.keywordQueries.isEmpty,
+                   let f = forms,
+                   !key.keywordQueries.contains(where: {
+                       $0.matches(normalized: f.normalized, tokens: f.tokens)
+                   }) {
                     return nil
                 }
                 return (idx, u)
@@ -349,15 +360,15 @@ final class TranscriptFilterModel {
         searchCacheTask?.cancel()
         searchCacheTask = Task.detached(priority: .userInitiated) { [weak self] in
             let normalized = await withTaskGroup(
-                of: (UUID, String, String).self
-            ) { group -> [(UUID, String, String)] in
+                of: (UUID, String, [String]).self
+            ) { group -> [(UUID, String, [String])] in
                 for (id, raw) in toRebuild {
                     if Task.isCancelled { break }
                     group.addTask {
-                        (id, raw, JapaneseSearchNormalizer.normalize(raw))
+                        (id, raw, JapaneseSearchNormalizer.normalizedTokens(raw))
                     }
                 }
-                var out: [(UUID, String, String)] = []
+                var out: [(UUID, String, [String])] = []
                 for await triple in group {
                     out.append(triple)
                 }
@@ -368,11 +379,12 @@ final class TranscriptFilterModel {
         }
     }
 
-    private func mergeNormalizedResults(_ results: [(UUID, String, String)]) {
-        for (id, raw, normalized) in results {
+    private func mergeNormalizedResults(_ results: [(UUID, String, [String])]) {
+        for (id, raw, tokens) in results {
             normalizedTranscriptCache[id] = NormalizedTranscript(
                 raw: raw,
-                normalized: normalized
+                normalized: tokens.joined(),
+                tokens: tokens
             )
         }
     }

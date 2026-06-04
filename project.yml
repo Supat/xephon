@@ -197,8 +197,18 @@ targets:
       - Tests/UnitTests
     dependencies:
       - target: Xephon
+      # `link: false` — XephonCore (and its static onnxruntime
+      # xcframework) is already linked into the host app; this test
+      # bundle runs inside the host via TEST_HOST, so it resolves
+      # those symbols at runtime. Re-linking the static product here
+      # makes the build system reject the duplicate ("linked as a
+      # static library by … This will result in duplication of
+      # library code"). The dependency is kept (not link) so the
+      # `@testable import Fusion/SERAcoustic/SERText/Export` modules
+      # stay discoverable for compilation.
       - package: Xephon
         product: XephonCore
+        link: false
     settings:
       base:
         BUNDLE_LOADER: "$(TEST_HOST)"
@@ -212,8 +222,12 @@ targets:
       - Tests/EvalTests
     dependencies:
       - target: Xephon
+      # See XephonTests above — same static-onnxruntime duplication
+      # avoidance. Symbols (incl. `@testable import ASR`) resolve
+      # from the host app at runtime.
       - package: Xephon
         product: XephonCore
+        link: false
     settings:
       base:
         BUNDLE_LOADER: "$(TEST_HOST)"

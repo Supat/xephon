@@ -38,6 +38,15 @@ enum JapaneseSearchNormalizer {
         tokens(input).map(\.normalized).joined()
     }
 
+    /// Per-token normalized forms, in order. The join of this array
+    /// equals `normalize(input)`; whole-token / token-sequence
+    /// matchers want the array (`NormalizedSearchQuery`'s token mode)
+    /// while substring matchers want the join, so callers that need
+    /// both compute this once and join when required.
+    static func normalizedTokens(_ input: String) -> [String] {
+        tokens(input).map(\.normalized)
+    }
+
     /// Per-chunk view of `normalize(input)`. The concatenation of
     /// the returned tokens' `normalized` strings equals
     /// `normalize(input)` byte-for-byte. Tokens whose chunk

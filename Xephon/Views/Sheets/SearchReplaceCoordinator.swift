@@ -71,6 +71,20 @@ final class SearchReplaceCoordinator {
     @ObservationIgnored
     private var similarMatchIDs: Set<UUID> = []
 
+    /// Set of utterance ids that surfaced because the search term is
+    /// a single Latin letter and the transcript contains that
+    /// letter's *spoken* reading (ジー / じー for "G") as a
+    /// token-boundary run — not a literal "G"/"g" (those take the
+    /// raw path and stay replaceable). Drives the "spoken letter"
+    /// badge and, like cross-script rows, keeps Replace disabled:
+    /// swapping ジー for the replace term would corrupt the Japanese
+    /// reading, so a letter-name hit is find-only. Manual editing via
+    /// the row's TextEditor is still available. Repopulated alongside
+    /// `matches`; observation-ignored because the sheet re-renders on
+    /// the `matches` change.
+    @ObservationIgnored
+    private var letterNameMatchIDs: Set<UUID> = []
+
     /// In-flight search task, cancelled on every keystroke so a
     /// pile-up of normalizer passes doesn't trail behind the user.
     @ObservationIgnored
@@ -184,6 +198,7 @@ final class SearchReplaceCoordinator {
         guard !term.isEmpty else {
             matches = []
             similarMatchIDs = []
+            letterNameMatchIDs = []
             return
         }
         let snapshot = recorder.utterances
@@ -207,6 +222,7 @@ final class SearchReplaceCoordinator {
             if Task.isCancelled { return }
             matches = result.matches
             similarMatchIDs = result.similarIDs
+            letterNameMatchIDs = result.letterNameIDs
         }
     }
 
@@ -221,6 +237,7 @@ final class SearchReplaceCoordinator {
     private struct FilterResult {
         let matches: [UtteranceEstimate]
         let similarIDs: Set<UUID>
+        let letterNameIDs: Set<UUID>
     }
 
     /// Off-main filter. Runs three passes per row, falling through
@@ -244,8 +261,21 @@ final class SearchReplaceCoordinator {
             let doSimilar = allowSimilar
                 && normalizedQuery.count >= Self.minQueryLengthForSimilar
             let threshold = Self.similarMatchThreshold(for: normalizedQuery.count)
+            // Single-letter queries take a separate path: surface the
+            // letter's spoken reading(s) (ジー / じー for "G") matched
+            // as a token-boundary run, NOT the broad romaji-substring
+            // pass (which for "G"→"g" would drag in every が / ご). The
+            // literal letter still surfaces via the raw pass below and
+            // stays the only replaceable form. Fuzzy is already off
+            // here — single letters fall below minQueryLengthForSimilar.
+            let letter = LatinLetterReadings.singleLetter(in: term)
+            let readingForms = letter.map {
+                NormalizedSearchQuery.readingBoundaryForms(for: $0)
+            } ?? []
+            let isLetterName = !readingForms.isEmpty
             var out: [UtteranceEstimate] = []
             var similar: Set<UUID> = []
+            var letterName: Set<UUID> = []
             let minRun = Self.wideVariationMinRun(for: normalizedQuery.count)
             for (idx, u) in items.enumerated() {
                 // Check cancellation every 32 rows — enough to
@@ -253,10 +283,20 @@ final class SearchReplaceCoordinator {
                 // enough that the check itself isn't the
                 // bottleneck.
                 if idx & 0x1F == 0, Task.isCancelled {
-                    return FilterResult(matches: [], similarIDs: [])
+                    return FilterResult(matches: [], similarIDs: [], letterNameIDs: [])
                 }
                 if u.transcript.localizedStandardRange(of: term) != nil {
                     out.append(u)
+                    continue
+                }
+                if isLetterName {
+                    let toks = JapaneseSearchNormalizer.normalizedTokens(u.transcript)
+                    if readingForms.contains(where: {
+                        NormalizedSearchQuery.containsTokenAlignedRun(toks, $0)
+                    }) {
+                        out.append(u)
+                        letterName.insert(u.id)
+                    }
                     continue
                 }
                 if normalizedQuery.isEmpty { continue }
@@ -306,7 +346,11 @@ final class SearchReplaceCoordinator {
                     similar.insert(u.id)
                 }
             }
-            return FilterResult(matches: out, similarIDs: similar)
+            return FilterResult(
+                matches: out,
+                similarIDs: similar,
+                letterNameIDs: letterName
+            )
         }
         return await withTaskCancellationHandler {
             await detached.value
@@ -321,6 +365,60 @@ final class SearchReplaceCoordinator {
     /// the sheet header.
     func isSimilarMatch(_ utterance: UtteranceEstimate) -> Bool {
         similarMatchIDs.contains(utterance.id)
+    }
+
+    /// True when the row surfaced only because the single-letter
+    /// search term's spoken reading (ジー / じー for "G") appears in
+    /// the transcript — no literal "G"/"g" present. Drives the
+    /// "spoken letter" badge and keeps Replace disabled.
+    func isLetterNameMatch(_ utterance: UtteranceEstimate) -> Bool {
+        letterNameMatchIDs.contains(utterance.id)
+    }
+
+    /// Original-text character ranges to highlight when the search
+    /// term is a single Latin letter and the transcript spells out
+    /// its spoken reading. Each range covers a contiguous token run
+    /// whose joined normalized form equals one of the letter's
+    /// reading forms (so ジー / じー is covered as a unit), excluding
+    /// any run overlapping a raw literal-letter match (those get the
+    /// yellow raw highlight instead). Returns [] when the term isn't
+    /// a single letter or no reading run is present. Painted the
+    /// same purple as similar matches — the two never co-occur, since
+    /// a single-letter query is below the fuzzy pass's length floor.
+    func letterNameMatchRanges(
+        for utterance: UtteranceEstimate
+    ) -> [Range<String.Index>] {
+        guard let letter = LatinLetterReadings.singleLetter(in: trimmedSearch)
+        else { return [] }
+        let forms = NormalizedSearchQuery.readingBoundaryForms(for: letter)
+        guard !forms.isEmpty else { return [] }
+        let tokens = JapaneseSearchNormalizer.tokens(utterance.transcript)
+        guard !tokens.isEmpty else { return [] }
+        let rawRanges = Self.rawMatches(in: utterance.transcript, term: trimmedSearch)
+
+        var ranges: [Range<String.Index>] = []
+        for form in forms {
+            let targetCount = form.unicodeScalars.count
+            for start in tokens.indices {
+                var acc = ""
+                var end = start
+                while end < tokens.count {
+                    acc += tokens[end].normalized
+                    if acc == form {
+                        let range = tokens[start].originalRange.lowerBound
+                            ..< tokens[end].originalRange.upperBound
+                        if !rawRanges.contains(where: { $0.overlaps(range) }),
+                           !ranges.contains(where: { $0.overlaps(range) }) {
+                            ranges.append(range)
+                        }
+                        break
+                    }
+                    if acc.unicodeScalars.count >= targetCount { break }
+                    end += 1
+                }
+            }
+        }
+        return ranges
     }
 
     /// Original-text character ranges to paint purple in a match

@@ -5,17 +5,19 @@ import Fusion
 /// and `displayedSummary` in ContentView. `Equatable` so `FilterMemo`
 /// can early-exit on no-change renders.
 struct FilterDepsKey: Equatable {
-    /// Already-normalized search query, so we don't re-tokenize the
-    /// query string on every change-check.
-    let normalizedQuery: String
-    /// Already-normalized forms of every currently-selected
-    /// keyword. Empty when nothing's selected. Stacks AND-wise
-    /// with the search query (so the user can search inside a
-    /// keyword-filtered slice), but ORs internally — a row
-    /// survives when its normalized transcript contains ANY of
-    /// these. Sorted so the array's Equatable comparison is
-    /// stable across selection-set reorderings.
-    let normalizedKeywordFilters: [String]
+    /// Pre-built search query, so we don't re-tokenize the query
+    /// string on every change-check. Carries either a normalized
+    /// substring (ordinary queries) or token-boundary forms (a
+    /// single Latin letter, expanded to its spoken letter-name
+    /// readings — see `NormalizedSearchQuery`).
+    let searchQuery: NormalizedSearchQuery
+    /// Pre-built query for every currently-selected keyword. Empty
+    /// when nothing's selected. Stacks AND-wise with the search
+    /// query (so the user can search inside a keyword-filtered
+    /// slice), but ORs internally — a row survives when its
+    /// transcript matches ANY of these. A `Set` so the Equatable
+    /// comparison is order-independent across selection reorderings.
+    let keywordQueries: Set<NormalizedSearchQuery>
     let labelFilter: String?
     let speakerFilter: String?
     /// When true, only utterances whose stored speaker disagrees
