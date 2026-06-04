@@ -1,4 +1,6 @@
+import Combine
 import SwiftUI
+import UIKit
 import Summarizer
 
 /// "Remote LLM Server" subsection on the Settings card. Lets the
@@ -30,6 +32,14 @@ struct LMStudioServerSection: View {
     /// right now.
     @State private var availableModels: [String] = []
 
+    /// Mirrors the device interface orientation so `testRow` can
+    /// drop its status line under the button in portrait, where the
+    /// section is too narrow to read a status beside a bordered
+    /// button. Landscape keeps button + status side-by-side. Seeded
+    /// in `onAppear` and kept current via the orientation-change
+    /// notification (see body's `.onReceive`).
+    @State private var isPortrait = false
+
     enum ProbeResult: Equatable {
         case idle
         case running
@@ -60,6 +70,34 @@ struct LMStudioServerSection: View {
         }
         .onChange(of: settings.host) { _, _ in resetProbe() }
         .onChange(of: settings.port) { _, _ in resetProbe() }
+        .onAppear {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            isPortrait = Self.interfaceIsPortrait()
+        }
+        .onDisappear {
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIDevice.orientationDidChangeNotification
+            )
+        ) { _ in
+            isPortrait = Self.interfaceIsPortrait()
+        }
+    }
+
+    /// Portrait-ness of the current interface orientation, read from
+    /// the foreground-active window scene. Preferred over
+    /// `UIDevice.current.orientation`, which reports `.faceUp` /
+    /// `.unknown` when the iPad lies flat and would mis-stack the
+    /// row. Falls back to non-portrait when no scene resolves.
+    @MainActor
+    private static func interfaceIsPortrait() -> Bool {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive }
+            ?? scenes.first
+        return scene?.effectiveGeometry.interfaceOrientation.isPortrait ?? false
     }
 
     /// A change to host / port invalidates both the probe status
@@ -241,20 +279,35 @@ struct LMStudioServerSection: View {
 
     @ViewBuilder
     private var testRow: some View {
-        HStack(spacing: 8) {
-            Button {
-                runProbe()
-            } label: {
-                Label(
-                    String(localized: "settings.lmStudio.test"),
-                    systemImage: "network"
-                )
+        if isPortrait {
+            // Portrait: the section is too narrow to read a status
+            // line beside the bordered button, so stack the status
+            // underneath. Landscape keeps the side-by-side HStack
+            // below unchanged.
+            VStack(alignment: .leading, spacing: 8) {
+                testButton
+                probeStatus
             }
-            .buttonStyle(.bordered)
-            .disabled(settings.baseURL == nil || probe == .running)
-            probeStatus
-            Spacer()
+        } else {
+            HStack(spacing: 8) {
+                testButton
+                probeStatus
+                Spacer()
+            }
         }
+    }
+
+    private var testButton: some View {
+        Button {
+            runProbe()
+        } label: {
+            Label(
+                String(localized: "settings.lmStudio.test"),
+                systemImage: "network"
+            )
+        }
+        .buttonStyle(.bordered)
+        .disabled(settings.baseURL == nil || probe == .running)
     }
 
     @ViewBuilder
