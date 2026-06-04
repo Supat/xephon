@@ -223,6 +223,17 @@ public actor AVAudioEngineCapture: AudioCapture {
         // the rebuilt graph faithfully captures from whatever device the OS
         // flipped to, so the mic "flips" mid-session. Re-binding verifies
         // the route via currentRoute.inputs and switches back if it moved.
+        // Source the post-renegotiation format from AVAudioSession. The
+        // input node's `outputFormat(forBus:)` is stale here: we reuse the
+        // same AVAudioEngine across recovery (see the engine property
+        // comment), so its inputNode still reports the format it cached at
+        // engine creation — typically the pre-renegotiation rate. A USB
+        // clock switch (48 ↔ 44.1) leaves the node at the old rate while
+        // the session has moved on, and connecting at the stale format
+        // throws "Input HW format and tap format not matching" out of
+        // `engine.connect`. AVAudioSession is the authoritative source
+        // once the config-change notification has fired and we've cycled
+        // the session in `bindPreferredInput` above.
         #if os(iOS) || targetEnvironment(macCatalyst)
         let session = AVAudioSession.sharedInstance()
         do {
@@ -230,19 +241,14 @@ public actor AVAudioEngineCapture: AudioCapture {
         } catch {
             AppLog.audio.error("restartAfterConfigChange: re-bind failed — \(String(describing: error), privacy: .public)")
         }
-        AppLog.audio.info("restartAfterConfigChange: route after re-bind=\(session.currentRoute.inputs.first?.uid ?? "<none>", privacy: .public) sessionRate=\(session.sampleRate, privacy: .public)")
-        #endif
-
-        // Single authoritative format source: the input node's own output
-        // format is exactly what the tap will deliver. Taking BOTH the rate
-        // and channel count from the node (rather than blending node-channels
-        // with `AVAudioSession.sampleRate`) avoids a rate/channel mismatch
-        // during the renegotiation window — a mismatch hands the converter a
-        // wrong ratio (garbled / half-speed) or throws -10868, which lands in
-        // the catch below and silently finishes the streams.
+        AppLog.audio.info("restartAfterConfigChange: route after re-bind=\(session.currentRoute.inputs.first?.uid ?? "<none>", privacy: .public) sessionRate=\(session.sampleRate, privacy: .public) sessionChannels=\(session.inputNumberOfChannels, privacy: .public)")
+        let liveSampleRate = session.sampleRate
+        let liveChannelCount = AVAudioChannelCount(session.inputNumberOfChannels)
+        #else
         let liveFormat = input.outputFormat(forBus: 0)
         let liveSampleRate = liveFormat.sampleRate
         let liveChannelCount = liveFormat.channelCount
+        #endif
 
         guard liveSampleRate > 0, liveChannelCount > 0,
               let inputFormat = AVAudioFormat(
