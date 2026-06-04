@@ -71,24 +71,8 @@ public actor AVAudioEngineCapture: AudioCapture {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
-            // Fall back to the built-in mic when the user hasn't
-            // explicitly picked anything. iPadOS otherwise auto-routes
-            // to whatever USB-C audio device happens to be plugged in,
-            // which means a user who's never touched the input picker
-            // gets silently switched to USB — surprising behavior that
-            // makes the picker feel decorative. Mirrors how Voice
-            // Memos and Ferrite handle the no-preference case.
-            let effectiveUID: String?
-            if let preferredInputUID {
-                effectiveUID = preferredInputUID
-            } else if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
-                effectiveUID = builtIn.uid
-                AppLog.audio.info("no explicit preferred input; falling back to built-in mic \(builtIn.uid, privacy: .public)")
-            } else {
-                effectiveUID = nil
-            }
             try Self.bindPreferredInput(
-                to: effectiveUID,
+                to: effectiveInputUID(session: session),
                 session: session
             )
         } catch {
@@ -232,16 +216,33 @@ public actor AVAudioEngineCapture: AudioCapture {
         engine.disconnectNodeInput(eq)
         engine.disconnectNodeInput(processedSink)
 
-        // Live HW sample rate. After the config-change notification has
-        // fired, the OS has committed the new route, so
-        // `AVAudioSession.sampleRate` is authoritative here (unlike the
-        // window right after `setActive(true)`).
-        let liveChannelCount = input.outputFormat(forBus: 0).channelCount
+        // Re-assert the preferred input. A USB clock renegotiation (or a
+        // brief drop / re-enumerate) fires this notification AND lets the
+        // OS re-arbitrate the route — the same auto-routing
+        // `bindPreferredInput` fights at start(). Without re-pinning here,
+        // the rebuilt graph faithfully captures from whatever device the OS
+        // flipped to, so the mic "flips" mid-session. Re-binding verifies
+        // the route via currentRoute.inputs and switches back if it moved.
         #if os(iOS) || targetEnvironment(macCatalyst)
-        let liveSampleRate = AVAudioSession.sharedInstance().sampleRate
-        #else
-        let liveSampleRate = input.outputFormat(forBus: 0).sampleRate
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try Self.bindPreferredInput(to: effectiveInputUID(session: session), session: session)
+        } catch {
+            AppLog.audio.error("restartAfterConfigChange: re-bind failed — \(String(describing: error), privacy: .public)")
+        }
+        AppLog.audio.info("restartAfterConfigChange: route after re-bind=\(session.currentRoute.inputs.first?.uid ?? "<none>", privacy: .public) sessionRate=\(session.sampleRate, privacy: .public)")
         #endif
+
+        // Single authoritative format source: the input node's own output
+        // format is exactly what the tap will deliver. Taking BOTH the rate
+        // and channel count from the node (rather than blending node-channels
+        // with `AVAudioSession.sampleRate`) avoids a rate/channel mismatch
+        // during the renegotiation window — a mismatch hands the converter a
+        // wrong ratio (garbled / half-speed) or throws -10868, which lands in
+        // the catch below and silently finishes the streams.
+        let liveFormat = input.outputFormat(forBus: 0)
+        let liveSampleRate = liveFormat.sampleRate
+        let liveChannelCount = liveFormat.channelCount
 
         guard liveSampleRate > 0, liveChannelCount > 0,
               let inputFormat = AVAudioFormat(
@@ -481,6 +482,22 @@ public actor AVAudioEngineCapture: AudioCapture {
     }
 
     #if os(iOS) || targetEnvironment(macCatalyst)
+    /// The input UID we actually want bound: the user's explicit pick
+    /// when set, otherwise the built-in mic. iPadOS otherwise auto-routes
+    /// to whatever USB-C audio device happens to be plugged in, so a user
+    /// who never touched the picker gets silently switched to USB.
+    /// Returns nil only when neither is resolvable, letting the OS pick.
+    private func effectiveInputUID(session: AVAudioSession) -> String? {
+        if let preferredInputUID {
+            return preferredInputUID
+        }
+        if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
+            AppLog.audio.info("no explicit preferred input; falling back to built-in mic \(builtIn.uid, privacy: .public)")
+            return builtIn.uid
+        }
+        return nil
+    }
+
     /// Activate the session and bind the user's preferred input,
     /// fighting iPadOS 26's tendency to silently auto-route to USB-C
     /// audio devices regardless of the app's preference.
