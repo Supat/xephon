@@ -70,7 +70,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         #if os(iOS) || targetEnvironment(macCatalyst)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
+            try session.setCategory(.record, mode: .measurement)
             try Self.bindPreferredInput(
                 to: effectiveInputUID(session: session),
                 session: session
@@ -335,9 +335,9 @@ public actor AVAudioEngineCapture: AudioCapture {
         eq = nil
         processedSink = nil
         #if os(iOS) || targetEnvironment(macCatalyst)
-        // Deactivate the session so the `.record / .measurement /
-        // [.allowBluetoothHFP]` config we set in `start()` doesn't
-        // linger as the system-wide active session.
+        // Deactivate the session so the `.record / .measurement`
+        // config we set in `start()` doesn't linger as the
+        // system-wide active session.
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
@@ -625,7 +625,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     private func configureCategoryIfNeeded(_ session: AVAudioSession) {
         if session.category != .record {
             do {
-                try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
+                try session.setCategory(.record, mode: .measurement)
             } catch {
                 AppLog.audio.warning("setCategory failed: \(String(describing: error), privacy: .public)")
             }

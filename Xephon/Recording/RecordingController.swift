@@ -1616,13 +1616,12 @@ final class RecordingController {
         //
         // We deliberately DO NOT call `refreshInputs()` here. Doing so
         // routes through `AudioCapture.availableInputs()`, which
-        // forces the AVAudioSession into `.record / .measurement /
-        // [.allowBluetoothHFP]`. That config persists in the route
-        // graph even when we later set `.playback` on top of it, and
-        // `AVAudioPlayer.play()` returns true while the actual output
-        // is silent. The inputs list will refresh the next time the
-        // user presses Record (mic `start()` configures the session
-        // explicitly anyway).
+        // forces the AVAudioSession into `.record / .measurement`.
+        // That config persists in the route graph even when we later
+        // set `.playback` on top of it, and `AVAudioPlayer.play()`
+        // returns true while the actual output is silent. The inputs
+        // list will refresh the next time the user presses Record
+        // (mic `start()` configures the session explicitly anyway).
         if case .file = sourceMode {
             sourceMode = .microphone
             asrLatencyMeaningful = true
