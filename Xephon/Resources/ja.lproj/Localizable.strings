@@ -464,3 +464,7 @@
 "plutchik.fear" = "恐れ";
 "plutchik.disgust" = "嫌悪";
 "plutchik.trust" = "信頼";
+
+/* Mid-recording capture failures (surfaced via the error banner) */
+"error.capture.interrupted" = "録音が停止しました:システムまたは他のアプリがマイクを使用しました。";
+"error.capture.recovery_failed" = "録音が停止しました:オーディオデバイスの変更後にエンジンを復旧できませんでした。";

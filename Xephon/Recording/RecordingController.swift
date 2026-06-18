@@ -1227,6 +1227,30 @@ final class RecordingController {
             }
             self.inputLevel = 0
             self.inputChannelLevels = []
+            // The stream finishing while we're still `.recording` and the
+            // pump wasn't cancelled means capture died underneath the
+            // session (non-resumable interruption, failed engine
+            // recovery). Surface it and auto-stop so the user gets the
+            // partial session instead of a frozen recording screen.
+            // Stop from a separate task: `stop()` awaits `rawTask.value`,
+            // so stopping inline here would deadlock.
+            if !Task.isCancelled, self.phase == .recording,
+               let reason = await self.capture.captureEndReason() {
+                AppLog.app.error("raw stream ended mid-recording: \(String(describing: reason), privacy: .public); auto-stopping")
+                self.errorMessage = Self.captureFailureMessage(for: reason)
+                Task { @MainActor [weak self] in
+                    await self?.stop()
+                }
+            }
+        }
+    }
+
+    private static func captureFailureMessage(for reason: CaptureEndReason) -> String {
+        switch reason {
+        case .interruptedNotResumable:
+            return String(localized: "error.capture.interrupted")
+        case .recoveryFailed:
+            return String(localized: "error.capture.recovery_failed")
         }
     }
 

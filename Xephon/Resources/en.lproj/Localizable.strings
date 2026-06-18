@@ -464,3 +464,7 @@
 "plutchik.fear" = "Fear";
 "plutchik.disgust" = "Disgust";
 "plutchik.trust" = "Trust";
+
+/* Mid-recording capture failures (surfaced via the error banner) */
+"error.capture.interrupted" = "Recording stopped: the system or another app took over the microphone.";
+"error.capture.recovery_failed" = "Recording stopped: the audio engine could not recover after an audio device change.";

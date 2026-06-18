@@ -15,12 +15,29 @@ public struct CaptureStreams: Sendable {
     }
 }
 
+/// Abnormal termination cause for a capture session. The recording
+/// controller checks this when the capture streams finish while a
+/// recording is still in progress and surfaces it to the user —
+/// without it, a mid-session engine death is a silent stall.
+public enum CaptureEndReason: Sendable, Equatable {
+    /// The session was interrupted (call, Siri, another app seizing the
+    /// mic) and the OS did not offer resumption.
+    case interruptedNotResumable
+    /// Engine recovery after a config change, interruption, or
+    /// media-services reset failed.
+    case recoveryFailed(String)
+}
+
 public protocol AudioCapture: Actor {
     /// Starts the audio engine and returns two parallel streams: a raw mic
     /// capture (for SER) and a speech-boosted copy (for ASR). Throws
     /// `AudioError.permissionDenied` if microphone access is not granted.
     func start() async throws -> CaptureStreams
     func stop() async
+
+    /// Why the most recent capture ended, when it ended abnormally.
+    /// nil = still running, never started, or ended via `stop()`.
+    func captureEndReason() async -> CaptureEndReason?
 
     func availableInputs() async -> [AudioInputDescription]
     func currentInput() async -> AudioInputDescription?
@@ -34,6 +51,7 @@ public protocol AudioCapture: Actor {
 }
 
 public extension AudioCapture {
+    func captureEndReason() async -> CaptureEndReason? { nil }
     func availableInputs() async -> [AudioInputDescription] { [] }
     func currentInput() async -> AudioInputDescription? { nil }
     func setPreferredInput(_ uid: String?) async throws {}
@@ -58,6 +76,9 @@ public actor AVAudioEngineCapture: AudioCapture {
     private var processedConverter: AVAudioConverter?
     private var preferredInputUID: String?
     private var configChangeObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    private var mediaResetObserver: NSObjectProtocol?
+    private var endReason: CaptureEndReason?
     private var speechBoostEnabled: Bool = true
 
     public init() {}
@@ -79,6 +100,36 @@ public actor AVAudioEngineCapture: AudioCapture {
             throw AudioError.engineUnavailable(reason: "audio session: \(error)")
         }
         #endif
+
+        endReason = nil
+        let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        self.rawCont = rawCont
+        self.processedCont = processedCont
+
+        do {
+            try buildAndStartEngine()
+        } catch {
+            rawCont.finish()
+            processedCont.finish()
+            self.rawCont = nil
+            self.processedCont = nil
+            throw error
+        }
+
+        registerSessionObservers()
+        return CaptureStreams(raw: rawStream, processed: processedStream)
+    }
+
+    /// Build a fresh AVAudioEngine + graph against the session's current
+    /// route and start it, yielding into the already-stored stream
+    /// continuations. Used by `start()` and by media-services-reset
+    /// recovery, where the previous engine instance is invalid and must
+    /// be discarded rather than reused.
+    private func buildAndStartEngine() throws {
+        guard let rawCont, let processedCont else {
+            throw AudioError.engineUnavailable(reason: "no active capture streams")
+        }
 
         // Fresh engine + nodes per session — see the property comment.
         let engine = AVAudioEngine()
@@ -121,9 +172,6 @@ public actor AVAudioEngineCapture: AudioCapture {
         engine.connect(input, to: eq, format: inputFormat)
         engine.connect(eq, to: processedSink, format: inputFormat)
 
-        let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
-        let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
-
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
 
         // Tap A — raw input.
@@ -156,13 +204,12 @@ public actor AVAudioEngineCapture: AudioCapture {
         } catch {
             input.removeTap(onBus: 0)
             processedSink.removeTap(onBus: 0)
-            rawCont.finish()
-            processedCont.finish()
             throw AudioError.engineUnavailable(reason: String(describing: error))
         }
 
-        // Mid-session config changes (USB clock renegotiation, media-services
-        // restart) auto-stop the engine. Pinned to this engine instance.
+        // Mid-session config changes (USB clock renegotiation) auto-stop
+        // the engine. Pinned to this engine instance; re-registered when
+        // media-services-reset recovery swaps in a fresh engine.
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -170,45 +217,142 @@ public actor AVAudioEngineCapture: AudioCapture {
         ) { [weak self] _ in
             AppLog.audio.info("AVAudioEngineConfigurationChange received")
             Task { [weak self] in
-                await self?.restartEngineAfterConfigurationChange()
+                await self?.recoverEngine(trigger: "configChange")
             }
         }
 
         self.engine = engine
         self.eq = eq
         self.processedSink = processedSink
-        self.rawCont = rawCont
-        self.processedCont = processedCont
         self.rawConverter = rawConverter
         self.processedConverter = processedConverter
 
         AppLog.audio.info("Capture started: input=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch → 16 kHz mono (raw + speech-boosted)")
-        return CaptureStreams(raw: rawStream, processed: processedStream)
     }
 
-    /// Recover from `AVAudioEngineConfigurationChange`. The engine has
-    /// been auto-stopped by the OS; the input's HW sample rate may
-    /// have renegotiated (USB-C mics commonly switch 48 ↔ 44.1 mid-session).
-    /// We tear down the taps + connections first (calling `connect()`
-    /// while old-format taps are installed trips -10868), rebuild the
-    /// graph against the live HW format, then reinstall taps.
-    private func restartEngineAfterConfigurationChange() async {
+    /// Session-level lifecycle observers — interruption and media-services
+    /// reset. Engine-level config changes are handled by the per-engine
+    /// observer in `buildAndStartEngine`; these two are different beasts:
+    /// neither fires `AVAudioEngineConfigurationChange`, and before this
+    /// pair existed both stalled a recording silently.
+    private func registerSessionObservers() {
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        let session = AVAudioSession.sharedInstance()
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: nil
+        ) { [weak self] note in
+            // Extract primitives before hopping into the actor —
+            // Notification isn't Sendable.
+            let typeRaw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+            Task { [weak self] in
+                await self?.handleInterruption(typeRaw: typeRaw, optionsRaw: optionsRaw)
+            }
+        }
+        mediaResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: session,
+            queue: nil
+        ) { [weak self] _ in
+            AppLog.audio.warning("mediaServicesWereReset received")
+            Task { [weak self] in
+                await self?.handleMediaServicesReset()
+            }
+        }
+        #endif
+    }
+
+    #if os(iOS) || targetEnvironment(macCatalyst)
+    private func handleInterruption(typeRaw: UInt?, optionsRaw: UInt?) async {
+        guard let typeRaw,
+              let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
+        switch type {
+        case .began:
+            // The OS has already stopped the engine. Recovery (or
+            // abandonment) is decided at `.ended`. Note `.ended` is not
+            // guaranteed to arrive (e.g. the user answers the call); in
+            // that case capture stays stalled until the user stops it.
+            AppLog.audio.warning("audio session interruption began — engine stopped by OS; awaiting .ended")
+        case .ended:
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw ?? 0)
+            if options.contains(.shouldResume) {
+                AppLog.audio.info("interruption ended with .shouldResume — recovering engine")
+                await recoverEngine(trigger: "interruptionEnded")
+            } else {
+                AppLog.audio.error("interruption ended without .shouldResume — ending capture")
+                endReason = .interruptedNotResumable
+                rawCont?.finish()
+                processedCont?.finish()
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    /// mediaserverd died and came back. Every AVAudio object from before
+    /// the reset is invalid — including the engine the config-change
+    /// observer is pinned to — so the engine-reuse recovery path can't
+    /// help. Drop everything and rebuild session + engine from scratch,
+    /// yielding into the same stream continuations.
+    private func handleMediaServicesReset() async {
+        guard engine != nil, rawCont != nil, processedCont != nil else {
+            AppLog.audio.info("mediaServicesReset: no active capture; nothing to rebuild")
+            return
+        }
+        if let obs = configChangeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            configChangeObserver = nil
+        }
+        engine = nil
+        eq = nil
+        processedSink = nil
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement)
+            try Self.bindPreferredInput(to: effectiveInputUID(session: session), session: session)
+            try buildAndStartEngine()
+            AppLog.audio.info("mediaServicesReset: session + engine rebuilt")
+        } catch {
+            AppLog.audio.error("mediaServicesReset: rebuild failed — \(String(describing: error), privacy: .public); ending capture")
+            endReason = .recoveryFailed("media services reset: \(error)")
+            rawCont?.finish()
+            processedCont?.finish()
+        }
+    }
+    #endif
+
+    public func captureEndReason() async -> CaptureEndReason? {
+        endReason
+    }
+
+    /// Recover the existing engine after the OS auto-stopped it —
+    /// `AVAudioEngineConfigurationChange` (USB clock renegotiation;
+    /// 48 ↔ 44.1 mid-session is common) or an interruption that ended
+    /// with `.shouldResume`. We tear down the taps + connections first
+    /// (calling `connect()` while old-format taps are installed trips
+    /// -10868), rebuild the graph against the live HW format, then
+    /// reinstall taps. Reuses the engine instance — valid for both
+    /// triggers; only a media-services reset invalidates it (handled
+    /// separately by `handleMediaServicesReset`).
+    private func recoverEngine(trigger: String) async {
         guard let engine, let eq, let processedSink else {
-            AppLog.audio.info("restartAfterConfigChange: nothing to restart (engine/eq/processedSink nil) — capture already stopped")
+            AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: nothing to restart (engine/eq/processedSink nil) — capture already stopped")
             return
         }
         guard configChangeObserver != nil else {
-            AppLog.audio.info("restartAfterConfigChange: observer cleared — capture is stopping; bailing")
+            AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: observer cleared — capture is stopping; bailing")
             return
         }
         guard !engine.isRunning else {
-            AppLog.audio.info("restartAfterConfigChange: engine still running, skipping rebuild")
+            AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: engine still running, skipping rebuild")
             return
         }
 
         let input = engine.inputNode
         let oldFormat = input.outputFormat(forBus: 0)
-        AppLog.audio.info("restartAfterConfigChange: begin (old inputFormat=\(oldFormat.sampleRate, privacy: .public) Hz × \(oldFormat.channelCount, privacy: .public) ch)")
+        AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: begin (old inputFormat=\(oldFormat.sampleRate, privacy: .public) Hz × \(oldFormat.channelCount, privacy: .public) ch)")
 
         // Old taps gone first — they reference the prior format.
         input.removeTap(onBus: 0)
@@ -239,9 +383,9 @@ public actor AVAudioEngineCapture: AudioCapture {
         do {
             try Self.bindPreferredInput(to: effectiveInputUID(session: session), session: session)
         } catch {
-            AppLog.audio.error("restartAfterConfigChange: re-bind failed — \(String(describing: error), privacy: .public)")
+            AppLog.audio.error("recoverEngine[\(trigger, privacy: .public)]: re-bind failed — \(String(describing: error), privacy: .public)")
         }
-        AppLog.audio.info("restartAfterConfigChange: route after re-bind=\(session.currentRoute.inputs.first?.uid ?? "<none>", privacy: .public) sessionRate=\(session.sampleRate, privacy: .public) sessionChannels=\(session.inputNumberOfChannels, privacy: .public)")
+        AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: route after re-bind=\(session.currentRoute.inputs.first?.uid ?? "<none>", privacy: .public) sessionRate=\(session.sampleRate, privacy: .public) sessionChannels=\(session.inputNumberOfChannels, privacy: .public)")
         let liveSampleRate = session.sampleRate
         let liveChannelCount = AVAudioChannelCount(session.inputNumberOfChannels)
         #else
@@ -264,12 +408,13 @@ public actor AVAudioEngineCapture: AudioCapture {
               let newRawConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
               let newProcessedConverter = AVAudioConverter(from: inputFormat, to: outputFormat),
               let rawCont = rawCont, let processedCont = processedCont else {
-            AppLog.audio.error("restartAfterConfigChange: invalid state — liveSampleRate=\(liveSampleRate, privacy: .public) liveChannelCount=\(liveChannelCount, privacy: .public) hasRawCont=\(self.rawCont != nil, privacy: .public) hasProcessedCont=\(self.processedCont != nil, privacy: .public); finishing streams (recording will silently stall)")
+            AppLog.audio.error("recoverEngine[\(trigger, privacy: .public)]: invalid state — liveSampleRate=\(liveSampleRate, privacy: .public) liveChannelCount=\(liveChannelCount, privacy: .public) hasRawCont=\(self.rawCont != nil, privacy: .public) hasProcessedCont=\(self.processedCont != nil, privacy: .public); ending capture")
+            endReason = .recoveryFailed("\(trigger): invalid post-change state (rate=\(liveSampleRate), channels=\(liveChannelCount))")
             rawCont?.finish()
             processedCont?.finish()
             return
         }
-        AppLog.audio.info("restartAfterConfigChange: rebuilding with inputFormat=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
+        AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: rebuilding with inputFormat=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
         newRawConverter.primeMethod = .none
         newProcessedConverter.primeMethod = .none
         rawConverter = newRawConverter
@@ -303,9 +448,10 @@ public actor AVAudioEngineCapture: AudioCapture {
         engine.prepare()
         do {
             try engine.start()
-            AppLog.audio.info("Capture engine restarted after config change: input=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
+            AppLog.audio.info("Capture engine recovered [\(trigger, privacy: .public)]: input=\(inputFormat.sampleRate, privacy: .public) Hz × \(inputFormat.channelCount, privacy: .public) ch")
         } catch {
-            AppLog.audio.error("restartAfterConfigChange: engine.start() failed — \(String(describing: error), privacy: .public); finishing streams (recording will silently stall)")
+            AppLog.audio.error("recoverEngine[\(trigger, privacy: .public)]: engine.start() failed — \(String(describing: error), privacy: .public); ending capture")
+            endReason = .recoveryFailed("\(trigger): engine restart: \(error)")
             rawCont.finish()
             processedCont.finish()
         }
@@ -315,6 +461,14 @@ public actor AVAudioEngineCapture: AudioCapture {
         if let obs = configChangeObserver {
             NotificationCenter.default.removeObserver(obs)
             configChangeObserver = nil
+        }
+        if let obs = interruptionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            interruptionObserver = nil
+        }
+        if let obs = mediaResetObserver {
+            NotificationCenter.default.removeObserver(obs)
+            mediaResetObserver = nil
         }
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
