@@ -1181,14 +1181,19 @@ final class RecordingController {
             guard let self else { return }
             for await buffer in streams.raw {
                 // Rebase chunk timestamp into session-relative time
-                // (subtract the first chunk's stamp). Mic-mode chunks
-                // carry the engine's running sampleTime which can be
-                // any value at the start of a fresh session — without
-                // this, capturedAudio's anchors and the diarize
-                // cursor would live at engine-time while ASR uses
-                // session-relative time, producing a cumulative
-                // timeline that doesn't line up with utterances and
-                // a strip whose totalDuration explodes.
+                // (subtract the first chunk's stamp). For mic mode this
+                // is now a no-op: `AVAudioEngineCapture.TimestampRebaser`
+                // makes the first chunk's timestamp 0 and keeps the
+                // timeline monotonic across engine restarts. File mode
+                // still relies on this rebase because `AudioFileCapture`
+                // can begin mid-file (the first chunk carries the
+                // resume offset). Keeping one path for both: when the
+                // rebaser-side already starts at 0, `base` is 0 and
+                // subtraction is a no-op; when the file side starts at
+                // X, `base` becomes X and subsequent chunks land at
+                // session-relative seconds. Either way `capturedAudio`'s
+                // anchors and the diarize cursor stay in the same time
+                // domain as the analyzer's source-time mapping.
                 let base = self.rawPumpBaseTimestamp ?? buffer.timestamp
                 if self.rawPumpBaseTimestamp == nil {
                     self.rawPumpBaseTimestamp = base

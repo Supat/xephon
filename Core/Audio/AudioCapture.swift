@@ -50,6 +50,73 @@ public protocol AudioCapture: Actor {
     func setSpeechBoostEnabled(_ enabled: Bool) async
 }
 
+/// Maps the running `AVAudioTime.sampleTime` of each tap callback to a
+/// session-relative seconds value, even across engine restarts.
+///
+/// One instance per capture session, shared between the raw and
+/// processed taps so they observe the same time origin. The audio
+/// thread calls `sessionTime(forRaw:)`; the capture actor calls
+/// `markEngineRebuildBoundary()` whenever a recovery path is about to
+/// rebuild the engine (`recoverEngine`, `handleMediaServicesReset`).
+///
+/// On boundary, the rebaser inspects the next chunk's raw time and:
+/// - leaves the anchor alone if the new raw time would still produce a
+///   forward session time (engine `sampleTime` continued — common when
+///   only taps were reinstalled), or
+/// - re-anchors so the session timeline continues from
+///   `lastSessionTime` (engine `sampleTime` reset to ~0 — happens on a
+///   fresh `AVAudioEngine` and is implementation-defined on
+///   `engine.stop()`/`start()`).
+///
+/// Without this, a fresh engine after `handleMediaServicesReset` (or a
+/// post-renegotiation tap reinstall, depending on platform behavior)
+/// silently produced session times that jumped backward by tens of
+/// seconds — corrupting the rolling buffer's anchors, the diarize
+/// cursor, and the analyzer's source-time mapping.
+///
+/// Thread-safe via NSLock; contention is minimal (audio thread reads
+/// per chunk, actor writes only on rebuild).
+final class TimestampRebaser: @unchecked Sendable {
+    private let lock = NSLock()
+    private var firstRawTime: Double?
+    private var offset: Double = 0
+    private var lastSessionTime: Double = 0
+    private var pendingBoundary = false
+
+    init() {}
+
+    func markEngineRebuildBoundary() {
+        lock.lock(); defer { lock.unlock() }
+        pendingBoundary = true
+    }
+
+    func sessionTime(forRaw raw: Double) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        if pendingBoundary {
+            pendingBoundary = false
+            if let prev = firstRawTime {
+                let wouldBeSession = (raw - prev) + offset
+                if wouldBeSession < lastSessionTime {
+                    // sampleTime reset — re-anchor so the next chunk
+                    // lands at lastSessionTime, collapsing the
+                    // rebuild gap. Monotonic, no backward jumps.
+                    offset = lastSessionTime
+                    firstRawTime = raw
+                }
+                // else: sampleTime continued forward across the
+                // rebuild; keep the existing anchor. The natural
+                // forward delta is the audio gap during recovery.
+            }
+        }
+        if firstRawTime == nil {
+            firstRawTime = raw
+        }
+        let session = (raw - (firstRawTime ?? raw)) + offset
+        if session > lastSessionTime { lastSessionTime = session }
+        return session
+    }
+}
+
 public extension AudioCapture {
     func captureEndReason() async -> CaptureEndReason? { nil }
     func availableInputs() async -> [AudioInputDescription] { [] }
@@ -79,6 +146,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     private var interruptionObserver: NSObjectProtocol?
     private var mediaResetObserver: NSObjectProtocol?
     private var endReason: CaptureEndReason?
+    private var rebaser: TimestampRebaser?
     private var speechBoostEnabled: Bool = true
 
     public init() {}
@@ -102,6 +170,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         #endif
 
         endReason = nil
+        rebaser = TimestampRebaser()
         let (rawStream, rawCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
         let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
         self.rawCont = rawCont
@@ -127,9 +196,10 @@ public actor AVAudioEngineCapture: AudioCapture {
     /// recovery, where the previous engine instance is invalid and must
     /// be discarded rather than reused.
     private func buildAndStartEngine() throws {
-        guard let rawCont, let processedCont else {
+        guard let rawCont, let processedCont, let rebaser else {
             throw AudioError.engineUnavailable(reason: "no active capture streams")
         }
+        let capturedRebaser = rebaser
 
         // Fresh engine + nodes per session — see the property comment.
         let engine = AVAudioEngine()
@@ -179,6 +249,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             Self.yieldResampled(
                 buffer,
                 time: time,
+                rebaser: capturedRebaser,
                 sampleRateRatio: sampleRateRatio,
                 outputFormat: outputFormat,
                 converter: rawConverter,
@@ -191,6 +262,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             Self.yieldResampled(
                 buffer,
                 time: time,
+                rebaser: capturedRebaser,
                 sampleRateRatio: sampleRateRatio,
                 outputFormat: outputFormat,
                 converter: processedConverter,
@@ -308,6 +380,10 @@ public actor AVAudioEngineCapture: AudioCapture {
         engine = nil
         eq = nil
         processedSink = nil
+        // Fresh engine = fresh `sampleTime` origin near 0. Without
+        // this mark, the next chunk's session-relative timestamp
+        // would jump backward by the entire session duration so far.
+        rebaser?.markEngineRebuildBoundary()
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
@@ -424,10 +500,22 @@ public actor AVAudioEngineCapture: AudioCapture {
         engine.connect(eq, to: processedSink, format: inputFormat)
 
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
+        // Capture the rebaser locally so it survives any actor-state
+        // reset during tap callbacks. nil is impossible here (we'd
+        // have bailed at the top guard) but defend against future
+        // refactors.
+        guard let capturedRebaser = rebaser else {
+            AppLog.audio.error("recoverEngine[\(trigger, privacy: .public)]: rebaser nil; ending capture")
+            endReason = .recoveryFailed("\(trigger): rebaser nil")
+            rawCont.finish()
+            processedCont.finish()
+            return
+        }
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
                 buffer,
                 time: time,
+                rebaser: capturedRebaser,
                 sampleRateRatio: sampleRateRatio,
                 outputFormat: outputFormat,
                 converter: newRawConverter,
@@ -438,6 +526,7 @@ public actor AVAudioEngineCapture: AudioCapture {
             Self.yieldResampled(
                 buffer,
                 time: time,
+                rebaser: capturedRebaser,
                 sampleRateRatio: sampleRateRatio,
                 outputFormat: outputFormat,
                 converter: newProcessedConverter,
@@ -445,6 +534,13 @@ public actor AVAudioEngineCapture: AudioCapture {
             )
         }
 
+        // Mark a rebuild boundary so the rebaser can correct for an
+        // `engine.stop()`/`start()` that resets `AVAudioTime.sampleTime`
+        // (implementation-defined for the same engine instance). If
+        // sampleTime continues forward, the rebaser passes through
+        // unchanged; if it resets to ~0, the rebaser re-anchors to
+        // maintain monotonicity.
+        capturedRebaser.markEngineRebuildBoundary()
         engine.prepare()
         do {
             try engine.start()
@@ -483,6 +579,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         processedCont = nil
         rawConverter = nil
         processedConverter = nil
+        rebaser = nil
         // Drop the engine + nodes entirely. The next `start()` builds
         // fresh instances — see the engine property comment.
         engine = nil
@@ -505,6 +602,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     private static func yieldResampled(
         _ buffer: AVAudioPCMBuffer,
         time: AVAudioTime,
+        rebaser: TimestampRebaser,
         sampleRateRatio: Double,
         outputFormat: AVAudioFormat,
         converter: AVAudioConverter,
@@ -552,9 +650,14 @@ public actor AVAudioEngineCapture: AudioCapture {
 
         let frameCount = Int(outBuffer.frameLength)
         let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
-        let timestamp = time.sampleRate > 0
+        // Session-relative timestamp via the rebaser — survives engine
+        // restarts (config-change recovery and media-services reset)
+        // without backward jumps. See `TimestampRebaser` for the
+        // boundary logic.
+        let rawTimestamp = time.sampleRate > 0
             ? Double(time.sampleTime) / time.sampleRate
             : 0
+        let timestamp = rebaser.sessionTime(forRaw: rawTimestamp)
 
         // Per-source-channel perceptual levels for the multi-bar
         // meter. Read from the PRE-downmix input buffer so a stereo
