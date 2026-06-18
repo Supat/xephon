@@ -449,7 +449,14 @@ final class RecordingController {
     private var rawTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
-    private var routeWatcherTask: Task<Void, Never>?
+    // The four watcher tasks below are marked `nonisolated(unsafe)`
+    // so the (nonisolated) `deinit` can cancel them — `@MainActor`
+    // isolation would otherwise lock deinit out and the discarded
+    // controller's notification handlers would keep running, which
+    // is the exact leak the route-change stomp was triggering. Each
+    // is assigned once in `init` (on the MainActor) and never mutated
+    // again, so the unsafe escape is sound.
+    nonisolated(unsafe) private var routeWatcherTask: Task<Void, Never>?
     /// Hardware-level connect/disconnect notification observers.
     /// `AVAudioSession.routeChangeNotification` only fires for active
     /// sessions, so while the app is idle between recordings, USB-C
@@ -459,8 +466,8 @@ final class RecordingController {
     /// globally for any audio (and video) device the system sees,
     /// regardless of session state, so we use those as the primary
     /// signal to refresh the input list on plug/unplug.
-    private var deviceConnectedWatcherTask: Task<Void, Never>?
-    private var deviceDisconnectedWatcherTask: Task<Void, Never>?
+    nonisolated(unsafe) private var deviceConnectedWatcherTask: Task<Void, Never>?
+    nonisolated(unsafe) private var deviceDisconnectedWatcherTask: Task<Void, Never>?
     /// Polling fallback for USB-C audio plug/unplug detection.
     /// On iPadOS 26, neither `AVAudioSession.routeChangeNotification`
     /// (silent for inactive sessions) nor `AVCaptureDevice.wasConnected
@@ -469,7 +476,7 @@ final class RecordingController {
     /// poll the input list at 2 s intervals while idle. The poll is a
     /// metadata-only category swap + read; no audio session activation
     /// happens, so the cost is negligible.
-    private var inputPollTask: Task<Void, Never>?
+    nonisolated(unsafe) private var inputPollTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
     /// Sliding-window continuous diarization. Fires every
@@ -710,9 +717,10 @@ final class RecordingController {
             let notifications = NotificationCenter.default.notifications(
                 named: AVAudioSession.routeChangeNotification
             )
-            for await _ in notifications {
+            for await note in notifications {
                 guard let self else { break }
-                await self.handleAudioRouteChange()
+                let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+                await self.handleAudioRouteChange(reasonRaw: reasonRaw)
             }
         }
         // Hardware-level connect/disconnect — fires for USB-C audio
@@ -771,6 +779,20 @@ final class RecordingController {
                 }
             }
         }
+    }
+
+    /// Cancel the four init-time notification/poll tasks so a discarded
+    /// controller stops responding to `AVAudioSession` route changes,
+    /// `AVCaptureDevice` connect/disconnect events, and the USB-poll
+    /// timer. Without this, a stale controller's idle route handler
+    /// can deactivate the shared audio session out from under the
+    /// foreground controller's recording (see the instanceTag doc).
+    deinit {
+        AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] deinit")
+        routeWatcherTask?.cancel()
+        deviceConnectedWatcherTask?.cancel()
+        deviceDisconnectedWatcherTask?.cancel()
+        inputPollTask?.cancel()
     }
 
     /// Internal access (not `private`) so sibling coordinators can

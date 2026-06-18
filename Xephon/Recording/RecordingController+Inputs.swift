@@ -38,8 +38,26 @@ extension RecordingController {
         // + no active playback because changing category on an
         // already-active session leaves the route latched (see
         // docs/playback_silence_postmortem.md).
-        let canReconfigure = phase == .idle && playbackPlayer == nil
+        //
+        // ALSO skip the swap when the session is already in a
+        // recording-class category: (1) the inputs are already
+        // visible without a swap, and (2) `setCategory` fires
+        // `.categoryChange` + `.routeConfigurationChange`
+        // notifications even when "switching" between equivalent
+        // categories, which both disrupts an active engine on this
+        // process *and* re-triggers `handleAudioRouteChange` →
+        // `refreshInputs` → `setCategory` for every other
+        // RecordingController that's still subscribed. Without this
+        // guard, a stale idle controller (see the instanceTag doc)
+        // category-thrashes the singleton session while another
+        // controller is mid-recording, and the recording captures no
+        // audio.
         let session = AVAudioSession.sharedInstance()
+        let alreadyExposesInputs = session.category == .record
+            || session.category == .playAndRecord
+        let canReconfigure = phase == .idle
+            && playbackPlayer == nil
+            && !alreadyExposesInputs
         let priorCategory = session.category
         let priorMode = session.mode
         let priorOptions = session.categoryOptions
@@ -84,25 +102,42 @@ extension RecordingController {
     }
 
     /// React to `AVAudioSession.routeChangeNotification`. Refreshes
-    /// the visible input list and, when we're idle, fully deactivates
-    /// the shared session so the next playback or record activation
-    /// rebinds against the current route.
+    /// the visible input list and, when we're idle AND the change
+    /// reason is `.oldDeviceUnavailable`, fully deactivates the shared
+    /// session so the next playback or record activation rebinds
+    /// against the current route.
     ///
-    /// Without this, AirPods that disconnect mid-app-session and then
-    /// reconnect leave the session bound to a stale (dead) route:
-    /// both AirPods playback and the built-in speaker silently fail
-    /// until the user backgrounds the app, which forces the OS to
-    /// reclaim the session. Deactivating here mimics that recovery
-    /// path without requiring user intervention.
+    /// The reason filter is load-bearing. `AVAudioSession` is a
+    /// process-wide singleton: deactivating it affects every
+    /// controller in the app, including one that's mid-recording.
+    /// Route changes fire constantly during normal operation —
+    /// `.categoryChange` when our own `setCategory` runs,
+    /// `.routeConfigurationChange` on USB clock renegotiation,
+    /// `.newDeviceAvailable` when a device plugs in. Deactivating on
+    /// any of those stomps an active recording. The original AirPods
+    /// scenario this method handles is specifically the
+    /// `.oldDeviceUnavailable` case (a device we were using
+    /// disappeared, leaving the session bound to a dead route);
+    /// gating on that is enough to fix AirPods without breaking
+    /// another controller's session.
     ///
     /// Active playback gets a hard stop on any route change — Apple's
     /// human-interface guidance is that an unplugged or disconnected
     /// output should pause / stop playback rather than silently
     /// continue through whatever the OS falls back to.
-    func handleAudioRouteChange() async {
+    func handleAudioRouteChange(reasonRaw: UInt? = nil) async {
         #if os(iOS) || targetEnvironment(macCatalyst)
         let reason = (AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "<none>")
-        AppLog.app.info("handleAudioRouteChange[\(self.instanceTag, privacy: .public)] fired; currentInput=\(reason, privacy: .public) phase=\(String(describing: self.phase), privacy: .public)")
+        AppLog.app.info("handleAudioRouteChange[\(self.instanceTag, privacy: .public)] fired; currentInput=\(reason, privacy: .public) phase=\(String(describing: self.phase), privacy: .public) reasonRaw=\(reasonRaw ?? 99, privacy: .public)")
+        let parsedReason = reasonRaw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+        // `.categoryChange` is overwhelmingly our own `setCategory`
+        // echoing back. Treat it as a no-op so the refresh path
+        // doesn't loop into another `setCategory` and re-fire the
+        // notification, then fire another, etc. Without this guard,
+        // any second-instance controller's idle `refreshInputs`
+        // becomes a self-perpetuating route-change storm that starves
+        // the recording controller's engine.
+        if parsedReason == .categoryChange { return }
         #endif
         await refreshInputs()
         if playbackPlayer != nil {
@@ -110,6 +145,7 @@ extension RecordingController {
         }
         guard phase == .idle else { return }
         #if os(iOS) || targetEnvironment(macCatalyst)
+        guard parsedReason == .oldDeviceUnavailable else { return }
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
