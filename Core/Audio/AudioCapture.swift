@@ -91,7 +91,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         #if os(iOS) || targetEnvironment(macCatalyst)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement)
+            try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
             try Self.bindPreferredInput(
                 to: effectiveInputUID(session: session),
                 session: session
@@ -310,7 +310,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         processedSink = nil
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement)
+            try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
             try Self.bindPreferredInput(to: effectiveInputUID(session: session), session: session)
             try buildAndStartEngine()
             AppLog.audio.info("mediaServicesReset: session + engine rebuilt")
@@ -779,7 +779,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     private func configureCategoryIfNeeded(_ session: AVAudioSession) {
         if session.category != .record {
             do {
-                try session.setCategory(.record, mode: .measurement)
+                try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
             } catch {
                 AppLog.audio.warning("setCategory failed: \(String(describing: error), privacy: .public)")
             }

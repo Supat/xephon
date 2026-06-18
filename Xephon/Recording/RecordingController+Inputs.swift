@@ -65,7 +65,7 @@ extension RecordingController {
             try? session.setCategory(
                 .playAndRecord,
                 mode: .default,
-                options: [.defaultToSpeaker]
+                options: [.allowBluetoothHFP, .defaultToSpeaker]
             )
         }
         #endif
