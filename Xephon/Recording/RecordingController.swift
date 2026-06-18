@@ -449,14 +449,22 @@ final class RecordingController {
     private var rawTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
-    // The four watcher tasks below are marked `nonisolated(unsafe)`
-    // so the (nonisolated) `deinit` can cancel them — `@MainActor`
-    // isolation would otherwise lock deinit out and the discarded
-    // controller's notification handlers would keep running, which
-    // is the exact leak the route-change stomp was triggering. Each
-    // is assigned once in `init` (on the MainActor) and never mutated
-    // again, so the unsafe escape is sound.
-    nonisolated(unsafe) private var routeWatcherTask: Task<Void, Never>?
+    // The four watcher tasks below need `@ObservationIgnored
+    // nonisolated(unsafe)` together. `nonisolated` (without `(unsafe)`)
+    // isn't allowed on a mutable stored property of a `@MainActor`
+    // class — Swift 6 strict concurrency rejects it. `(unsafe)` is the
+    // documented escape for "set on MainActor, read elsewhere," which
+    // we need so the (nonisolated) `deinit` can cancel them; without
+    // that, deinit can't touch them and the discarded controller's
+    // notification handlers keep running — the exact leak the
+    // route-change stomp was triggering. `@ObservationIgnored` keeps
+    // the `@Observable` macro from generating a tracking accessor that
+    // would shadow the storage with a MainActor-isolated wrapper and
+    // make `(unsafe)` look redundant (per Xcode's "has no effect"
+    // hint — applying `@ObservationIgnored` is what makes the
+    // `(unsafe)` actually take effect). Skipping observation is also
+    // correct: UI never reads these tasks.
+    @ObservationIgnored nonisolated(unsafe) private var routeWatcherTask: Task<Void, Never>?
     /// Hardware-level connect/disconnect notification observers.
     /// `AVAudioSession.routeChangeNotification` only fires for active
     /// sessions, so while the app is idle between recordings, USB-C
@@ -466,8 +474,8 @@ final class RecordingController {
     /// globally for any audio (and video) device the system sees,
     /// regardless of session state, so we use those as the primary
     /// signal to refresh the input list on plug/unplug.
-    nonisolated(unsafe) private var deviceConnectedWatcherTask: Task<Void, Never>?
-    nonisolated(unsafe) private var deviceDisconnectedWatcherTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var deviceConnectedWatcherTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var deviceDisconnectedWatcherTask: Task<Void, Never>?
     /// Polling fallback for USB-C audio plug/unplug detection.
     /// On iPadOS 26, neither `AVAudioSession.routeChangeNotification`
     /// (silent for inactive sessions) nor `AVCaptureDevice.wasConnected
@@ -476,7 +484,7 @@ final class RecordingController {
     /// poll the input list at 2 s intervals while idle. The poll is a
     /// metadata-only category swap + read; no audio session activation
     /// happens, so the cost is negligible.
-    nonisolated(unsafe) private var inputPollTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var inputPollTask: Task<Void, Never>?
     private var volatilePollTask: Task<Void, Never>?
     private var fileEndWatcherTask: Task<Void, Never>?
     /// Sliding-window continuous diarization. Fires every
