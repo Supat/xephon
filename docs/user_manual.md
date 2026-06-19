@@ -47,21 +47,26 @@ collapses to a sidebar drawer.
 > **Figure 2: Main screen, landscape, idle state.**
 > Left pane: input picker ("iPad Microphone ⌄"), a large "Start
 > Recording" button, an "Open Audio File" icon button next to it, then
-> stacked cards: Settings, Pipeline, (optional) Summarizer. Right pane:
-> a "Search utterances" field at top, a "All Labels ⌄" filter chip on
-> the right, a horizontal diarization strip below them, then the
-> transcript list (empty state: "No utterances yet — tap Start
-> Recording to begin"). Top toolbar carries (left → right) Save, Find,
-> Search, Export buttons.
+> a swipeable card region with page-indicator dots at the bottom. Right
+> pane: a "Search utterances" field at top, a "All Labels ⌄" filter
+> chip on the right, a horizontal diarization strip below them, then
+> the transcript list (empty state: "No utterances yet — tap Start
+> Recording to begin"). Top chrome carries an editable **session
+> title** field in the center and (left → right on the trailing edge)
+> **Summarize**, **Review**, **Search & Replace**, **Export** buttons.
 
-The control pane has four cards you'll use most:
+The control pane is organized as a horizontally swipeable strip of six
+pages. Swipe left / right, tap the page indicator at the bottom, or
+press ⌘1 – ⌘6 on an external keyboard to jump directly:
 
-| Card           | What it does                                                       |
-|----------------|--------------------------------------------------------------------|
-| **Settings**   | Language, text-SER backend, speech-boost toggle, diarizer slider, Custom Glossary |
-| **Pipeline**   | Live "is each stage working?" indicators while recording           |
-| **Summarizer** | Generates an LLM summary of the session (optional, off by default) |
-| **Models**     | Tap "Manage Models" if you ever need to re-download / delete model weights |
+| ⌘    | Page          | What's on it                                                                                                                                                                                       |
+|------|---------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ⌘1   | **Settings**  | Language picker, offline-ASR backend, text-SER backend, Speech Boost toggle, Speaker Sensitivity slider. Plus the **Pipeline** "is each stage working?" card below.                                |
+| ⌘2   | **Affect**    | Session-level Summary, Statistics, the SER aggregate, and the **Fusion Legend** card (acoustic-vs-text mix sliders + the **Custom Glossary** entry point).                                          |
+| ⌘3   | **Speakers**  | Speaker roster, voice-embedding cluster, speaker-behavior heatmap, turn-taking matrix, affective synchrony, and the influence / accommodation / reactivity / synchrony-arc analyses.                |
+| ⌘4   | **Sections**  | Named chapter markers over the transcript with optional per-section LLM summaries. See § 13.                                                                                                        |
+| ⌘5   | **Keywords**  | Personal keyword bank used as filter chips above the transcript and as anchors for the heuristic summarizer mode. See § 14.                                                                         |
+| ⌘6   | **Summarizer**| Session-summary card, model picker (Apple FM / Qwen / Llama-Swallow / LM Studio), Prompts editor, Models card for download / delete.                                                                |
 
 ---
 
@@ -259,7 +264,9 @@ things:
 
 Each entry can do either, both, or neither.
 
-Open the sheet via **Settings → Custom Glossary**.
+Open the sheet from the **Affect page (⌘2)** — scroll to the **Fusion
+Legend** card and tap the **Custom Glossary** button (a purple book
+icon with a count chip showing how many entries you've added).
 
 > **Figure 10: Custom Glossary sheet.**
 > Modal sheet, top to bottom:
@@ -393,13 +400,22 @@ the label to reset to the default.
 If you've enabled the summarizer (Settings → Summarizer card), Xephon
 can produce a one-page LLM summary of the whole session.
 
-Backends:
+Backends, picked in the Summarizer card on the **Summarizer page
+(⌘6)**:
 
-- **Apple Foundation Models** (built into iOS 26, no download
+- **Apple Foundation Models** (built into iPadOS 26, no download
   needed). Default when available.
 - **Qwen3 8B** (MLX). Downloads ~ 4.6 GB on first use.
+- **Llama-Swallow 8B** (MLX). Same size class as Qwen, tuned for
+  Japanese; downloads on first use.
+- **LM Studio** (remote). Talks to an LM Studio server running on
+  your Mac or another machine on the same network. Configure the
+  base URL + model in the LM Studio Server section of the
+  Summarizer card. Audio still stays on the iPad; only the
+  transcript text is sent to the configured server.
 
-Open the summary sheet from the toolbar (📖 icon).
+Open the summary sheet from the **Summarize** button on the top
+chrome (a book icon).
 
 > **Figure 15: Session Summary sheet.**
 > Modal sheet. Sections, top to bottom:
@@ -440,57 +456,154 @@ to adjust the time range too.
 
 ---
 
-## 13. Saving and sharing
+## 13. Sections (chapter markers)
+
+The **Sections** page (⌘4) lets you mark named ranges of utterances
+inside a session — like chapters in a long interview. Each section
+points to a **start utterance** and an **end utterance**, and can
+optionally carry its own LLM summary.
+
+> **Figure 17: Sections card.**
+> The Sections page on the control pane. Stacked list of section rows,
+> each showing the section title, a "Speaker · m:ss → m:ss" range, an
+> optional cached summary excerpt, and a row of action buttons
+> (Summarize, Edit, Delete). Below the list: a prominent "Add Section"
+> button. Two quick-add buttons sit beneath it — **Add Start** and
+> **Add End** — that snap the focused-utterance id into a fresh
+> incomplete section so you can build markers while you read.
+
+### Creating a section
+
+You have three paths:
+
+1. **Add Section** → raises the section editor sheet. Pick a title
+   and the start / end utterances explicitly from a picker.
+2. **Add Start** (with one utterance focused) → creates an
+   incomplete section whose start is the focused row; fill in the
+   end later.
+3. **Add End** (with one utterance focused) → mirror of the above —
+   end is set, start is empty.
+
+### Completing a section
+
+Each row has a small **complete-with-focus** button that stamps the
+focused utterance into whichever bound (start or end) is still
+missing. Useful when you marked one boundary live and want to set
+the other later without opening the editor.
+
+### Per-section summary
+
+Tap the **Summarize** button on a section row to ask the active
+summarizer backend (see § 11) for a one-paragraph summary of just
+that section's utterances. The result is cached in the section,
+survives a Save / Load round-trip, and renders as an excerpt under
+the title.
+
+### Sections vs. session swap
+
+Sections reference per-session utterance UUIDs. Loading a different
+session drops them; starting a new recording clears them.
+
+---
+
+## 14. Keywords
+
+The **Keywords** page (⌘5) is a personal keyword bank that does
+two things:
+
+- Surfaces tappable **keyword chips** above the transcript that
+  filter to utterances whose normalized transcript contains that
+  keyword (case- and width-insensitive, hiragana / katakana
+  interchangeable). Multiple chips OR together.
+- Anchors the **heuristic** summarizer mode (no LLM call) — when
+  enabled, the summary is built from sentences that match your
+  selected keywords plus their neighbors.
+
+> **Figure 18: Keywords card.**
+> Vertical list of keyword rows. Each row carries the keyword text,
+> an occurrence count chip ("12 utts"), a group-assignment menu
+> ("Ungrouped ⌄"), and a destructive Delete button. Above the list:
+> a group selector and an "Add Group" button. Bottom: a TextField
+> "Add a keyword…" with a + button that commits on submit.
+
+### Adding, deleting, organizing
+
+- Type in the **Add a keyword…** field and submit. The keyword
+  lands at the bottom of its currently-selected group (or
+  Ungrouped).
+- Each row has a trash button — confirms before deleting.
+- Drag a row onto a different group header to move it; drag onto a
+  different row to reorder.
+- The **⋯** menu offers Import / Export JSON for the whole bank
+  and a destructive **Remove All**.
+
+### Groups
+
+Tap **Add Group** to define a named bucket (e.g. "Negative",
+"Names", "Technical"). Use groups to keep large banks organized
+and to scope the heuristic summarizer to a subset.
+
+Keywords are app-global, not per-session — they persist across
+launches and don't ship inside the `.xph` bundle. Use Export to
+share them deliberately.
+
+---
+
+## 15. Saving and sharing
 
 ### Save a session
 
-Toolbar 💾 icon → standard system save sheet. The session is written
-as a `.xph` bundle (binary plist) containing the utterance list,
-source audio (file mode only), diarizer state, summary, and
-metadata. Save anywhere — Files app, iCloud Drive, etc.
+**File → Save Session…** (⌘S) raises the system save sheet. The
+session is written as a `.xph` bundle (binary plist) containing the
+utterance list, source audio (file mode only), diarizer state,
+sections, summary, and metadata. Save anywhere — Files app, iCloud
+Drive, etc.
 
 ### Open a saved session
 
-Toolbar 📂 icon in the toolbar, or use the Files app and tap a
-`.xph` file. The session loads with full state (including playback if
-the source audio was bundled).
+**File → Import Session…** (⌘⇧O) raises the system file picker
+filtered to `.xph` documents. Alternatively, tap a `.xph` file in
+the Files app and it opens in Xephon. The session loads with full
+state (including playback if the source audio was bundled).
 
 ### Export JSON
 
-Toolbar share icon → **Export JSON**. Writes the per-utterance
-rows as JSON (see `docs/output_schema.md`). Use this to bring
-results into external tooling.
-
-> **Figure 17: Export menu.**
-> Action sheet from the share icon with three options stacked: "Save
-> Session (.xph)", "Export JSON", "Share Audio File…" (only when the
-> session has a bundled source).
+The **Export** button on the top chrome (a share icon) writes the
+per-utterance rows as JSON (see `docs/output_schema.md`). The same
+action is also available as **File → Export to JSON** (⌘⇧S). Use
+this to bring results into external tooling.
 
 ---
 
-## 14. Settings reference
+## 16. Settings reference
 
-> **Figure 18: Settings card, expanded.**
-> The full Settings card with every control labeled:
->   • Language picker (🇯🇵 Japanese ⌄)
->   • Text SER picker (WRIME ⌄)
+> **Figure 19: Settings card, expanded.**
+> The full Settings card on the Settings page (⌘1) with every
+> control labeled:
+>   • Language picker (🇯🇵 Japanese ⌄) and Offline ASR picker
+>     (Apple SpeechAnalyzer / WhisperKit / Qwen3-ASR) on the same
+>     row in landscape; stacked on portrait
+>   • Text SER picker (WRIME ⌄), shown only when more than one
+>     backend is available
 >   • Speech Boost toggle (mic mode only)
->   • Speaker Sensitivity slider (👥 ─── value)
->   • Custom Glossary navigation row (📕 Custom Glossary  N >)
+>   • Speaker Sensitivity slider (👥 ─── value, double-tap to reset)
 
 | Control               | When to change                                          |
 |-----------------------|---------------------------------------------------------|
-| Language              | Recording in a language other than Japanese.            |
-| Text SER              | Pick WRIME for fastest Japanese inference, or Apple FM for richer (slower) reasoning. Auto-falls back when one is unavailable. |
+| Language              | Recording in a language other than Japanese. Locked while a session is running. |
+| Offline ASR           | Pick the fallback recognizer used by file-mode analysis and Re-evaluate. Apple SpeechAnalyzer is default; switch to WhisperKit (Kotoba-Whisper) for more conservative Japanese transcripts, or Qwen3-ASR (experimental). |
+| Text SER              | Pick WRIME for fastest Japanese inference, or Apple FM for richer (slower) reasoning. Auto-falls back when one is unavailable. Hidden when only one backend is installed. |
 | Speech Boost          | Quiet or distant input. Affects ASR only.              |
-| Speaker Sensitivity   | Diarizer is splitting one person into many speakers (drag left), or merging two people into one (drag right). |
-| Custom Glossary       | Open to bias text-SER or seed ASR with your vocabulary. |
+| Speaker Sensitivity   | Diarizer is splitting one person into many speakers (drag left), or merging two people into one (drag right). Double-tap to reset. |
+
+The **Custom Glossary** button lives on the Fusion Legend card on the
+Affect page (⌘2), not on the Settings card — see § 9.
 
 ---
 
-## 15. Pipeline card — what each indicator means
+## 17. Pipeline card — what each indicator means
 
-> **Figure 19: Pipeline card, all stages active.**
+> **Figure 20: Pipeline card, all stages active.**
 > Vertical list of six stages, each with an icon, label, throughput
 > number, and a green-check status pill. Stages:
 >   • 🎙 Capture
@@ -510,7 +623,7 @@ fails to load. Tap the banner for details.
 
 ---
 
-## 16. Troubleshooting
+## 18. Troubleshooting
 
 | Symptom                                              | Try                                                                                                                                                                                                          |
 |------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -525,7 +638,7 @@ fails to load. Tap the banner for details.
 
 ---
 
-## 17. Privacy
+## 19. Privacy
 
 - **All audio processing is on-device.** Recording, transcription,
   diarization, acoustic and text emotion analysis all run on the
@@ -546,23 +659,50 @@ See `docs/privacy.md` for the formal privacy statement.
 
 ---
 
-## 18. Keyboard shortcuts (external keyboard)
+## 20. Keyboard shortcuts (external keyboard)
 
-| Shortcut       | Action                              |
-|----------------|-------------------------------------|
-| ⌘ R            | Start / Stop recording              |
-| ⌘ O            | Open audio file                     |
-| ⌘ S            | Save session                        |
-| ⌘ F            | Focus search field                  |
-| ⌘ E            | Export JSON                         |
-| ⌘ ⇧ S          | Open session summary sheet          |
-| ⌘ ⇧ R          | Open transcription review sheet     |
-| Space          | Play / pause selected row's audio   |
-| Esc            | Dismiss the active sheet            |
+The shortcuts below are the ones the app actually registers with the
+system menu bar. They surface in the iPadOS 26 menu strip (press and
+hold ⌘) and in macOS / Designed-for-iPad on Apple Silicon menus.
+
+**File**
+
+| Shortcut | Action                              |
+|----------|-------------------------------------|
+| ⌘ O      | Open audio file                     |
+| ⌘ ⇧ O    | Import a saved session (`.xph`)     |
+| ⌘ S      | Save session as `.xph`              |
+| ⌘ ⇧ S    | Export per-utterance JSON           |
+
+**Edit**
+
+| Shortcut | Action                                                |
+|----------|-------------------------------------------------------|
+| ⌘ Z      | Undo last edit (transcript / speaker / sections / glossary / keywords / settings) |
+| ⌘ ⇧ Z    | Redo                                                  |
+| ⌘ F      | Focus the utterance search field                      |
+
+**View** — switch the control pane to a specific page
+
+| Shortcut | Page         |
+|----------|--------------|
+| ⌘ 1      | Settings     |
+| ⌘ 2      | Affect       |
+| ⌘ 3      | Speakers     |
+| ⌘ 4      | Sections     |
+| ⌘ 5      | Keywords     |
+| ⌘ 6      | Summarizer   |
+
+Sheet items in the View menu (Summary, Review, Search & Replace) are
+listed there as labelled buttons but ship without keyboard shortcuts —
+trigger them with the matching toolbar buttons in the top chrome.
+
+There is **no** ⌘R shortcut to start / stop recording — tap the
+Record button instead.
 
 ---
 
-## 19. Getting help
+## 21. Getting help
 
 Xephon is research software — there's no support desk. The
 documentation in `docs/` covers the architecture, model selection,
