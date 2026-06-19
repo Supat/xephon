@@ -19,6 +19,16 @@ the UI that aren't self-explanatory.
   iPads can install the app but the primary speech recognizer won't run
   on them.
 - iPadOS 26 or later.
+- **16 GB unified memory** (the 1 TB / 2 TB iPad Pro SKUs) if you want
+  to run an on-device LLM for session summarization or transcription
+  review. The MLX backends (Qwen3 8B, Llama-Swallow 8B) need ~5 GB
+  resident on top of the ~4 GB analysis pipeline, which trips iOS's
+  Jetsam ceiling on the 8 GB SKUs. On an 8 GB iPad the rest of the
+  app — recording, transcription, diarization, emotion analysis —
+  works fine; only the on-device LLM is out of reach, and you can
+  still get a session summary via **Apple Foundation Models** (light
+  enough to run on 8 GB) or **LM Studio** pointing at a Mac on the
+  same network. See § 11.
 - Microphone permission (for live recording) and Speech Recognition
   permission (for transcription). The app will prompt the first time
   each is needed.
@@ -40,9 +50,11 @@ When the ring closes you land on the main screen.
 
 ## 2. The main screen
 
-Xephon's main screen is a two-pane layout: a **control pane** on the left
-and a **transcript pane** on the right. In portrait the control pane
-collapses to a sidebar drawer.
+Xephon's main screen is a two-pane layout: a **control pane** on the
+left and a **transcript pane** on the right. Both panes stay visible
+in every orientation — the split is roughly 1 / 3 vs 2 / 3, so the
+control pane just gets narrower in portrait (cards stack vertically
+inside it where the wider landscape pane fit them side-by-side).
 
 > **Figure 2: Main screen, landscape, idle state.**
 > Left pane: input picker ("iPad Microphone ⌄"), a large "Start
@@ -109,8 +121,15 @@ in-flight utterances and returns to idle.
    button.
 2. Pick a file in the system file picker. Supported: anything
    AVFoundation can decode (MP3, M4A, WAV, AAC, FLAC, ...).
-3. Tap **Start Recording** (now labeled the same way; mode is shown
-   above the button as "File: filename.mp3").
+
+Analysis starts as soon as the picker hands the file back — there's
+no second tap. The status line above the button switches to "File:
+*filename.mp3*" and a thin progress bar tracks how far through the
+file the analyzer is.
+
+If you already have a session loaded when you pick a new file, Xephon
+shows a **Discard current session?** alert first; confirming starts
+the new analysis, cancelling leaves the existing session intact.
 
 > **Figure 4: File-mode picker.**
 > System document picker open over Xephon. Files browser shows two
@@ -375,10 +394,25 @@ folded into that speaker's centroid.
 
 ### Affirming a speaker
 
-If the diarizer's guess is right but you want to reinforce its
-confidence (useful for "Speaker 3" rows that are actually Speaker 1
-but the diarizer wasn't sure), tap **Affirm Speaker** in the
-popover. Requires source audio (file mode or imported session).
+Use Affirm when the row's **current** speaker label is already
+correct but you want the diarizer to lock that judgment in — for
+example a row tagged "S01" that you've listened to and confirmed
+really is S01, but the diarizer wasn't sure (so the row shows a
+caution / mismatch glyph). Tap the chip → **Affirm Speaker**.
+Xephon folds the row's audio into S01's centroid in the diarizer's
+internal database the same way the Teach-diarizer path does, but
+without changing the speaker label or splitting / merging anything.
+It also rewrites the cumulative timeline for the row's range so
+later utterances in the same window stop being flagged as
+mismatched.
+
+Use Reassign + Teach diarizer (above) instead when the current
+label is **wrong** — Affirm reinforces, it doesn't correct.
+
+Requires source audio: the row needs its waveform available so the
+speaker embedding can be extracted. That means file-mode sessions
+and imported `.xph` sessions only; rows captured live without a
+bundled source file have nothing to fold.
 
 ### Speaker sensitivity
 
@@ -406,8 +440,11 @@ Backends, picked in the Summarizer card on the **Summarizer page
 - **Apple Foundation Models** (built into iPadOS 26, no download
   needed). Default when available.
 - **Qwen3 8B** (MLX). Downloads ~ 4.6 GB on first use.
+  **Requires a 16 GB iPad** — needs ~5 GB resident on top of the
+  analysis pipeline; 8 GB iPads Jetsam-kill the app during prefill.
 - **Llama-Swallow 8B** (MLX). Same size class as Qwen, tuned for
-  Japanese; downloads on first use.
+  Japanese; downloads on first use. **Also 16 GB-only**, same
+  Jetsam constraint as Qwen.
 - **LM Studio** (remote). Talks to an LM Studio server running on
   your Mac or another machine on the same network. Configure the
   base URL + model in the LM Studio Server section of the
@@ -528,9 +565,11 @@ two things:
 
 ### Adding, deleting, organizing
 
-- Type in the **Add a keyword…** field and submit. The keyword
-  lands at the bottom of its currently-selected group (or
-  Ungrouped).
+- Type in the **Add a keyword…** field and submit. New keywords
+  always land at the bottom of **Ungrouped** — the add field has
+  no notion of a target group. Move the keyword into a group
+  afterwards using its per-row group menu, or by drag-and-drop
+  onto the destination group's header.
 - Each row has a trash button — confirms before deleting.
 - Drag a row onto a different group header to move it; drag onto a
   different row to reorder.
