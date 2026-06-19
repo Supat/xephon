@@ -661,8 +661,15 @@ final class SearchReplaceCoordinator {
                 return (id, text, u.start, u.end)
             }
         commitAllInflight = true
-        Task {
+        Task { @MainActor in
             defer { commitAllInflight = false }
+            // Wrap the per-row commits into a single undo group so one
+            // Cmd-Z reverses the whole batch — each commitHandEdit
+            // pushes its own .utteranceBatch step; UndoManager merges
+            // them between begin/endUndoGrouping into a single
+            // user-visible undo entry.
+            recorder.undoManager.beginUndoGrouping()
+            recorder.undoManager.setActionName(String(localized: "undo.searchReplace.all"))
             for entry in pending {
                 await recorder.commitHandEdit(
                     utteranceID: entry.id,
@@ -672,6 +679,7 @@ final class SearchReplaceCoordinator {
                 )
                 stagedReplacements.removeValue(forKey: entry.id)
             }
+            recorder.undoManager.endUndoGrouping()
             scheduleSearch(in: recorder)
         }
     }

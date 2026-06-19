@@ -89,7 +89,10 @@ struct SectionsCard: View {
                         },
                         onSummary: { onSummarize(section) },
                         onEdit: { editing = section },
-                        onDelete: { store.remove(id: section.id) }
+                        onDelete: {
+                            recorder.registerSectionsUndo(actionName: String(localized: "undo.section.remove"))
+                            store.remove(id: section.id)
+                        }
                     )
                     if section.id != store.sections.last?.id {
                         Divider()
@@ -125,6 +128,7 @@ struct SectionsCard: View {
             HStack(spacing: 8) {
                 Button {
                     guard let focusedID = validFocusedID else { return }
+                    recorder.registerSectionsUndo(actionName: String(localized: "undo.section.add"))
                     store.add(ConversationSection(
                         title: "",
                         startUtteranceID: focusedID,
@@ -143,6 +147,7 @@ struct SectionsCard: View {
 
                 Button {
                     guard let focusedID = validFocusedID else { return }
+                    recorder.registerSectionsUndo(actionName: String(localized: "undo.section.add"))
                     store.add(ConversationSection(
                         title: "",
                         startUtteranceID: nil,
@@ -169,6 +174,7 @@ struct SectionsCard: View {
                 speakerNames: recorder.speakerNameOverrides,
                 section: nil,
                 onSave: { newSection in
+                    recorder.registerSectionsUndo(actionName: String(localized: "undo.section.add"))
                     store.add(newSection)
                     showingNewSection = false
                 },
@@ -181,6 +187,7 @@ struct SectionsCard: View {
                 speakerNames: recorder.speakerNameOverrides,
                 section: section,
                 onSave: { updated in
+                    recorder.registerSectionsUndo(actionName: String(localized: "undo.section.update"))
                     store.update(updated)
                     editing = nil
                 },
@@ -240,6 +247,7 @@ struct SectionsCard: View {
             }
             updated.endUtteranceID = focusedID
         }
+        recorder.registerSectionsUndo(actionName: String(localized: "undo.section.update"))
         store.update(updated)
     }
 

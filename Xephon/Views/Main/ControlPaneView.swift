@@ -428,6 +428,7 @@ struct ControlPaneView: View {
                 KeywordsCard(
                     store: recorder.keywords,
                     filePicker: filePicker,
+                    registerUndo: { name in recorder.registerKeywordsUndo(actionName: name) },
                     keywordCounts: filterModel.keywordOccurrenceCounts(in: recorder)
                 )
             }

@@ -28,6 +28,12 @@ struct FusionLegendCard: View {
     let recorder: RecordingController
 
     @State private var showingGlossary = false
+    /// Slider-drag-start values for the fusion weights. Captured at
+    /// `onEditingChanged(true)` and consumed at `onEditingChanged(false)`
+    /// to push exactly one undo step per drag gesture (instead of one
+    /// per slider tick). Nil between drags.
+    @State private var acousticDragStart: Float?
+    @State private var textFloorDragStart: Float?
     /// Palette endpoint tints — pulled from the strip's own RGB
     /// constants so the legend can't drift out of sync with the
     /// rendering it explains.
@@ -107,6 +113,7 @@ struct FusionLegendCard: View {
         .sheet(isPresented: $showingGlossary) {
             CustomGlossarySheet(
                 store: recorder.glossary,
+                registerUndo: { name in recorder.registerGlossaryUndo(actionName: name) },
                 onDismiss: {
                     showingGlossary = false
                     Task { await recorder.reapplyGlossaryBias() }
@@ -249,7 +256,23 @@ struct FusionLegendCard: View {
                     .textCase(.uppercase)
                 Spacer()
                 Button(role: .destructive) {
+                    // Reset moves two weights at once — group so a
+                    // single Cmd-Z restores both. Both setters register
+                    // their inverse via the existing undo plumbing, so
+                    // we just need to scope them with the grouping
+                    // boundaries here.
+                    recorder.undoManager.beginUndoGrouping()
+                    recorder.undoManager.setActionName(String(localized: "undo.fusion.reset"))
+                    recorder.registerUndoStep(
+                        .fusionAcousticWeight(previous: recorder.fusionAcousticWeight),
+                        actionName: String(localized: "undo.fusion.reset")
+                    )
+                    recorder.registerUndoStep(
+                        .fusionTextWeightFloor(previous: recorder.fusionTextWeightFloor),
+                        actionName: String(localized: "undo.fusion.reset")
+                    )
                     recorder.resetFusionWeights()
+                    recorder.undoManager.endUndoGrouping()
                 } label: {
                     Text(String(localized: "fusion.controls.reset"))
                         .font(.caption2)
@@ -264,13 +287,41 @@ struct FusionLegendCard: View {
                 label: String(localized: "fusion.controls.acousticWeight"),
                 value: acousticBinding,
                 range: 0...2,
-                step: 0.05
+                step: 0.05,
+                onEditingChanged: { editing in
+                    if editing {
+                        acousticDragStart = recorder.fusionAcousticWeight
+                    } else if let start = acousticDragStart,
+                              start != recorder.fusionAcousticWeight {
+                        recorder.registerUndoStep(
+                            .fusionAcousticWeight(previous: start),
+                            actionName: String(localized: "undo.fusion.acousticWeight")
+                        )
+                        acousticDragStart = nil
+                    } else {
+                        acousticDragStart = nil
+                    }
+                }
             )
             sliderRow(
                 label: String(localized: "fusion.controls.textWeightFloor"),
                 value: textFloorBinding,
                 range: 0...1,
-                step: 0.05
+                step: 0.05,
+                onEditingChanged: { editing in
+                    if editing {
+                        textFloorDragStart = recorder.fusionTextWeightFloor
+                    } else if let start = textFloorDragStart,
+                              start != recorder.fusionTextWeightFloor {
+                        recorder.registerUndoStep(
+                            .fusionTextWeightFloor(previous: start),
+                            actionName: String(localized: "undo.fusion.textWeightFloor")
+                        )
+                        textFloorDragStart = nil
+                    } else {
+                        textFloorDragStart = nil
+                    }
+                }
             )
         }
     }
@@ -280,7 +331,8 @@ struct FusionLegendCard: View {
         label: String,
         value: Binding<Float>,
         range: ClosedRange<Float>,
-        step: Float
+        step: Float,
+        onEditingChanged: @escaping (Bool) -> Void = { _ in }
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
@@ -293,7 +345,7 @@ struct FusionLegendCard: View {
                     .foregroundStyle(.primary)
                     .frame(width: 40, alignment: .trailing)
             }
-            Slider(value: value, in: range, step: step)
+            Slider(value: value, in: range, step: step, onEditingChanged: onEditingChanged)
                 .controlSize(.small)
         }
     }

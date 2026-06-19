@@ -26,6 +26,11 @@ struct KeywordsCard: View {
     /// to avoid the multi-presentation hazard that swallowed
     /// Export in earlier iterations.
     let filePicker: FilePickerCoordinator
+    /// Undo-registration hook. Called with the localized action name
+    /// BEFORE every keyword/group mutation; ControlPaneView wires it
+    /// to `recorder.registerKeywordsUndo(actionName:)`. Default no-op
+    /// so previews / tests can elide it.
+    var registerUndo: (String) -> Void = { _ in }
     /// Per-keyword tally — `count[keyword.id]` is the number of
     /// utterances whose normalized transcript contains that
     /// keyword's normalized form. Computed by the parent against
@@ -137,6 +142,7 @@ struct KeywordsCard: View {
                 text: $addGroupText
             )
             Button(String(localized: "keywords.group.add.create")) {
+                registerUndo(String(localized: "undo.keywords.group.add"))
                 store.addGroup(name: addGroupText)
                 addGroupText = ""
                 presentation = .none
@@ -156,6 +162,7 @@ struct KeywordsCard: View {
                 text: $renameGroupText
             )
             Button(String(localized: "keywords.group.rename.save")) {
+                registerUndo(String(localized: "undo.keywords.group.rename"))
                 store.renameGroup(group.id, to: renameGroupText)
                 renameGroupText = ""
                 presentation = .none
@@ -180,6 +187,7 @@ struct KeywordsCard: View {
                 String(localized: "keywords.delete.confirm.delete"),
                 role: .destructive
             ) {
+                registerUndo(String(localized: "undo.keywords.group.remove"))
                 store.removeGroup(group.id)
                 presentation = .none
             }
@@ -249,6 +257,7 @@ struct KeywordsCard: View {
                 .disabled(store.keywords.isEmpty)
                 Divider()
                 Button(role: .destructive) {
+                    registerUndo(String(localized: "undo.keywords.removeAll"))
                     store.removeAll()
                 } label: {
                     Label(
@@ -562,6 +571,7 @@ struct KeywordsCard: View {
                     String(localized: "keywords.delete.confirm.delete"),
                     role: .destructive
                 ) {
+                    registerUndo(String(localized: "undo.keywords.remove"))
                     store.remove(id: keyword.id)
                     pendingDeleteKeyword = nil
                 }
@@ -626,6 +636,12 @@ struct KeywordsCard: View {
             guard let id = UUID(uuidString: raw), id != targetKeyword.id else {
                 continue
             }
+            if !didMove {
+                // One undo step per drop gesture, capturing the whole
+                // pre-move list — register on the first move, skip on
+                // subsequent within the same drop.
+                registerUndo(String(localized: "undo.keywords.move"))
+            }
             store.move(id, beforeKeywordWithID: targetKeyword.id)
             didMove = true
         }
@@ -639,6 +655,9 @@ struct KeywordsCard: View {
         var didMove = false
         for raw in droppedIDStrings {
             guard let id = UUID(uuidString: raw) else { continue }
+            if !didMove {
+                registerUndo(String(localized: "undo.keywords.move"))
+            }
             store.move(id, toEndOfGroup: groupID)
             didMove = true
         }
@@ -656,6 +675,7 @@ struct KeywordsCard: View {
         if !store.groups.isEmpty {
             Menu {
                 Button {
+                    registerUndo(String(localized: "undo.keywords.assign"))
                     store.assignKeyword(keyword.id, toGroup: nil)
                 } label: {
                     if keyword.groupID == nil {
@@ -670,6 +690,7 @@ struct KeywordsCard: View {
                 Divider()
                 ForEach(store.groups) { group in
                     Button {
+                        registerUndo(String(localized: "undo.keywords.assign"))
                         store.assignKeyword(keyword.id, toGroup: group.id)
                     } label: {
                         if keyword.groupID == group.id {
@@ -716,6 +737,7 @@ struct KeywordsCard: View {
     private func submitNewKeyword() {
         let trimmed = newKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        registerUndo(String(localized: "undo.keywords.add"))
         store.add(trimmed)
         newKeyword = ""
         // Keep focus so the user can chain additions without

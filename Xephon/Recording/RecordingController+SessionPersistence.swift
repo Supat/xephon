@@ -197,6 +197,12 @@ extension RecordingController {
     func loadSession(_ document: SessionDocument) async throws {
         guard phase == .idle else { return }
         stopPlayback()
+        // Drop any in-flight undo history — every step references the
+        // prior session's UUIDs, which the new bundle's utterance list
+        // about to replace `utterances` will invalidate. Per scope:
+        // save preserves history (it doesn't change in-memory state),
+        // but load wipes it.
+        undoManager.removeAllActions()
         // Bump the session token so ContentView's `@State` keyed
         // by UUID (`visibleUtteranceIDs`, `expandedUtteranceIDs`,
         // `selectedUtteranceID`, `scrollRequestUtteranceID`,

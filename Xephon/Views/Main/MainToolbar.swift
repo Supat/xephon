@@ -13,33 +13,13 @@ struct MainToolbar: ToolbarContent {
     let fileCoord: SessionFileCoordinator
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) { sessionTitleField }
+        ToolbarItem(placement: .principal) {
+            SessionTitleField(recorder: recorder)
+        }
         ToolbarItem(placement: .topBarTrailing) { summarize }
         ToolbarItem(placement: .topBarTrailing) { review }
         ToolbarItem(placement: .topBarTrailing) { searchReplace }
         ToolbarItem(placement: .topBarTrailing) { export }
-    }
-
-    /// Editable session-title field that replaces the static
-    /// "Xephon" nav title. Bound to `recorder.sessionTitle`;
-    /// empty value renders the localized "Untitled Session"
-    /// placeholder. Centered, headline font, plain field style
-    /// so it visually matches the nav title look.
-    /// `.frame(maxWidth: 320)` caps the editor width so it
-    /// doesn't grow past the available principal-slot space on
-    /// landscape iPad — without the cap the field stretches and
-    /// crowds out the trailing toolbar buttons.
-    @ViewBuilder
-    private var sessionTitleField: some View {
-        TextField(
-            String(localized: "chrome.sessionTitle.placeholder"),
-            text: $recorder.sessionTitle
-        )
-        .font(.headline)
-        .multilineTextAlignment(.center)
-        .textFieldStyle(.plain)
-        .frame(maxWidth: 320)
-        .submitLabel(.done)
     }
 
     @ViewBuilder
@@ -132,5 +112,76 @@ struct MainToolbar: ToolbarContent {
             )
         }
         .disabled(!recorder.isIdleWithTranscript)
+    }
+}
+
+/// Editable session-title field. Locally-buffered: the TextField
+/// binds to a `@State` shadow, not to `recorder.sessionTitle`
+/// directly. This avoids two hazards:
+///
+/// 1. Per-keystroke writes into the `@Observable` controller
+///    invalidate every view observing `sessionTitle` on every
+///    character — visible on long sessions as keystroke lag.
+/// 2. A direct binding pushes one undo step per character. Instead
+///    we capture `previousCommitted` on focus gain and push a single
+///    `.sessionTitle` undo step on `.onSubmit` / focus loss if the
+///    committed value differs from where we started.
+///
+/// Per-character undo inside the field continues to be handled by
+/// UIKit's built-in text-edit undo manager (the standard system
+/// behavior is independent of our app-level stack).
+private struct SessionTitleField: View {
+    @Bindable var recorder: RecordingController
+    @State private var draft: String = ""
+    @State private var previousCommitted: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField(
+            String(localized: "chrome.sessionTitle.placeholder"),
+            text: $draft
+        )
+        .font(.headline)
+        .multilineTextAlignment(.center)
+        .textFieldStyle(.plain)
+        .frame(maxWidth: 320)
+        .submitLabel(.done)
+        .focused($focused)
+        .onAppear {
+            draft = recorder.sessionTitle
+            previousCommitted = recorder.sessionTitle
+        }
+        .onChange(of: recorder.sessionTitle) { _, newValue in
+            // External updates (session load, undo restore) must
+            // flow into the shadow while the field is unfocused.
+            // Skip when focused so we don't stomp the user's typing.
+            if !focused {
+                draft = newValue
+                previousCommitted = newValue
+            }
+        }
+        .onChange(of: focused) { _, isFocused in
+            if isFocused {
+                previousCommitted = recorder.sessionTitle
+            } else {
+                commitIfChanged()
+            }
+        }
+        .onSubmit {
+            commitIfChanged()
+            focused = false
+        }
+    }
+
+    private func commitIfChanged() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != previousCommitted else { return }
+        recorder.registerUndoStep(
+            .sessionTitle(previous: previousCommitted),
+            actionName: String(localized: "undo.sessionTitle")
+        )
+        recorder.sessionTitle = trimmed
+        previousCommitted = trimmed
+        draft = trimmed
     }
 }

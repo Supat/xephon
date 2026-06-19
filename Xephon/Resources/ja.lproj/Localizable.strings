@@ -468,3 +468,33 @@
 /* Mid-recording capture failures (surfaced via the error banner) */
 "error.capture.interrupted" = "録音が停止しました:システムまたは他のアプリがマイクを使用しました。";
 "error.capture.recovery_failed" = "録音が停止しました:オーディオデバイスの変更後にエンジンを復旧できませんでした。";
+
+/* Undo/Redo menu items and action names */
+"menu.undo" = "取り消す";
+"menu.redo" = "やり直す";
+"undo.handEdit" = "発話の編集";
+"undo.renameSpeaker" = "話者名の変更";
+"undo.reassignSpeaker" = "話者の再割り当て";
+"undo.reevaluate" = "再評価";
+"undo.revertReeval" = "再評価の取り消し";
+"undo.searchReplace.all" = "すべて置換";
+"undo.sessionTitle" = "セッションタイトルの編集";
+"undo.fusion.acousticWeight" = "音響重み";
+"undo.fusion.textWeightFloor" = "テキスト重み下限";
+"undo.fusion.reset" = "融合重みのリセット";
+"undo.diarizerThreshold" = "話者分離感度";
+"undo.diarizerThreshold.reset" = "話者分離感度のリセット";
+"undo.section.add" = "セクションの追加";
+"undo.section.update" = "セクションの編集";
+"undo.section.remove" = "セクションの削除";
+"undo.glossary.add" = "用語の追加";
+"undo.glossary.remove" = "用語の削除";
+"undo.glossary.toggle" = "用語集の切り替え";
+"undo.keywords.add" = "キーワードの追加";
+"undo.keywords.remove" = "キーワードの削除";
+"undo.keywords.removeAll" = "すべてのキーワードを削除";
+"undo.keywords.move" = "キーワードの移動";
+"undo.keywords.assign" = "キーワードグループの割り当て";
+"undo.keywords.group.add" = "グループの追加";
+"undo.keywords.group.rename" = "グループ名の変更";
+"undo.keywords.group.remove" = "グループの削除";

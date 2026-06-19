@@ -608,6 +608,23 @@ final class RecordingController {
     /// the foreground controller.
     let instanceTag: String = String(UUID().uuidString.prefix(8))
 
+    /// Process-wide undo stack for every user-initiated edit. See
+    /// `RecordingController+Undo.swift` for the `UndoStep` shape, the
+    /// snapshot types, and the per-call-site registration helpers.
+    /// `groupsByEvent = false` because we control grouping explicitly
+    /// (via `beginUndoGrouping` / `endUndoGrouping` in search/replace
+    /// `commitAll`); per-event auto-grouping would coalesce successive
+    /// `registerUndo` calls from independent actions in the same
+    /// runloop tick. `levelsOfUndo = 50` caps memory; the heaviest
+    /// step type (`UtteranceBatchSnapshot`) runs ~1 MB on a 1-hour
+    /// session, so worst-case ≈50 MB. Tunable.
+    let undoManager: UndoManager = {
+        let mgr = UndoManager()
+        mgr.levelsOfUndo = 50
+        mgr.groupsByEvent = false
+        return mgr
+    }()
+
     init(
         capture: any AudioCapture = AVAudioEngineCapture(),
         streamingTranscriber: (any StreamingTranscriber)? = nil,
@@ -1094,6 +1111,12 @@ final class RecordingController {
     private func resetSessionState() {
         errorMessage = nil
         samplesCaptured = 0
+        // Every existing undo step references UUIDs from the prior
+        // session that are about to be invalidated. Drop the stack so
+        // a stale Cmd-Z can't corrupt the fresh session's state.
+        // (`loadSession` calls into here too — see Recovery doc on
+        // RecordingController+SessionPersistence.)
+        undoManager.removeAllActions()
         // Bump first so views observing the token can drop their
         // stale UUID-keyed state before they see the empty
         // utterance list — `@Observable` change notifications fire

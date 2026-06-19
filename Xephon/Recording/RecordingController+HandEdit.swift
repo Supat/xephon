@@ -105,6 +105,15 @@ extension RecordingController {
         let sentences = Self.splitTranscriptIntoSentences(trimmedText)
         guard !sentences.isEmpty else { return }
 
+        // Single undo step for the entire hand-edit, regardless of
+        // whether the path runs the file-mode pipeline, the mic-mode
+        // text-only branch, or the multi-sentence split (which inserts
+        // sibling rows + writes `handEditChildren` + new embeddings).
+        // A batch snapshot is the only thing that can reverse a 1→N
+        // split atomically. Capture BEFORE the first mutation
+        // (`preReevaluationSnapshots[utteranceID] = original` below).
+        registerUtteranceBatchUndo(actionName: String(localized: "undo.handEdit"))
+
         let original = utterances[index]
         // Two flows split on whether the session has source audio.
         // File-mode (`playbackSourceURL != nil`) follows the full

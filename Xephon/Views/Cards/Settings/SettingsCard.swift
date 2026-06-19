@@ -28,6 +28,11 @@ import SERText
 struct SettingsCard: View {
     let recorder: RecordingController
 
+    /// Diarizer-threshold drag-start value. Captured at
+    /// `onEditingChanged(true)`, consumed at `onEditingChanged(false)`
+    /// so one slider drag produces exactly one undo step.
+    @State private var diarizerThresholdDragStart: Float?
+
     /// Picker layout style. Landscape gets `.stacked` (label above
     /// control). Portrait gets `.inline` so the label hugs the leading
     /// edge and the control hugs the trailing edge.
@@ -315,6 +320,19 @@ struct SettingsCard: View {
                 Text(String(localized: "settings.diarizerSensitivity.max"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            } onEditingChanged: { editing in
+                if editing {
+                    diarizerThresholdDragStart = recorder.diarizerClusteringThreshold
+                } else if let start = diarizerThresholdDragStart,
+                          start != recorder.diarizerClusteringThreshold {
+                    recorder.registerUndoStep(
+                        .diarizerClusteringThreshold(previous: start),
+                        actionName: String(localized: "undo.diarizerThreshold")
+                    )
+                    diarizerThresholdDragStart = nil
+                } else {
+                    diarizerThresholdDragStart = nil
+                }
             }
             Text(String(localized: "settings.diarizerSensitivity.hint"))
                 .font(.caption2)
@@ -323,6 +341,12 @@ struct SettingsCard: View {
         .padding(.horizontal)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
+            // Double-tap reset — push one step with the pre-reset
+            // value so Cmd-Z restores the user's prior threshold.
+            recorder.registerUndoStep(
+                .diarizerClusteringThreshold(previous: recorder.diarizerClusteringThreshold),
+                actionName: String(localized: "undo.diarizerThreshold.reset")
+            )
             Task { await recorder.resetDiarizerClusteringThreshold() }
         }
     }

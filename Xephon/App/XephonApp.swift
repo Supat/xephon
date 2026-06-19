@@ -74,6 +74,39 @@ struct XephonApp: App {
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!menuCommands.canExportJSON)
             }
+            // Edit > Undo / Edit > Redo. Backed by
+            // `RecordingController.undoManager`; both menu items are
+            // gated on `canUndo` / `canRedo` mirrored into
+            // `MenuCommands` (refreshed via the
+            // NSUndoManagerCheckpoint observer set up in
+            // `EventBridgeModifier`). Replaces the placement so the
+            // standard Edit > Undo slot routes through our stack
+            // instead of the system's nil default. UIKit's per-
+            // keystroke text-edit undo continues to win when a
+            // TextField holds first responder — those Cmd-Z presses
+            // route to the field, not to our menu item.
+            CommandGroup(replacing: .undoRedo) {
+                Button {
+                    menuCommands.undoToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.undo"),
+                        systemImage: "arrow.uturn.backward"
+                    )
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!menuCommands.canUndo)
+                Button {
+                    menuCommands.redoToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.redo"),
+                        systemImage: "arrow.uturn.forward"
+                    )
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!menuCommands.canRedo)
+            }
             // ⌘F focuses the utterance search field. Lives in the Edit
             // menu's pasteboard region (which is where Find traditionally
             // sits on Apple platforms). Same UUID-token bridge as the
@@ -219,6 +252,19 @@ final class MenuCommands {
     /// Bumped by the Edit → Find menu item (⌘F). ContentView watches
     /// this and moves keyboard focus into the utterance search field.
     var findToken: UUID = UUID()
+    /// Bumped by Edit → Undo (⌘Z). ContentView watches this and
+    /// invokes `recorder.undoManager.undo()`. Routed through the
+    /// token bus rather than calling the UndoManager directly from
+    /// the CommandGroup so the gate-disabled state stays in sync
+    /// across MainActor isolation boundaries.
+    var undoToken: UUID = UUID()
+    /// Bumped by Edit → Redo (⌘⇧Z). Same pattern as `undoToken`.
+    var redoToken: UUID = UUID()
+    /// Mirror of `recorder.undoManager.canUndo`. Refreshed by
+    /// EventBridgeModifier's NSUndoManagerCheckpoint observer.
+    var canUndo: Bool = false
+    /// Mirror of `recorder.undoManager.canRedo`. Same refresh path.
+    var canRedo: Bool = false
     /// Bumped by the View → <page> menu items (⌘1–⌘6).
     /// `ControlPaneView` watches each and flips `selectedTab` to the
     /// corresponding page in its swipeable TabView. One UUID per

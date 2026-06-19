@@ -468,3 +468,33 @@
 /* Mid-recording capture failures (surfaced via the error banner) */
 "error.capture.interrupted" = "Recording stopped: the system or another app took over the microphone.";
 "error.capture.recovery_failed" = "Recording stopped: the audio engine could not recover after an audio device change.";
+
+/* Undo/Redo menu items and action names */
+"menu.undo" = "Undo";
+"menu.redo" = "Redo";
+"undo.handEdit" = "Edit Transcript";
+"undo.renameSpeaker" = "Rename Speaker";
+"undo.reassignSpeaker" = "Reassign Speaker";
+"undo.reevaluate" = "Re-evaluate";
+"undo.revertReeval" = "Revert Re-evaluation";
+"undo.searchReplace.all" = "Replace All";
+"undo.sessionTitle" = "Edit Session Title";
+"undo.fusion.acousticWeight" = "Acoustic Weight";
+"undo.fusion.textWeightFloor" = "Text Weight Floor";
+"undo.fusion.reset" = "Reset Fusion Weights";
+"undo.diarizerThreshold" = "Diarizer Sensitivity";
+"undo.diarizerThreshold.reset" = "Reset Diarizer Sensitivity";
+"undo.section.add" = "Add Section";
+"undo.section.update" = "Edit Section";
+"undo.section.remove" = "Delete Section";
+"undo.glossary.add" = "Add Glossary Entry";
+"undo.glossary.remove" = "Delete Glossary Entry";
+"undo.glossary.toggle" = "Toggle Glossary";
+"undo.keywords.add" = "Add Keyword";
+"undo.keywords.remove" = "Delete Keyword";
+"undo.keywords.removeAll" = "Delete All Keywords";
+"undo.keywords.move" = "Move Keyword";
+"undo.keywords.assign" = "Assign Keyword Group";
+"undo.keywords.group.add" = "Add Keyword Group";
+"undo.keywords.group.rename" = "Rename Keyword Group";
+"undo.keywords.group.remove" = "Delete Keyword Group";

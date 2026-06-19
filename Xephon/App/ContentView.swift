@@ -400,6 +400,33 @@ private struct EventBridgeModifier: ViewModifier {
             .onChange(of: menuCommands.findToken) { _, _ in
                 searchFieldFocused = true
             }
+            .onChange(of: menuCommands.undoToken) { _, _ in
+                if recorder.undoManager.canUndo {
+                    recorder.undoManager.undo()
+                }
+            }
+            .onChange(of: menuCommands.redoToken) { _, _ in
+                if recorder.undoManager.canRedo {
+                    recorder.undoManager.redo()
+                }
+            }
+            // Keep `menuCommands.canUndo` / `canRedo` (the menu gate
+            // mirrors) in sync with the UndoManager. The manager
+            // posts `.NSUndoManagerCheckpoint` after every state
+            // change (registerUndo, undo, redo, removeAllActions);
+            // task-based async sequence consumption matches the
+            // existing route-watcher pattern on `RecordingController`.
+            .task {
+                menuCommands.canUndo = recorder.undoManager.canUndo
+                menuCommands.canRedo = recorder.undoManager.canRedo
+                for await _ in NotificationCenter.default.notifications(
+                    named: .NSUndoManagerCheckpoint,
+                    object: recorder.undoManager
+                ) {
+                    menuCommands.canUndo = recorder.undoManager.canUndo
+                    menuCommands.canRedo = recorder.undoManager.canRedo
+                }
+            }
             .onChange(of: menuCommands.presentSummaryToken) { _, _ in
                 llmCoord.presentSummary(recorder: recorder)
             }

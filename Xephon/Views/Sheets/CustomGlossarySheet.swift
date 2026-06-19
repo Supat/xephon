@@ -26,6 +26,13 @@ import SERText
 /// re-running text SER.
 struct CustomGlossarySheet: View {
     @Bindable var store: GlossaryStore
+    /// Caller-supplied undo-registration hook. Each entry-add /
+    /// delete / toggle path calls this with the localized action name
+    /// BEFORE applying the mutation; the host (FusionLegendCard) wires
+    /// it to `recorder.registerGlossaryUndo(actionName:)`. Default
+    /// no-op so callers that don't need undo (previews, tests) don't
+    /// have to thread a stub through.
+    var registerUndo: (String) -> Void = { _ in }
     let onDismiss: () -> Void
 
     @State private var showingImporter = false
@@ -235,6 +242,7 @@ struct CustomGlossarySheet: View {
                     // chance to drop the row's view first.
                     let id = entry.wrappedValue.id
                     Task { @MainActor in
+                        registerUndo(String(localized: "undo.glossary.remove"))
                         store.entries.removeAll { $0.id == id }
                     }
                 } label: {
@@ -367,7 +375,13 @@ struct CustomGlossarySheet: View {
     private var applyBiasHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Toggle(isOn: $store.isEnabled) {
+                Toggle(isOn: Binding(
+                    get: { store.isEnabled },
+                    set: { newValue in
+                        registerUndo(String(localized: "undo.glossary.toggle"))
+                        store.isEnabled = newValue
+                    }
+                )) {
                     Label(
                         String(localized: "glossary.enable"),
                         systemImage: "book.closed"
@@ -379,7 +393,13 @@ struct CustomGlossarySheet: View {
                     .foregroundStyle(.tertiary)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Toggle(isOn: $store.isASRHintEnabled) {
+                Toggle(isOn: Binding(
+                    get: { store.isASRHintEnabled },
+                    set: { newValue in
+                        registerUndo(String(localized: "undo.glossary.toggle"))
+                        store.isASRHintEnabled = newValue
+                    }
+                )) {
                     Label(
                         String(localized: "glossary.asrHint.enable"),
                         systemImage: "mic.fill"
@@ -407,6 +427,7 @@ struct CustomGlossarySheet: View {
                 label: .joy,
                 weight: 0.5
             )
+            registerUndo(String(localized: "undo.glossary.add"))
             store.add(newEntry)
             // Defer focus assignment one MainActor hop so the
             // ForEach has a chance to render the new row's

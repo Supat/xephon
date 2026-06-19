@@ -22,18 +22,27 @@ extension RecordingController {
     /// invalidates and every row re-renders with the new label.
     func renameSpeaker(stored: String, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Snapshot the previous override BEFORE we know whether the
+        // rename will actually mutate, so we don't push noop steps.
+        let previousOverride = speakerNameOverrides[stored]
         if trimmed.isEmpty {
             guard speakerNameOverrides.removeValue(forKey: stored) != nil else { return }
             AppLog.app.info(
                 "speaker rename: cleared override for \(stored, privacy: .public)"
             )
         } else {
-            if speakerNameOverrides[stored] == trimmed { return }
+            if previousOverride == trimmed { return }
             speakerNameOverrides[stored] = trimmed
             AppLog.app.info(
                 "speaker rename: \(stored, privacy: .public) → \(trimmed, privacy: .public)"
             )
         }
+        // Register AFTER the mutation lands so we know the rename was
+        // not a no-op (the guards above bail before us).
+        registerUndoStep(
+            .renameSpeaker(stored: stored, previousOverride: previousOverride),
+            actionName: String(localized: "undo.renameSpeaker")
+        )
         utterancesVersion &+= 1
     }
 
@@ -93,6 +102,14 @@ extension RecordingController {
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
         let original = utterances[index]
         guard original.speakerID != trimmed else { return }
+        // Register before the mutation so the step captures the
+        // pre-edit speakerID. Pure-annotation reassign (no diarizer
+        // teaching) — see `correctUtteranceSpeaker` for the variant
+        // that's excluded from undo.
+        registerUndoStep(
+            .reassignSpeaker(utteranceID: utteranceID, previousSpeakerID: original.speakerID),
+            actionName: String(localized: "undo.reassignSpeaker")
+        )
         utterances[index] = original.withSpeakerID(trimmed)
         AppLog.app.info(
             "speaker reassigned: utt=\(original.id, privacy: .public) \(original.speakerID, privacy: .public) → \(trimmed, privacy: .public)"
@@ -110,6 +127,19 @@ extension RecordingController {
     func knownSpeakerIDs() -> [String] {
         cachedKnownSpeakerIDs
     }
+
+    // MARK: - Diarizer-teaching actions (intentionally NOT undoable)
+    //
+    // `correctUtteranceSpeaker`, `affirmUtteranceSpeaker`, and
+    // `promoteUtteranceToNewSpeaker` push audio observations into the
+    // FluidAudio `SpeakerManager`'s internal centroids. There's no
+    // public "unteach" hook, so an undo could only roll back the
+    // on-screen mutation (utterance speakerID + timeline). The
+    // diarizer's belief about the speaker would diverge from what the
+    // user sees — every subsequent re-eval would draw on the lingering
+    // teaching. We exclude these from the undo stack to avoid that
+    // hidden drift. The cheaper `reassignSpeaker` above stays
+    // undoable; it doesn't touch the diarizer DB.
 
     /// Corrective reassignment: extract the row's audio embedding
     /// and fold it into `targetSpeakerID`'s centroid in the

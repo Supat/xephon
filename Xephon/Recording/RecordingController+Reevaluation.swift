@@ -286,6 +286,11 @@ extension RecordingController {
             correctedEnd: fresh.end,
             fallback: ctx.speakerID
         )
+        // Push undo step only on successful re-eval (we reached this
+        // point — fresh estimate produced, speaker rediarized). Done
+        // here rather than at the top of `reevaluate(_:)` so retries
+        // / failures don't pollute the stack with no-op snapshots.
+        registerUtteranceBatchUndo(actionName: String(localized: "undo.reevaluate"))
         applyReevaluation(
             utteranceID: ctx.utteranceID,
             fresh: fresh.withSpeakerID(speaker)
@@ -400,6 +405,11 @@ extension RecordingController {
         guard let snapshot = preReevaluationSnapshots[utterance.id] else {
             return
         }
+        // Long-press revert is itself a user-initiated edit — Cmd-Z
+        // should restore the post-reeval state. Capture BEFORE the
+        // mutation; we know we'll mutate because the snapshot guard
+        // above passed.
+        registerUtteranceBatchUndo(actionName: String(localized: "undo.revertReeval"))
         // If this row spawned siblings via a multi-sentence hand-edit
         // commit, drop them so the revert leaves a single row again
         // rather than orphan sentences alongside the restored
