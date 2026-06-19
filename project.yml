@@ -142,12 +142,80 @@ targets:
         # Use the Xephon.icon Icon Composer document for the runtime app icon.
         ASSETCATALOG_COMPILER_APPICON_NAME: Xephon
         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
+        # Disable user-script sandboxing on this target only. The
+        # post-build script that patches `onnxruntime.framework`'s
+        # MinimumOSVersion (vtool + plutil + codesign) needs to read
+        # and write the embedded framework inside the .app bundle in
+        # the archive's InstallationBuildProductsLocation, which
+        # Xcode 26's sandbox blocks ("Operation not permitted" out of
+        # vtool). Other targets keep the project-wide YES default.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
     dependencies:
       - package: Xephon
         product: XephonCore
       - target: XephonWidget
         embed: true
         codeSign: true
+    # Bump embedded onnxruntime.framework's MinimumOSVersion + Mach-O
+    # LC_BUILD_VERSION minos to match the app's deployment target.
+    # The SPM artifact ships with minos=15.1, which trips App Store
+    # Connect's ITMS-90208 ("does not support the minimum OS Version
+    # specified in the Info.plist") because the embedded framework's
+    # min must be >= the parent app's. Patching after the Embed
+    # Frameworks phase invalidates the SPM-provided code signature;
+    # we re-sign with the active identity so the app bundle stays
+    # valid. Runs only for device archives ($PLATFORM_NAME =
+    # iphoneos) since simulator builds don't go through store
+    # validation and the framework would be in a different slice
+    # anyway. No-op if `onnxruntime` is missing (e.g. a future
+    # build removed it).
+    postBuildScripts:
+      - name: "Bump onnxruntime.framework minOS"
+        # Only runs during archive (`xcodebuild archive` / Product →
+        # Archive). Debug device builds skip it entirely — they
+        # don't go through App Store validation, and the script's
+        # vtool+resign dance is only needed for upload-bound bundles.
+        runOnlyWhenInstalling: true
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          if [ "${ACTION:-}" != "install" ]; then
+            echo "note: skipping onnxruntime minOS bump (ACTION=${ACTION:-unset})"
+            exit 0
+          fi
+          if [ "${PLATFORM_NAME}" != "iphoneos" ]; then
+            echo "note: skipping onnxruntime minOS bump on ${PLATFORM_NAME}"
+            exit 0
+          fi
+          FRAMEWORK="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/onnxruntime.framework"
+          if [ ! -d "$FRAMEWORK" ]; then
+            echo "note: onnxruntime.framework not embedded; nothing to patch"
+            exit 0
+          fi
+          IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
+          if [ -z "$IDENTITY" ]; then
+            echo "warning: no code-sign identity available; cannot re-sign onnxruntime.framework after vtool patch"
+            exit 0
+          fi
+          EXEC="$FRAMEWORK/onnxruntime"
+          TARGET_MIN="${IPHONEOS_DEPLOYMENT_TARGET}"
+          echo "Patching $FRAMEWORK to MinimumOSVersion=$TARGET_MIN"
+          # 1. Bump Mach-O build version. `vtool -set-build-version`
+          #    overwrites LC_BUILD_VERSION; platform 2 = iOS. Write
+          #    to a temp file first so vtool isn't reading + writing
+          #    the same path simultaneously.
+          TMP_EXEC="$(mktemp)"
+          xcrun vtool -set-build-version 2 "$TARGET_MIN" "$TARGET_MIN" \
+            -replace -output "$TMP_EXEC" "$EXEC"
+          mv "$TMP_EXEC" "$EXEC"
+          chmod +x "$EXEC"
+          # 2. Bump Info.plist.
+          plutil -replace MinimumOSVersion -string "$TARGET_MIN" "$FRAMEWORK/Info.plist"
+          # 3. Re-sign — vtool invalidates the embedded signature.
+          #    Preserve identifier so the framework keeps its bundle id.
+          /usr/bin/codesign --force --sign "$IDENTITY" \
+            --preserve-metadata=identifier,entitlements,flags \
+            --timestamp=none "$FRAMEWORK"
 
   XephonWidget:
     type: app-extension
@@ -181,6 +249,11 @@ targets:
         # target uses so they bump in lockstep.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # App Store Connect upload requires every appex bundle to carry
+        # CFBundleDisplayName explicitly (validation error 90360 —
+        # "Missing Info.plist value"). Required even though the widget
+        # surface labels its own complications / Live Activity strings.
+        CFBundleDisplayName: Xephon
     settings:
       base:
         PRODUCT_NAME: XephonWidget
