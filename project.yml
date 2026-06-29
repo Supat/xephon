@@ -284,6 +284,11 @@ targets:
         link: false
     settings:
       base:
+        # Test bundles ship no hand-written Info.plist; let the build
+        # system synthesize one. Without this the bundle can't sign
+        # once DEVELOPMENT_TEAM is set (Config/Local.xcconfig), so
+        # `xcodebuild test` fails before running.
+        GENERATE_INFOPLIST_FILE: YES
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Xephon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Xephon"
 
@@ -303,6 +308,7 @@ targets:
         link: false
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Xephon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Xephon"
 

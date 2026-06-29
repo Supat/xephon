@@ -83,6 +83,17 @@ final class TimestampRebaser: @unchecked Sendable {
     private var lastSessionTime: Double = 0
     private var pendingBoundary = false
 
+    /// Largest plausible audio gap across an engine rebuild. A
+    /// recovery (config-change rebuild, USB reconnect, media-services
+    /// reset) takes sub-second to a few seconds, so anything past this
+    /// is a `sampleTime` discontinuity, not real elapsed audio — clamp
+    /// it. ponytail: 30s ceiling; raise only if a legitimately longer
+    /// recovery gap ever shows up in the field. Observed failure: a USB
+    /// reconnect rebuild anchored ~64000s ahead, producing a single
+    /// utterance spanning ~64000s that froze the per-row diarization
+    /// strip's O(duration) majority sweep.
+    private static let maxRecoveryGapSec: Double = 30
+
     init() {}
 
     func markEngineRebuildBoundary() {
@@ -96,16 +107,19 @@ final class TimestampRebaser: @unchecked Sendable {
             pendingBoundary = false
             if let prev = firstRawTime {
                 let wouldBeSession = (raw - prev) + offset
-                if wouldBeSession < lastSessionTime {
-                    // sampleTime reset — re-anchor so the next chunk
-                    // lands at lastSessionTime, collapsing the
-                    // rebuild gap. Monotonic, no backward jumps.
+                // Re-anchor on a discontinuity in EITHER direction so
+                // the next chunk lands at lastSessionTime, collapsing
+                // the rebuild gap. Backward: a fresh engine's sampleTime
+                // reset toward 0. Forward-beyond-cap: a fresh engine's
+                // sampleTime jumped far ahead (USB reconnect rebuild was
+                // seen anchoring ~64000s ahead). A small forward delta
+                // is left alone — that's the genuine audio gap during
+                // recovery.
+                if wouldBeSession < lastSessionTime
+                    || wouldBeSession - lastSessionTime > Self.maxRecoveryGapSec {
                     offset = lastSessionTime
                     firstRawTime = raw
                 }
-                // else: sampleTime continued forward across the
-                // rebuild; keep the existing anchor. The natural
-                // forward delta is the audio gap during recovery.
             }
         }
         if firstRawTime == nil {
