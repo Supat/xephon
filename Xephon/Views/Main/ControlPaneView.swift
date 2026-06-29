@@ -594,6 +594,10 @@ struct ControlPaneView: View {
                 .font(.system(size: 22))
                 .labelStyle(.iconOnly)
                 .frame(width: 32, height: 32)
+                // waveform.badge.plus reads slightly right-of-center in
+                // the circle (the top-right plus badge); nudge left to
+                // optically center it.
+                .offset(x: -1)
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.circle)
