@@ -94,8 +94,15 @@ extension RecordingController {
         // enumerated the USB device yet) rather than a legitimate
         // "no inputs connected" state.
         if !inputs.isEmpty {
-            self.availableInputs = inputs
-            self.currentInputUID = current?.uid
+            // Commit only on an actual change so the idle input poll
+            // (which calls this every ~2 s) doesn't fire @Observable
+            // churn on every tick when nothing's plugged or unplugged.
+            if inputs != self.availableInputs {
+                self.availableInputs = inputs
+            }
+            if current?.uid != self.currentInputUID {
+                self.currentInputUID = current?.uid
+            }
         } else {
             AppLog.app.info("refreshInputs[\(self.instanceTag, privacy: .public)]: empty query result; keeping prior list (count=\(self.availableInputs.count, privacy: .public))")
         }

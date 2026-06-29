@@ -786,29 +786,22 @@ final class RecordingController {
         // available input UIDs actually changes, so steady state is
         // a cheap array compare with no observable side effects.
         inputPollTask = Task { @MainActor [weak self] in
-            var lastKnownUIDs: Set<String> = []
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Self.inputPollIntervalSec))
                 if Task.isCancelled { return }
                 guard let self else { return }
                 guard self.phase == .idle, self.playbackPlayer == nil else { continue }
-                let currentUIDs = Set(self.availableInputs.map(\.uid))
-                // Cheap probe: snapshot what session.availableInputs
-                // reports right now (no category swap) and compare to
-                // our cached UID set. Only do the full enumeration if
-                // the snapshot differs from what the picker currently
-                // shows.
-                #if os(iOS) || targetEnvironment(macCatalyst)
-                let session = AVAudioSession.sharedInstance()
-                let probeUIDs = Set((session.availableInputs ?? []).map(\.uid))
-                #else
-                let probeUIDs = currentUIDs
-                #endif
-                if probeUIDs != currentUIDs || lastKnownUIDs != probeUIDs {
-                    AppLog.app.info("input poll: detected change probe=\(probeUIDs.count, privacy: .public) cached=\(currentUIDs.count, privacy: .public); refreshing")
-                    lastKnownUIDs = probeUIDs
-                    await self.refreshInputs()
-                }
+                // Full enumerate every tick (refreshInputs does the
+                // category-swap that surfaces USB / Bluetooth ports).
+                // A bare `session.availableInputs` probe can't be used
+                // here: under the idle category it only ever reports
+                // the built-in mic, so it never sees a USB mic plugged
+                // in AFTER launch — exactly the gap this poll exists to
+                // close. The swap is metadata-only, refreshInputs
+                // commits only on a real change, and its categoryChange
+                // echo is filtered in handleAudioRouteChange, so this is
+                // a cheap idle read rather than a route-change storm.
+                await self.refreshInputs()
             }
         }
     }
