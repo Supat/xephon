@@ -468,6 +468,7 @@
 /* Mid-recording capture failures (surfaced via the error banner) */
 "error.capture.interrupted" = "録音が停止しました:システムまたは他のアプリがマイクを使用しました。";
 "error.capture.recovery_failed" = "録音が停止しました:オーディオデバイスの変更後にエンジンを復旧できませんでした。";
+"error.capture.inputDisconnectedFallback" = "マイクの接続が切断されました。内蔵マイクに切り替えて録音を続行しています。";
 
 /* Undo/Redo menu items and action names */
 "menu.undo" = "取り消す";

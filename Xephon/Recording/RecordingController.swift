@@ -752,7 +752,13 @@ final class RecordingController {
             for await note in notifications {
                 guard let self else { break }
                 let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
-                await self.handleAudioRouteChange(reasonRaw: reasonRaw)
+                let previousRoute = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
+                    as? AVAudioSessionRouteDescription
+                let previousInputUID = previousRoute?.inputs.first?.uid
+                await self.handleAudioRouteChange(
+                    reasonRaw: reasonRaw,
+                    previousInputUID: previousInputUID
+                )
             }
         }
         // Hardware-level connect/disconnect — fires for USB-C audio

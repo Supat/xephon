@@ -132,7 +132,7 @@ extension RecordingController {
     /// human-interface guidance is that an unplugged or disconnected
     /// output should pause / stop playback rather than silently
     /// continue through whatever the OS falls back to.
-    func handleAudioRouteChange(reasonRaw: UInt? = nil) async {
+    func handleAudioRouteChange(reasonRaw: UInt? = nil, previousInputUID: String? = nil) async {
         #if os(iOS) || targetEnvironment(macCatalyst)
         let reason = (AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "<none>")
         AppLog.app.info("handleAudioRouteChange[\(self.instanceTag, privacy: .public)] fired; currentInput=\(reason, privacy: .public) phase=\(String(describing: self.phase), privacy: .public) reasonRaw=\(reasonRaw ?? 99, privacy: .public)")
@@ -145,6 +145,20 @@ extension RecordingController {
         // becomes a self-perpetuating route-change storm that starves
         // the recording controller's engine.
         if parsedReason == .categoryChange { return }
+        // USB / external mic unplugged mid-recording: the OS falls back
+        // to the built-in mic and capture continues, so we DON'T stop —
+        // we just surface a banner so the user knows the source changed.
+        // Keyed on the previous route's *input* port (not just the
+        // reason) so an output-only change — e.g. unplugging headphones
+        // while on the built-in mic — doesn't trigger it. Falls through
+        // to refreshInputs below so the picker updates to the new route.
+        if phase == .recording,
+           parsedReason == .oldDeviceUnavailable,
+           let lostInputUID = previousInputUID,
+           !AVAudioSession.sharedInstance().currentRoute.inputs.contains(where: { $0.uid == lostInputUID }) {
+            AppLog.app.info("input \(lostInputUID, privacy: .public) disconnected mid-recording; falling back to built-in, keeping recording")
+            errorMessage = String(localized: "error.capture.inputDisconnectedFallback")
+        }
         #endif
         await refreshInputs()
         if playbackPlayer != nil {
