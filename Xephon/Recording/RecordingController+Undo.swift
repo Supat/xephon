@@ -95,10 +95,18 @@ extension RecordingController {
     // and stamps the localized action name so the menu reads
     // "Undo Edit Transcript" etc.
     func registerUndoStep(_ step: UndoStep, actionName: String) {
+        // groupsByEvent = false means nothing auto-opens a group, so a
+        // bare registerUndo throws "must begin a group". Wrap each step
+        // in its own group. When the caller already opened one (search/
+        // replace commitAll), this nests harmlessly — undoing the outer
+        // group recurses into ours, and setActionName here names only
+        // our nested group, leaving the outer batch name intact.
+        undoManager.beginUndoGrouping()
         undoManager.registerUndo(withTarget: self) { target in
             target.apply(step)
         }
         undoManager.setActionName(actionName)
+        undoManager.endUndoGrouping()
     }
 
     // Applied via the closure UndoManager invokes on undo (or redo).
