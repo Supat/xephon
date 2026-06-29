@@ -84,8 +84,10 @@ struct ControlPaneView: View {
                 VStack(spacing: 16) {
                     HStack(spacing: 12) {
                         inputPicker
-                        recordButton
-                        openFileButton
+                        HStack(spacing: 6) {
+                            recordButton
+                            openFileButton
+                        }
                     }
 
                     if recorder.isRecording {
@@ -568,7 +570,10 @@ struct ControlPaneView: View {
         .buttonStyle(.borderedProminent)
         .buttonBorderShape(.circle)
         .tint(recorder.isRecording ? .red : .accentColor)
-        .disabled(recorder.isAnalyzing)
+        // Block start while the pipeline is mid-load (launch warmup
+        // or post-summarization rebuild). Stay enabled mid-recording
+        // so the user can always stop.
+        .disabled(recorder.isAnalyzing || (!recorder.isRecording && !recorder.pipelineReady))
     }
 
     private var recordButtonTitle: String {
@@ -596,7 +601,7 @@ struct ControlPaneView: View {
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.circle)
-        .disabled(recorder.isRecording || recorder.isAnalyzing)
+        .disabled(recorder.isRecording || recorder.isAnalyzing || !recorder.pipelineReady)
     }
 
     @ViewBuilder

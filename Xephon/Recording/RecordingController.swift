@@ -439,6 +439,13 @@ final class RecordingController {
     /// anyway). Kept here rather than threaded through the view so
     /// `ModelsCard` doesn't have to know how `AnalysisPipeline` is
     /// stored.
+    /// True once the analysis pipeline is built and warm. Goes false
+    /// while the pipeline is released for memory orchestration (large-
+    /// LLM summarization) and during the initial post-launch / post-
+    /// swap rebuild. Transport controls gate on this so the user can't
+    /// start a capture or open a file while models are mid-load.
+    var pipelineReady: Bool { pipeline != nil }
+
     var pipelineHasDiarizer: Bool { pipeline?.hasDiarizer ?? false }
     var pipelineHasDimensionalSER: Bool { pipeline?.hasDimensionalSER ?? false }
     var pipelineHasCategoricalSER: Bool { pipeline?.hasCategoricalSER ?? false }
