@@ -182,7 +182,8 @@ struct ContentView: View {
                 MainToolbar(
                     recorder: recorder,
                     llmCoord: llmCoord,
-                    fileCoord: fileCoord
+                    fileCoord: fileCoord,
+                    filePicker: filePicker
                 )
             }
             .modifier(LLMSheetBridge(recorder: recorder, coord: llmCoord))

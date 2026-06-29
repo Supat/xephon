@@ -11,8 +11,11 @@ struct MainToolbar: ToolbarContent {
     @Bindable var recorder: RecordingController
     let llmCoord: LLMSheetCoordinator
     let fileCoord: SessionFileCoordinator
+    let filePicker: FilePickerCoordinator
 
     var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) { openSession }
+        ToolbarItem(placement: .topBarLeading) { saveSession }
         ToolbarItem(placement: .principal) {
             SessionTitleField(recorder: recorder)
         }
@@ -20,6 +23,30 @@ struct MainToolbar: ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) { review }
         ToolbarItem(placement: .topBarTrailing) { searchReplace }
         ToolbarItem(placement: .topBarTrailing) { export }
+    }
+
+    // Open / Save Session — same actions as the File menu's
+    // Open Session (⇧⌘O) / Save Session (⇧⌘S) items, surfaced on the
+    // chrome's leading edge. Glyphs and the save gate
+    // (idleWithTranscript, == MenuCommands.canSaveSession) match the
+    // menu so the two entry points stay in sync.
+    @ViewBuilder
+    private var openSession: some View {
+        Button {
+            fileCoord.presentSessionPicker(recorder: recorder, filePicker: filePicker)
+        } label: {
+            Label(String(localized: "menu.importSession"), systemImage: "folder")
+        }
+    }
+
+    @ViewBuilder
+    private var saveSession: some View {
+        Button {
+            Task { await fileCoord.saveSession(recorder: recorder, filePicker: filePicker) }
+        } label: {
+            Label(String(localized: "menu.saveSession"), systemImage: "square.and.arrow.down")
+        }
+        .disabled(!recorder.isIdleWithTranscript)
     }
 
     @ViewBuilder
