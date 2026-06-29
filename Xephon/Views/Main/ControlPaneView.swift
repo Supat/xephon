@@ -561,8 +561,9 @@ struct ControlPaneView: View {
                 recordButtonTitle,
                 systemImage: recorder.isRecording ? "stop.fill" : "mic.fill"
             )
-            .font(.title3)
+            .font(.system(size: 22))
             .labelStyle(.iconOnly)
+            .frame(width: 32, height: 32)
         }
         .buttonStyle(.borderedProminent)
         .buttonBorderShape(.circle)
@@ -585,8 +586,13 @@ struct ControlPaneView: View {
             fileCoord.presentAudioPicker(recorder: recorder, filePicker: filePicker)
         } label: {
             Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
-                .font(.title3)
+                .font(.system(size: 22))
                 .labelStyle(.iconOnly)
+                .frame(width: 32, height: 32)
+                // doc.badge.arrow.up sits visually left-of-center (the
+                // top-right badge skews its bounding box); nudge right
+                // to optically center it in the round button.
+                .offset(x: 2)
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.circle)
