@@ -47,7 +47,7 @@ struct XephonApp: App {
                 } label: {
                     Label(
                         String(localized: "menu.importSession"),
-                        systemImage: "square.and.arrow.down.on.square"
+                        systemImage: "folder"
                     )
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])

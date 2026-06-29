@@ -590,14 +590,10 @@ struct ControlPaneView: View {
         Button {
             fileCoord.presentAudioPicker(recorder: recorder, filePicker: filePicker)
         } label: {
-            Label(String(localized: "file.open"), systemImage: "doc.badge.arrow.up")
+            Label(String(localized: "file.open"), systemImage: "waveform.badge.plus")
                 .font(.system(size: 22))
                 .labelStyle(.iconOnly)
                 .frame(width: 32, height: 32)
-                // doc.badge.arrow.up sits visually left-of-center (the
-                // top-right badge skews its bounding box); nudge right
-                // to optically center it in the round button.
-                .offset(x: 2)
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.circle)
