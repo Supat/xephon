@@ -82,9 +82,8 @@ struct ControlPaneView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 VStack(spacing: 16) {
-                    inputPicker
-
                     HStack(spacing: 12) {
+                        inputPicker
                         recordButton
                         openFileButton
                     }
@@ -560,11 +559,13 @@ struct ControlPaneView: View {
         } label: {
             Label(
                 recordButtonTitle,
-                systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill"
+                systemImage: recorder.isRecording ? "stop.fill" : "mic.fill"
             )
             .font(.title3)
+            .labelStyle(.iconOnly)
         }
         .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.circle)
         .tint(recorder.isRecording ? .red : .accentColor)
         .disabled(recorder.isAnalyzing)
     }
@@ -588,6 +589,7 @@ struct ControlPaneView: View {
                 .labelStyle(.iconOnly)
         }
         .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
         .disabled(recorder.isRecording || recorder.isAnalyzing)
     }
 
