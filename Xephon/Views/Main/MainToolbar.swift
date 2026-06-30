@@ -164,16 +164,48 @@ private struct SessionTitleField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        TextField(
-            String(localized: "chrome.sessionTitle.placeholder"),
-            text: $draft
-        )
+        // A bare TextField clips/scrolls a too-long title (truncating
+        // the END). To middle-truncate the displayed title we overlay a
+        // Text with `.truncationMode(.middle)` while unfocused; the
+        // TextField stays in the tree (just transparent) so `focused`
+        // still moves first responder into it on tap. While editing,
+        // the real TextField shows (no truncation — the user needs to
+        // see what they type).
+        // Z-order matters. The TextField sits ON TOP, transparent
+        // while unfocused but still hit-testable (opacity doesn't
+        // disable hit-testing), so a NATIVE tap makes it first
+        // responder — the path that always worked. Behind it, a
+        // middle-truncating Text shows the title through the
+        // transparent field.
+        //
+        // Tombstone: an earlier attempt put the Text on top with an
+        // `.onTapGesture { focused = true }`. Programmatic @FocusState
+        // focus does NOT take in a toolbar *principal* item, so
+        // tap-to-edit broke. Don't re-walk that — keep the field on top
+        // and rely on native tap.
+        ZStack {
+            Text(draft.isEmpty
+                 ? String(localized: "chrome.sessionTitle.placeholder")
+                 : draft)
+                .foregroundStyle(draft.isEmpty ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity)
+                .opacity(focused ? 0 : 1)
+                .allowsHitTesting(false)
+
+            TextField(
+                String(localized: "chrome.sessionTitle.placeholder"),
+                text: $draft
+            )
+            .multilineTextAlignment(.center)
+            .textFieldStyle(.plain)
+            .focused($focused)
+            .opacity(focused ? 1 : 0)
+        }
         .font(.headline)
-        .multilineTextAlignment(.center)
-        .textFieldStyle(.plain)
         .frame(maxWidth: 320)
         .submitLabel(.done)
-        .focused($focused)
         .onAppear {
             draft = recorder.sessionTitle
             previousCommitted = recorder.sessionTitle
