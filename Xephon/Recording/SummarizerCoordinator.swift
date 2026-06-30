@@ -452,7 +452,7 @@ final class SummarizerCoordinator {
         defer { scheduleUnloadAndPipelineRewarm() }
         logAvailableMemory(label: "\(logLabelPrefix) Apple FM (before respond)")
         let mode: SummarizeMode = self.mode
-        let boostedIDs = mode == .heuristic
+        let boostedIDs = (mode == .heuristic || mode == .meeting)
             ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
         do {
@@ -524,7 +524,7 @@ final class SummarizerCoordinator {
         // (see comment in `summarizeWithAppleFM`).
         defer { scheduleUnloadAndPipelineRewarm() }
         let mode: SummarizeMode = self.mode
-        let boostedIDs = mode == .heuristic
+        let boostedIDs = (mode == .heuristic || mode == .meeting)
             ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
         do {
@@ -584,7 +584,7 @@ final class SummarizerCoordinator {
         )
         logAvailableMemory(label: "\(logLabelPrefix) LM Studio (before request)")
         let mode: SummarizeMode = self.mode
-        let boostedIDs = mode == .heuristic
+        let boostedIDs = (mode == .heuristic || mode == .meeting)
             ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
         do {

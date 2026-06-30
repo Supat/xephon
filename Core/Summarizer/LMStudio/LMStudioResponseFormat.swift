@@ -140,6 +140,43 @@ internal enum LMStudioSchemas {
         required: ["setting", "topic", "overallMood", "perSpeaker"]
     )
 
+    /// Meeting-mode shape — content only, no affect. Mirrors
+    /// `LMStudioSummarizer.parseMeeting`'s `Wire` struct:
+    /// `{ topic, topics: [{ title, raisedBy, positions: [{ speaker,
+    /// stance }] }], perSpeaker: [{ speakerID, talkingPoints: [string]
+    /// }] }`. As with `summarySchema`, **every property is in
+    /// `required`** for OpenAI strict-mode compliance — the parser
+    /// tolerates empty strings / arrays so requiring `raisedBy` (which
+    /// is genuinely optional in the data model) costs nothing on the
+    /// emit side; the parser maps an empty `raisedBy` back to nil.
+    static let meetingSchema: JSONSchemaNode = .object(
+        properties: [
+            ("topic", .string(allowedValues: nil)),
+            ("topics", .array(items: .object(
+                properties: [
+                    ("title", .string(allowedValues: nil)),
+                    ("raisedBy", .string(allowedValues: nil)),
+                    ("positions", .array(items: .object(
+                        properties: [
+                            ("speaker", .string(allowedValues: nil)),
+                            ("stance", .string(allowedValues: nil)),
+                        ],
+                        required: ["speaker", "stance"]
+                    ))),
+                ],
+                required: ["title", "raisedBy", "positions"]
+            ))),
+            ("perSpeaker", .array(items: .object(
+                properties: [
+                    ("speakerID", .string(allowedValues: nil)),
+                    ("talkingPoints", .array(items: .string(allowedValues: nil))),
+                ],
+                required: ["speakerID", "talkingPoints"]
+            ))),
+        ],
+        required: ["topic", "topics", "perSpeaker"]
+    )
+
     /// Mirrors `MLXLLMReviewerCore.parse`'s `Wire` struct:
     /// `{ issues: [{ rowIndex, kind, reason, confidence }] }`.
     /// `kind` is enum-constrained to the four values the parser

@@ -24,17 +24,52 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         /// in across the session (or a short phrase like
         /// "predominantly neutral with a sad turn at the end").
         public let dominantMood: String
+        /// Meeting mode: this speaker's main talking points, one per
+        /// entry. Optional + nil for the affect-oriented modes (which
+        /// don't populate it) and for older `.xph` bundles.
+        public let talkingPoints: [String]?
 
         public init(
             speakerID: String,
             speakerName: String?,
             summary: String,
-            dominantMood: String
+            dominantMood: String,
+            talkingPoints: [String]? = nil
         ) {
             self.speakerID = speakerID
             self.speakerName = speakerName
             self.summary = summary
             self.dominantMood = dominantMood
+            self.talkingPoints = talkingPoints
+        }
+    }
+
+    /// Meeting mode: one conversation topic with attribution and the
+    /// other speakers' positions. Affect-oriented modes leave
+    /// `SessionSummary.topics` nil.
+    public struct TopicSummary: Sendable, Hashable, Codable {
+        /// One participant's stance on the topic.
+        public struct Position: Sendable, Hashable, Codable {
+            /// Speaker as the model refers to them (display name when
+            /// renamed, else the raw speaker id).
+            public let speaker: String
+            /// Their opinion / position on this topic.
+            public let stance: String
+            public init(speaker: String, stance: String) {
+                self.speaker = speaker
+                self.stance = stance
+            }
+        }
+        /// The topic / subject discussed.
+        public let title: String
+        /// Who first raised it (display name or id); nil when unclear.
+        public let raisedBy: String?
+        /// Other participants' positions / opinions on the topic.
+        public let positions: [Position]
+        public init(title: String, raisedBy: String?, positions: [Position]) {
+            self.title = title
+            self.raisedBy = raisedBy
+            self.positions = positions
         }
     }
 
@@ -59,6 +94,11 @@ public struct SessionSummary: Sendable, Hashable, Codable {
     /// Per-speaker arcs, one entry per distinct `speakerID` in the
     /// input. Order matches the input's first-appearance ordering.
     public let perSpeaker: [SpeakerSummary]
+    /// Meeting mode: the conversation's main topics with attribution
+    /// and per-speaker positions. Nil for the affect-oriented modes
+    /// and older `.xph` bundles; the sheet renders the topic section
+    /// only when present.
+    public let topics: [TopicSummary]?
     /// Identifier for the model that produced this summary
     /// (e.g. `"qwen2.5-7b-instruct-4bit"`). Persisted so a later
     /// re-summarize knows whether the existing summary is stale
@@ -80,6 +120,7 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         topic: String,
         overallMood: String,
         perSpeaker: [SpeakerSummary],
+        topics: [TopicSummary]? = nil,
         model: String,
         generatedAt: Date,
         mode: SummarizeMode? = nil
@@ -88,6 +129,7 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         self.topic = topic
         self.overallMood = overallMood
         self.perSpeaker = perSpeaker
+        self.topics = topics
         self.model = model
         self.generatedAt = generatedAt
         self.mode = mode
@@ -140,12 +182,33 @@ public struct SessionSummary: Sendable, Hashable, Codable {
             lines.append("## Setting")
             lines.append(setting)
         }
+        let isMeeting = mode == .meeting || (topics?.isEmpty == false)
         lines.append("")
         lines.append("## Topic")
         lines.append(topic.isEmpty ? "—" : topic)
-        lines.append("")
-        lines.append("## Overall Mood")
-        lines.append(overallMood.isEmpty ? "—" : overallMood)
+        // Meeting mode drops affect: no overall-mood section, a
+        // structured Topics breakdown, and per-speaker talking points
+        // instead of an emotional arc.
+        if let topics, !topics.isEmpty {
+            lines.append("")
+            lines.append("## Topics")
+            for t in topics {
+                lines.append("")
+                lines.append("### \(t.title.isEmpty ? "—" : t.title)")
+                if let by = t.raisedBy?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !by.isEmpty {
+                    lines.append("**Raised by:** \(by)")
+                }
+                for p in t.positions where !p.stance.isEmpty {
+                    lines.append("- **\(p.speaker):** \(p.stance)")
+                }
+            }
+        }
+        if !isMeeting {
+            lines.append("")
+            lines.append("## Overall Mood")
+            lines.append(overallMood.isEmpty ? "—" : overallMood)
+        }
         if !perSpeaker.isEmpty {
             lines.append("")
             lines.append("## Per Speaker")
@@ -160,11 +223,18 @@ public struct SessionSummary: Sendable, Hashable, Codable {
                 }
                 lines.append("")
                 lines.append("### \(heading)")
-                if !entry.dominantMood.isEmpty {
+                if !isMeeting, !entry.dominantMood.isEmpty {
                     lines.append("**Dominant mood:** \(entry.dominantMood)")
                 }
-                lines.append("")
-                lines.append(entry.summary.isEmpty ? "—" : entry.summary)
+                if let points = entry.talkingPoints, !points.isEmpty {
+                    lines.append("")
+                    for point in points where !point.isEmpty {
+                        lines.append("- \(point)")
+                    }
+                } else {
+                    lines.append("")
+                    lines.append(entry.summary.isEmpty ? "—" : entry.summary)
+                }
             }
         }
         lines.append("")

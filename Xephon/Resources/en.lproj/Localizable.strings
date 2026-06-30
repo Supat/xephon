@@ -1,6 +1,11 @@
 "input.default" = "Default Input";
 "settings.language" = "Language";
 "settings.speechBoost" = "Speech Boost (ASR Only)";
+"settings.recordAudio" = "Record Session Audio";
+"settings.recordAudio.format" = "Audio Format";
+"settings.recordAudio.format.aac" = "AAC (smaller)";
+"settings.recordAudio.format.wav" = "WAV (lossless)";
+"settings.recordAudio.caption" = "Save the recording so you can play it back, re-evaluate utterances, and keep audio in the saved session. WAV is lossless but much larger.";
 "settings.diarizerSensitivity" = "Speaker Sensitivity";
 "settings.diarizerSensitivity.min" = "Merge";
 "settings.diarizerSensitivity.max" = "Split";
@@ -63,6 +68,8 @@
 "settings.summarizer.mode.trailing.caption" = "Single pass over the most recent utterances (trailing window). Same speed as Heuristic; drops the prefix of long sessions.";
 "settings.summarizer.mode.heuristic.caption" = "Single pass over the most distinctive utterances picked by session-relative TF-IDF (backchannels and fillers downweighted). Same speed as Trailing; better coverage on long sessions.";
 "settings.summarizer.mode.deep.caption" = "Map-reduce over every utterance. Takes longer (scales with session length); peak memory unchanged.";
+"settings.summarizer.mode.meeting" = "Meeting";
+"settings.summarizer.mode.meeting.caption" = "Meeting minutes: drops emotion and captures the main topics (who raised each, others' positions) plus each speaker's talking points. Text-only rows fit far more of the session in one pass.";
 "settings.summarizer.mode.all" = "All";
 "settings.summarizer.mode.all.caption" = "Sends every utterance with full per-row metadata to the remote server in a single pass. Remote backend only — on-device LLMs can't fit the context window.";
 "chrome.sessionTitle.placeholder" = "Untitled Session";
@@ -125,12 +132,15 @@
 "summary.empty" = "No summary yet. Tap Summarize from the toolbar.";
 "summary.section.setting" = "Setting";
 "summary.section.topic" = "Topic";
+"summary.section.topics" = "Topics";
+"summary.topic.raisedBy" = "Raised by %@";
 "summary.section.overallMood" = "Overall Mood";
 "summary.section.perSpeaker" = "Per Speaker";
 "summary.footer.model" = "Model: %@";
 "summary.footer.mode.trailing" = "Trailing summary";
 "summary.footer.mode.heuristic" = "Heuristic summary";
 "summary.footer.mode.deep" = "Deep summary";
+"summary.footer.mode.meeting" = "Meeting minutes";
 "summary.footer.mode.all" = "All-utterances summary";
 "summary.footer.aiGenerated" = "AI-generated";
 "summary.footer.aiCaveat" = "May contain mistakes";

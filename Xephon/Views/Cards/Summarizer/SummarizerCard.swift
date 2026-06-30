@@ -118,6 +118,11 @@ struct SummarizerCard: View {
                     Text(String(localized: "settings.summarizer.mode.heuristic"))
                         .tag(SummarizeMode.heuristic)
                     deepModeRow.tag(SummarizeMode.deep)
+                    // Meeting minutes: content-only (topics +
+                    // talking points), emotion dropped. Works on
+                    // every backend, so no gate.
+                    Text(String(localized: "settings.summarizer.mode.meeting"))
+                        .tag(SummarizeMode.meeting)
                     // `.all` is only viable on the LM Studio
                     // remote backend — on-device LLMs would
                     // either OOM or hit their context cap.
@@ -173,6 +178,8 @@ struct SummarizerCard: View {
             return String(localized: "settings.summarizer.mode.heuristic.caption")
         case .deep:
             return String(localized: "settings.summarizer.mode.deep.caption")
+        case .meeting:
+            return String(localized: "settings.summarizer.mode.meeting.caption")
         case .all:
             return String(localized: "settings.summarizer.mode.all.caption")
         }

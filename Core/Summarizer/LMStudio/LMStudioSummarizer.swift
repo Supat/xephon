@@ -104,6 +104,16 @@ public actor LMStudioSummarizer: SessionSummarizer {
         let promptUtterances: [UtteranceEstimate]
         let truncatedFrom: Int?
         switch mode {
+        case .meeting:
+            // Content-focused minutes: text-only rows, topics +
+            // talking points out, no affect. Own prompt / schema /
+            // parser, so short-circuit the shared single-pass plumbing
+            // below entirely.
+            return try await summarizeMeeting(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                boostedUtteranceIDs: boostedUtteranceIDs
+            )
         case .trailing:
             resolvedMode = .trailing
             selection = .trailing
@@ -227,5 +237,214 @@ public actor LMStudioSummarizer: SessionSummarizer {
             )
             return (utterances.filter { topIDs.contains($0.id) }, utterances.count)
         }
+    }
+
+    // MARK: - Meeting mode
+
+    /// Cap on transcript rows fed into a `.meeting` prompt.
+    // ponytail: meeting rows are TEXT-ONLY (speaker + transcript, no
+    // fused label / V/A/D / acoustic / Plutchik / demographics), so a
+    // row costs ~3-4× less than the full-SER line `.all` sends. That
+    // freed budget buys a much larger cap than the on-device 100. We
+    // keep a hard cap (rather than borrowing `.all`'s uncapped pass)
+    // so a pathologically long session can't blow even a remote
+    // server's context window; 400 distinct lines is plenty of meeting
+    // coverage and stays well inside a typical LM Studio context. Same
+    // heuristic top-N-balanced-by-speaker selection as `.heuristic`.
+    private static let meetingMaxPromptUtterances = 400
+
+    /// `.meeting` path. Heuristic top-N selection (larger cap, text-
+    /// only rows), a content-only prompt + schema, and a meeting
+    /// parser that fills `SessionSummary.topics` +
+    /// `SpeakerSummary.talkingPoints` while zeroing every affect field.
+    private func summarizeMeeting(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        boostedUtteranceIDs: Set<UUID>
+    ) async throws -> SessionSummary {
+        let (promptUtterances, truncatedFrom) = selectUtterances(
+            from: utterances,
+            cap: Self.meetingMaxPromptUtterances,
+            selection: .heuristicTopN,
+            boostedUtteranceIDs: boostedUtteranceIDs
+        )
+        let prompt = buildMeetingPrompt(
+            utterances: promptUtterances,
+            speakerNames: speakerNames,
+            truncatedFromTotal: truncatedFrom
+        )
+        AppLog.app.info(
+            "LMStudioSummarizer meeting summarizing \(promptUtterances.count, privacy: .public) utterances (prompt \(prompt.count, privacy: .public) chars)"
+        )
+        let raw: String
+        do {
+            let responseFormatJSON = useStructuredOutput
+                ? try? JSONEncoder().encode(LMStudioResponseFormat.jsonSchema(
+                    name: "meeting_summary",
+                    schema: LMStudioSchemas.meetingSchema
+                ))
+                : nil
+            raw = try await client.chat(
+                userMessage: prompt,
+                temperature: 0.2,
+                maxTokens: spec.maxOutputTokens,
+                responseFormatJSON: responseFormatJSON
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw SummarizerError.inferenceFailed(reason: String(describing: error))
+        }
+        if Task.isCancelled { throw CancellationError() }
+        let preview = raw.count > 400
+            ? String(raw.prefix(400)) + "…[truncated]"
+            : raw
+        AppLog.app.info(
+            "LMStudioSummarizer meeting raw output: \(raw.count, privacy: .public) chars, preview: \(preview, privacy: .public)"
+        )
+        return try Self.parseMeeting(
+            raw: raw,
+            speakerNames: speakerNames,
+            modelIdentifier: modelIdentifier,
+            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs
+        )
+    }
+
+    /// Build the meeting prompt. Rows are TEXT-ONLY — speaker label
+    /// (id, plus the rename when present) + transcript, nothing else.
+    /// The output schema is content-only: an overview, the main topics
+    /// with attribution + per-speaker positions, and each speaker's
+    /// talking points. Kept local to this file (not in
+    /// `PromptCatalog` / `MLXQwenSpec`) since it's LM-Studio-specific.
+    private func buildMeetingPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        truncatedFromTotal: Int?
+    ) -> String {
+        let speakers = utterances.orderedSpeakerIDs
+        let speakerList = speakers.joined(separator: ", ")
+        var lines: [String] = []
+        lines.reserveCapacity(utterances.count + 16)
+        lines.append("You are an analyst writing the minutes of a multi-speaker meeting.")
+        lines.append("Read every line of the transcript below and produce a JSON object with three fields:")
+        lines.append("  \"topic\" — one or two sentences giving an overall overview of what the meeting was about.")
+        lines.append("  \"topics\" — array of the main subjects discussed. Each entry is { \"title\": <short topic name>, \"raisedBy\": <speaker id or name who first brought it up, or \"\" if unclear>, \"positions\": [ { \"speaker\": <id or name>, \"stance\": <that speaker's opinion / position on this topic> } ] }. Capture every distinct topic the meeting actually covered.")
+        lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakerList). Each entry is { \"speakerID\": <id>, \"talkingPoints\": [ <short string>, … ] } listing that speaker's main points / contributions. Maximize coverage — list every substantive point the speaker made.")
+        lines.append("Focus ONLY on content: who said what, and the positions taken. Do NOT comment on emotion, mood, tone, or affect.")
+        lines.append("Return ONLY valid JSON, no prose before or after.")
+        lines.append(SummarizerLocale.responseLanguageInstruction)
+        // Disable Qwen3 thinking for a single turn (harmless literal
+        // text for Llama-served models — see the type-level note).
+        lines.append("/no_think")
+        if let total = truncatedFromTotal {
+            lines.append("")
+            lines.append("NOTE: This meeting has \(total) lines total; the \(utterances.count) most distinctive lines (chosen by session-relative TF-IDF, NOT the most recent) are shown below in chronological order. Cover the whole meeting; gaps between lines are expected.")
+        }
+        lines.append("")
+        lines.append("Transcript:")
+        for u in utterances {
+            lines.append(meetingLine(for: u, speakerNames: speakerNames))
+        }
+        lines.append("")
+        lines.append("---")
+        lines.append("IMPORTANT: Follow the instructions above and produce exactly one valid JSON object with fields topic, topics, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the transcript above; do NOT add any prose.")
+        return lines.joined(separator: "\n")
+    }
+
+    /// One TEXT-ONLY transcript row: `- <id> (<name>): <transcript>`.
+    /// All emotion fields the SER-rich `compactLine` carries are
+    /// deliberately dropped. The rename map is applied so the model
+    /// can refer to speakers by their friendly name in `raisedBy` /
+    /// `positions`.
+    private func meetingLine(
+        for u: UtteranceEstimate,
+        speakerNames: [String: String]
+    ) -> String {
+        var label = u.speakerID
+        if let name = speakerNames[u.speakerID], !name.isEmpty {
+            label += " (\(name))"
+        }
+        return "- \(label): \(u.transcript)"
+    }
+
+    /// Parse the meeting JSON into a `SessionSummary`. Reuses the
+    /// shared `<think>` / code-fence sanitizers and the lenient
+    /// first-`{`-to-last-`}` slice the affect parser uses, then maps
+    /// onto `topics` + per-speaker `talkingPoints` with every affect
+    /// field zeroed (`overallMood` / `dominantMood` empty, no setting).
+    /// `fillMissingPerSpeaker` guarantees a roster entry per input
+    /// speaker even when the model drops one.
+    static func parseMeeting(
+        raw: String,
+        speakerNames: [String: String],
+        modelIdentifier: String,
+        expectedSpeakerIDs: [String]
+    ) throws -> SessionSummary {
+        let dethought = MLXLLMSummarizerCore.stripThinkBlocks(raw)
+        let stripped = MLXLLMSummarizerCore.stripCodeFence(dethought)
+        guard let braceStart = stripped.firstIndex(of: "{"),
+              let braceEnd = stripped.lastIndex(of: "}"),
+              braceStart < braceEnd else {
+            throw SummarizerError.decodeFailed(reason: "no JSON object found")
+        }
+        struct Wire: Decodable {
+            struct Position: Decodable {
+                let speaker: String?
+                let stance: String?
+            }
+            struct Topic: Decodable {
+                let title: String?
+                let raisedBy: String?
+                let positions: [Position]?
+            }
+            struct PerSpeaker: Decodable {
+                let speakerID: String
+                let talkingPoints: [String]?
+            }
+            let topic: String?
+            let topics: [Topic]?
+            let perSpeaker: [PerSpeaker]?
+        }
+        let jsonSlice = String(stripped[braceStart...braceEnd])
+        guard let data = jsonSlice.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(Wire.self, from: data) else {
+            throw SummarizerError.decodeFailed(reason: "meeting JSON did not parse")
+        }
+        let topics: [SessionSummary.TopicSummary]? = decoded.topics.map { list in
+            list.map { t in
+                let by = t.raisedBy?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return SessionSummary.TopicSummary(
+                    title: t.title ?? "",
+                    raisedBy: (by?.isEmpty == false) ? by : nil,
+                    positions: (t.positions ?? []).map { p in
+                        .init(speaker: p.speaker ?? "", stance: p.stance ?? "")
+                    }
+                )
+            }
+        }
+        let perSpeaker = (decoded.perSpeaker ?? []).map { entry in
+            SessionSummary.SpeakerSummary(
+                speakerID: entry.speakerID,
+                speakerName: speakerNames[entry.speakerID],
+                summary: "",
+                dominantMood: "",
+                talkingPoints: entry.talkingPoints
+            )
+        }
+        let filled = SessionSummary.fillMissingPerSpeaker(
+            perSpeaker,
+            expectedSpeakerIDs: expectedSpeakerIDs,
+            speakerNames: speakerNames
+        )
+        return SessionSummary(
+            inferredSetting: nil,
+            topic: decoded.topic ?? "",
+            overallMood: "",
+            perSpeaker: filled,
+            topics: topics,
+            model: modelIdentifier,
+            generatedAt: Date(),
+            mode: .meeting
+        )
     }
 }

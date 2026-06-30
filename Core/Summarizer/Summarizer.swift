@@ -78,6 +78,16 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
     /// context window. Picker only surfaces this option when
     /// LM Studio is the active backend.
     case all
+    /// Content-focused MEETING minutes. Same heuristic selection
+    /// policy as `.heuristic` (`Informativeness.topN`,
+    /// backchannel-penalized) but emotion data is dropped from every
+    /// prompt row, so the freed token budget buys a much larger
+    /// utterance cap — more of the conversation is seen under the same
+    /// one-pass cost. The output drops affect entirely and instead
+    /// captures the main topics (who raised each, others' positions)
+    /// and each speaker's main talking points (`SessionSummary.topics`
+    /// + `SpeakerSummary.talkingPoints`).
+    case meeting
 
     /// Custom rawValue initializer for backward compatibility.
     /// Accepts the legacy `"fast"` string (used before the case
@@ -91,6 +101,7 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
         case "heuristic": self = .heuristic
         case "deep":      self = .deep
         case "all":       self = .all
+        case "meeting":   self = .meeting
         case "fast":      self = .trailing   // legacy
         default:          return nil
         }

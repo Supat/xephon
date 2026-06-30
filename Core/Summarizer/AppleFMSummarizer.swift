@@ -47,6 +47,23 @@ public actor AppleFMSummarizer: SessionSummarizer {
     /// time is comparable for short-to-medium sessions.
     private static let deepWindowSize = 15
 
+    /// Cap on prompt utterances for `.meeting` mode. Meeting rows
+    /// are TEXT-ONLY (speaker + transcript, no fused label / V/A / D
+    /// / Plutchik / demographics), so each line is roughly a third
+    /// the size of the affect-bearing `compactLine`. That freed
+    /// budget buys a much wider window than the 15-utterance affect
+    /// cap. The meeting Generable schema (topics → positions, plus
+    /// per-speaker talking points) is bulkier than `GenerableSummary`
+    /// though, and `includeSchemaInPrompt: false` only keeps the
+    /// schema text out of the prompt — constrained decoding still
+    /// reserves output budget against the same 4096-token window. 35
+    /// is the empirical ceiling that keeps text rows + reserved
+    /// response under the window without tripping
+    /// `exceededContextWindowSize`.
+    // ponytail: 35 is the Apple-FM meeting ceiling; raising it risks
+    // exceededContextWindowSize once topic/position output grows.
+    private static let meetingMaxPromptUtterances = 35
+
     public func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
@@ -87,6 +104,12 @@ public actor AppleFMSummarizer: SessionSummarizer {
             return try await summarizeDeep(
                 utterances: utterances,
                 speakerNames: speakerNames
+            )
+        case .meeting:
+            return try await summarizeMeeting(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                boostedUtteranceIDs: boostedUtteranceIDs
             )
         case .all:
             // `.all` is LM-Studio-only — Apple FM's 4096-token
@@ -256,6 +279,140 @@ public actor AppleFMSummarizer: SessionSummarizer {
         } catch {
             AppLog.app.error(
                 "AppleFMSummarizer.respond failed: \(String(describing: error), privacy: .public)"
+            )
+            throw SummarizerError.inferenceFailed(
+                reason: String(describing: error)
+            )
+        }
+    }
+
+    /// Single-pass MEETING-minutes path. Selection mirrors
+    /// `.heuristic` (`Informativeness.topNBalancedBySpeaker`, with
+    /// the caller's keyword boosts) but draws from the larger
+    /// `meetingMaxPromptUtterances` budget. Prompt rows are
+    /// TEXT-ONLY — speaker label + transcript, no affect — and the
+    /// output drops emotion entirely in favor of topics (who raised
+    /// each + others' positions) and per-speaker talking points.
+    private func summarizeMeeting(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        boostedUtteranceIDs: Set<UUID>
+    ) async throws -> SessionSummary {
+        let cap = Self.meetingMaxPromptUtterances
+        let promptUtterances: [UtteranceEstimate]
+        let truncatedFrom: Int?
+        if utterances.count > cap {
+            // Same speaker-balanced top-N selection `.heuristic`
+            // uses, just over the wider meeting budget.
+            let topIDs = Informativeness.topNBalancedBySpeaker(
+                cap,
+                utterances: utterances,
+                boostedIDs: boostedUtteranceIDs
+            )
+            promptUtterances = utterances.filter { topIDs.contains($0.id) }
+            truncatedFrom = utterances.count
+        } else {
+            promptUtterances = utterances
+            truncatedFrom = nil
+        }
+
+        let speakers = promptUtterances.orderedSpeakerIDs
+        let utteranceLines = promptUtterances
+            .map { Self.meetingLine(for: $0) }
+            .joined(separator: "\n")
+        // Friendly-name roster so the model refers to renamed
+        // speakers by name in topic positions and talking points.
+        // Per-speaker entries still copy the raw id (the schema's
+        // `speakerID` Guide says so) and get `speakerName` stamped
+        // post-hoc from the same map, mirroring the other modes.
+        let nameRoster = speakers
+            .compactMap { id -> String? in
+                guard let name = speakerNames[id], !name.isEmpty else { return nil }
+                return "\(id) = \(name)"
+            }
+            .joined(separator: ", ")
+        let nameRosterLine = nameRoster.isEmpty
+            ? ""
+            : "\n\nSpeaker names: \(nameRoster)."
+        let truncationNote: String
+        if let total = truncatedFrom {
+            truncationNote = "\n\n(Showing the \(promptUtterances.count) most distinctive of \(total) utterances by session-relative TF-IDF, in chronological order; treat as a representative sample of the meeting.)"
+        } else {
+            truncationNote = ""
+        }
+        let languageDirective = SummarizerLocale.responseLanguageInstruction
+        let userMessage = """
+            \(languageDirective)
+
+            Speakers present: \(speakers.joined(separator: ", ")).\(nameRosterLine)
+
+            Utterances:
+            \(utteranceLines)\(truncationNote)
+            """
+
+        AppLog.app.info(
+            "AppleFMSummarizer meeting mode summarizing \(promptUtterances.count, privacy: .public) utterances"
+        )
+        let session = LanguageModelSession(instructions: Self.meetingInstructions)
+        do {
+            let response = try await session.respond(
+                to: userMessage,
+                generating: GenerableMeetingSummary.self,
+                includeSchemaInPrompt: false
+            )
+            let g = response.content
+            let perSpeaker = g.perSpeaker.map { entry in
+                SessionSummary.SpeakerSummary(
+                    speakerID: entry.speakerID,
+                    speakerName: speakerNames[entry.speakerID],
+                    // Meeting mode carries no affect: empty summary
+                    // (talking points are the per-speaker payload)
+                    // and empty dominant mood.
+                    summary: "",
+                    dominantMood: "",
+                    talkingPoints: entry.talkingPoints
+                )
+            }
+            let filled = SessionSummary.fillMissingPerSpeaker(
+                perSpeaker,
+                expectedSpeakerIDs: speakers,
+                speakerNames: speakerNames
+            )
+            if filled.count > perSpeaker.count {
+                AppLog.app.info(
+                    "AppleFMSummarizer meeting filled \(filled.count - perSpeaker.count, privacy: .public) missing per-speaker entries (\(perSpeaker.count, privacy: .public) emitted, \(speakers.count, privacy: .public) expected)"
+                )
+            }
+            let topics = g.topics.map { t in
+                SessionSummary.TopicSummary(
+                    title: t.title,
+                    raisedBy: t.raisedBy.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty ? nil : t.raisedBy,
+                    positions: t.positions.map { p in
+                        SessionSummary.TopicSummary.Position(
+                            speaker: p.speaker,
+                            stance: p.stance
+                        )
+                    }
+                )
+            }
+            return SessionSummary(
+                inferredSetting: nil,
+                topic: g.overview,
+                overallMood: "",
+                perSpeaker: filled,
+                topics: topics,
+                model: modelIdentifier,
+                generatedAt: Date(),
+                mode: .meeting
+            )
+        } catch let error as SummarizerError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            AppLog.app.error(
+                "AppleFMSummarizer meeting respond failed: \(String(describing: error), privacy: .public)"
             )
             throw SummarizerError.inferenceFailed(
                 reason: String(describing: error)
@@ -590,6 +747,41 @@ public actor AppleFMSummarizer: SessionSummarizer {
         parts.append("\"\(escaped)\"")
         return parts.joined(separator: " ")
     }
+
+    /// Text-only line for `.meeting` mode — speaker id + transcript,
+    /// nothing else. All affect (fused label, V/A/D, vectors) and
+    /// demographics are dropped: meeting minutes don't use them, and
+    /// the smaller line is what funds the wider utterance cap.
+    /// Format: `S01: "text"`
+    private static func meetingLine(for u: UtteranceEstimate) -> String {
+        let escaped = u.transcript
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\(u.speakerID): \"\(escaped)\""
+    }
+
+    /// Instructions for the single-pass `.meeting` path. Output is
+    /// content-focused minutes, NOT affect: main topics (with who
+    /// raised each + others' positions) plus per-speaker talking
+    /// points. Maps to `GenerableMeetingSummary`.
+    internal static let meetingInstructions = """
+        Produce concise MEETING MINUTES for a multi-speaker
+        conversation. Each input line is `speaker: "transcript"`.
+        Ignore emotion entirely — this is a content summary, not an
+        affect read.
+        First write a 1-2 sentence overview of what the meeting was
+        about. Then identify the conversation's main TOPICS. For each
+        topic give a short title, who first raised it, and the other
+        participants' positions / opinions on it (one entry per
+        speaker who weighed in, with their stance). Finally, for every
+        speaker id in the input, list that speaker's main talking
+        points as short bullet phrases. Do not invent speakers, topics,
+        or positions that the transcript does not support.
+        When a "Speaker names" roster is provided, refer to speakers by
+        their given names in the overview, topic attribution, and
+        positions — but still copy the raw speaker id (e.g. S01) into
+        each per-speaker entry's id field.
+        """
 }
 
 @Generable
@@ -637,4 +829,42 @@ private struct GenerableSummary {
     var overallMood: String
     @Guide(description: "Per-speaker emotional arcs, one entry per distinct speaker id in the input")
     var perSpeaker: [GenerableSpeakerSummary]
+}
+
+// MARK: - Meeting-mode guided generation
+
+@Generable
+private struct GenerableMeetingPosition {
+    @Guide(description: "The speaker who holds this position — use their given name if a Speaker names roster was provided, else the speaker id")
+    var speaker: String
+    @Guide(description: "This speaker's opinion / position / stance on the topic, in one short sentence")
+    var stance: String
+}
+
+@Generable
+private struct GenerableMeetingTopic {
+    @Guide(description: "Short title for the topic / subject discussed")
+    var title: String
+    @Guide(description: "Who first raised this topic — given name if a roster was provided, else the speaker id; leave empty if unclear")
+    var raisedBy: String
+    @Guide(description: "Other participants' positions on this topic, one entry per speaker who weighed in")
+    var positions: [GenerableMeetingPosition]
+}
+
+@Generable
+private struct GenerableMeetingSpeaker {
+    @Guide(description: "Canonical speaker id (e.g. S01, S02) — copy from the input, do not use the display name here")
+    var speakerID: String
+    @Guide(description: "This speaker's main talking points as short bullet phrases (3-8 words each)")
+    var talkingPoints: [String]
+}
+
+@Generable
+private struct GenerableMeetingSummary {
+    @Guide(description: "One or two sentences giving an overall overview of what the meeting was about")
+    var overview: String
+    @Guide(description: "The meeting's main topics, each with a title, who raised it, and other participants' positions")
+    var topics: [GenerableMeetingTopic]
+    @Guide(description: "Per-speaker talking points, one entry per distinct speaker id in the input")
+    var perSpeaker: [GenerableMeetingSpeaker]
 }

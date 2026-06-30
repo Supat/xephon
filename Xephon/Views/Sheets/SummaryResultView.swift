@@ -91,14 +91,29 @@ struct SummaryResultView: View {
                         body: setting
                     )
                 }
+                // Meeting mode drops affect: no overall-mood section,
+                // and a structured Topics breakdown sits between the
+                // overview and the per-speaker talking points.
+                let isMeeting = summary.mode == .meeting
+                    || (summary.topics?.isEmpty == false)
                 section(
                     header: String(localized: "summary.section.topic"),
                     body: summary.topic
                 )
-                section(
-                    header: String(localized: "summary.section.overallMood"),
-                    body: summary.overallMood
-                )
+                if let topics = summary.topics, !topics.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        sectionHeader(String(localized: "summary.section.topics"))
+                        ForEach(Array(topics.enumerated()), id: \.offset) { _, t in
+                            topicCard(t)
+                        }
+                    }
+                }
+                if !isMeeting {
+                    section(
+                        header: String(localized: "summary.section.overallMood"),
+                        body: summary.overallMood
+                    )
+                }
                 if !summary.perSpeaker.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader(String(localized: "summary.section.perSpeaker"))
@@ -202,26 +217,76 @@ struct SummaryResultView: View {
             .textCase(.uppercase)
     }
 
+    /// One meeting topic: title, who raised it, and each speaker's
+    /// position. Meeting mode only (`summary.topics`).
+    @ViewBuilder
+    private func topicCard(_ topic: SessionSummary.TopicSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(topic.title.isEmpty ? "—" : topic.title)
+                .font(.callout.bold())
+                .fixedSize(horizontal: false, vertical: true)
+            if let by = topic.raisedBy?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !by.isEmpty {
+                Text(String(format: String(localized: "summary.topic.raisedBy"), by))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(topic.positions.enumerated()), id: \.offset) { _, p in
+                if !p.stance.isEmpty {
+                    Text(positionAttributed(speaker: p.speaker, stance: p.stance))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// "Speaker: stance" with the speaker bolded, as one inline-
+    /// flowing run. AttributedString instead of the `Text + Text`
+    /// concatenation operator (deprecated in iOS 26).
+    private func positionAttributed(speaker: String, stance: String) -> AttributedString {
+        var name = AttributedString("\(speaker): ")
+        name.font = .subheadline.weight(.semibold)
+        var rest = AttributedString(stance)
+        rest.font = .subheadline
+        name.append(rest)
+        return name
+    }
+
     @ViewBuilder
     private func speakerCard(_ entry: SessionSummary.SpeakerSummary) -> some View {
+        // Meeting mode: bullet talking points, no mood chip.
+        let points = entry.talkingPoints?.filter { !$0.isEmpty } ?? []
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(displayName(for: entry))
                     .font(.callout.bold())
                     .foregroundStyle(speakerTint(for: entry.speakerID))
                 Spacer(minLength: 6)
-                Text(entry.dominantMood)
-                    .font(.caption)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule().fill(speakerTint(for: entry.speakerID).opacity(0.18))
-                    )
-                    .foregroundStyle(speakerTint(for: entry.speakerID))
+                if points.isEmpty, !entry.dominantMood.isEmpty {
+                    Text(entry.dominantMood)
+                        .font(.caption)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(speakerTint(for: entry.speakerID).opacity(0.18))
+                        )
+                        .foregroundStyle(speakerTint(for: entry.speakerID))
+                }
             }
-            Text(entry.summary.isEmpty ? "—" : entry.summary)
-                .font(.body)
-                .fixedSize(horizontal: false, vertical: true)
+            if !points.isEmpty {
+                ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                    Text("• \(point)")
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text(entry.summary.isEmpty ? "—" : entry.summary)
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -255,6 +320,7 @@ struct SummaryResultView: View {
             case .trailing:  modeLabel = String(localized: "summary.footer.mode.trailing")
             case .heuristic: modeLabel = String(localized: "summary.footer.mode.heuristic")
             case .deep:      modeLabel = String(localized: "summary.footer.mode.deep")
+            case .meeting:   modeLabel = String(localized: "summary.footer.mode.meeting")
             case .all:       modeLabel = String(localized: "summary.footer.mode.all")
             }
             return "\(base) · \(modeLabel)"

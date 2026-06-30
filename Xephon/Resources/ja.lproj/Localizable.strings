@@ -1,6 +1,11 @@
 "input.default" = "デフォルト入力";
 "settings.language" = "言語";
 "settings.speechBoost" = "音声強調 (ASRのみ)";
+"settings.recordAudio" = "セッション音声を録音";
+"settings.recordAudio.format" = "音声フォーマット";
+"settings.recordAudio.format.aac" = "AAC（小容量）";
+"settings.recordAudio.format.wav" = "WAV（ロスレス）";
+"settings.recordAudio.caption" = "録音を保存すると、再生・発話の再評価ができ、保存セッションに音声を含められます。WAVはロスレスですが大幅に大きくなります。";
 "settings.diarizerSensitivity" = "話者分離の感度";
 "settings.diarizerSensitivity.min" = "統合";
 "settings.diarizerSensitivity.max" = "分離";
@@ -63,6 +68,8 @@
 "settings.summarizer.mode.trailing.caption" = "末尾の発話（直近のウィンドウ）を1回でまとめます。ヒューリスティックと同じ速度ですが、長いセッションでは冒頭が落ちます。";
 "settings.summarizer.mode.heuristic.caption" = "セッション内TF-IDFで最も特徴的な発話を1回でまとめます（あいづちやフィラーは減点）。末尾と同じ速度で、長いセッションの全体像をより捉えます。";
 "settings.summarizer.mode.deep.caption" = "全発話をマップ・リデュースで処理します。セッションの長さに比例して時間がかかりますが、ピークメモリは変わりません。";
+"settings.summarizer.mode.meeting" = "会議";
+"settings.summarizer.mode.meeting.caption" = "会議メモ：感情を省き、主な議題（誰が提起したか、他の参加者の立場）と各話者の発言ポイントをまとめます。テキストのみの行なので、1回でセッションの大部分をカバーできます。";
 "settings.summarizer.mode.all" = "全て";
 "settings.summarizer.mode.all.caption" = "全発話を完全なメタデータ付きで1回のリクエストでリモートサーバーに送信します。リモートバックエンド専用 — オンデバイスLLMはコンテキストウィンドウに収まりません。";
 "chrome.sessionTitle.placeholder" = "無題のセッション";
@@ -125,12 +132,15 @@
 "summary.empty" = "要約はまだありません。ツールバーの「要約」をタップしてください。";
 "summary.section.setting" = "シチュエーション";
 "summary.section.topic" = "トピック";
+"summary.section.topics" = "議題";
+"summary.topic.raisedBy" = "提起者: %@";
 "summary.section.overallMood" = "全体の雰囲気";
 "summary.section.perSpeaker" = "話者ごと";
 "summary.footer.model" = "モデル: %@";
 "summary.footer.mode.trailing" = "末尾要約";
 "summary.footer.mode.heuristic" = "ヒューリスティック要約";
 "summary.footer.mode.deep" = "ディープ要約";
+"summary.footer.mode.meeting" = "会議メモ";
 "summary.footer.mode.all" = "全発話要約";
 "summary.footer.aiGenerated" = "AI生成";
 "summary.footer.aiCaveat" = "誤りを含む可能性があります";
