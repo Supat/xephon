@@ -161,12 +161,19 @@ extension RecordingController {
         }
         #endif
         await refreshInputs()
+        guard phase == .idle else { return }
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        // React only to a genuine output-device loss. Benign
+        // reconfigurations — `.routeConfigurationChange` from USB clock
+        // renegotiation or another controller's idle category swap —
+        // fire in storms; the old "stop playback on any route change"
+        // cut utterance playback to short blips the instant it started.
+        // `.oldDeviceUnavailable` is the unplugged-headphones case Apple
+        // HIG wants playback to stop for.
+        guard parsedReason == .oldDeviceUnavailable else { return }
         if playbackPlayer != nil {
             stopPlayback()
         }
-        guard phase == .idle else { return }
-        #if os(iOS) || targetEnvironment(macCatalyst)
-        guard parsedReason == .oldDeviceUnavailable else { return }
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
