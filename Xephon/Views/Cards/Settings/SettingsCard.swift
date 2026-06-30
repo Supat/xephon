@@ -1,5 +1,6 @@
 import SwiftUI
 import ASR
+import Audio
 import Diarization
 import SERText
 
@@ -59,6 +60,7 @@ struct SettingsCard: View {
             }
             textSERPicker
             speechBoostToggle
+            recordAudioControls
             diarizerSensitivitySlider
         }
         .padding(12)
@@ -238,6 +240,54 @@ struct SettingsCard: View {
         switch backend {
         case .speechAnalyzer: return String(localized: "settings.offlineASR.speechAnalyzer")
         case .qwen3ASR:       return String(localized: "settings.offlineASR.qwen3ASR")
+        }
+    }
+
+    /// Record-the-session-audio controls. Mic mode only (file mode
+    /// already has source audio). The toggle persists across launches;
+    /// the format picker shows only when recording is on. Both lock
+    /// while a recording is in flight (the destination is fixed at
+    /// start).
+    @ViewBuilder
+    private var recordAudioControls: some View {
+        if case .microphone = recorder.sourceMode {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    isOn: Binding(
+                        get: { recorder.recordAudioEnabled },
+                        set: { recorder.setRecordAudioEnabled($0) }
+                    )
+                ) {
+                    Label(
+                        String(localized: "settings.recordAudio"),
+                        systemImage: "waveform.circle"
+                    )
+                }
+                .toggleStyle(.switch)
+                .disabled(recorder.isRecording)
+
+                if recorder.recordAudioEnabled {
+                    Picker(
+                        String(localized: "settings.recordAudio.format"),
+                        selection: Binding(
+                            get: { recorder.recordAudioFormat },
+                            set: { recorder.setRecordAudioFormat($0) }
+                        )
+                    ) {
+                        Text(String(localized: "settings.recordAudio.format.aac"))
+                            .tag(RecordingAudioFormat.aac)
+                        Text(String(localized: "settings.recordAudio.format.wav"))
+                            .tag(RecordingAudioFormat.wav)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(recorder.isRecording)
+                }
+
+                Text(String(localized: "settings.recordAudio.caption"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal)
         }
     }
 

@@ -15,6 +15,22 @@ public struct CaptureStreams: Sendable {
     }
 }
 
+/// Container/codec for the optional native-rate session recording.
+/// `aac` (`.m4a`) keeps sessions small enough to embed in the session
+/// bundle; `wav` is bit-exact lossless at the cost of ~10× the size.
+public enum RecordingAudioFormat: String, Sendable, CaseIterable, Codable {
+    case aac
+    case wav
+
+    /// File extension for the chosen container.
+    public var fileExtension: String {
+        switch self {
+        case .aac: return "m4a"
+        case .wav: return "wav"
+        }
+    }
+}
+
 /// Abnormal termination cause for a capture session. The recording
 /// controller checks this when the capture streams finish while a
 /// recording is still in progress and surfaces it to the user —
@@ -34,6 +50,11 @@ public protocol AudioCapture: Actor {
     /// `AudioError.permissionDenied` if microphone access is not granted.
     func start() async throws -> CaptureStreams
     func stop() async
+
+    /// Configure native-rate recording-to-disk for the NEXT `start()`.
+    /// `url == nil` disables it. Default is a no-op — only the live mic
+    /// engine records; file-mode capture ignores this.
+    func setRecordingDestination(_ url: URL?, format: RecordingAudioFormat) async
 
     /// Why the most recent capture ended, when it ended abnormally.
     /// nil = still running, never started, or ended via `stop()`.
@@ -138,6 +159,7 @@ public extension AudioCapture {
     func setPreferredInput(_ uid: String?) async throws {}
     var isSpeechBoostEnabled: Bool { get async { false } }
     func setSpeechBoostEnabled(_ enabled: Bool) async {}
+    func setRecordingDestination(_ url: URL?, format: RecordingAudioFormat) async {}
 }
 
 public actor AVAudioEngineCapture: AudioCapture {
@@ -163,7 +185,35 @@ public actor AVAudioEngineCapture: AudioCapture {
     private var rebaser: TimestampRebaser?
     private var speechBoostEnabled: Bool = true
 
+    // Optional native-rate recording-to-disk. The file is opened once
+    // (first engine build) at a FIXED PCM format; later rebuilds (USB
+    // reconnect changing rate/channels) recreate `recordConverter` to
+    // map the new input format into that same fixed format, so the one
+    // output file stays valid across recovery. Writing happens off the
+    // audio thread: the tap yields converted buffers into `recordCont`
+    // and `recordWriterTask` drains them with `file.write`.
+    private var recordingURL: URL?
+    private var recordingFormat: RecordingAudioFormat = .aac
+    private var recordFile: AVAudioFile?
+    private var recordPCMFormat: AVAudioFormat?
+    private var recordConverter: AVAudioConverter?
+    private var recordCont: AsyncStream<SendableBuffer>.Continuation?
+    private var recordWriterTask: Task<Void, Never>?
+
+    /// Ownership-transfer box for handing a freshly-allocated,
+    /// never-reused PCM buffer from the audio-thread tap to the
+    /// off-thread writer. `@unchecked` is safe: the tap allocates a
+    /// fresh buffer per chunk and never touches it after yielding.
+    private struct SendableBuffer: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+    }
+
     public init() {}
+
+    public func setRecordingDestination(_ url: URL?, format: RecordingAudioFormat) async {
+        recordingURL = url
+        recordingFormat = format
+    }
 
     public func start() async throws -> CaptureStreams {
         guard await Self.requestPermission() else {
@@ -189,6 +239,22 @@ public actor AVAudioEngineCapture: AudioCapture {
         let (processedStream, processedCont) = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(64))
         self.rawCont = rawCont
         self.processedCont = processedCont
+
+        // Spin up the off-thread recording writer before the engine so
+        // the very first converted chunk has a consumer. The file
+        // itself is opened inside buildAndStartEngine, once the input
+        // format is known; the writer no-ops until then.
+        if recordingURL != nil {
+            let (recStream, recCont) = AsyncStream<SendableBuffer>.makeStream(
+                bufferingPolicy: .bufferingNewest(256)
+            )
+            self.recordCont = recCont
+            self.recordWriterTask = Task { [weak self] in
+                for await box in recStream {
+                    await self?.appendRecordBuffer(box.buffer)
+                }
+            }
+        }
 
         do {
             try buildAndStartEngine()
@@ -258,6 +324,14 @@ public actor AVAudioEngineCapture: AudioCapture {
 
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
 
+        // Open the recording file (first build) + (re)make the record
+        // converter for this input format. Locals captured into the tap
+        // so the audio-thread closure never touches actor state.
+        configureRecording(inputFormat: inputFormat)
+        let recConverter = recordConverter
+        let recFormat = recordPCMFormat
+        let recCont = recordCont
+
         // Tap A — raw input.
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
@@ -269,6 +343,9 @@ public actor AVAudioEngineCapture: AudioCapture {
                 converter: rawConverter,
                 continuation: rawCont
             )
+            if let recConverter, let recFormat, let recCont {
+                Self.recordCopy(buffer, converter: recConverter, recordFormat: recFormat, continuation: recCont)
+            }
         }
 
         // Tap B — sink mixer (= EQ-processed audio).
@@ -525,6 +602,16 @@ public actor AVAudioEngineCapture: AudioCapture {
             processedCont.finish()
             return
         }
+        // Remap the (unchanged, fixed-format) record file from the new
+        // input format. The file was opened on the first build; only the
+        // converter changes here.
+        if let rpf = recordPCMFormat {
+            recordConverter = AVAudioConverter(from: inputFormat, to: rpf)
+            recordConverter?.primeMethod = .none
+        }
+        let recConverter = recordConverter
+        let recFormat = recordPCMFormat
+        let recCont = recordCont
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
                 buffer,
@@ -535,6 +622,9 @@ public actor AVAudioEngineCapture: AudioCapture {
                 converter: newRawConverter,
                 continuation: rawCont
             )
+            if let recConverter, let recFormat, let recCont {
+                Self.recordCopy(buffer, converter: recConverter, recordFormat: recFormat, continuation: recCont)
+            }
         }
         processedSink.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
             Self.yieldResampled(
@@ -567,6 +657,101 @@ public actor AVAudioEngineCapture: AudioCapture {
         }
     }
 
+    // MARK: - Recording-to-disk
+
+    /// Open the recording file on the first build (fixing its PCM
+    /// format to the initial input format) and (re)make the converter
+    /// that maps the current input format into it. Disables recording
+    /// on file-open failure rather than aborting the whole capture.
+    private func configureRecording(inputFormat: AVAudioFormat) {
+        guard let url = recordingURL else { return }
+        if recordPCMFormat == nil {
+            guard let pcm = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: inputFormat.sampleRate,
+                channels: inputFormat.channelCount,
+                interleaved: false
+            ) else { return }
+            do {
+                recordFile = try AVAudioFile(
+                    forWriting: url,
+                    settings: Self.recordSettings(format: recordingFormat, pcm: pcm),
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+                recordPCMFormat = pcm
+                AppLog.audio.info("recording → \(url.lastPathComponent, privacy: .public) (\(self.recordingFormat.rawValue, privacy: .public), \(pcm.sampleRate, privacy: .public) Hz × \(pcm.channelCount, privacy: .public) ch)")
+            } catch {
+                AppLog.audio.error("recording file open failed: \(String(describing: error), privacy: .public); recording disabled this session")
+                recordingURL = nil
+                return
+            }
+        }
+        if let recordPCMFormat {
+            recordConverter = AVAudioConverter(from: inputFormat, to: recordPCMFormat)
+            recordConverter?.primeMethod = .none
+        }
+    }
+
+    private static func recordSettings(format: RecordingAudioFormat, pcm: AVAudioFormat) -> [String: Any] {
+        switch format {
+        case .aac:
+            return [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: pcm.sampleRate,
+                AVNumberOfChannelsKey: pcm.channelCount,
+                AVEncoderBitRateKey: 192_000,
+            ]
+        case .wav:
+            return [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: pcm.sampleRate,
+                AVNumberOfChannelsKey: pcm.channelCount,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
+            ]
+        }
+    }
+
+    /// Off-thread file write, invoked by `recordWriterTask`.
+    private func appendRecordBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let file = recordFile else { return }
+        do {
+            try file.write(from: buffer)
+        } catch {
+            AppLog.audio.error("recording write failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Audio-thread helper: convert the native tap buffer into the
+    /// fixed record format and hand the fresh (owned) buffer to the
+    /// off-thread writer. Mirrors `yieldResampled`'s converter dance.
+    private static func recordCopy(
+        _ buffer: AVAudioPCMBuffer,
+        converter: AVAudioConverter,
+        recordFormat: AVAudioFormat,
+        continuation: AsyncStream<SendableBuffer>.Continuation
+    ) {
+        let ratio = recordFormat.sampleRate / buffer.format.sampleRate
+        let cap = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
+        guard cap > 0,
+              let out = AVAudioPCMBuffer(pcmFormat: recordFormat, frameCapacity: cap) else { return }
+        var convError: NSError?
+        final class Once: @unchecked Sendable { var fired = false }
+        let once = Once()
+        let inputBlock: AVAudioConverterInputBlock = { _, status in
+            if once.fired { status.pointee = .noDataNow; return nil }
+            once.fired = true
+            status.pointee = .haveData
+            return buffer
+        }
+        let result = converter.convert(to: out, error: &convError, withInputFrom: inputBlock)
+        guard result != .error, out.frameLength > 0 else { return }
+        continuation.yield(SendableBuffer(buffer: out))
+    }
+
     public func stop() async {
         if let obs = configChangeObserver {
             NotificationCenter.default.removeObserver(obs)
@@ -594,6 +779,19 @@ public actor AVAudioEngineCapture: AudioCapture {
         rawConverter = nil
         processedConverter = nil
         rebaser = nil
+        // Finalize the recording: stop accepting buffers, drain the
+        // writer so every queued chunk lands, then drop the file so
+        // AVAudioFile flushes its header. Cleared for the next session;
+        // the controller keeps the URL it handed in via
+        // setRecordingDestination.
+        recordCont?.finish()
+        recordCont = nil
+        await recordWriterTask?.value
+        recordWriterTask = nil
+        recordFile = nil
+        recordConverter = nil
+        recordPCMFormat = nil
+        recordingURL = nil
         // Drop the engine + nodes entirely. The next `start()` builds
         // fresh instances — see the engine property comment.
         engine = nil

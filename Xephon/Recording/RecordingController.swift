@@ -76,6 +76,18 @@ final class RecordingController {
     /// while iOS shuffles routes underneath.
     var selectedInputUID: String?
     private(set) var isSpeechBoostEnabled: Bool = true
+    /// Persisted: record the live mic session's audio to disk
+    /// (default off). When on, a mic recording produces a playback
+    /// file so the session behaves like a file-opened one (playback,
+    /// re-evaluate, save-with-audio). Survives relaunch via
+    /// `recordAudioEnabledKey`.
+    private(set) var recordAudioEnabled: Bool = false
+    /// Persisted: container/codec for the session recording.
+    private(set) var recordAudioFormat: RecordingAudioFormat = .aac
+    /// Sandbox path of the in-progress / just-finished mic recording.
+    /// Held so `stop()` can wire it into `playbackSourceURL` and the
+    /// next recording can delete it.
+    private var currentRecordingURL: URL?
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
     /// Offline ASR backend list + current pick, mirrored from the
@@ -569,6 +581,8 @@ final class RecordingController {
     private static let fusionTextWeightFloorKey = "xephon.fusionTextWeightFloor"
     private static let diarizerClusteringThresholdKey = "xephon.diarizerClusteringThreshold"
     private static let offlineASRBackendKey = "xephon.offlineASRBackend"
+    private static let recordAudioEnabledKey = "xephon.recordAudioEnabled"
+    private static let recordAudioFormatKey = "xephon.recordAudioFormat"
 
 
     /// Current weight applied to the acoustic modality during late
@@ -664,6 +678,13 @@ final class RecordingController {
             self.diarizerClusteringThreshold = UserDefaults.standard.float(forKey: Self.diarizerClusteringThresholdKey)
         } else {
             self.diarizerClusteringThreshold = FluidAudioDiarizer.defaultClusteringThreshold
+        }
+        // Record-audio prefs. Default off; bool(forKey:) is false when
+        // unset, which matches.
+        self.recordAudioEnabled = UserDefaults.standard.bool(forKey: Self.recordAudioEnabledKey)
+        if let raw = UserDefaults.standard.string(forKey: Self.recordAudioFormatKey),
+           let fmt = RecordingAudioFormat(rawValue: raw) {
+            self.recordAudioFormat = fmt
         }
         // Resolve the persisted ASR backend pick once, into a
         // local, so the streaming-transcriber factory below
@@ -1083,6 +1104,25 @@ final class RecordingController {
             // recordings would stack new ones on top). Tear it down
             // explicitly before propagating, so failure paths leave the
             // controller in a clean idle state.
+            //
+            // Mic mode: a prior recording's playback file is stale once
+            // a new recording begins — drop it. When record-audio is on,
+            // hand the capture engine a fresh destination so it writes
+            // native-rate audio alongside the pipeline streams.
+            if case .microphone = sourceMode {
+                setPlaybackSourceURL(nil)
+                fileTotalAudioDuration = nil
+                cleanupRecordingFile()
+                if recordAudioEnabled {
+                    let url = recordingsDirectory().appendingPathComponent(
+                        "session-\(Int(Date().timeIntervalSince1970)).\(recordAudioFormat.fileExtension)"
+                    )
+                    currentRecordingURL = url
+                    await capture.setRecordingDestination(url, format: recordAudioFormat)
+                } else {
+                    await capture.setRecordingDestination(nil, format: recordAudioFormat)
+                }
+            }
             let streams: CaptureStreams
             do {
                 streams = try await capture.start()
@@ -1694,6 +1734,12 @@ final class RecordingController {
         if case .file = sourceMode {
             reconcileSpeakersWithTimeline()
         }
+        // Mic recording finished (capture.stop() has flushed the file):
+        // expose it for playback / re-eval / save, exactly like a
+        // file-opened source. Keyed off playbackSourceURL downstream.
+        if let url = currentRecordingURL {
+            finalizeMicRecording(url: url)
+        }
         phase = .idle
         await liveActivity.end(finalState: currentLiveActivityState)
         sessionStartedAt = nil
@@ -1728,6 +1774,58 @@ final class RecordingController {
     }
 
 
+
+    /// Persist the record-audio toggle. Takes effect on the next
+    /// recording (the in-flight capture's destination is fixed at
+    /// start); the Settings toggle is disabled mid-recording anyway.
+    func setRecordAudioEnabled(_ enabled: Bool) {
+        guard enabled != recordAudioEnabled else { return }
+        recordAudioEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.recordAudioEnabledKey)
+        AppLog.app.info("recordAudioEnabled → \(enabled, privacy: .public)")
+    }
+
+    func setRecordAudioFormat(_ format: RecordingAudioFormat) {
+        guard format != recordAudioFormat else { return }
+        recordAudioFormat = format
+        UserDefaults.standard.set(format.rawValue, forKey: Self.recordAudioFormatKey)
+        AppLog.app.info("recordAudioFormat → \(format.rawValue, privacy: .public)")
+    }
+
+    /// Sandbox directory for in-progress mic recordings (app-owned).
+    private func recordingsDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Delete the current recording file (an unsaved temp). Saved
+    /// sessions embed their own byte copy, so dropping the temp is
+    /// safe once the bundle is written.
+    func cleanupRecordingFile() {
+        guard let url = currentRecordingURL else { return }
+        try? FileManager.default.removeItem(at: url)
+        currentRecordingURL = nil
+    }
+
+    /// After a mic recording stops, expose the recorded file for
+    /// playback / re-eval / save — the same path a file-opened
+    /// session takes. Mirrors `RecordingController+FileSource`'s
+    /// duration probe.
+    private func finalizeMicRecording(url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            currentRecordingURL = nil
+            return
+        }
+        setPlaybackSourceURL(url)
+        fileTotalAudioDuration = {
+            guard let f = try? AVAudioFile(forReading: url) else { return nil }
+            let rate = f.processingFormat.sampleRate
+            guard rate > 0, f.length > 0 else { return nil }
+            return TimeInterval(Double(f.length) / rate)
+        }()
+    }
 
     func setSpeechBoostEnabled(_ enabled: Bool) async {
         await capture.setSpeechBoostEnabled(enabled)
