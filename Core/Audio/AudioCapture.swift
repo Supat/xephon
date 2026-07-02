@@ -152,6 +152,33 @@ final class TimestampRebaser: @unchecked Sendable {
     }
 }
 
+/// Audio-thread diagnostic: detects capture discontinuities by comparing
+/// each tap callback's `sampleTime` against where the previous buffer
+/// ended. A gap means frames were lost upstream of the tap (HAL overrun,
+/// USB glitch, engine stall) — the signature of periodic dropouts in the
+/// session recording. One fresh instance per engine build (like the
+/// converters), so a rebuild's sampleTime reset doesn't false-positive.
+///
+/// Lock-free single-consumer: only the input tap's serial callback
+/// thread touches the state.
+final class TapGapDetector: @unchecked Sendable {
+    private var expectedNext: AVAudioFramePosition?
+    private var gapCount = 0
+    private var gapFramesTotal: AVAudioFramePosition = 0
+
+    func check(time: AVAudioTime, frameLength: AVAudioFrameCount) {
+        guard time.isSampleTimeValid, time.sampleRate > 0 else { return }
+        defer { expectedNext = time.sampleTime + AVAudioFramePosition(frameLength) }
+        guard let expected = expectedNext, time.sampleTime != expected else { return }
+        let gap = time.sampleTime - expected
+        gapCount += 1
+        gapFramesTotal += max(0, gap)
+        let ms = Double(gap) / time.sampleRate * 1000
+        let totalMs = Double(gapFramesTotal) / time.sampleRate * 1000
+        AppLog.audio.warning("input tap discontinuity #\(self.gapCount, privacy: .public): \(gap, privacy: .public) frames (\(String(format: "%.1f", ms), privacy: .public) ms) at sampleTime=\(time.sampleTime, privacy: .public); lost so far ≈\(String(format: "%.0f", totalMs), privacy: .public) ms")
+    }
+}
+
 public extension AudioCapture {
     func captureEndReason() async -> CaptureEndReason? { nil }
     func availableInputs() async -> [AudioInputDescription] { [] }
@@ -331,9 +358,11 @@ public actor AVAudioEngineCapture: AudioCapture {
         let recConverter = recordConverter
         let recFormat = recordPCMFormat
         let recCont = recordCont
+        let gapDetector = TapGapDetector()
 
         // Tap A — raw input.
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
+            gapDetector.check(time: time, frameLength: buffer.frameLength)
             Self.yieldResampled(
                 buffer,
                 time: time,
@@ -612,7 +641,9 @@ public actor AVAudioEngineCapture: AudioCapture {
         let recConverter = recordConverter
         let recFormat = recordPCMFormat
         let recCont = recordCont
+        let gapDetector = TapGapDetector()
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, time in
+            gapDetector.check(time: time, frameLength: buffer.frameLength)
             Self.yieldResampled(
                 buffer,
                 time: time,
@@ -748,8 +779,16 @@ public actor AVAudioEngineCapture: AudioCapture {
             return buffer
         }
         let result = converter.convert(to: out, error: &convError, withInputFrom: inputBlock)
-        guard result != .error, out.frameLength > 0 else { return }
-        continuation.yield(SendableBuffer(buffer: out))
+        guard result != .error, out.frameLength > 0 else {
+            AppLog.audio.warning("recordCopy: converter produced no output (result=\(result.rawValue, privacy: .public)) — \(buffer.frameLength, privacy: .public) input frames not recorded")
+            return
+        }
+        // `bufferingNewest` silently evicts the oldest queued buffer
+        // when the writer backlogs — surface that as a definite drop
+        // in the recorded file.
+        if case .dropped = continuation.yield(SendableBuffer(buffer: out)) {
+            AppLog.audio.warning("recordCopy: record queue full — writer backlogged; dropped \(out.frameLength, privacy: .public) frames from the recording")
+        }
     }
 
     public func stop() async {
@@ -788,6 +827,10 @@ public actor AVAudioEngineCapture: AudioCapture {
         recordCont = nil
         await recordWriterTask?.value
         recordWriterTask = nil
+        if let recordFile, let recordPCMFormat {
+            let secs = Double(recordFile.length) / recordPCMFormat.sampleRate
+            AppLog.audio.info("recording finalized: \(recordFile.length, privacy: .public) frames ≈ \(String(format: "%.1f", secs), privacy: .public) s @ \(recordPCMFormat.sampleRate, privacy: .public) Hz — compare against wall-clock session length to quantify dropped audio")
+        }
         recordFile = nil
         recordConverter = nil
         recordPCMFormat = nil
