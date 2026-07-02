@@ -39,6 +39,21 @@ extension RecordingController {
         // already-active session leaves the route latched (see
         // docs/playback_silence_postmortem.md).
         //
+        // "Metadata-only" holds ONLY while the session is INACTIVE.
+        // Playback and the UISounds chimes activate the session and
+        // historically nothing deactivated it, so this swap ran on a
+        // live session — each tick cycled the USB input up/down
+        // (record-class category brings the input online → clock
+        // renegotiation → immediate teardown on restore), which
+        // audibly dropped audio out of the next utterance playback.
+        // `stopPlayback` now deactivates after itself; the explicit
+        // deactivation below covers the remaining leavers (UISounds
+        // post-stop chime) and is a no-op when already inactive. Safe
+        // here: `canReconfigure` requires idle + no playback, so
+        // nothing in-app is using the session. Worst case is cutting
+        // a stop-chime mid-ring if a poll tick lands inside its
+        // ~0.2 s window.
+        //
         // ALSO skip the swap when the session is already in a
         // recording-class category: (1) the inputs are already
         // visible without a swap, and (2) `setCategory` fires
@@ -55,13 +70,23 @@ extension RecordingController {
         let session = AVAudioSession.sharedInstance()
         let alreadyExposesInputs = session.category == .record
             || session.category == .playAndRecord
+        // `Self.playbackSessionActive` (not just our own
+        // `playbackPlayer`) — the per-instance check is blind to a
+        // playback running on ANOTHER live controller instance, and a
+        // swap/deactivate here while that instance plays kills its
+        // audio (see the playbackSessionOwner doc).
         let canReconfigure = phase == .idle
             && playbackPlayer == nil
+            && !Self.playbackSessionActive
             && !alreadyExposesInputs
         let priorCategory = session.category
         let priorMode = session.mode
         let priorOptions = session.categoryOptions
         if canReconfigure {
+            try? session.setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
             try? session.setCategory(
                 .playAndRecord,
                 mode: .default,

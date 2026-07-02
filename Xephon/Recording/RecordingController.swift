@@ -825,7 +825,15 @@ final class RecordingController {
                 try? await Task.sleep(for: .seconds(Self.inputPollIntervalSec))
                 if Task.isCancelled { return }
                 guard let self else { return }
-                guard self.phase == .idle, self.playbackPlayer == nil else { continue }
+                // Include the PROCESS-WIDE playback latch: this
+                // instance's `playbackPlayer` can't see a playback
+                // running on another live controller instance, and
+                // refreshInputs' swap under that playback is what
+                // produced the periodic dropouts / hard silence
+                // (see playbackSessionOwner in +Playback).
+                guard self.phase == .idle,
+                      self.playbackPlayer == nil,
+                      !Self.playbackSessionActive else { continue }
                 // Full enumerate every tick (refreshInputs does the
                 // category-swap that surfaces USB / Bluetooth ports).
                 // A bare `session.availableInputs` probe can't be used

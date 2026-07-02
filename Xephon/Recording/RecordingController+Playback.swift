@@ -15,7 +15,28 @@ import XephonLogging
 // it's recording-pipeline state, not playback.
 extension RecordingController {
 
+    /// PROCESS-WIDE "some controller is playing" latch. The
+    /// per-instance guards (`phase == .idle`, `playbackPlayer == nil`)
+    /// that gate `refreshInputs`' category swap and the idle input
+    /// poll are invisible across instances: when a second live
+    /// RecordingController exists (see 1eefe4f — observed in field
+    /// logs, not yet root-caused at the SwiftUI level), the idle
+    /// instance's poll saw itself as idle while the foreground
+    /// instance was mid-playback, and thrashed the shared session
+    /// under the active player — category swaps produced the
+    /// periodic ~3-5 s dropouts; after the deactivate-before-swap
+    /// hardening it became a hard kill (~2 s in, player silent while
+    /// the stop task keeps running). Claimed on every playback start,
+    /// released in `stopPlayback` ONLY by the claiming instance — so
+    /// a defensive stopPlayback() on some other instance can't
+    /// unlatch an active playback. Checked (non-nil) by every
+    /// instance before touching the shared session while idle.
+    @MainActor static var playbackSessionOwner: ObjectIdentifier?
 
+    /// True while ANY controller instance has playback running.
+    @MainActor static var playbackSessionActive: Bool {
+        playbackSessionOwner != nil
+    }
 
     /// Assign `playbackSourceURL` while keeping the security-scoped
     /// access ref balanced. File-picker URLs only stay readable while
@@ -63,6 +84,11 @@ extension RecordingController {
             return
         }
         stopPlayback()
+        // Claim the shared session BEFORE activating it so no other
+        // controller instance's idle poll deactivates/swaps it out
+        // from under the player. Released by `stopPlayback` on every
+        // exit path.
+        Self.playbackSessionOwner = ObjectIdentifier(self)
         #if os(iOS) || targetEnvironment(macCatalyst)
         do {
             let session = AVAudioSession.sharedInstance()
@@ -94,7 +120,9 @@ extension RecordingController {
             )
             guard didStart else {
                 AppLog.app.warning("playback failed to start for \(utterance.id, privacy: .public)")
-                playbackPlayer = nil
+                // Through stopPlayback so the session latch clears
+                // and the just-activated session deactivates.
+                stopPlayback()
                 return
             }
             playingUtteranceID = utterance.id
@@ -107,6 +135,7 @@ extension RecordingController {
             }
         } catch {
             AppLog.app.error("playback open failed: \(String(describing: error), privacy: .public)")
+            stopPlayback()
         }
     }
 
@@ -237,6 +266,8 @@ extension RecordingController {
         guard phase == .idle else { return }
         guard end > start else { return }
         stopPlayback()
+        // Same cross-instance session claim as togglePlayback.
+        Self.playbackSessionOwner = ObjectIdentifier(self)
         #if os(iOS) || targetEnvironment(macCatalyst)
         do {
             let session = AVAudioSession.sharedInstance()
@@ -253,7 +284,10 @@ extension RecordingController {
             playbackPlayer = player
             player.prepareToPlay()
             player.currentTime = max(0, start)
-            guard player.play() else { return }
+            guard player.play() else {
+                stopPlayback()
+                return
+            }
             isPreviewPlaying = true
             playingUtteranceID = owner
             let duration = max(0, end - start)
@@ -266,6 +300,7 @@ extension RecordingController {
             AppLog.app.error(
                 "playRange failed: \(String(describing: error), privacy: .public)"
             )
+            stopPlayback()
         }
     }
 
@@ -333,7 +368,8 @@ extension RecordingController {
     /// Stop any in-flight playback. Safe to call when nothing is
     /// playing — it just clears the latch.
     func stopPlayback(caller: String = #function) {
-        if playingUtteranceID != nil || playbackPlayer != nil {
+        let hadPlayer = playbackPlayer != nil
+        if playingUtteranceID != nil || hadPlayer {
             AppLog.app.info("stopPlayback called by \(caller, privacy: .public), playingID=\(self.playingUtteranceID?.uuidString ?? "nil", privacy: .public)")
         }
         playbackStopTask?.cancel()
@@ -342,6 +378,32 @@ extension RecordingController {
         playbackPlayer = nil
         playingUtteranceID = nil
         isPreviewPlaying = false
+        // Release only our own claim: stopPlayback is the universal
+        // terminus for every playback path on THIS instance
+        // (including failed starts), but defensive calls on another
+        // instance must not unlatch an active playback elsewhere.
+        if Self.playbackSessionOwner == ObjectIdentifier(self) {
+            Self.playbackSessionOwner = nil
+        }
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        // Deactivate the session a playback activated. Leaving it
+        // active in `.playback` broke the idle input poll's safety
+        // premise: `refreshInputs`' category swap is metadata-only
+        // ONLY on an inactive session — on the active one it took
+        // effect immediately, cycling the USB input up and down
+        // (clock renegotiation) every ~2 s between utterances, which
+        // bled audible dropouts into the next playback. Gated on
+        // `hadPlayer` so the many defensive stopPlayback() calls
+        // (sheet dismissals, row taps) don't churn the session when
+        // nothing was playing. Playback only ever runs at
+        // `phase == .idle`, so this can't touch a recording session.
+        if hadPlayer {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
+        #endif
     }
 
 }
