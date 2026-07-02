@@ -13,13 +13,28 @@ struct XephonApp: App {
     /// same reference and `.onChange` fires reliably.
     @State private var menuCommands = MenuCommands()
 
+    /// THE process-wide RecordingController. Constructed here — and
+    /// only here — because the App struct is instantiated exactly
+    /// once per process, so this `@State` autoclosure runs exactly
+    /// once. It previously lived as `@State` on ContentView, where
+    /// the autoclosure re-ran on every ContentView.init: the
+    /// `.commands` block below reads MenuCommands gates
+    /// (`canUndo`, `canSaveSession`, …) that ContentView rewrites on
+    /// every recorder state change, so each write invalidated the
+    /// scene body, re-init'd ContentView, and constructed a fully
+    /// LIVE duplicate controller (watcher tasks + input poll start
+    /// in init) that stomped the shared AVAudioSession until the
+    /// next re-init replaced it. See the liveInstances tripwire in
+    /// RecordingController.init.
+    @State private var recorder = RecordingController()
+
     init() {
         AppLog.app.info("Xephon launching")
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(recorder: recorder)
                 .environment(menuCommands)
         }
         // Hardware-keyboard menu integration. iPadOS 26's menu strip

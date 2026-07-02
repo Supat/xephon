@@ -21,7 +21,27 @@ struct ContentView: View {
     /// `FluidAudioDiarizer.loadModels` pins to `.cpuAndNeuralEngine`
     /// so it never touches Metal.)
     @Environment(\.scenePhase) private var scenePhase
-    @State private var recorder = RecordingController()
+    /// Injected by XephonApp, which owns the single process-wide
+    /// instance. MUST NOT be constructed here in a `@State`
+    /// autoclosure: that expression re-runs on every
+    /// ContentView.init — and the scene body re-inits ContentView
+    /// whenever any `.commands`-observed MenuCommands gate changes —
+    /// each time constructing a fully LIVE throwaway controller
+    /// (watcher tasks + 2 s input poll spawn in init; hydrateAndWarm
+    /// holds a strong self for the whole model warm). The discarded
+    /// duplicate kept polling and stomped the shared AVAudioSession
+    /// under the real controller's playback/recording — the
+    /// duplicate-instance bug band-aided by 1eefe4f and the
+    /// playbackSessionOwner latch.
+    let recorder: RecordingController
+
+    /// Explicit init: the implicit memberwise init is `private`
+    /// (private @State members participate), so XephonApp couldn't
+    /// call it from another file. Every other stored property keeps
+    /// its inline default.
+    init(recorder: RecordingController) {
+        self.recorder = recorder
+    }
     /// Owns every session-file UI surface: the shared
     /// `.fileImporter` mode + flag, the Save Session export panel,
     /// the discard-before-import alert, the JSON-export share URL,
@@ -453,5 +473,5 @@ private struct EventBridgeModifier: ViewModifier {
 }
 
 #Preview {
-    ContentView()
+    ContentView(recorder: RecordingController())
 }

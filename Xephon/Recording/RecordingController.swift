@@ -637,6 +637,17 @@ final class RecordingController {
     /// the foreground controller.
     let instanceTag: String = String(UUID().uuidString.prefix(8))
 
+    /// Tripwire for the duplicate-instance bug. The app must hold
+    /// exactly ONE live controller (owned by XephonApp); a second
+    /// live instance's init-spawned watchers stomp the shared
+    /// AVAudioSession (dropouts / killed playback — see 1eefe4f and
+    /// playbackSessionOwner). Historically duplicates came from
+    /// constructing the controller in a ContentView `@State`
+    /// autoclosure, which re-ran on every scene-body invalidation.
+    /// Lock-based (not MainActor) because deinit is nonisolated.
+    /// Tests construct extra instances freely — this only logs.
+    private nonisolated static let liveInstances = OSAllocatedUnfairLock(initialState: 0)
+
     /// Process-wide undo stack for every user-initiated edit. See
     /// `RecordingController+Undo.swift` for the `UndoStep` shape, the
     /// snapshot types, and the per-call-site registration helpers.
@@ -660,7 +671,15 @@ final class RecordingController {
         pipeline: AnalysisPipeline? = nil,
         modelStore: ModelStore? = nil
     ) {
-        AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] init")
+        let alive = Self.liveInstances.withLock { count in
+            count += 1
+            return count
+        }
+        if alive > 1 {
+            AppLog.app.error("RecordingController[\(self.instanceTag, privacy: .public)] init — \(alive, privacy: .public) instances now ALIVE; duplicates stomp the shared audio session (see liveInstances doc)")
+        } else {
+            AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] init")
+        }
         self.capture = capture
         self.micCapture = capture
         let initialLanguage = SessionLanguage.loadFromDefaults()
@@ -856,6 +875,7 @@ final class RecordingController {
     /// can deactivate the shared audio session out from under the
     /// foreground controller's recording (see the instanceTag doc).
     deinit {
+        Self.liveInstances.withLock { $0 -= 1 }
         AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] deinit")
         routeWatcherTask?.cancel()
         deviceConnectedWatcherTask?.cancel()
