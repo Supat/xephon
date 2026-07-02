@@ -395,9 +395,12 @@ extension RecordingController {
         // bled audible dropouts into the next playback. Gated on
         // `hadPlayer` so the many defensive stopPlayback() calls
         // (sheet dismissals, row taps) don't churn the session when
-        // nothing was playing. Playback only ever runs at
-        // `phase == .idle`, so this can't touch a recording session.
-        if hadPlayer {
+        // nothing was playing — AND on `phase == .idle`:
+        // `prepareSessionForRecording` calls stopPlayback AFTER
+        // `capture.start()` has activated the `.record` session
+        // (phase is already .recording), and deactivating there
+        // would stall the freshly-started capture engine.
+        if hadPlayer, phase == .idle {
             try? AVAudioSession.sharedInstance().setActive(
                 false,
                 options: .notifyOthersOnDeactivation

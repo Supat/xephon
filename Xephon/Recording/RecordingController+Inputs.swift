@@ -98,7 +98,24 @@ extension RecordingController {
         let current = await capture.currentInput()
         #if os(iOS) || targetEnvironment(macCatalyst)
         if canReconfigure {
-            try? session.setCategory(priorCategory, mode: priorMode, options: priorOptions)
+            // Re-check across the suspension above: a record start
+            // (phase now .warmingUp/.recording) or a playback may
+            // have claimed the session while we awaited the actor
+            // hop. Restoring the PRE-swap category on top of it
+            // flips the session to a no-input category mid-engine-
+            // build — the IsFormatSampleRateAndChannelCountValid
+            // crash. When conditions changed, leave the session
+            // alone; the new owner has already set what it needs,
+            // and an inactive leftover .playAndRecord is harmless
+            // (`alreadyExposesInputs` skips the next swap).
+            let stillSafe = phase == .idle
+                && playbackPlayer == nil
+                && !Self.playbackSessionActive
+            if stillSafe {
+                try? session.setCategory(priorCategory, mode: priorMode, options: priorOptions)
+            } else {
+                AppLog.app.warning("refreshInputs[\(self.instanceTag, privacy: .public)]: session claimed mid-query (phase=\(String(describing: self.phase), privacy: .public)); skipping category restore")
+            }
         }
         #endif
         AppLog.app.info("refreshInputs[\(self.instanceTag, privacy: .public)]: phase=\(String(describing: self.phase), privacy: .public) canReconfigure=\(canReconfigure, privacy: .public) inputs.count=\(inputs.count, privacy: .public) current=\(current?.uid ?? "<nil>", privacy: .public)")

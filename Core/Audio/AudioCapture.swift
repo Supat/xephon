@@ -319,6 +319,20 @@ public actor AVAudioEngineCapture: AudioCapture {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
 
+        // A 0 Hz / 0 ch input format means the session is inactive or
+        // bound to a no-input category at this instant (e.g. another
+        // session toucher raced our activation). `engine.connect`
+        // with such a format raises an uncatchable
+        // IsFormatSampleRateAndChannelCountValid NSException — throw
+        // a typed error instead so the controller surfaces it and
+        // the user can retry.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw AudioError.unsupportedFormat(
+                expected: "non-zero input sample rate and channel count",
+                got: "\(inputFormat.sampleRate) Hz × \(inputFormat.channelCount) ch (session inactive or no input bound)"
+            )
+        }
+
         guard let outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: PipelineAudio.sampleRate,

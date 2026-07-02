@@ -1127,6 +1127,22 @@ final class RecordingController {
     /// to `utterances` live.
     func start() async {
         AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] start()")
+        // Claim the spin-up window BEFORE the first await. `phase`
+        // stayed `.idle` through the whole chime → transcriber →
+        // capture.start() sequence, so the idle input poll saw
+        // itself free to run refreshInputs mid-spin-up: its
+        // deactivate + category swap + (post-suspension) restore
+        // interleaved with capture.start()'s session setup — the
+        // restore could flip the session to a no-input category
+        // right before buildAndStartEngine read
+        // `inputNode.outputFormat(forBus:)`, yielding a 0 Hz / 0 ch
+        // format and an uncatchable
+        // IsFormatSampleRateAndChannelCountValid NSException out of
+        // `engine.connect`. `.warmingUp` (previously declared but
+        // never set) excludes every idle-gated session toucher for
+        // the whole spin-up. The catch below restores `.idle` on
+        // failure.
+        phase = .warmingUp
         // Audible cue fires first, before any session-category
         // changes — the chime plays through the speaker while the
         // transcriber and capture spin up. `capture.start()` will
