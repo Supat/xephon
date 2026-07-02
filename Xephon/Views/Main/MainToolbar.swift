@@ -150,9 +150,9 @@ struct MainToolbar: ToolbarContent {
 ///    invalidate every view observing `sessionTitle` on every
 ///    character — visible on long sessions as keystroke lag.
 /// 2. A direct binding pushes one undo step per character. Instead
-///    we capture `previousCommitted` on focus gain and push a single
-///    `.sessionTitle` undo step on `.onSubmit` / focus loss if the
-///    committed value differs from where we started.
+///    we capture `previousCommitted` when editing begins and push a
+///    single `.sessionTitle` undo step on `.onSubmit` / end-editing
+///    if the committed value differs from where we started.
 ///
 /// Per-character undo inside the field continues to be handled by
 /// UIKit's built-in text-edit undo manager (the standard system
@@ -161,47 +161,71 @@ private struct SessionTitleField: View {
     @Bindable var recorder: RecordingController
     @State private var draft: String = ""
     @State private var previousCommitted: String = ""
-    @FocusState private var focused: Bool
+    // Control-driven editing flag, set by the TextField's
+    // `onEditingChanged` (UIKit begin/end-editing events). NOT
+    // @FocusState — see tombstone (3) below.
+    @State private var isEditing = false
 
     var body: some View {
         // A bare TextField clips/scrolls a too-long title (truncating
         // the END). To middle-truncate the displayed title we overlay a
         // Text with `.truncationMode(.middle)` while unfocused; the
-        // TextField stays in the tree (just transparent) so `focused`
-        // still moves first responder into it on tap. While editing,
-        // the real TextField shows (no truncation — the user needs to
-        // see what they type).
-        // Z-order matters. The TextField sits ON TOP, transparent
-        // while unfocused but still hit-testable (opacity doesn't
-        // disable hit-testing), so a NATIVE tap makes it first
-        // responder — the path that always worked. Behind it, a
-        // middle-truncating Text shows the title through the
-        // transparent field.
+        // TextField stays in the tree so a NATIVE tap moves first
+        // responder into it — the path that always worked. While
+        // editing, the real TextField shows (no truncation — the user
+        // needs to see what they type).
         //
-        // Tombstone: an earlier attempt put the Text on top with an
-        // `.onTapGesture { focused = true }`. Programmatic @FocusState
-        // focus does NOT take in a toolbar *principal* item, so
-        // tap-to-edit broke. Don't re-walk that — keep the field on top
-        // and rely on native tap.
+        // The TextField sits ON TOP at FULL OPACITY always; while
+        // unfocused only its TEXT COLOR is `.clear`, which hides the
+        // glyphs without touching hit-testing. Its native placeholder
+        // keeps its own color regardless of `foregroundStyle`, so the
+        // empty state needs no Text underlay at all.
+        //
+        // Tombstones — three failed shapes, don't re-walk any of them:
+        // (1) Text on top + `.onTapGesture { focused = true }`:
+        //     programmatic focus is rejected while the target field
+        //     renders at alpha 0 (an invisible UIKit responder refuses
+        //     first-responder status).
+        // (2) TextField on top with `.opacity(focused ? 1 : 0)`:
+        //     alpha < 0.01 removes a UIKit-backed view from hit
+        //     testing entirely, so the "transparent but hit-testable"
+        //     premise was false — the tap never reached the field and
+        //     `focused` could never flip true. Hiding via clear TEXT
+        //     COLOR (not view opacity) is what keeps the field
+        //     tappable.
+        // (3) Clear text color driven by @FocusState: @FocusState
+        //     never OBSERVES focus inside a toolbar *principal* item
+        //     on iPadOS 26 (setting was already known-broken; reading
+        //     is too). UIKit editing went live while `focused` stayed
+        //     false, so the view never left display mode — keystrokes
+        //     were invisible and the user watched the middle-truncated
+        //     underlay update instead ("editing the truncated title").
+        //     Editing state must come from the CONTROL's own
+        //     begin/end-editing events (`onEditingChanged`), which are
+        //     hosting-agnostic.
         ZStack {
-            Text(draft.isEmpty
-                 ? String(localized: "chrome.sessionTitle.placeholder")
-                 : draft)
-                .foregroundStyle(draft.isEmpty ? .secondary : .primary)
+            Text(draft)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity)
-                .opacity(focused ? 0 : 1)
+                .opacity(isEditing ? 0 : 1)
                 .allowsHitTesting(false)
 
             TextField(
                 String(localized: "chrome.sessionTitle.placeholder"),
-                text: $draft
+                text: $draft,
+                onEditingChanged: { editing in
+                    isEditing = editing
+                    if editing {
+                        previousCommitted = recorder.sessionTitle
+                    } else {
+                        commitIfChanged()
+                    }
+                }
             )
             .multilineTextAlignment(.center)
             .textFieldStyle(.plain)
-            .focused($focused)
-            .opacity(focused ? 1 : 0)
+            .foregroundStyle(isEditing ? Color.primary : Color.clear)
         }
         .font(.headline)
         .frame(maxWidth: 320)
@@ -212,28 +236,28 @@ private struct SessionTitleField: View {
         }
         .onChange(of: recorder.sessionTitle) { _, newValue in
             // External updates (session load, undo restore) must
-            // flow into the shadow while the field is unfocused.
-            // Skip when focused so we don't stomp the user's typing.
-            if !focused {
+            // flow into the shadow while the field is not being
+            // edited. Skip mid-edit so we don't stomp the user's
+            // typing.
+            if !isEditing {
                 draft = newValue
                 previousCommitted = newValue
             }
         }
-        .onChange(of: focused) { _, isFocused in
-            if isFocused {
-                previousCommitted = recorder.sessionTitle
-            } else {
-                commitIfChanged()
-            }
-        }
+        // Return key: commit immediately. The end-editing event that
+        // follows resignation calls `commitIfChanged` again — the
+        // trimmed-vs-previousCommitted guard makes the second call a
+        // no-op.
         .onSubmit {
             commitIfChanged()
-            focused = false
         }
     }
 
     private func commitIfChanged() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalize the visible draft even on a no-op commit, so
+        // "  same title  " doesn't linger untrimmed in the field.
+        draft = trimmed
         guard trimmed != previousCommitted else { return }
         recorder.registerUndoStep(
             .sessionTitle(previous: previousCommitted),
@@ -241,6 +265,5 @@ private struct SessionTitleField: View {
         )
         recorder.sessionTitle = trimmed
         previousCommitted = trimmed
-        draft = trimmed
     }
 }
