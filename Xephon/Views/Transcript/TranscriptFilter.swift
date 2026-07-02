@@ -51,6 +51,10 @@ struct FilterDepsKey: Equatable {
 final class FilterMemo {
     var lastKey: FilterDepsKey?
     var results: [(idx: Int, u: UtteranceEstimate)] = []
+    /// Set-form of `results` ids, rebuilt alongside them. Consumers
+    /// needing membership tests (visible-set pruning on filter
+    /// change) read this instead of building a Set per render.
+    var resultIDs: Set<UUID> = []
     var summary: ConversationSummary = ConversationSummary()
 }
 

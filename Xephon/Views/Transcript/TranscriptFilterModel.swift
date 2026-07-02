@@ -238,6 +238,18 @@ final class TranscriptFilterModel {
         return filterMemo.results
     }
 
+    /// IDs of the utterances surviving every active filter — the
+    /// set-form companion to `filteredIndexedUtterances`, memoized
+    /// under the same key so the per-render cost is a stored-
+    /// property read. Used to prune `visibleUtteranceIDs` when the
+    /// filter narrows (see TranscriptPaneView).
+    func filteredUtteranceIDs(
+        in recorder: RecordingController
+    ) -> Set<UUID> {
+        refreshFilterMemoIfNeeded(in: recorder)
+        return filterMemo.resultIDs
+    }
+
     /// `ConversationSummary` computed over the *filtered* slice, so
     /// the Summary and Statistics panels show the same slice the
     /// transcript list shows.
@@ -325,6 +337,7 @@ final class TranscriptFilterModel {
         }
         filterMemo.lastKey = key
         filterMemo.results = results
+        filterMemo.resultIDs = Set(results.map(\.u.id))
         filterMemo.summary = summary
     }
 

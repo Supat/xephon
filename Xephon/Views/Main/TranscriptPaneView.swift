@@ -52,6 +52,19 @@ struct TranscriptPaneView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Belt to the phantom-id fix in `selectedUtteranceRange`:
+            // when the filter narrows, rows removed from the data
+            // set never reliably report themselves not-visible, so
+            // their ids linger in `visibleUtteranceIDs` and poison
+            // every consumer of the set (the unread-utterance
+            // capsule reads it too). Prune to the filtered id-set —
+            // memoized, so the `onChange` compare is cheap in the
+            // steady state.
+            .onChange(of: filterModel.filteredUtteranceIDs(in: recorder)) { _, ids in
+                if !visibleUtteranceIDs.isSubset(of: ids) {
+                    visibleUtteranceIDs.formIntersection(ids)
+                }
+            }
         }
     }
 
@@ -188,6 +201,18 @@ struct TranscriptPaneView: View {
         // visibility tracker writes to `visibleUtteranceIDs`, so
         // this getter runs on every flick.
         //
+        // Sweep the FILTERED items (memoized), not
+        // `recorder.utterances`: `visibleUtteranceIDs` can hold
+        // phantom ids for rows the filter just removed — a row
+        // removed from the data set is torn down without reliably
+        // emitting `.onDisappear` / a visibility-false transition
+        // (same flakiness tombstoned in TranscriptList for
+        // expansion flux). Sweeping all utterances against the
+        // stale set anchored one end of the timeline marker to a
+        // row that was no longer even listed. The filtered slice
+        // is the source of truth for what CAN be on screen, so
+        // phantom ids simply don't participate.
+        //
         // Expanded rows are excluded from the visible-range vote.
         // An expansion is tall enough to push its neighbors off-
         // screen — without this filter, `visibleUtteranceIDs`
@@ -200,11 +225,11 @@ struct TranscriptPaneView: View {
         // pinning itself.
         var minStart: TimeInterval = .infinity
         var maxEnd: TimeInterval = -.infinity
-        for u in recorder.utterances
-            where visibleUtteranceIDs.contains(u.id)
-                && !expandedUtteranceIDs.contains(u.id) {
-            if u.start < minStart { minStart = u.start }
-            if u.end > maxEnd { maxEnd = u.end }
+        for item in filterModel.filteredIndexedUtterances(in: recorder)
+            where visibleUtteranceIDs.contains(item.u.id)
+                && !expandedUtteranceIDs.contains(item.u.id) {
+            if item.u.start < minStart { minStart = item.u.start }
+            if item.u.end > maxEnd { maxEnd = item.u.end }
         }
         guard minStart.isFinite else { return nil }
         return (start: minStart, end: maxEnd)
