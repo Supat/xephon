@@ -159,6 +159,8 @@ final class RecordingController {
     var summarizerQwenInstalled: Bool { summarizer.qwenInstalled }
     var summarizerLlamaSwallowInstalled: Bool { summarizer.llamaSwallowInstalled }
     var summarizerDownloading: Bool { summarizer.downloading }
+    /// Backend whose weights are downloading right now (nil if none).
+    var summarizerDownloadingBackend: SummarizerBackend? { summarizer.downloadingBackend }
     var summarizerInferenceRunning: Bool { summarizer.inferenceRunning }
     var summarizerInferenceStart: Date? { summarizer.inferenceStart }
     /// ID of the section whose summary is currently being
@@ -184,6 +186,12 @@ final class RecordingController {
     }
     func reviewSession() async -> [TranscriptionIssue]? { await summarizer.review() }
     func removeSummarizerModel() async { await summarizer.removeModel() }
+    /// Explicitly download a specific MLX summarizer backend's
+    /// weights (Models card Download button), regardless of the
+    /// active backend.
+    func downloadSummarizerModel(_ backend: SummarizerBackend) async {
+        await summarizer.downloadModel(for: backend)
+    }
     func dismissTranscriptionIssue(id: UUID) { summarizer.dismissIssue(id: id) }
     var volatileText: String = ""
     var lastAcousticDuration: TimeInterval?

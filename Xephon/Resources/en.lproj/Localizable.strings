@@ -358,6 +358,8 @@
 "models.status.unavailable" = "Unavailable";
 "models.status.notInstalled" = "Not installed";
 "models.status.failed" = "Failed";
+"models.download" = "Download";
+"models.download.a11y" = "Download %@";
 "roster.header" = "Speakers";
 "roster.empty" = "No speakers yet.";
 "roster.gender.female" = "Female";

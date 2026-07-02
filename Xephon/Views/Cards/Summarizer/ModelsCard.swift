@@ -1,5 +1,6 @@
 import SwiftUI
 import Speech
+import Summarizer
 
 /// Card listing every model the analysis pipeline can call into,
 /// alongside its current install / availability state. Sits below
@@ -22,7 +23,7 @@ struct ModelsCard: View {
             }
             VStack(spacing: 6) {
                 ForEach(rows) { row in
-                    ModelStatusRowView(row: row)
+                    ModelStatusRowView(row: row, onDownload: downloadAction(for: row))
                 }
             }
         }
@@ -102,7 +103,7 @@ struct ModelsCard: View {
             detail: String(localized: "models.summarizerQwen.detail"),
             license: "Apache-2.0",
             licenseIsRestricted: false,
-            status: mlxStatus(installed: recorder.summarizerQwenInstalled, isActiveBackend: recorder.summarizerBackend == .qwen)
+            status: mlxStatus(installed: recorder.summarizerQwenInstalled, backend: .qwen)
         ))
         out.append(ModelStatusRow(
             id: "summarizerLlamaSwallow",
@@ -110,18 +111,31 @@ struct ModelsCard: View {
             detail: String(localized: "models.summarizerLlamaSwallow.detail"),
             license: "Llama 3 Community License · tokyotech-llm terms",
             licenseIsRestricted: false,
-            status: mlxStatus(installed: recorder.summarizerLlamaSwallowInstalled, isActiveBackend: recorder.summarizerBackend == .llamaSwallow)
+            status: mlxStatus(installed: recorder.summarizerLlamaSwallowInstalled, backend: .llamaSwallow)
         ))
         return out
     }
 
-    /// Per-MLX-backend status. The `downloading` flag on the
-    /// coordinator is global (only one backend can be downloading
-    /// at a time), so we only paint a row "downloading" when it
-    /// matches the currently-active backend.
-    private func mlxStatus(installed: Bool, isActiveBackend: Bool) -> ModelStatus {
-        if isActiveBackend, recorder.summarizerDownloading { return .downloading }
+    /// Per-MLX-backend status. Paints "downloading" for whichever
+    /// backend's weights are actually in flight (explicit Download
+    /// button or auto-trigger), not just the active one.
+    private func mlxStatus(installed: Bool, backend: SummarizerBackend) -> ModelStatus {
+        if recorder.summarizerDownloadingBackend == backend { return .downloading }
         return installed ? .ready : .notInstalled
+    }
+
+    /// Download action for a row, when it's a not-installed MLX
+    /// summarizer (the only on-demand-downloadable models). Nil for
+    /// every other row.
+    private func downloadAction(for row: ModelStatusRow) -> (() -> Void)? {
+        guard row.status == .notInstalled else { return nil }
+        let backend: SummarizerBackend
+        switch row.id {
+        case "summarizerQwen":          backend = .qwen
+        case "summarizerLlamaSwallow":  backend = .llamaSwallow
+        default:                        return nil
+        }
+        return { Task { await recorder.downloadSummarizerModel(backend) } }
     }
 }
 
@@ -181,6 +195,9 @@ enum ModelStatus: Equatable {
 /// One row. Title + detail on the left, status badge on the right.
 private struct ModelStatusRowView: View {
     let row: ModelStatusRow
+    /// Non-nil for a not-installed, on-demand-downloadable model;
+    /// renders a Download button in place of the status badge.
+    var onDownload: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -214,14 +231,35 @@ private struct ModelStatusRowView: View {
                 )
             }
             Spacer(minLength: 6)
-            HStack(spacing: 4) {
-                Image(systemName: row.status.glyph)
+            // Not-installed downloadable models get an explicit
+            // Download button in place of the redundant "Not
+            // installed" badge; everything else shows the status
+            // badge (incl. the in-flight "Downloading" state, which
+            // replaces the button while the fetch runs).
+            if let onDownload {
+                Button(action: onDownload) {
+                    Label(
+                        String(localized: "models.download"),
+                        systemImage: "arrow.down.circle"
+                    )
                     .font(.caption2)
-                    .foregroundStyle(row.status.tint)
-                Text(row.status.badgeText)
-                    .font(.caption2)
-                    .foregroundStyle(row.status.tint)
-                    .lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel(Text(String(
+                    format: String(localized: "models.download.a11y"),
+                    row.title
+                )))
+            } else {
+                HStack(spacing: 4) {
+                    Image(systemName: row.status.glyph)
+                        .font(.caption2)
+                        .foregroundStyle(row.status.tint)
+                    Text(row.status.badgeText)
+                        .font(.caption2)
+                        .foregroundStyle(row.status.tint)
+                        .lineLimit(1)
+                }
             }
         }
     }

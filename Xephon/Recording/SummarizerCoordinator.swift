@@ -47,6 +47,10 @@ final class SummarizerCoordinator {
     private(set) var llamaSwallowInstalled: Bool = false
     /// True while `ModelStore.ensureOptional` is in flight.
     private(set) var downloading: Bool = false
+    /// Which backend's weights are being fetched right now (nil when
+    /// idle). Lets the Models card paint the correct row as
+    /// downloading even when it isn't the active backend.
+    private(set) var downloadingBackend: SummarizerBackend?
     /// True while `summarize` is generating tokens. Disables the
     /// "Summarize session" toolbar button mid-run.
     private(set) var inferenceRunning: Bool = false
@@ -142,7 +146,11 @@ final class SummarizerCoordinator {
     /// for Apple FM (no install needed). Drives `ModelStore` calls
     /// — install / directory lookup / removal — so a single switch
     /// statement here centralizes the per-backend manifest mapping.
-    private var mlxModelID: String? {
+    private var mlxModelID: String? { modelID(for: backend) }
+
+    /// Per-backend manifest mapping (active or not), so an explicit
+    /// download can target a backend that isn't the current pick.
+    private func modelID(for backend: SummarizerBackend) -> String? {
         switch backend {
         case .appleFM:      return nil
         case .qwen:         return ModelManifest.summarizerID
@@ -243,21 +251,36 @@ final class SummarizerCoordinator {
         }
     }
 
-    /// Drive the on-demand download via `ModelStore.ensureOptional`
-    /// for the current MLX backend. Wraps the call in `downloading`
-    /// so the Settings card can render an inline progress indicator.
+    /// Auto-download the current backend's weights (fired on
+    /// enable / backend switch when missing).
     private func triggerDownload() async {
-        guard let id = mlxModelID,
-              let modelStore = parent.modelStore else { return }
+        await downloadModel(for: backend)
+    }
+
+    /// Explicitly download a SPECIFIC MLX backend's weights —
+    /// drives the Models card's per-row Download button, so a user
+    /// can fetch Qwen or Llama-Swallow without first switching the
+    /// active backend to it. Apple FM / LM Studio have no on-disk
+    /// install and are no-ops. `downloadingBackend` names the model
+    /// in flight so the card paints the right row as downloading
+    /// (only one download runs at a time — guarded).
+    func downloadModel(for target: SummarizerBackend) async {
+        guard let id = modelID(for: target),
+              let modelStore = parent.modelStore,
+              downloadingBackend == nil else { return }
+        downloadingBackend = target
         downloading = true
-        defer { downloading = false }
+        defer {
+            downloading = false
+            downloadingBackend = nil
+        }
         do {
             try await modelStore.ensureOptional(id: id)
             await syncInstallState()
         } catch {
             parent.errorMessage = String(describing: error)
             AppLog.app.error(
-                "Summarizer download failed: \(String(describing: error), privacy: .public)"
+                "Summarizer download failed (\(target.rawValue, privacy: .public)): \(String(describing: error), privacy: .public)"
             )
         }
     }

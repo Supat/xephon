@@ -358,6 +358,8 @@
 "models.status.unavailable" = "未対応";
 "models.status.notInstalled" = "未インストール";
 "models.status.failed" = "失敗";
+"models.download" = "ダウンロード";
+"models.download.a11y" = "%@をダウンロード";
 "roster.header" = "話者一覧";
 "roster.empty" = "話者がまだ登録されていません。";
 "roster.gender.female" = "女性";
