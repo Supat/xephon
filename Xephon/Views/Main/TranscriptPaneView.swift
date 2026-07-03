@@ -26,6 +26,17 @@ struct TranscriptPaneView: View {
     let onRenameSpeaker: (UtteranceEstimate) -> Void
     let onEditTranscript: (UtteranceEstimate) -> Void
 
+    // Timeline-strip visibility toggles, written by MainToolbar's
+    // Timelines menu over the same UserDefaults keys. Each gate
+    // composes with the strip's own data gate below — a strip
+    // toggled ON still hides while it has nothing to draw.
+    @AppStorage(TimelineStripPrefs.showDiarizationKey)
+    private var showDiarizationStrip = true
+    @AppStorage(TimelineStripPrefs.showEmotionKey)
+    private var showEmotionStrip = true
+    @AppStorage(TimelineStripPrefs.showFusionKey)
+    private var showFusionStrip = true
+
     @ViewBuilder
     var body: some View {
         if recorder.utterances.isEmpty {
@@ -79,7 +90,7 @@ struct TranscriptPaneView: View {
     private var diarizationTimelineStrip: some View {
         let timeline = recorder.diarizationTimeline
         let total = transcriptTotalDuration
-        if !timeline.isEmpty, total > 0 {
+        if showDiarizationStrip, !timeline.isEmpty, total > 0 {
             DiarizationTimelineStrip(
                 segments: timeline,
                 totalDuration: total,
@@ -105,7 +116,7 @@ struct TranscriptPaneView: View {
     private var emotionTimelineStrip: some View {
         let total = transcriptTotalDuration
         let hasAnyLabel = recorder.utterances.contains { $0.fusedTopLabel != nil }
-        if hasAnyLabel, total > 0 {
+        if showEmotionStrip, hasAnyLabel, total > 0 {
             EmotionTimelineStrip(
                 utterances: recorder.utterances,
                 totalDuration: total,
@@ -136,7 +147,7 @@ struct TranscriptPaneView: View {
         let hasAnyModality = recorder.utterances.contains {
             $0.acousticCategorical != nil || $0.plutchik != nil
         }
-        if hasAnyModality, total > 0 {
+        if showFusionStrip, hasAnyModality, total > 0 {
             FusionContributionStrip(
                 utterances: recorder.utterances,
                 totalDuration: total,

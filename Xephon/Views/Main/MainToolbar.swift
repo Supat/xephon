@@ -21,6 +21,7 @@ struct MainToolbar: ToolbarContent {
         }
         ToolbarItem(placement: .topBarTrailing) { summarize }
         ToolbarItem(placement: .topBarTrailing) { review }
+        ToolbarItem(placement: .topBarTrailing) { TimelineStripMenu() }
         ToolbarItem(placement: .topBarTrailing) { searchReplace }
         ToolbarItem(placement: .topBarTrailing) { export }
     }
@@ -139,6 +140,58 @@ struct MainToolbar: ToolbarContent {
             )
         }
         .disabled(!recorder.isIdleWithTranscript)
+    }
+}
+
+/// Timeline-strip visibility menu — checkmark toggles for the three
+/// strips stacked above the transcript list (speaker/diarization,
+/// emotion, fusion contribution). State lives in UserDefaults via
+/// `@AppStorage` (keys in `TimelineStripPrefs`); TranscriptPaneView
+/// reads the same keys to gate each strip, so a toggle here
+/// shows/hides the strip immediately with no plumbing through
+/// ContentView.
+///
+/// A plain `View` struct rather than `@AppStorage` directly on the
+/// `ToolbarContent` — dynamic properties on plain Views are
+/// unconditionally reliable, same reasoning as `SessionTitleField`
+/// below. Always enabled: strip visibility is a view preference,
+/// meaningful while recording as much as while idle. A strip whose
+/// toggle is ON still hides itself when it has no data yet (the
+/// pre-existing per-strip data gates).
+private struct TimelineStripMenu: View {
+    @AppStorage(TimelineStripPrefs.showDiarizationKey)
+    private var showDiarization = true
+    @AppStorage(TimelineStripPrefs.showEmotionKey)
+    private var showEmotion = true
+    @AppStorage(TimelineStripPrefs.showFusionKey)
+    private var showFusion = true
+
+    var body: some View {
+        Menu {
+            Toggle(isOn: $showDiarization) {
+                Label(
+                    String(localized: "timeline.toggle.speakers"),
+                    systemImage: "person.2"
+                )
+            }
+            Toggle(isOn: $showEmotion) {
+                Label(
+                    String(localized: "timeline.toggle.emotion"),
+                    systemImage: "face.smiling"
+                )
+            }
+            Toggle(isOn: $showFusion) {
+                Label(
+                    String(localized: "timeline.toggle.fusion"),
+                    systemImage: "chart.bar"
+                )
+            }
+        } label: {
+            Label(
+                String(localized: "timeline.menu.toolbar"),
+                systemImage: "list.and.film"
+            )
+        }
     }
 }
 

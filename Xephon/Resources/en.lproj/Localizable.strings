@@ -91,6 +91,10 @@
 "summary.exportMarkdown" = "Export Markdown";
 "review.toolbar" = "Review Transcription";
 "searchReplace.toolbar" = "Find and Replace";
+"timeline.menu.toolbar" = "Timelines";
+"timeline.toggle.speakers" = "Speaker Timeline";
+"timeline.toggle.emotion" = "Emotion Timeline";
+"timeline.toggle.fusion" = "Fusion Strip";
 "searchReplace.title" = "Find and Replace";
 "searchReplace.search.placeholder" = "Find…";
 "searchReplace.replace.placeholder" = "Replace with…";

@@ -13,6 +13,21 @@ struct XephonApp: App {
     /// same reference and `.onChange` fires reliably.
     @State private var menuCommands = MenuCommands()
 
+    /// Timeline-strip visibility toggles, shared with MainToolbar's
+    /// Timelines menu and TranscriptPaneView's strip gates through
+    /// the same UserDefaults keys. Persistent state, not a fire
+    /// action — so no MenuCommands token/gate plumbing: @AppStorage
+    /// on every consumer binds to the same storage, which is the
+    /// bus philosophy applied to defaults-backed state. (Safe at
+    /// App level only because ContentView re-inits are cheap now —
+    /// the controller lives up here, see `recorder`.)
+    @AppStorage(TimelineStripPrefs.showDiarizationKey)
+    private var showDiarizationStrip = true
+    @AppStorage(TimelineStripPrefs.showEmotionKey)
+    private var showEmotionStrip = true
+    @AppStorage(TimelineStripPrefs.showFusionKey)
+    private var showFusionStrip = true
+
     /// THE process-wide RecordingController. Constructed here — and
     /// only here — because the App struct is instantiated exactly
     /// once per process, so this `@State` autoclosure runs exactly
@@ -240,6 +255,40 @@ struct XephonApp: App {
                     )
                 }
                 .disabled(!menuCommands.canPresentSearchReplace)
+                Divider()
+                // Timeline-strip visibility — the View-menu
+                // counterpart of MainToolbar's Timelines menu.
+                // A nested Menu (submenu) rather than three flat
+                // toggles so the menu mirrors the toolbar's
+                // structure and label. Toggles render as checkmark
+                // items; state round-trips through UserDefaults
+                // (see the @AppStorage block on the App struct), so
+                // no MenuCommands token/gate is involved.
+                Menu {
+                    Toggle(isOn: $showDiarizationStrip) {
+                        Label(
+                            String(localized: "timeline.toggle.speakers"),
+                            systemImage: "person.2"
+                        )
+                    }
+                    Toggle(isOn: $showEmotionStrip) {
+                        Label(
+                            String(localized: "timeline.toggle.emotion"),
+                            systemImage: "face.smiling"
+                        )
+                    }
+                    Toggle(isOn: $showFusionStrip) {
+                        Label(
+                            String(localized: "timeline.toggle.fusion"),
+                            systemImage: "chart.bar"
+                        )
+                    }
+                } label: {
+                    Label(
+                        String(localized: "timeline.menu.toolbar"),
+                        systemImage: "list.and.film"
+                    )
+                }
             }
         }
     }

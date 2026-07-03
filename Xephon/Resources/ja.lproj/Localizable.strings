@@ -91,6 +91,10 @@
 "summary.exportMarkdown" = "Markdownで書き出す";
 "review.toolbar" = "文字起こしを校閲";
 "searchReplace.toolbar" = "検索と置換";
+"timeline.menu.toolbar" = "タイムライン";
+"timeline.toggle.speakers" = "話者タイムライン";
+"timeline.toggle.emotion" = "感情タイムライン";
+"timeline.toggle.fusion" = "融合ストリップ";
 "searchReplace.title" = "検索と置換";
 "searchReplace.search.placeholder" = "検索…";
 "searchReplace.replace.placeholder" = "置換後の語句…";
