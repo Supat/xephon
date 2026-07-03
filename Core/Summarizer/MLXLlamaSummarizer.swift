@@ -191,6 +191,14 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
         lines.append("")
         lines.append("---")
         lines.append("重要：上記の指示に従い、setting、topic、overallMood、perSpeaker の4フィールドを持つ有効なJSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記の発話リストをエコーしないでください。散文も一切含めないでください。")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         return lines.joined(separator: "\n")
     }
 
@@ -241,6 +249,14 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
         lines.append("")
         lines.append("---")
         lines.append("重要：上記の指示に従い、windowIndex、timeStart、timeEnd、topicSnapshot、moodSnapshot、perSpeaker のフィールドを持つウィンドウ中間JSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記の発話リストをエコーしないでください。散文も一切含めないでください。")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         return lines.joined(separator: "\n")
     }
 
@@ -307,6 +323,14 @@ internal struct MLXLlamaSpec: MLXLLMSpec {
         lines.append("")
         lines.append("---")
         lines.append("重要：上記の指示に従い、setting、topic、overallMood、perSpeaker の4フィールドを持つ最終要約JSONオブジェクトを1つだけ生成してください。出力の最初の文字は必ず `{` でなければなりません。上記のウィンドウ要約や発話の抜粋をエコーしないでください。散文も一切含めないでください。")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         return lines.joined(separator: "\n")
     }
 

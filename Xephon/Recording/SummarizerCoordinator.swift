@@ -430,6 +430,16 @@ final class SummarizerCoordinator {
         // resident ONNX models + fat speaker DB before we allocate
         // anything for the summary). The pipeline lazy-rewarms in
         // the deferred cleanup.
+        // Field-debuggable record of the response-language
+        // resolution chain: the directive embedded in every prompt
+        // derives from Bundle.main.preferredLocalizations (app-
+        // resolved language), which can diverge from the system
+        // list when a per-app language override is set or the
+        // bundle lacks the system language. When a summary comes
+        // out in the wrong language, this line says whether the
+        // directive was wrong (resolution problem) or ignored
+        // (model-obedience problem).
+        AppLog.app.info("\(logLabelPrefix, privacy: .public): responseLanguage=\(SummarizerLocale.responseLanguageNameInEnglish, privacy: .public) bundlePreferred=\(Bundle.main.preferredLocalizations.joined(separator: ","), privacy: .public) systemPreferred=\(Locale.preferredLanguages.joined(separator: ","), privacy: .public)")
         logAvailableMemory(label: "\(logLabelPrefix) start (before pipeline release)")
         await releasePipelineForSummarization()
         logAvailableMemory(label: "\(logLabelPrefix) start (after pipeline release)")

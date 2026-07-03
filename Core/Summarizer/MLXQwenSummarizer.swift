@@ -209,6 +209,14 @@ internal struct MLXQwenSpec: MLXLLMSpec {
         lines.append("")
         lines.append("---")
         lines.append("IMPORTANT: Follow the instructions above and produce exactly one valid JSON object with fields setting, topic, overallMood, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the utterance list above; do NOT add any prose.")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         return lines.joined(separator: "\n")
     }
 
@@ -258,6 +266,14 @@ internal struct MLXQwenSpec: MLXLLMSpec {
         lines.append("")
         lines.append("---")
         lines.append("IMPORTANT: Follow the instructions above and produce exactly one window-intermediate JSON object with fields windowIndex, timeStart, timeEnd, topicSnapshot, moodSnapshot, perSpeaker, modalityFlags. The FIRST character of your output MUST be `{`. Do NOT echo the utterance list above; do NOT add any prose.")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         return lines.joined(separator: "\n")
     }
 
@@ -326,6 +342,14 @@ internal struct MLXQwenSpec: MLXLLMSpec {
         lines.append("")
         lines.append("---")
         lines.append("IMPORTANT: Follow the instructions above and produce exactly one final-summary JSON object with fields setting, topic, overallMood, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the window summaries or raw utterances above; do NOT add any prose.")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
         return lines.joined(separator: "\n")
     }
 
