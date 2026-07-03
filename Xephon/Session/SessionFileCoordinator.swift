@@ -69,10 +69,17 @@ final class SessionFileCoordinator {
     /// localize digits / separators (e.g. Arabic-Indic numerals
     /// under ar locale) and break the filename scheme.
     var defaultSessionFilename: String {
+        "\(defaultSessionFilenameBase).xph"
+    }
+
+    /// Extension-less variant of `defaultSessionFilename`, shared
+    /// with the recorded-audio export (which appends the recording's
+    /// own container extension instead of `.xph`).
+    var defaultSessionFilenameBase: String {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd_HHmm"
-        return "xephon-\(fmt.string(from: Date())).xph"
+        return "xephon-\(fmt.string(from: Date()))"
     }
 
     /// Suggested Save Session… filename for the given title.
@@ -86,13 +93,56 @@ final class SessionFileCoordinator {
     /// else (Unicode, spaces, emoji, punctuation) the system
     /// allows in a filename, so we leave it alone.
     func sessionFilename(forTitle title: String) -> String {
+        "\(sessionFilenameBase(forTitle: title)).xph"
+    }
+
+    /// Extension-less variant of `sessionFilename(forTitle:)` — the
+    /// sanitized title, or the timestamped default when the title is
+    /// empty / sanitizes to empty.
+    func sessionFilenameBase(forTitle title: String) -> String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return defaultSessionFilename }
+        guard !trimmed.isEmpty else { return defaultSessionFilenameBase }
         let sanitized = trimmed
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        guard !sanitized.isEmpty else { return defaultSessionFilename }
-        return "\(sanitized).xph"
+        guard !sanitized.isEmpty else { return defaultSessionFilenameBase }
+        return sanitized
+    }
+
+    /// File → Export Recorded Audio… / leading toolbar button.
+    /// Hands the just-finished mic recording (m4a or wav, per the
+    /// record-audio format setting) to the centralized exporter.
+    /// `.mappedIfSafe` keeps a long WAV from being copied wholesale
+    /// into RAM — the DataFileDocument write streams it from disk.
+    /// Gated on `canExportRecordedAudio` (file exists + idle); the
+    /// menu item and toolbar button mirror the same gate, so this
+    /// guard is defense-in-depth.
+    func exportRecordedAudio(
+        recorder: RecordingController,
+        filePicker: FilePickerCoordinator
+    ) {
+        guard recorder.canExportRecordedAudio,
+              let url = recorder.recordedAudioFileURL else { return }
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let ext = url.pathExtension.lowercased()
+            let contentType: UTType = ext == "wav" ? .wav : .mpeg4Audio
+            let filename = "\(sessionFilenameBase(forTitle: recorder.sessionTitle)).\(ext)"
+            filePicker.presentExport(
+                data: data,
+                contentType: contentType,
+                defaultFilename: filename
+            ) { [weak self] result in
+                switch result {
+                case .success(let savedURL):
+                    AppLog.app.info("recorded audio exported to \(savedURL.lastPathComponent, privacy: .public)")
+                case .failure(let error):
+                    self?.sessionIOError = String(describing: error)
+                }
+            }
+        } catch {
+            sessionIOError = String(describing: error)
+        }
     }
 
     // MARK: - Menu-command entry points

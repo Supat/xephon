@@ -88,6 +88,21 @@ final class RecordingController {
     /// Held so `stop()` can wire it into `playbackSourceURL` and the
     /// next recording can delete it.
     private var currentRecordingURL: URL?
+
+    /// Read-only view of the just-finished mic recording for the
+    /// export flows (File → Export Recorded Audio, and the leading
+    /// toolbar button). nil while no recorded file exists — never
+    /// recorded, record-audio off, or the temp was cleaned up by a
+    /// new session / session load (saved sessions embed their own
+    /// audio copy).
+    var recordedAudioFileURL: URL? { currentRecordingURL }
+
+    /// Gate for the recorded-audio export UI: a recorded file
+    /// exists and nothing is mutating it (recording writes into the
+    /// file until `stop()` finalizes it).
+    var canExportRecordedAudio: Bool {
+        phase == .idle && currentRecordingURL != nil
+    }
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
     /// Offline ASR backend list + current pick, mirrored from the

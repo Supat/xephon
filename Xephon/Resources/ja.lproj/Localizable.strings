@@ -217,6 +217,7 @@
 "menu.exportJSON" = "JSONを書き出す…";
 "menu.saveSession" = "セッションを保存…";
 "menu.importSession" = "セッションを開く…";
+"menu.exportRecordedAudio" = "録音音声を書き出す…";
 "menu.findInUtterances" = "発話を検索…";
 "menu.view" = "表示";
 "menu.view.settings" = "設定とパイプライン";

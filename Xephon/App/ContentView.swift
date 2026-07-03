@@ -349,6 +349,11 @@ struct ContentView: View {
         // analysis.
         menuCommands.canSaveSession = idleWithTranscript
         menuCommands.canExportJSON = idleWithTranscript
+        // File → Export Recorded Audio: unlike the two above, gated
+        // on a recorded file existing, not on the transcript — the
+        // audio is exportable even when a session produced zero
+        // utterances.
+        menuCommands.canExportRecordedAudio = recorder.canExportRecordedAudio
     }
 }
 
@@ -461,6 +466,11 @@ private struct EventBridgeModifier: ViewModifier {
             .onChange(of: recorder.isIdleWithTranscript) { _, _ in syncMenuItemGates() }
             .onChange(of: recorder.summarizerInferenceRunning) { _, _ in syncMenuItemGates() }
             .onChange(of: recorder.transcriptionReviewRunning) { _, _ in syncMenuItemGates() }
+            // Export Recorded Audio gate — flips when a recording
+            // finalizes (URL set) or a new session / load cleans
+            // the temp up (URL nil). isIdleWithTranscript above
+            // covers the phase half of the predicate.
+            .onChange(of: recorder.recordedAudioFileURL) { _, _ in syncMenuItemGates() }
             .onChange(of: recorder.sessionToken) { _, _ in
                 visibleUtteranceIDs.removeAll()
                 expandedUtteranceIDs.removeAll()

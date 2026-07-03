@@ -217,6 +217,7 @@
 "menu.exportJSON" = "Export to JSON…";
 "menu.saveSession" = "Save Session…";
 "menu.importSession" = "Open Session…";
+"menu.exportRecordedAudio" = "Export Recorded Audio…";
 "menu.findInUtterances" = "Find in Utterances…";
 "menu.view" = "View";
 "menu.view.settings" = "Settings & Pipeline";

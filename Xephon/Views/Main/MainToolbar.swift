@@ -16,6 +16,11 @@ struct MainToolbar: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) { openSession }
         ToolbarItem(placement: .topBarLeading) { saveSession }
+        // Fixed spacer splits the Liquid Glass grouping so the
+        // recorded-audio export renders in its own bubble, visually
+        // separated from the session Open/Save pair.
+        ToolbarSpacer(.fixed, placement: .topBarLeading)
+        ToolbarItem(placement: .topBarLeading) { exportRecordedAudio }
         ToolbarItem(placement: .principal) {
             SessionTitleField(recorder: recorder)
         }
@@ -48,6 +53,25 @@ struct MainToolbar: ToolbarContent {
             Label(String(localized: "menu.saveSession"), systemImage: "square.and.arrow.down")
         }
         .disabled(!recorder.isIdleWithTranscript)
+    }
+
+    // Export the just-finished mic recording (m4a/wav per the
+    // record-audio setting). Same action as File → Export Recorded
+    // Audio…; gate matches the menu item's `canExportRecordedAudio`
+    // mirror (file exists + idle — deliberately NOT
+    // isIdleWithTranscript, the audio is exportable even when the
+    // session produced zero utterances).
+    @ViewBuilder
+    private var exportRecordedAudio: some View {
+        Button {
+            fileCoord.exportRecordedAudio(recorder: recorder, filePicker: filePicker)
+        } label: {
+            Label(
+                String(localized: "menu.exportRecordedAudio"),
+                systemImage: "recordingtape"
+            )
+        }
+        .disabled(!recorder.canExportRecordedAudio)
     }
 
     @ViewBuilder

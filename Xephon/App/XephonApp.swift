@@ -103,6 +103,15 @@ struct XephonApp: App {
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!menuCommands.canExportJSON)
+                Button {
+                    menuCommands.exportRecordedAudioToken = UUID()
+                } label: {
+                    Label(
+                        String(localized: "menu.exportRecordedAudio"),
+                        systemImage: "recordingtape"
+                    )
+                }
+                .disabled(!menuCommands.canExportRecordedAudio)
             }
             // Edit > Undo / Edit > Redo. Backed by
             // `RecordingController.undoManager`; both menu items are
@@ -313,6 +322,13 @@ final class MenuCommands {
     /// Bumped by File → Import Session… (⇧⌘O). Replaces the
     /// in-memory analysis with the contents of a `.xph` file.
     var importSessionToken: UUID = UUID()
+    /// Bumped by File → Export Recorded Audio…. SessionFileBridge
+    /// watches this and hands the mic recording's file to the
+    /// centralized exporter.
+    var exportRecordedAudioToken: UUID = UUID()
+    /// Mirror of `recorder.canExportRecordedAudio` (recorded file
+    /// exists + idle). Refreshed by `syncMenuItemGates()`.
+    var canExportRecordedAudio: Bool = false
     /// Bumped by the Edit → Find menu item (⌘F). ContentView watches
     /// this and moves keyboard focus into the utterance search field.
     var findToken: UUID = UUID()

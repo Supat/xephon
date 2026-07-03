@@ -158,8 +158,11 @@ public struct DataFileDocument: FileDocument, Sendable {
     // the export. `.data` stays as the generic fallback;
     // `.xephonSession` is the app's own `.xph` UTType (declared
     // in SessionFileDocument.swift).
-    public static var readableContentTypes: [UTType] { [.data, .json, .plainText, .xephonSession] }
-    public static var writableContentTypes: [UTType] { [.data, .json, .plainText, .xephonSession] }
+    // `.mpeg4Audio` / `.wav`: the recorded-audio export (File →
+    // Export Recorded Audio…) hands the session recording through
+    // in whichever container the record-audio setting produced.
+    public static var readableContentTypes: [UTType] { [.data, .json, .plainText, .xephonSession, .mpeg4Audio, .wav] }
+    public static var writableContentTypes: [UTType] { [.data, .json, .plainText, .xephonSession, .mpeg4Audio, .wav] }
 
     public var data: Data
     public var contentType: UTType
