@@ -112,3 +112,18 @@ final class KeywordCountsMemo {
     var lastKey: Key?
     var counts: [UUID: Int] = [:]
 }
+
+/// Memo for the keyword-timeline strip's utteranceID → matched-tag
+/// map. Same shape as KeywordCountsMemo; the signature includes
+/// each keyword's tagColor because a swatch change alters the
+/// output without touching text or utterances.
+@MainActor
+final class KeywordTagMatchesMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let utteranceCount: Int
+        let keywordSignature: [String]
+    }
+    var lastKey: Key?
+    var matches: [UUID: [KeywordTagColor]] = [:]
+}

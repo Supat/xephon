@@ -27,6 +27,8 @@ struct XephonApp: App {
     private var showEmotionStrip = true
     @AppStorage(TimelineStripPrefs.showFusionKey)
     private var showFusionStrip = true
+    @AppStorage(TimelineStripPrefs.showKeywordKey)
+    private var showKeywordStrip = true
 
     /// THE process-wide RecordingController. Constructed here — and
     /// only here — because the App struct is instantiated exactly
@@ -290,6 +292,12 @@ struct XephonApp: App {
                         Label(
                             String(localized: "timeline.toggle.fusion"),
                             systemImage: "chart.bar"
+                        )
+                    }
+                    Toggle(isOn: $showKeywordStrip) {
+                        Label(
+                            String(localized: "timeline.toggle.keywords"),
+                            systemImage: "tag"
                         )
                     }
                 } label: {

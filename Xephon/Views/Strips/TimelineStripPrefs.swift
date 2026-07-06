@@ -12,4 +12,5 @@ enum TimelineStripPrefs {
     static let showDiarizationKey = "timelineStrip.showDiarization"
     static let showEmotionKey = "timelineStrip.showEmotion"
     static let showFusionKey = "timelineStrip.showFusion"
+    static let showKeywordKey = "timelineStrip.showKeyword"
 }

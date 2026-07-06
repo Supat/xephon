@@ -36,6 +36,8 @@ struct TranscriptPaneView: View {
     private var showEmotionStrip = true
     @AppStorage(TimelineStripPrefs.showFusionKey)
     private var showFusionStrip = true
+    @AppStorage(TimelineStripPrefs.showKeywordKey)
+    private var showKeywordStrip = true
 
     @ViewBuilder
     var body: some View {
@@ -56,6 +58,7 @@ struct TranscriptPaneView: View {
                 diarizationTimelineStrip
                 emotionTimelineStrip
                 fusionContributionStrip
+                keywordTimelineStrip
                 if filterModel.filteredIndexedUtterances(in: recorder).isEmpty {
                     TranscriptNoMatchesView(model: filterModel)
                 } else {
@@ -153,6 +156,31 @@ struct TranscriptPaneView: View {
                 totalDuration: total,
                 acousticWeight: recorder.fusionAcousticWeight,
                 textWeightFloor: recorder.fusionTextWeightFloor,
+                selectedRange: selectedUtteranceRange,
+                onTapAtTime: { t in
+                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
+                    selectedUtteranceID = target.id
+                    scrollRequestUtteranceID = target.id
+                }
+            )
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+        }
+    }
+
+    /// Keyword-occurrence strip — marks where color-tagged
+    /// keywords hit, in their tag colors. Hidden until at least
+    /// one tagged keyword matches something (assigning colors is
+    /// the opt-in; sessions without tags see no extra strip).
+    @ViewBuilder
+    private var keywordTimelineStrip: some View {
+        let total = transcriptTotalDuration
+        let tagMatches = filterModel.keywordTagMatches(in: recorder)
+        if showKeywordStrip, !tagMatches.isEmpty, total > 0 {
+            KeywordTimelineStrip(
+                utterances: recorder.utterances,
+                tagsByUtterance: tagMatches,
+                totalDuration: total,
                 selectedRange: selectedUtteranceRange,
                 onTapAtTime: { t in
                     guard let target = recorder.nearestUtterance(toTime: t) else { return }

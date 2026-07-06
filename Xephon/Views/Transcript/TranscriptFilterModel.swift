@@ -97,6 +97,7 @@ final class TranscriptFilterModel {
     /// level — same pattern as `mismatchMemo`.
     @ObservationIgnored
     private let keywordCountsMemo = KeywordCountsMemo()
+    private let keywordTagMatchesMemo = KeywordTagMatchesMemo()
 
     // MARK: - Filter controls
 
@@ -223,6 +224,48 @@ final class TranscriptFilterModel {
         keywordCountsMemo.lastKey = key
         keywordCountsMemo.counts = counts
         return counts
+    }
+
+    /// utteranceID → ordered tags of the COLOR-TAGGED keywords
+    /// matching that utterance, deduped by color (two same-colored
+    /// keywords hitting one row paint one band). Match semantics =
+    /// the counts above (NormalizedSearchQuery over the full
+    /// utterance list). Memoized on the same inputs plus tagColor
+    /// (a swatch change alters output without touching text).
+    /// Drives KeywordTimelineStrip.
+    func keywordTagMatches(
+        in recorder: RecordingController
+    ) -> [UUID: [KeywordTagColor]] {
+        let kws = recorder.keywords.keywords
+        let signature = kws.map {
+            "\($0.id.uuidString)|\($0.text)|\($0.tagColor?.rawValue ?? "-")"
+        }
+        let key = KeywordTagMatchesMemo.Key(
+            utterancesVersion: recorder.utterancesVersion,
+            utteranceCount: recorder.utterances.count,
+            keywordSignature: signature
+        )
+        if keywordTagMatchesMemo.lastKey == key { return keywordTagMatchesMemo.matches }
+        var matches: [UUID: [KeywordTagColor]] = [:]
+        let taggedQueries: [(tag: KeywordTagColor, query: NormalizedSearchQuery)] = kws.compactMap {
+            guard let tag = $0.tagColor else { return nil }
+            let q = NormalizedSearchQuery.build(from: $0.text)
+            return q.isEmpty ? nil : (tag: tag, query: q)
+        }
+        if !taggedQueries.isEmpty {
+            for u in recorder.utterances {
+                let forms = normalizedForms(for: u)
+                var tags: [KeywordTagColor] = []
+                for entry in taggedQueries
+                where entry.query.matches(normalized: forms.normalized, tokens: forms.tokens) {
+                    if !tags.contains(entry.tag) { tags.append(entry.tag) }
+                }
+                if !tags.isEmpty { matches[u.id] = tags }
+            }
+        }
+        keywordTagMatchesMemo.lastKey = key
+        keywordTagMatchesMemo.matches = matches
+        return matches
     }
 
     // MARK: - Filtered slice + summary

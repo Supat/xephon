@@ -66,6 +66,10 @@ struct KeywordsCard: View {
     /// the Delete button's action so a tap-then-tap-cancel leaves
     /// the keyword untouched.
     @State private var pendingDeleteKeyword: Keyword?
+    /// Keyword whose color-palette popover is showing. Per-row
+    /// presentation (like the delete dialog above) so the iPad
+    /// popover anchors to the tapped color dot.
+    @State private var colorPickingKeywordID: UUID?
     @FocusState private var newKeywordFocused: Bool
 
     // MARK: - Presentation bindings
@@ -541,6 +545,7 @@ struct KeywordsCard: View {
                         keywordCounts[keyword.id] ?? 0
                     )
                 )
+            colorTagButton(for: keyword)
             groupAssignMenu(for: keyword)
             Button {
                 pendingDeleteKeyword = keyword
@@ -625,6 +630,97 @@ struct KeywordsCard: View {
                 targetKeyword: keyword
             )
         }
+    }
+
+    /// Color-tag dot: shows the keyword's tag color (dashed circle
+    /// when untagged) and opens the 24-swatch palette popover.
+    private func colorTagButton(for keyword: Keyword) -> some View {
+        Button {
+            colorPickingKeywordID = keyword.id
+        } label: {
+            if let tag = keyword.tagColor {
+                Circle()
+                    .fill(tag.color)
+                    .frame(width: 14, height: 14)
+                    .overlay(
+                        Circle().strokeBorder(
+                            Color.primary.opacity(0.15),
+                            lineWidth: 0.5
+                        )
+                    )
+            } else {
+                Image(systemName: "circle.dashed")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(
+            String(
+                format: String(localized: "keywords.colorTag.a11y"),
+                keyword.text
+            )
+        )
+        .popover(
+            isPresented: Binding(
+                get: { colorPickingKeywordID == keyword.id },
+                set: { if !$0 { colorPickingKeywordID = nil } }
+            )
+        ) {
+            colorPalette(for: keyword)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    /// 6×4 swatch grid + a "no color" clear row. One undo step per
+    /// pick (the keywords snapshot includes tagColor via Codable).
+    private func colorPalette(for keyword: Keyword) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                registerUndo(String(localized: "undo.keywords.color"))
+                store.setTagColor(nil, for: keyword.id)
+                colorPickingKeywordID = nil
+            } label: {
+                Label(
+                    String(localized: "keywords.colorTag.none"),
+                    systemImage: "circle.slash"
+                )
+                .font(.callout)
+            }
+            .buttonStyle(.borderless)
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.fixed(28), spacing: 8),
+                    count: 6
+                ),
+                spacing: 8
+            ) {
+                ForEach(KeywordTagColor.allCases, id: \.self) { tag in
+                    Button {
+                        registerUndo(String(localized: "undo.keywords.color"))
+                        store.setTagColor(tag, for: keyword.id)
+                        colorPickingKeywordID = nil
+                    } label: {
+                        Circle()
+                            .fill(tag.color)
+                            .frame(width: 24, height: 24)
+                            .overlay(
+                                Circle().strokeBorder(
+                                    Color.primary.opacity(
+                                        keyword.tagColor == tag ? 0.8 : 0.1
+                                    ),
+                                    lineWidth: keyword.tagColor == tag ? 2 : 0.5
+                                )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    // Palette names are stable identifiers, not
+                    // localized copy — surfaced to VoiceOver only.
+                    .accessibilityLabel(Text(verbatim: tag.rawValue))
+                }
+            }
+        }
+        .padding(12)
     }
 
     private func handleDropOnRow(
@@ -764,3 +860,51 @@ struct KeywordsCard: View {
     }
 }
 
+
+/// SwiftUI color for each palette case. Lives here (not on the
+/// store type) so `KeywordStore.swift` stays presentation-free.
+/// Values are hand-picked for legibility as small swatches/dots on
+/// both light and dark backgrounds — mid-lightness, high-chroma
+/// hues plus six earth/neutral tones.
+extension KeywordTagColor {
+    var color: Color {
+        switch self {
+        case .red:     return Color(hexRGB: 0xEF4444)
+        case .orange:  return Color(hexRGB: 0xF97316)
+        case .amber:   return Color(hexRGB: 0xF59E0B)
+        case .yellow:  return Color(hexRGB: 0xEAB308)
+        case .lime:    return Color(hexRGB: 0x84CC16)
+        case .green:   return Color(hexRGB: 0x22C55E)
+        case .emerald: return Color(hexRGB: 0x10B981)
+        case .teal:    return Color(hexRGB: 0x14B8A6)
+        case .cyan:    return Color(hexRGB: 0x06B6D4)
+        case .sky:     return Color(hexRGB: 0x0EA5E9)
+        case .blue:    return Color(hexRGB: 0x3B82F6)
+        case .indigo:  return Color(hexRGB: 0x6366F1)
+        case .violet:  return Color(hexRGB: 0x8B5CF6)
+        case .purple:  return Color(hexRGB: 0xA855F7)
+        case .fuchsia: return Color(hexRGB: 0xD946EF)
+        case .pink:    return Color(hexRGB: 0xEC4899)
+        case .rose:    return Color(hexRGB: 0xF43F5E)
+        case .maroon:  return Color(hexRGB: 0x9F1239)
+        case .brown:   return Color(hexRGB: 0x795548)
+        case .olive:   return Color(hexRGB: 0x808000)
+        case .navy:    return Color(hexRGB: 0x1E3A8A)
+        case .slate:   return Color(hexRGB: 0x64748B)
+        case .gray:    return Color(hexRGB: 0x6B7280)
+        case .stone:   return Color(hexRGB: 0x78716C)
+        }
+    }
+}
+
+private extension Color {
+    /// 0xRRGGBB literal → sRGB Color.
+    init(hexRGB: UInt32) {
+        self.init(
+            .sRGB,
+            red: Double((hexRGB >> 16) & 0xFF) / 255,
+            green: Double((hexRGB >> 8) & 0xFF) / 255,
+            blue: Double(hexRGB & 0xFF) / 255
+        )
+    }
+}

@@ -15,19 +15,31 @@ public struct Keyword: Sendable, Hashable, Codable, Identifiable {
     public let id: UUID
     public var text: String
     public var groupID: UUID?
+    /// Optional user-assigned color tag. nil = no color (the
+    /// default). Pure visual metadata — no filter or prompt logic
+    /// reads it, which is also why mutating it deliberately skips
+    /// the store's `onChange` hook (see `setTagColor`).
+    public var tagColor: KeywordTagColor?
 
-    public init(id: UUID = UUID(), text: String, groupID: UUID? = nil) {
+    public init(
+        id: UUID = UUID(),
+        text: String,
+        groupID: UUID? = nil,
+        tagColor: KeywordTagColor? = nil
+    ) {
         self.id = id
         self.text = text
         self.groupID = groupID
+        self.tagColor = tagColor
     }
 
     // Custom Codable so JSON files saved before the grouping
     // feature (no `groupID` key on each keyword) still decode as
-    // ungrouped instead of failing. Mirrors the
+    // ungrouped instead of failing — and likewise files saved
+    // before the color-tag feature decode as untagged. Mirrors the
     // `KeywordDocument.groups` `decodeIfPresent` pattern below.
     private enum CodingKeys: String, CodingKey {
-        case id, text, groupID
+        case id, text, groupID, tagColor
     }
 
     public init(from decoder: any Decoder) throws {
@@ -35,7 +47,24 @@ public struct Keyword: Sendable, Hashable, Codable, Identifiable {
         self.id = try c.decode(UUID.self, forKey: .id)
         self.text = try c.decode(String.self, forKey: .text)
         self.groupID = try c.decodeIfPresent(UUID.self, forKey: .groupID)
+        // Unknown raw values (palette renames in a future version)
+        // degrade to untagged rather than failing the whole file.
+        self.tagColor = try? c.decodeIfPresent(KeywordTagColor.self, forKey: .tagColor)
     }
+}
+
+/// The 24-color tag palette. Raw-value Codable so persisted JSON
+/// stays human-readable and stable across reorderings of this
+/// enum. Case order IS the palette's display order in the picker
+/// grid: warm hues → cool hues → earth/neutral tones, six per
+/// row over four rows. The SwiftUI `Color` mapping lives with the
+/// picker UI (KeywordsCard) — this type stays presentation-free
+/// so the store module doesn't import SwiftUI.
+public enum KeywordTagColor: String, Sendable, Hashable, Codable, CaseIterable {
+    case red, orange, amber, yellow, lime, green
+    case emerald, teal, cyan, sky, blue, indigo
+    case violet, purple, fuchsia, pink, rose, maroon
+    case brown, olive, navy, slate, gray, stone
 }
 
 /// Named bucket the user can assign keywords to. Persisted in the
@@ -352,12 +381,36 @@ public final class KeywordStore {
 
     // MARK: - Internal
 
+    /// Set (or clear, with nil) a keyword's color tag. Persists
+    /// like any other mutation but SUPPRESSES the `onChange` hook:
+    /// the hook's consumer is the summarizer's auto re-run
+    /// (keyword text/selection feed the heuristic/meeting prompts)
+    /// and a color change alters nothing any prompt reads —
+    /// re-running a multi-minute LLM pass over a swatch tap would
+    /// be pure waste.
+    public func setTagColor(_ color: KeywordTagColor?, for keywordID: UUID) {
+        guard let idx = keywords.firstIndex(where: { $0.id == keywordID }),
+              keywords[idx].tagColor != color else { return }
+        suppressOnChangeForNextMutation = true
+        keywords[idx].tagColor = color
+    }
+
+    /// One-shot latch read by `didMutate` — set by mutations that
+    /// must persist without notifying the `onChange` consumer
+    /// (currently only `setTagColor`).
+    private var suppressOnChangeForNextMutation = false
+
     private func didMutate() {
         // Same deferral trick `GlossaryStore.didMutate` uses — see
         // its doc-comment for the simultaneous-access rationale.
         // Persist + observer notification run on the next
         // MainActor tick, after the `_modify` exclusive-access
         // region for the property being set has released.
+        // The suppress latch is read SYNCHRONOUSLY (before the
+        // deferral) so it can't leak onto an unrelated later
+        // mutation.
+        let notify = !suppressOnChangeForNextMutation
+        suppressOnChangeForNextMutation = false
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -367,7 +420,7 @@ public final class KeywordStore {
                     "KeywordStore persist failed: \(String(describing: error), privacy: .public)"
                 )
             }
-            self.onChange?()
+            if notify { self.onChange?() }
         }
     }
 

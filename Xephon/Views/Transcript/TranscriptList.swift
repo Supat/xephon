@@ -200,6 +200,7 @@ struct TranscriptList: View {
         UtteranceRow(
             number: item.idx + 1,
             utterance: item.u,
+            keywords: recorder.keywords.keywords,
             isExpanded: expandedUtteranceIDs.contains(item.u.id),
             onToggleExpanded: { onToggleExpansion(item.u.id) },
             playback: .resolve(for: item.u, recorder: recorder),
