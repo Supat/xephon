@@ -48,6 +48,10 @@ extension RecordingController {
         // from wall-clock when the pump runs faster than 1×.
         asrLatencyMeaningful = false
         capture = AudioFileCapture(fileURL: url)
+        // Propagate the ASR-branch leveler pick into the fresh file
+        // capture (its own default is off). The mic engine keeps its
+        // flag independently.
+        await capture.setSpeechLevelerEnabled(isSpeechLevelerEnabled)
         availableInputs = []
         currentInputUID = nil
         await start()

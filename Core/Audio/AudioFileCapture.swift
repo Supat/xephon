@@ -16,9 +16,12 @@ import XephonLogging
 /// timeline would no longer match the analysis cursor, so playback was
 /// removed entirely).
 ///
-/// Both `raw` and `processed` streams carry the same content — the speech
-/// boost EQ doesn't apply to pre-recorded material. Input selection is
-/// disabled while a file is the active source.
+/// The speech-boost EQ doesn't apply to pre-recorded material, but the
+/// ASR-branch speech leveler does: when enabled, the `processed` stream
+/// is run through `SoftwareSpeechLeveler` (the sample-domain twin of the
+/// live engine's DynamicsProcessor node) while `raw` stays untouched —
+/// same branch discipline as the mic graph. Input selection is disabled
+/// while a file is the active source.
 public actor AudioFileCapture: AudioCapture {
     private let fileURL: URL
     private let chunkFrames: AVAudioFrameCount
@@ -26,6 +29,11 @@ public actor AudioFileCapture: AudioCapture {
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var isAccessingScopedResource = false
+    /// ASR-branch leveler toggle, propagated from RecordingController
+    /// at session start (startFromFile) and live-flippable mid-run —
+    /// the pump reads this per chunk. Default off so directly
+    /// constructed instances (tests) stay pass-through.
+    private var speechLevelerEnabled = false
 
     public init(
         fileURL: URL,
@@ -118,6 +126,11 @@ public actor AudioFileCapture: AudioCapture {
     public func setPreferredInput(_ uid: String?) async throws {}
     public var isSpeechBoostEnabled: Bool { get async { false } }
     public func setSpeechBoostEnabled(_ enabled: Bool) async {}
+    public var isSpeechLevelerEnabled: Bool { get async { speechLevelerEnabled } }
+    public func setSpeechLevelerEnabled(_ enabled: Bool) async {
+        speechLevelerEnabled = enabled
+        AppLog.audio.info("File-capture speech leveler \(enabled ? "ON" : "OFF", privacy: .public)")
+    }
 
     // MARK: - File pump
 
@@ -137,6 +150,10 @@ public actor AudioFileCapture: AudioCapture {
         }
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
 
+        // One streaming leveler for the whole file so the envelope
+        // carries across chunk boundaries (a per-chunk reset would
+        // re-attack on every chunk edge).
+        let leveler = SoftwareSpeechLeveler(sampleRate: PipelineAudio.sampleRate)
         var elapsed: TimeInterval = 0
         while !Task.isCancelled {
             inputBuffer.frameLength = 0
@@ -184,7 +201,18 @@ public actor AudioFileCapture: AudioCapture {
             // backpressure (analyzer slow), it loops on `.dropped` with
             // a brief sleep so no audio is lost.
             await Self.yieldWithBackpressure(chunk, to: rawCont)
-            await Self.yieldWithBackpressure(chunk, to: processedCont)
+            // ASR branch: levelled copy when enabled; raw pass-through
+            // otherwise. `speechLevelerEnabled` is actor state and the
+            // pump is actor-isolated, so a mid-run Settings toggle
+            // takes effect on the next chunk.
+            let processedChunk = speechLevelerEnabled
+                ? AudioChunk(
+                    samples: leveler.process(samples),
+                    sampleRate: PipelineAudio.sampleRate,
+                    timestamp: elapsed
+                )
+                : chunk
+            await Self.yieldWithBackpressure(processedChunk, to: processedCont)
 
             // Advance by the actual input duration of this read.
             elapsed += Double(inputBuffer.frameLength) / inputFormat.sampleRate

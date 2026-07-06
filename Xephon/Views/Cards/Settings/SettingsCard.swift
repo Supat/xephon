@@ -60,6 +60,7 @@ struct SettingsCard: View {
             }
             textSERPicker
             speechBoostToggle
+            speechLevelerToggle
             recordAudioControls
             diarizerSensitivitySlider
         }
@@ -311,6 +312,32 @@ struct SettingsCard: View {
             .toggleStyle(.switch)
             .padding(.horizontal)
         }
+    }
+
+    /// AGC-style speech leveler for quiet / distant speakers — lifts
+    /// low-level speech the diarizer (raw branch) can see but the
+    /// transcriber misses. ASR branch only; the SER/diarizer branch
+    /// stays raw (energy is an arousal cue). Unlike the speech boost
+    /// EQ, this is visible in BOTH modes: file-opened analysis runs
+    /// the leveler on AudioFileCapture's processed stream, and the
+    /// re-evaluation / hand-edit ASR re-feeds level their slices too.
+    @ViewBuilder
+    private var speechLevelerToggle: some View {
+        Toggle(
+            isOn: Binding(
+                get: { recorder.isSpeechLevelerEnabled },
+                set: { newValue in
+                    Task { await recorder.setSpeechLevelerEnabled(newValue) }
+                }
+            )
+        ) {
+            Label(
+                String(localized: "settings.speechLeveler"),
+                systemImage: "waveform.path"
+            )
+        }
+        .toggleStyle(.switch)
+        .padding(.horizontal)
     }
 
     /// "Sensitivity" inverts the underlying clustering threshold

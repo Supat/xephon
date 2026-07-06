@@ -51,6 +51,15 @@ extension RecordingController {
                 )
             }.value
             guard !chunk.samples.isEmpty else { return nil }
+            // Every consumer in this helper is ASR (hinted
+            // SFSpeechRecognizer below, offline analyzer after) —
+            // level the whole slice when the toggle is on so
+            // hand-edit re-transcription hears the same lifted audio
+            // as the live pass. The SER/embedding chunks read
+            // elsewhere in this file stay raw.
+            let asrChunk = isSpeechLevelerEnabled
+                ? SoftwareSpeechLeveler.levelledCopy(of: chunk)
+                : chunk
             // Hinted path: SFSpeechRecognizer with contextualStrings.
             // Falls through to the offline-analyzer path on any
             // adapter-level failure (recognizer unavailable for
@@ -58,7 +67,7 @@ extension RecordingController {
             // user still gets *some* transcript.
             if !hints.isEmpty {
                 if let hinted = try? await pipeline.transcribeWithHints(
-                    audio: chunk, hints: hints
+                    audio: asrChunk, hints: hints
                 ) {
                     let trimmed = hinted.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty { return hinted }
@@ -67,7 +76,7 @@ extension RecordingController {
                     "transcribeRange hinted path returned empty; falling back to offline analyzer"
                 )
             }
-            let segments = try await pipeline.transcribeForReevaluation(audio: chunk)
+            let segments = try await pipeline.transcribeForReevaluation(audio: asrChunk)
             let combined = segments.map(\.text).joined()
             let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : combined

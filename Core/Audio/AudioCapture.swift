@@ -69,6 +69,12 @@ public protocol AudioCapture: Actor {
     /// ASR see identical input.
     var isSpeechBoostEnabled: Bool { get async }
     func setSpeechBoostEnabled(_ enabled: Bool) async
+
+    /// Enables/disables the AGC-style speech leveler (compressor +
+    /// makeup gain) on the ASR-bound branch. Same branch-scoping as
+    /// the speech boost: raw stream is never levelled.
+    var isSpeechLevelerEnabled: Bool { get async }
+    func setSpeechLevelerEnabled(_ enabled: Bool) async
 }
 
 /// Maps the running `AVAudioTime.sampleTime` of each tap callback to a
@@ -186,6 +192,8 @@ public extension AudioCapture {
     func setPreferredInput(_ uid: String?) async throws {}
     var isSpeechBoostEnabled: Bool { get async { false } }
     func setSpeechBoostEnabled(_ enabled: Bool) async {}
+    var isSpeechLevelerEnabled: Bool { get async { false } }
+    func setSpeechLevelerEnabled(_ enabled: Bool) async {}
     func setRecordingDestination(_ url: URL?, format: RecordingAudioFormat) async {}
 }
 
@@ -199,6 +207,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     // this; each `inputNode` gets to query HW from scratch.
     private var engine: AVAudioEngine?
     private var eq: AVAudioUnitEQ?
+    private var leveler: AVAudioUnitEffect?
     private var processedSink: AVAudioMixerNode?
     private var rawCont: AsyncStream<AudioChunk>.Continuation?
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
@@ -211,6 +220,7 @@ public actor AVAudioEngineCapture: AudioCapture {
     private var endReason: CaptureEndReason?
     private var rebaser: TimestampRebaser?
     private var speechBoostEnabled: Bool = true
+    private var speechLevelerEnabled: Bool = true
 
     // Optional native-rate recording-to-disk. The file is opened once
     // (first engine build) at a FIXED PCM format; later rebuilds (USB
@@ -312,8 +322,11 @@ public actor AVAudioEngineCapture: AudioCapture {
         let engine = AVAudioEngine()
         let eq = SpeechBoost.makeEQ()
         eq.bypass = !speechBoostEnabled
+        let leveler = SpeechLeveler.makeLeveler()
+        leveler.bypass = !speechLevelerEnabled
         let processedSink = AVAudioMixerNode()
         engine.attach(eq)
+        engine.attach(leveler)
         engine.attach(processedSink)
 
         let input = engine.inputNode
@@ -357,11 +370,13 @@ public actor AVAudioEngineCapture: AudioCapture {
         rawConverter.primeMethod = .none
         processedConverter.primeMethod = .none
 
-        // input → eq → processedSink. Tap input for raw, tap processedSink for
-        // the speech-boosted copy. The mixer sink avoids tapping the EQ output
-        // bus directly (see comment on `processedSink`).
+        // input → eq → leveler → processedSink. Tap input for raw, tap
+        // processedSink for the speech-boosted + levelled copy. The mixer
+        // sink avoids tapping an effect's output bus directly (see comment
+        // on `processedSink`).
         engine.connect(input, to: eq, format: inputFormat)
-        engine.connect(eq, to: processedSink, format: inputFormat)
+        engine.connect(eq, to: leveler, format: inputFormat)
+        engine.connect(leveler, to: processedSink, format: inputFormat)
 
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
 
@@ -429,6 +444,7 @@ public actor AVAudioEngineCapture: AudioCapture {
 
         self.engine = engine
         self.eq = eq
+        self.leveler = leveler
         self.processedSink = processedSink
         self.rawConverter = rawConverter
         self.processedConverter = processedConverter
@@ -513,6 +529,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         }
         engine = nil
         eq = nil
+        leveler = nil
         processedSink = nil
         // Fresh engine = fresh `sampleTime` origin near 0. Without
         // this mark, the next chunk's session-relative timestamp
@@ -547,8 +564,8 @@ public actor AVAudioEngineCapture: AudioCapture {
     /// triggers; only a media-services reset invalidates it (handled
     /// separately by `handleMediaServicesReset`).
     private func recoverEngine(trigger: String) async {
-        guard let engine, let eq, let processedSink else {
-            AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: nothing to restart (engine/eq/processedSink nil) — capture already stopped")
+        guard let engine, let eq, let leveler, let processedSink else {
+            AppLog.audio.info("recoverEngine[\(trigger, privacy: .public)]: nothing to restart (engine/eq/leveler/processedSink nil) — capture already stopped")
             return
         }
         guard configChangeObserver != nil else {
@@ -568,6 +585,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         input.removeTap(onBus: 0)
         processedSink.removeTap(onBus: 0)
         engine.disconnectNodeInput(eq)
+        engine.disconnectNodeInput(leveler)
         engine.disconnectNodeInput(processedSink)
 
         // Re-assert the preferred input. A USB clock renegotiation (or a
@@ -631,7 +649,8 @@ public actor AVAudioEngineCapture: AudioCapture {
         processedConverter = newProcessedConverter
 
         engine.connect(input, to: eq, format: inputFormat)
-        engine.connect(eq, to: processedSink, format: inputFormat)
+        engine.connect(eq, to: leveler, format: inputFormat)
+        engine.connect(leveler, to: processedSink, format: inputFormat)
 
         let sampleRateRatio = outputFormat.sampleRate / inputFormat.sampleRate
         // Capture the rebaser locally so it survives any actor-state
@@ -853,6 +872,7 @@ public actor AVAudioEngineCapture: AudioCapture {
         // fresh instances — see the engine property comment.
         engine = nil
         eq = nil
+        leveler = nil
         processedSink = nil
         #if os(iOS) || targetEnvironment(macCatalyst)
         // Deactivate the session so the `.record / .measurement`
@@ -1129,6 +1149,20 @@ public actor AVAudioEngineCapture: AudioCapture {
         speechBoostEnabled = enabled
         eq?.bypass = !enabled
         AppLog.audio.info("Speech boost \(enabled ? "ON" : "OFF", privacy: .public)")
+    }
+
+    public var isSpeechLevelerEnabled: Bool {
+        get async { speechLevelerEnabled }
+    }
+
+    public func setSpeechLevelerEnabled(_ enabled: Bool) async {
+        // Same live-flip semantics as the speech boost: bypass on an
+        // AVAudioUnitEffect toggles safely while the engine runs, so
+        // the graph structure never changes — only whether the
+        // dynamics stage processes or passes through.
+        speechLevelerEnabled = enabled
+        leveler?.bypass = !enabled
+        AppLog.audio.info("Speech leveler \(enabled ? "ON" : "OFF", privacy: .public)")
     }
 
     public func setPreferredInput(_ uid: String?) async throws {

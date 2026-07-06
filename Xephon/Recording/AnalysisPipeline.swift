@@ -922,15 +922,20 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// concatenated into one synthesized ASRSegment whose start/end
     /// match the caller's preserved range; per-token timing is dropped
     /// because we don't have a consistent timeline to slot it into.
+    /// `asrAudio` optionally substitutes the transcription input
+    /// (e.g. a speech-levelled copy) while `audio` — always raw —
+    /// feeds the SER/fusion re-run. Segment timings are unaffected:
+    /// leveling is gain-only and time-invariant.
     func reevaluate(
         audio: AudioChunk,
+        asrAudio: AudioChunk? = nil,
         originalStart: TimeInterval,
         originalEnd: TimeInterval,
         speakerID: String,
         onVolatileText: (@Sendable @MainActor (String) -> Void)? = nil
     ) async throws -> (UtteranceEstimate, ProcessingMetrics)? {
         let segments = try await transcribeForReevaluation(
-            audio: audio,
+            audio: asrAudio ?? audio,
             onVolatileText: onVolatileText
         )
         return try await reevaluateFromSegments(

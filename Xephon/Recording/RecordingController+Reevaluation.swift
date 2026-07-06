@@ -184,6 +184,12 @@ extension RecordingController {
         }
         guard let (fresh, _) = try await ctx.pipeline.reevaluate(
             audio: chunk,
+            // ASR hears the levelled copy when the toggle is on —
+            // same treatment the live pass applies on the processed
+            // branch. SER/fusion inside reevaluate keeps `audio` raw.
+            asrAudio: isSpeechLevelerEnabled
+                ? SoftwareSpeechLeveler.levelledCopy(of: chunk)
+                : nil,
             originalStart: ctx.originalStart,
             originalEnd: ctx.originalEnd,
             speakerID: ctx.speakerID,
@@ -234,8 +240,14 @@ extension RecordingController {
             }
             previousSampleCount = chunk.samples.count
 
+            // ASR-only consumer — level when enabled. `matchedAudio`
+            // below deliberately keeps the RAW chunk: it flows on to
+            // reevaluateFromSegments (SER) and embedding extraction.
+            let asrChunk = isSpeechLevelerEnabled
+                ? SoftwareSpeechLeveler.levelledCopy(of: chunk)
+                : chunk
             let segments = try await ctx.pipeline.transcribeForReevaluation(
-                audio: chunk, onVolatileText: ctx.volatileHandler
+                audio: asrChunk, onVolatileText: ctx.volatileHandler
             )
             if AnalysisPipeline.segmentsContainFullSentence(segments) {
                 AppLog.app.info(
