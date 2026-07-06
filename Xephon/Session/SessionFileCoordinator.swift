@@ -109,24 +109,39 @@ final class SessionFileCoordinator {
         return sanitized
     }
 
-    /// File → Export Recorded Audio… / leading toolbar button.
-    /// Hands the just-finished mic recording (m4a or wav, per the
-    /// record-audio format setting) to the centralized exporter.
-    /// `.mappedIfSafe` keeps a long WAV from being copied wholesale
-    /// into RAM — the DataFileDocument write streams it from disk.
-    /// Gated on `canExportRecordedAudio` (file exists + idle); the
-    /// menu item and toolbar button mirror the same gate, so this
-    /// guard is defense-in-depth.
-    func exportRecordedAudio(
+    /// File → Export Session Audio… / leading toolbar button.
+    /// Hands the session audio — a fresh mic recording, a loaded
+    /// `.xph` bundle extraction, or a file-opened session source —
+    /// to the centralized exporter. `.mappedIfSafe` keeps a long
+    /// WAV from being copied wholesale into RAM — the
+    /// DataFileDocument write streams it from disk. The scope dance
+    /// covers the file-opened case (picker URLs need an active
+    /// security scope to read); it no-ops for app-owned
+    /// temp/recording files. Gated on `canExportSessionAudio`
+    /// (audio exists + idle); the menu item and toolbar button
+    /// mirror the same gate, so this guard is defense-in-depth.
+    func exportSessionAudio(
         recorder: RecordingController,
         filePicker: FilePickerCoordinator
     ) {
-        guard recorder.canExportRecordedAudio,
-              let url = recorder.recordedAudioFileURL else { return }
+        guard recorder.canExportSessionAudio,
+              let url = recorder.sessionAudioFileURL else { return }
+        let stillScoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if stillScoped { url.stopAccessingSecurityScopedResource() }
+        }
         do {
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             let ext = url.pathExtension.lowercased()
-            let contentType: UTType = ext == "wav" ? .wav : .mpeg4Audio
+            // Derive the UTType from the actual container —
+            // imported sources can be mp3/aiff, not just the
+            // recorder m4a/wav pair. Falls back to .data
+            // (whitelisted) for exotic extensions rather than
+            // lying about the type.
+            let contentType: UTType = UTType(
+                filenameExtension: ext,
+                conformingTo: .audio
+            ) ?? .data
             let filename = "\(sessionFilenameBase(forTitle: recorder.sessionTitle)).\(ext)"
             filePicker.presentExport(
                 data: data,

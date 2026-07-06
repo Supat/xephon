@@ -82,9 +82,9 @@ struct SessionFileBridge: ViewModifier {
             .onChange(of: menuCommands.importSessionToken) { _, _ in
                 coord.presentSessionPicker(recorder: recorder, filePicker: filePicker)
             }
-            // File → Export Recorded Audio….
+            // File → Export Session Audio….
             .onChange(of: menuCommands.exportRecordedAudioToken) { _, _ in
-                coord.exportRecordedAudio(recorder: recorder, filePicker: filePicker)
+                coord.exportSessionAudio(recorder: recorder, filePicker: filePicker)
             }
     }
 }
