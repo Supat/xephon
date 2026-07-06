@@ -72,8 +72,39 @@ struct UtteranceDiarizationStrip: View {
     /// ready to render. Returns `[]` when no segment overlaps the
     /// window or the window has zero duration — the view then
     /// renders `EmptyView` and the row slot collapses.
+    /// Convenience single-shot variant: sorts + measures the
+    /// timeline itself. Fine for one-off calls; batch callers
+    /// (TranscriptList's per-row memo) MUST pre-sort once and use
+    /// the `sortedByStart:` overload below — sorting per row would
+    /// reintroduce the O(rows × segments log segments) recompute
+    /// this split exists to kill.
     static func computeRuns(
         segments: [DiarizedSegment],
+        utteranceStart: TimeInterval,
+        utteranceEnd: TimeInterval
+    ) -> [DiarizationRun] {
+        computeRuns(
+            sortedByStart: segments.sorted { $0.start < $1.start },
+            maxSegmentDuration: segments.lazy.map { $0.end - $0.start }.max() ?? 0,
+            utteranceStart: utteranceStart,
+            utteranceEnd: utteranceEnd
+        )
+    }
+
+    /// Batch-optimized windowing: `segments` pre-sorted by `start`,
+    /// `maxSegmentDuration` = the longest segment in the timeline.
+    /// Candidates for the window are found with two binary searches
+    /// — a segment can only overlap `[win.start, win.end)` if its
+    /// start lies in `[win.start − maxSegmentDuration, win.end)` —
+    /// so the per-row cost is O(log S + k) instead of O(S). With
+    /// the memoized recompute firing on every diarizer tick (~2 s)
+    /// during recording, the old full-scan grew quadratically with
+    /// session length (rows × segments ≈ 10⁶ checks per tick at
+    /// the one-hour mark); this caps k at the handful of
+    /// observations overlapping one utterance's window.
+    static func computeRuns(
+        sortedByStart segments: [DiarizedSegment],
+        maxSegmentDuration: TimeInterval,
         utteranceStart: TimeInterval,
         utteranceEnd: TimeInterval
     ) -> [DiarizationRun] {
@@ -81,10 +112,29 @@ struct UtteranceDiarizationStrip: View {
             utteranceStart: utteranceStart,
             utteranceEnd: utteranceEnd
         )
-        guard win.duration > 0 else { return [] }
+        guard win.duration > 0, !segments.isEmpty else { return [] }
+        // Lower bound: first segment whose start could still reach
+        // into the window given the longest observed duration.
+        let minStart = win.start - maxSegmentDuration
+        var lo = 0
+        var hi = segments.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if segments[mid].start < minStart { lo = mid + 1 } else { hi = mid }
+        }
+        let lower = lo
+        // Upper bound: first segment starting at/after the window's
+        // end — nothing from there on can overlap.
+        hi = segments.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if segments[mid].start < win.end { lo = mid + 1 } else { hi = mid }
+        }
+        let upper = lo
+        guard lower < upper else { return [] }
         var windowed: [DiarizedSegment] = []
-        windowed.reserveCapacity(segments.count)
-        for seg in segments {
+        windowed.reserveCapacity(upper - lower)
+        for seg in segments[lower..<upper] {
             let s = max(seg.start, win.start)
             let e = min(seg.end, win.end)
             if s < e {
