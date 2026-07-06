@@ -60,6 +60,11 @@ final class SummarizerCoordinator {
     /// Last successful summary, cached so the result sheet survives
     /// re-presentation. Cleared on session start.
     private(set) var lastSessionSummary: SessionSummary?
+    /// `parent.utterancesVersion` snapshot taken when the cached
+    /// summary's INPUT was read (inference start, not completion —
+    /// an edit made mid-run already isn't reflected in the result).
+    /// nil when no summary. Drives `summaryIsStale`.
+    private(set) var summaryUtterancesVersion: Int?
     /// ID of the section currently being summarized, or nil
     /// when no per-section pass is in flight. Distinct from
     /// `inferenceRunning` (which also covers the overall
@@ -77,6 +82,30 @@ final class SummarizerCoordinator {
     /// Last successful issue list. Issues are removed as the user
     /// edits or dismisses them. Cleared on session start.
     private(set) var issues: [TranscriptionIssue] = []
+    /// Reviewer counterpart of `summaryUtterancesVersion`.
+    private(set) var issuesUtterancesVersion: Int?
+
+    /// True when the cached summary was generated against an
+    /// utterance list that has since been mutated (hand-edit,
+    /// re-evaluation, speaker rename/reassign — anything that bumps
+    /// `utterancesVersion`). Content edits deliberately do NOT
+    /// auto re-run inference (unlike settings changes); this flag
+    /// drives the stale badge on the summary sheet instead.
+    var summaryIsStale: Bool {
+        guard lastSessionSummary != nil,
+              let version = summaryUtterancesVersion else { return false }
+        return version != parent.utterancesVersion
+    }
+
+    /// Reviewer counterpart of `summaryIsStale`. Note: dismissing
+    /// or hand-editing FROM the review sheet mutates utterances and
+    /// therefore flips this — accurate (the remaining issues were
+    /// computed against the pre-edit transcript), if eager.
+    var issuesAreStale: Bool {
+        guard !issues.isEmpty,
+              let version = issuesUtterancesVersion else { return false }
+        return version != parent.utterancesVersion
+    }
 
     /// Resident MLX summarizer (Qwen or Llama, depending on
     /// `backend`). Lazy-created on first `summarize` and dropped
@@ -579,11 +608,18 @@ final class SummarizerCoordinator {
         // picks it up.
         let chainReview = chainReviewAfterSummary
         chainReviewAfterSummary = false
+        // Stamp the version of the INPUT the model will read; if
+        // the user edits rows while the pass runs, the result is
+        // stale the moment it lands — which the stamp captures.
+        let inputVersion = parent.utterancesVersion
         let result = await withInferenceGate {
             await runSummarize(
                 utterances: parent.utterances,
                 logLabelPrefix: "summarize",
-                writeback: { summary in self.lastSessionSummary = summary }
+                writeback: { summary in
+                    self.lastSessionSummary = summary
+                    self.summaryUtterancesVersion = inputVersion
+                }
             )
         }
         if chainReview, result != nil {
@@ -935,7 +971,8 @@ final class SummarizerCoordinator {
         guard !reviewRunning else { return nil }
         guard !inferenceRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
-        return await withReviewGate {
+        let inputVersion = parent.utterancesVersion
+        let result = await withReviewGate {
             logAvailableMemory(label: "review start (before pipeline release)")
             await releasePipelineForSummarization()
             logAvailableMemory(label: "review start (after pipeline release)")
@@ -945,6 +982,10 @@ final class SummarizerCoordinator {
             case .lmStudio:             return await reviewWithLMStudio()
             }
         }
+        if result != nil {
+            issuesUtterancesVersion = inputVersion
+        }
+        return result
     }
 
     /// Reviewer-side counterpart of `withInferenceGate`. Sets
@@ -1140,11 +1181,13 @@ final class SummarizerCoordinator {
     /// when the user begins a new session.
     func clearIssues() {
         issues = []
+        issuesUtterancesVersion = nil
     }
 
     /// Clear the cached summary. Called on session start.
     func clearLastSummary() {
         lastSessionSummary = nil
+        summaryUtterancesVersion = nil
     }
 
     /// Restore a previously-saved summary from a `.xph` bundle so
@@ -1152,11 +1195,21 @@ final class SummarizerCoordinator {
     /// of forcing the user to regenerate.
     func restore(summary: SessionSummary?) {
         lastSessionSummary = summary
+        // A restored summary is in sync with the just-restored
+        // utterances by construction — both came out of the same
+        // bundle. Stamp the CURRENT version so editing after the
+        // load flips staleness correctly.
+        summaryUtterancesVersion = summary == nil
+            ? nil
+            : parent.utterancesVersion
     }
 
     /// Restore a previously-saved issue list from a `.xph` bundle.
     func restore(issues: [TranscriptionIssue]) {
         self.issues = issues
+        issuesUtterancesVersion = issues.isEmpty
+            ? nil
+            : parent.utterancesVersion
     }
 
     /// Remove the on-disk model for the currently-selected backend.

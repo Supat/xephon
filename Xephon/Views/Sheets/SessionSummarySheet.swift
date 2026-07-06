@@ -23,6 +23,9 @@ struct SessionSummarySheet: View {
     let recorder: RecordingController
     let summary: SessionSummary?
     let isGenerating: Bool
+    /// True when utterances were edited after this summary's input
+    /// was read — drives the stale-warning banner.
+    let isStale: Bool
     let onRegenerate: () -> Void
     /// Explicit inference cancel — only rendered while generating.
     let onCancel: () -> Void
@@ -44,6 +47,19 @@ struct SessionSummarySheet: View {
                 emptyMessage: String(localized: "summary.empty"),
                 onRegenerate: onRegenerate
             )
+            // Stale badge: utterances were edited after this
+            // summary's input was read. Content edits deliberately
+            // don't auto re-run inference (settings changes do) —
+            // this banner is the complement, nudging a manual
+            // Regenerate. Hidden mid-generation (the fresh pass
+            // will supersede) and when there's nothing cached.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if isStale, !isGenerating, summary != nil {
+                    StaleContentBanner(
+                        message: String(localized: "summary.stale")
+                    )
+                }
+            }
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(String(localized: "summary.title"))
             .toolbarTitleDisplayMode(.inline)
@@ -101,5 +117,28 @@ struct SessionSummarySheet: View {
             // the share sheet not appearing is the user-visible
             // signal that something went wrong.
         }
+    }
+}
+
+/// Compact warning banner shown when a cached LLM result predates
+/// the current transcript. Shared by the session-summary and
+/// transcription-review sheets.
+struct StaleContentBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.14))
+        .accessibilityElement(children: .combine)
     }
 }

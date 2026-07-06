@@ -528,3 +528,6 @@
 "undo.keywords.color" = "Keyword Color";
 
 "inference.cancel" = "Cancel";
+
+"summary.stale" = "The transcript has changed since this summary was generated.";
+"review.stale" = "The transcript has changed since this review was generated.";

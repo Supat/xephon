@@ -28,6 +28,9 @@ struct TranscriptionReviewSheet: View {
     let recorder: RecordingController
     let issues: [TranscriptionIssue]
     let isReviewing: Bool
+    /// True when utterances were edited after this issue list's
+    /// input was read — drives the stale-warning banner.
+    let isStale: Bool
     let onReview: () -> Void
     /// Explicit inference cancel — only rendered while reviewing.
     let onCancel: () -> Void
@@ -38,6 +41,16 @@ struct TranscriptionReviewSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // See SessionSummarySheet's stale banner comment.
+                // Eager by design: dismissing/editing an issue FROM
+                // this sheet mutates utterances, so the remaining
+                // issues correctly read as computed-against-an-
+                // older-transcript.
+                if isStale, !isReviewing, !issues.isEmpty {
+                    StaleContentBanner(
+                        message: String(localized: "review.stale")
+                    )
+                }
                 // See SummaryResultView for the rationale —
                 // the backend badge makes on-device vs remote
                 // unambiguous before the user reads any flagged

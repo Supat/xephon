@@ -528,3 +528,6 @@
 "undo.keywords.color" = "キーワードの色";
 
 "inference.cancel" = "キャンセル";
+
+"summary.stale" = "この要約の生成後に文字起こしが変更されました。";
+"review.stale" = "この校閲の生成後に文字起こしが変更されました。";

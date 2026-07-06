@@ -27,6 +27,7 @@ struct LLMSheetBridge: ViewModifier {
                     // summary was what was actually running.
                     isGenerating: recorder.summarizerInferenceRunning
                         && recorder.summarizingSectionID == nil,
+                    isStale: recorder.summarizer.summaryIsStale,
                     onRegenerate: { coord.startSummarization(recorder: recorder) },
                     onCancel: { coord.cancelSummarization(recorder: recorder) },
                     onDismiss: { coord.closeSummary() }
@@ -37,6 +38,7 @@ struct LLMSheetBridge: ViewModifier {
                     recorder: recorder,
                     issues: recorder.transcriptionIssues,
                     isReviewing: recorder.transcriptionReviewRunning,
+                    isStale: recorder.summarizer.issuesAreStale,
                     onReview: { coord.startReview(recorder: recorder) },
                     onCancel: { coord.cancelReview(recorder: recorder) },
                     onDismiss: { coord.closeReview() }
