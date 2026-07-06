@@ -76,6 +76,9 @@ final class RecordingController {
     /// while iOS shuffles routes underneath.
     var selectedInputUID: String?
     private(set) var isSpeechBoostEnabled: Bool = true
+    /// AGC-style speech leveler on the ASR branch (see SpeechLeveler).
+    /// Mirrors the capture actor's state for the Settings toggle.
+    private(set) var isSpeechLevelerEnabled: Bool = true
     /// Persisted: record the live mic session's audio to disk
     /// (default off). When on, a mic recording produces a playback
     /// file so the session behaves like a file-opened one (playback,
@@ -89,19 +92,22 @@ final class RecordingController {
     /// next recording can delete it.
     private var currentRecordingURL: URL?
 
-    /// Read-only view of the just-finished mic recording for the
-    /// export flows (File → Export Recorded Audio, and the leading
-    /// toolbar button). nil while no recorded file exists — never
-    /// recorded, record-audio off, or the temp was cleaned up by a
-    /// new session / session load (saved sessions embed their own
-    /// audio copy).
-    var recordedAudioFileURL: URL? { currentRecordingURL }
+    /// The session audio for the export flows (File → Export
+    /// Session Audio, and the leading toolbar button):
+    /// `playbackSourceURL`, which covers a just-finished mic
+    /// recording (finalizeMicRecording wires it), a loaded `.xph`
+    /// bundle audio (extracted to a temp file on load), and a
+    /// file-opened session source file. nil when the session has
+    /// no audio — mic session with record-audio off, or an old
+    /// `.xph` saved before recording-to-disk existed (those
+    /// bundles genuinely contain no audio block).
+    var sessionAudioFileURL: URL? { playbackSourceURL }
 
-    /// Gate for the recorded-audio export UI: a recorded file
-    /// exists and nothing is mutating it (recording writes into the
-    /// file until `stop()` finalizes it).
-    var canExportRecordedAudio: Bool {
-        phase == .idle && currentRecordingURL != nil
+    /// Gate for the session-audio export UI: playable audio exists
+    /// and nothing is mutating it (a live recording writes into
+    /// the file until `stop()` finalizes it).
+    var canExportSessionAudio: Bool {
+        phase == .idle && playbackSourceURL != nil
     }
     private(set) var availableTextSERBackends: [SwitchingTextSER.Backend] = []
     private(set) var currentTextSERBackend: SwitchingTextSER.Backend?
@@ -390,6 +396,12 @@ final class RecordingController {
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
+    /// True for the whole span of `stop()` — including the drain
+    /// window where `phase` is still `.recording` (see stop()'s
+    /// comment). Drives the finalize presentation in the control
+    /// pane: analyzing spinner instead of a frozen meter + stale
+    /// recording status.
+    private(set) var isFinalizing: Bool = false
     /// True iff a recorded transcript exists and we're idle enough
     /// to run actions over it (summarize / review / search /
     /// export). Each toolbar button starts from this and adds its
@@ -465,7 +477,10 @@ final class RecordingController {
     /// (rare but possible — e.g. resumed from a backgrounded scene)
     /// can be put into the correct EP state immediately on creation
     /// rather than waiting for the next scene-phase transition.
-    private var latestBackgroundMode: Bool = false
+    /// Internal (not private): SummarizerCoordinator's auto-run
+    /// fire gate reads this via `parent` to defer fires while
+    /// backgrounded.
+    var latestBackgroundMode: Bool = false
 
     /// Per-component readiness shims for the "Models" card. Each
     /// proxies through to the active pipeline's nonisolated snapshot
@@ -791,6 +806,21 @@ final class RecordingController {
         // Holds an unowned ref back to self, so init must finish here
         // before it's safe to construct.
         self.summarizer = SummarizerCoordinator(parent: self)
+        // Feature-B auto re-run hooks. Keyword mutations change the
+        // boosted-utterance set, but only the heuristic/meeting
+        // prompts read it; LM Studio settings only matter when that
+        // backend is active. Both stores' onChange slots were
+        // previously unclaimed.
+        keywords.onChange = { [weak self] in
+            guard let self else { return }
+            let mode = self.summarizer.mode
+            guard mode == .heuristic || mode == .meeting else { return }
+            self.summarizer.noteSummaryAffectingChange("keywords")
+        }
+        lmStudioSettings.onChange = { [weak self] in
+            guard let self, self.summarizer.backend == .lmStudio else { return }
+            self.summarizer.noteSummaryAffectingChange("LM Studio settings")
+        }
         // Pre-warm the pipeline in the background at first construction so heavy
         // SER constructors (W2V2 ONNX ~631 MB) and the SpeechAnalyzer asset
         // install can complete before the user finishes their first sentence.
@@ -1158,6 +1188,9 @@ final class RecordingController {
         // the whole spin-up. The catch below restores `.idle` on
         // failure.
         phase = .warmingUp
+        // A running summarization/review holds the released-pipeline
+        // state and the MLX weights; the new session supersedes it.
+        summarizer.cancelForRecordingStart()
         // Audible cue fires first, before any session-category
         // changes — the chime plays through the speaker while the
         // transcriber and capture spin up. `capture.start()` will
@@ -1251,6 +1284,8 @@ final class RecordingController {
         // issues — both pointed at utterances that are gone.
         summarizer.clearLastSummary()
         summarizer.clearIssues()
+        // A pending auto-run belongs to the session being discarded.
+        summarizer.cancelAutoRuns(reason: "session reset")
         // Same logic for user-defined sections: their
         // start/end references the prior session's utterance
         // UUIDs, which are about to be dropped. Clear here
@@ -1723,6 +1758,16 @@ final class RecordingController {
         // which is undefined behavior.
         guard phase == .recording else { return }
 
+        // Bridge the UI gap between "source exhausted" and
+        // `phase = .analyzing`: the drains below — capture stop,
+        // pump drains, and especially the diarize catch-up loop
+        // (up to 30 s) — run while phase is still `.recording`, so
+        // without this flag the meter freezes at its last chunk and
+        // the status line goes stale for many seconds. Views swap
+        // to the analyzing presentation the moment this flips.
+        isFinalizing = true
+        defer { isFinalizing = false }
+
         let t0 = Date()
         func elapsed() -> Double { Date().timeIntervalSince(t0) }
         AppLog.app.info("stop()[\(self.instanceTag, privacy: .public)]: begin")
@@ -1838,6 +1883,11 @@ final class RecordingController {
         // .playAndRecord, enumerate all inputs, and restore — which
         // re-enables the picker.
         await refreshInputs()
+
+        // Feature A: arm the auto-summarize grace countdown now that
+        // the session is fully idle. The pipeline stays warm through
+        // the grace; release happens when the run actually starts.
+        summarizer.scheduleAutoSummarize()
     }
 
 
@@ -1897,6 +1947,20 @@ final class RecordingController {
     func setSpeechBoostEnabled(_ enabled: Bool) async {
         await capture.setSpeechBoostEnabled(enabled)
         self.isSpeechBoostEnabled = enabled
+    }
+
+    /// Toggle the ASR-branch speech leveler (compressor + makeup
+    /// gain). Live-flips bypass on the running engine, same as the
+    /// speech boost.
+    func setSpeechLevelerEnabled(_ enabled: Bool) async {
+        await capture.setSpeechLevelerEnabled(enabled)
+        // File mode swaps `capture` to the AudioFileCapture; keep the
+        // mic engine's flag in sync so the next mic session doesn't
+        // resurrect a stale setting.
+        if capture !== micCapture {
+            await micCapture.setSpeechLevelerEnabled(enabled)
+        }
+        self.isSpeechLevelerEnabled = enabled
     }
 
     func setTextSERBackend(_ backend: SwitchingTextSER.Backend) async {
@@ -1996,6 +2060,11 @@ final class RecordingController {
     /// during init.
     func setBackgroundMode(_ inBackground: Bool) async {
         latestBackgroundMode = inBackground
+        if !inBackground {
+            // Consume any auto-summarize fire that was deferred
+            // because the app was backgrounded at fire time.
+            summarizer.retryDeferredAutoSummarize()
+        }
         guard let pipeline else { return }
         await pipeline.setBackgroundMode(inBackground)
     }

@@ -140,6 +140,13 @@ final class LMStudioSettings {
         Task { @MainActor [weak self] in
             guard let self else { return }
             UserDefaults.standard.set(self[keyPath: keyPath], forKey: key)
+            self.onChange?()
         }
     }
+
+    /// Fired on the MainActor (next tick, alongside the persist)
+    /// after any setting changes. RecordingController wires this to
+    /// the summarizer's auto re-run when LM Studio is the active
+    /// backend.
+    var onChange: (@MainActor () -> Void)?
 }

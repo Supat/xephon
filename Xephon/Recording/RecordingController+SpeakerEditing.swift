@@ -44,6 +44,8 @@ extension RecordingController {
             actionName: String(localized: "undo.renameSpeaker")
         )
         utterancesVersion &+= 1
+        // Speaker names feed every summarizer prompt's speaker list.
+        summarizer.noteSummaryAffectingChange("speaker name")
     }
 
     /// Custom display name for `stored` if the user has renamed it,

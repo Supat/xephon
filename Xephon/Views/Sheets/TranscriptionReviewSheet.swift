@@ -29,6 +29,8 @@ struct TranscriptionReviewSheet: View {
     let issues: [TranscriptionIssue]
     let isReviewing: Bool
     let onReview: () -> Void
+    /// Explicit inference cancel — only rendered while reviewing.
+    let onCancel: () -> Void
     let onDismiss: () -> Void
 
     @State private var coord = TranscriptionReviewCoordinator()
@@ -56,6 +58,16 @@ struct TranscriptionReviewSheet: View {
             .navigationTitle(String(localized: "review.title"))
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
+                // Close-vs-cancel split — see SessionSummarySheet.
+                if isReviewing {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(
+                            String(localized: "inference.cancel"),
+                            role: .destructive,
+                            action: onCancel
+                        )
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "summary.done"), action: onDismiss)
                 }
@@ -165,6 +177,15 @@ struct TranscriptionReviewSheet: View {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .fill(Color(uiColor: .secondarySystemBackground))
                     )
+                // Validated locator: the exact span the model
+                // flagged (guaranteed to appear in the transcript
+                // by ReviewIssueValidator). Helps the user find the
+                // problem without re-reading the whole row.
+                if let excerpt = issue.excerpt, !excerpt.isEmpty {
+                    Text(verbatim: "「\(excerpt)」")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
                 Text(issue.reason)
                     .font(.caption)
                     .foregroundStyle(.secondary)

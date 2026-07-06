@@ -1,6 +1,7 @@
 "input.default" = "Default Input";
 "settings.language" = "Language";
 "settings.speechBoost" = "Speech Boost (ASR Only)";
+"settings.speechLeveler" = "Speech Leveler — Auto Gain (ASR Only)";
 "settings.recordAudio" = "Record Session Audio";
 "settings.recordAudio.format" = "Audio Format";
 "settings.recordAudio.format.aac" = "AAC (smaller)";
@@ -95,6 +96,7 @@
 "timeline.toggle.speakers" = "Speaker Timeline";
 "timeline.toggle.emotion" = "Emotion Timeline";
 "timeline.toggle.fusion" = "Fusion Strip";
+"timeline.toggle.keywords" = "Keyword Timeline";
 "searchReplace.title" = "Find and Replace";
 "searchReplace.search.placeholder" = "Find…";
 "searchReplace.replace.placeholder" = "Replace with…";
@@ -217,7 +219,7 @@
 "menu.exportJSON" = "Export to JSON…";
 "menu.saveSession" = "Save Session…";
 "menu.importSession" = "Open Session…";
-"menu.exportRecordedAudio" = "Export Recorded Audio…";
+"menu.exportRecordedAudio" = "Export Session Audio…";
 "menu.findInUtterances" = "Find in Utterances…";
 "menu.view" = "View";
 "menu.view.settings" = "Settings & Pipeline";
@@ -516,3 +518,13 @@
 "undo.keywords.group.add" = "Add Keyword Group";
 "undo.keywords.group.rename" = "Rename Keyword Group";
 "undo.keywords.group.remove" = "Delete Keyword Group";
+
+"settings.summarizer.auto" = "Auto-Summarize";
+"summary.auto.countdown" = "Auto-summary in %d s";
+"summary.auto.cancel" = "Cancel";
+
+"keywords.colorTag.a11y" = "Color tag for %@";
+"keywords.colorTag.none" = "No Color";
+"undo.keywords.color" = "Keyword Color";
+
+"inference.cancel" = "Cancel";

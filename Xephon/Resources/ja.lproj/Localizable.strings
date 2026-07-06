@@ -1,6 +1,7 @@
 "input.default" = "デフォルト入力";
 "settings.language" = "言語";
 "settings.speechBoost" = "音声強調 (ASRのみ)";
+"settings.speechLeveler" = "音量自動調整 (ASRのみ)";
 "settings.recordAudio" = "セッション音声を録音";
 "settings.recordAudio.format" = "音声フォーマット";
 "settings.recordAudio.format.aac" = "AAC（小容量）";
@@ -95,6 +96,7 @@
 "timeline.toggle.speakers" = "話者タイムライン";
 "timeline.toggle.emotion" = "感情タイムライン";
 "timeline.toggle.fusion" = "融合ストリップ";
+"timeline.toggle.keywords" = "キーワードタイムライン";
 "searchReplace.title" = "検索と置換";
 "searchReplace.search.placeholder" = "検索…";
 "searchReplace.replace.placeholder" = "置換後の語句…";
@@ -217,7 +219,7 @@
 "menu.exportJSON" = "JSONを書き出す…";
 "menu.saveSession" = "セッションを保存…";
 "menu.importSession" = "セッションを開く…";
-"menu.exportRecordedAudio" = "録音音声を書き出す…";
+"menu.exportRecordedAudio" = "セッション音声を書き出す…";
 "menu.findInUtterances" = "発話を検索…";
 "menu.view" = "表示";
 "menu.view.settings" = "設定とパイプライン";
@@ -516,3 +518,13 @@
 "undo.keywords.group.add" = "グループの追加";
 "undo.keywords.group.rename" = "グループ名の変更";
 "undo.keywords.group.remove" = "グループの削除";
+
+"settings.summarizer.auto" = "自動要約";
+"summary.auto.countdown" = "%d秒後に自動要約";
+"summary.auto.cancel" = "キャンセル";
+
+"keywords.colorTag.a11y" = "%@のカラータグ";
+"keywords.colorTag.none" = "色なし";
+"undo.keywords.color" = "キーワードの色";
+
+"inference.cancel" = "キャンセル";

@@ -90,7 +90,11 @@ struct ControlPaneView: View {
                         }
                     }
 
-                    if recorder.isRecording {
+                    if recorder.isRecording, !recorder.isFinalizing {
+                        // Hidden during stop()'s drain window — no
+                        // chunks arrive once the source is
+                        // exhausted, so the meter would freeze at
+                        // its last value while the tail drains.
                         LevelMeterView(channelLevels: recorder.inputChannelLevels)
                             .frame(maxWidth: 280)
                     }
@@ -573,7 +577,26 @@ struct ControlPaneView: View {
         // Block start while the pipeline is mid-load (launch warmup
         // or post-summarization rebuild). Stay enabled mid-recording
         // so the user can always stop.
-        .disabled(recorder.isAnalyzing || (!recorder.isRecording && !recorder.pipelineReady))
+        // `pipelineReady == false` normally means "still warming —
+        // can't record", but a running summarization/review ALSO
+        // releases the pipeline for its whole run. Keep the button
+        // live in that case: tapping Record cancels the inference
+        // (RecordingController.start() → cancelForRecordingStart)
+        // and the pipeline rewarms as part of session start. The
+        // brief pipeline-nil window right after an inference ends
+        // (unload + rewarm, a few seconds) still disables — nothing
+        // there to cancel, the rewarm is already in flight.
+        .disabled(
+            recorder.isAnalyzing
+                // stop() already in flight — a second tap would
+                // just bounce off the reentrancy guard; disable so
+                // the button doesn't pretend to be actionable.
+                || recorder.isFinalizing
+                || (!recorder.isRecording
+                    && !recorder.pipelineReady
+                    && !recorder.summarizerInferenceRunning
+                    && !recorder.transcriptionReviewRunning)
+        )
     }
 
     private var recordButtonTitle: String {
@@ -601,12 +624,37 @@ struct ControlPaneView: View {
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.circle)
-        .disabled(recorder.isRecording || recorder.isAnalyzing || !recorder.pipelineReady)
+        // Same inference carve-out as the record button above: a
+        // running summarization/review releases the pipeline for
+        // its whole run, and file analysis routes through the same
+        // `start()` that cancels the inference and rewarms the
+        // pipeline (`cancelForRecordingStart`). Only a genuine
+        // warm-up gap (pipeline nil with no inference to blame)
+        // keeps the button disabled.
+        .disabled(
+            recorder.isRecording
+                || recorder.isAnalyzing
+                || (!recorder.pipelineReady
+                    && !recorder.summarizerInferenceRunning
+                    && !recorder.transcriptionReviewRunning)
+        )
     }
 
     @ViewBuilder
     private var statusLine: some View {
-        if recorder.isRecording {
+        if recorder.isFinalizing {
+            // stop() is draining the tail (pumps, diarizer catch-up)
+            // but phase hasn't flipped to .analyzing yet — show the
+            // analyzing presentation instead of a stale recording
+            // status. Same row the isAnalyzing branch below renders,
+            // so the user sees one continuous "analyzing" state from
+            // source-exhausted through transcriber finalize.
+            HStack(spacing: 8) {
+                ProgressView()
+                Text(String(localized: "analyze.inProgress"))
+                    .foregroundStyle(.secondary)
+            }
+        } else if recorder.isRecording {
             VStack(spacing: 4) {
                 if case .file(let url) = recorder.sourceMode {
                     Text(String(format: String(localized: "file.analyzing"), url.lastPathComponent))
@@ -636,6 +684,26 @@ struct ControlPaneView: View {
                 ProgressView()
                 Text(String(localized: "warmup.inProgress"))
                     .foregroundStyle(.secondary)
+            }
+        } else if let fireAt = recorder.summarizer.autoSummarizeFireAt {
+            // Auto-summarize grace countdown. Cancel kills only the
+            // pending auto-run — a manual Summarize afterwards still
+            // works. Once the run fires, `autoSummarizeFireAt` goes
+            // nil and the standard inferenceRunning UI takes over.
+            HStack(spacing: 8) {
+                Image(systemName: "text.book.closed")
+                    .foregroundStyle(.secondary)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let remaining = max(0, Int(fireAt.timeIntervalSince(context.date).rounded(.up)))
+                    Text(String(format: String(localized: "summary.auto.countdown"), remaining))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Button(String(localized: "summary.auto.cancel")) {
+                    recorder.summarizer.cancelAutoRuns(reason: "user cancelled banner")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
     }

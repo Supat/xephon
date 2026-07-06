@@ -52,9 +52,14 @@ final class LLMSheetCoordinator {
     /// backend / download the model.
     func presentSummary(recorder: RecordingController) {
         showingSummary = true
+        // !inferenceRunning: the toolbar button is tappable
+        // mid-run (spinner state) so the user can watch progress —
+        // auto-firing here would cancel-and-restart the very pass
+        // they came to see.
         if recorder.lastSessionSummary == nil
             && recorder.summarizerEnabled
-            && recorder.summarizerReady {
+            && recorder.summarizerReady
+            && !recorder.summarizerInferenceRunning {
             startSummarization(recorder: recorder)
         }
     }
@@ -63,26 +68,56 @@ final class LLMSheetCoordinator {
     /// prior in-flight task first so re-tapping Regenerate while a
     /// pass is still running supersedes it cleanly.
     func startSummarization(recorder: RecordingController) {
+        // Any pending auto-run is superseded by this start (whether
+        // the user tapped or the auto path itself requested it — in
+        // the latter case the timers have already fired and the
+        // cancel is a no-op).
+        recorder.summarizer.cancelAutoRuns(reason: "summarization starting")
         inflightSummarization?.cancel()
+        // LAST TAP WINS: a still-unwinding cancelled run (this
+        // slot's, or a section pass in the sibling slot) holds the
+        // shared `inferenceRunning` gate for however long its MLX
+        // cancellation takes to propagate — without the eager
+        // gate-clear the fresh run's `guard !inferenceRunning`
+        // fails and the tap silently does nothing (worst case:
+        // old run cancelled AND new run never starts). Same eager
+        // clear the auto-supersede path uses; the generation token
+        // keeps the dying run's defer from stomping the new gate.
+        if recorder.summarizerInferenceRunning {
+            inflightSectionSummarization?.cancel()
+            inflightSectionSummarization = nil
+            recorder.summarizer.userCancelledSummary()
+        }
         inflightSummarization = Task {
             _ = await recorder.summarizeSession()
         }
     }
 
-    /// Sheet-dismiss path. Cancel in-flight generation — no point
-    /// spending tokens on a result the user has already walked
-    /// away from. Caller passes `recorder` so we can flip the
-    /// coordinator's running flags immediately; otherwise the
-    /// toolbar Summary / Review buttons would stay disabled
-    /// until the underlying cancel chain (URLSession cancellation
-    /// for LM Studio, MLX `didGenerate` returning `.stop`, Apple
-    /// FM's CancellationError throw) fully propagates and the
-    /// summarizer's `withInferenceGate` defer fires.
-    func dismissSummary(recorder: RecordingController? = nil) {
+    /// Sheet-close path (Done button / programmatic). Deliberately
+    /// does NOT cancel a running generation: closing the sheet is
+    /// "let it finish in the background" — the toolbar button keeps
+    /// its spinner and the result lands via the normal writeback.
+    /// This also matches what swipe-down dismissal always did (the
+    /// presentation binding just flips; no cancel ever ran there).
+    /// Explicit cancellation is the sheet's Cancel button →
+    /// `cancelSummarization`.
+    func closeSummary() {
+        showingSummary = false
+    }
+
+    /// Explicit-cancel path (the sheet's Cancel button). Cancels
+    /// the in-flight Task and flips the coordinator's running flags
+    /// immediately — otherwise the toolbar Summary / Review buttons
+    /// would stay in their spinner state until the underlying
+    /// cancel chain (URLSession cancellation for LM Studio, MLX
+    /// `didGenerate` returning `.stop`, Apple FM's
+    /// CancellationError throw) fully propagates and the
+    /// summarizer's `withInferenceGate` defer fires. The sheet
+    /// stays open showing the regenerate bar.
+    func cancelSummarization(recorder: RecordingController) {
         inflightSummarization?.cancel()
         inflightSummarization = nil
-        recorder?.summarizer.userCancelledSummary()
-        showingSummary = false
+        recorder.summarizer.userCancelledSummary()
     }
 
     // MARK: - Section Summary
@@ -115,18 +150,30 @@ final class LLMSheetCoordinator {
         recorder: RecordingController
     ) {
         inflightSectionSummarization?.cancel()
+        // LAST TAP WINS — see startSummarization. Also covers a
+        // running OVERALL pass being superseded by a section tap.
+        if recorder.summarizerInferenceRunning {
+            inflightSummarization?.cancel()
+            inflightSummarization = nil
+            recorder.summarizer.userCancelledSummary()
+        }
         inflightSectionSummarization = Task {
             _ = await recorder.summarizeSection(id: sectionID)
         }
     }
 
-    /// Sheet-dismiss path. Cancel in-flight generation — same
-    /// reasoning as `dismissSummary`.
-    func dismissSectionSummary(recorder: RecordingController? = nil) {
+    /// Close-vs-cancel split — same reasoning as `closeSummary` /
+    /// `cancelSummarization`: Done (and swipe-down) only closes;
+    /// a running section pass finishes in the background and its
+    /// result lands on the section via the normal writeback.
+    func closeSectionSummary() {
+        presentingSectionSummaryID = nil
+    }
+
+    func cancelSectionSummarization(recorder: RecordingController) {
         inflightSectionSummarization?.cancel()
         inflightSectionSummarization = nil
-        recorder?.summarizer.userCancelledSummary()
-        presentingSectionSummaryID = nil
+        recorder.summarizer.userCancelledSummary()
     }
 
     // MARK: - Review
@@ -135,10 +182,12 @@ final class LLMSheetCoordinator {
         showingReview = true
         // Same auto-fire policy as the summarize button: kick off
         // only when we have nothing cached AND the backend is
-        // fully configured.
+        // fully configured. !reviewRunning mirrors presentSummary —
+        // opening the sheet mid-run must not restart the pass.
         if recorder.transcriptionIssues.isEmpty
             && recorder.summarizerEnabled
-            && recorder.summarizerReady {
+            && recorder.summarizerReady
+            && !recorder.transcriptionReviewRunning {
             startReview(recorder: recorder)
         }
     }
@@ -152,11 +201,16 @@ final class LLMSheetCoordinator {
         }
     }
 
-    func dismissReview(recorder: RecordingController? = nil) {
+    /// Close-vs-cancel split — same reasoning as `closeSummary` /
+    /// `cancelSummarization`.
+    func closeReview() {
+        showingReview = false
+    }
+
+    func cancelReview(recorder: RecordingController) {
         inflightReview?.cancel()
         inflightReview = nil
-        recorder?.summarizer.userCancelledReview()
-        showingReview = false
+        recorder.summarizer.userCancelledReview()
     }
 
     // MARK: - Search & Replace

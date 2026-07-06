@@ -55,23 +55,23 @@ struct MainToolbar: ToolbarContent {
         .disabled(!recorder.isIdleWithTranscript)
     }
 
-    // Export the just-finished mic recording (m4a/wav per the
-    // record-audio setting). Same action as File → Export Recorded
-    // Audio…; gate matches the menu item's `canExportRecordedAudio`
-    // mirror (file exists + idle — deliberately NOT
-    // isIdleWithTranscript, the audio is exportable even when the
-    // session produced zero utterances).
+    // Export the session audio — a fresh mic recording, a loaded
+    // `.xph` bundle extraction, or a file-opened session source.
+    // Same action as File → Export Session Audio…; gate matches
+    // the menu item mirror `canExportRecordedAudio` (audio exists
+    // + idle — deliberately NOT isIdleWithTranscript, the audio is
+    // exportable even when the session produced zero utterances).
     @ViewBuilder
     private var exportRecordedAudio: some View {
         Button {
-            fileCoord.exportRecordedAudio(recorder: recorder, filePicker: filePicker)
+            fileCoord.exportSessionAudio(recorder: recorder, filePicker: filePicker)
         } label: {
             Label(
                 String(localized: "menu.exportRecordedAudio"),
                 systemImage: "recordingtape"
             )
         }
-        .disabled(!recorder.canExportRecordedAudio)
+        .disabled(!recorder.canExportSessionAudio)
     }
 
     @ViewBuilder
@@ -89,16 +89,28 @@ struct MainToolbar: ToolbarContent {
         Button {
             llmCoord.presentSummary(recorder: recorder)
         } label: {
-            Label(
-                String(localized: hasCachedSummary
-                    ? "summary.openSummary"
-                    : "summary.summarize"),
-                systemImage: hasCachedSummary
-                    ? "text.book.closed.fill"
-                    : "text.book.closed"
-            )
+            // Spinner while a summarizer pass (session, section,
+            // auto, or manual) is in flight. The button stays
+            // TAPPABLE during the run — presentSummary's auto-fire
+            // is gated on !inferenceRunning, so the tap just opens
+            // the sheet with its live progress/elapsed readout
+            // instead of restarting the pass.
+            if recorder.summarizerInferenceRunning {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(String(localized: "summary.summarize"))
+            } else {
+                Label(
+                    String(localized: hasCachedSummary
+                        ? "summary.openSummary"
+                        : "summary.summarize"),
+                    systemImage: hasCachedSummary
+                        ? "text.book.closed.fill"
+                        : "text.book.closed"
+                )
+            }
         }
-        .disabled(!recorder.isIdleWithTranscript || recorder.summarizerInferenceRunning)
+        .disabled(!recorder.isIdleWithTranscript)
     }
 
     @ViewBuilder
@@ -120,19 +132,30 @@ struct MainToolbar: ToolbarContent {
         Button {
             llmCoord.presentReview(recorder: recorder)
         } label: {
-            Label(
-                String(localized: hasIssues
-                    ? "review.openReview"
-                    : "review.toolbar"),
-                systemImage: hasIssues
-                    ? "exclamationmark.bubble.fill"
-                    : "exclamationmark.bubble"
-            )
+            // Same spinner treatment as the Summarize button.
+            if recorder.transcriptionReviewRunning {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(String(localized: "review.toolbar"))
+            } else {
+                Label(
+                    String(localized: hasIssues
+                        ? "review.openReview"
+                        : "review.toolbar"),
+                    systemImage: hasIssues
+                        ? "exclamationmark.bubble.fill"
+                        : "exclamationmark.bubble"
+                )
+            }
         }
+        // Enabled during its OWN run (tap opens the progress
+        // sheet); disabled while a summarizer pass holds the
+        // shared MLX/pipeline resources — a review can't start
+        // then anyway, and a dead tap would just confuse.
         .disabled(
             !recorder.isIdleWithTranscript
-                || recorder.transcriptionReviewRunning
-                || recorder.summarizerInferenceRunning
+                || (recorder.summarizerInferenceRunning
+                    && !recorder.transcriptionReviewRunning)
         )
     }
 
@@ -189,6 +212,8 @@ private struct TimelineStripMenu: View {
     private var showEmotion = true
     @AppStorage(TimelineStripPrefs.showFusionKey)
     private var showFusion = true
+    @AppStorage(TimelineStripPrefs.showKeywordKey)
+    private var showKeyword = true
 
     var body: some View {
         Menu {
@@ -208,6 +233,12 @@ private struct TimelineStripMenu: View {
                 Label(
                     String(localized: "timeline.toggle.fusion"),
                     systemImage: "chart.bar"
+                )
+            }
+            Toggle(isOn: $showKeyword) {
+                Label(
+                    String(localized: "timeline.toggle.keywords"),
+                    systemImage: "tag"
                 )
             }
         } label: {

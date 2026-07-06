@@ -22,6 +22,8 @@ struct SectionSummarySheet: View {
     let summary: SessionSummary?
     let isGenerating: Bool
     let onRegenerate: () -> Void
+    /// Explicit inference cancel — only rendered while generating.
+    let onCancel: () -> Void
     let onDismiss: () -> Void
 
     @State private var markdownExportURL: URL?
@@ -50,6 +52,16 @@ struct SectionSummarySheet: View {
                         )
                     }
                     .disabled(summary == nil)
+                }
+                // Close-vs-cancel split — see SessionSummarySheet.
+                if isGenerating {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(
+                            String(localized: "inference.cancel"),
+                            role: .destructive,
+                            action: onCancel
+                        )
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "summary.done"), action: onDismiss)

@@ -53,6 +53,7 @@ struct SummarizerCard: View {
                 backendDescriptionLine
                 summarizerStatusLine
                 summaryModePickerRow
+                autoSummarizeRow
                 Divider()
                 // Remote LLM Server controls live here (not on the
                 // Settings card) because they only matter when a
@@ -98,6 +99,28 @@ struct SummarizerCard: View {
     /// changes per selection so the wall-time / coverage
     /// tradeoff is visible at the moment of choice.
     @ViewBuilder
+    /// Master switch for auto-summarize: fires the summarizer 15 s
+    /// after a session ends, and re-runs it (debounced) when a
+    /// summary-affecting setting changes while a summary exists.
+    /// Both behaviors live on SummarizerCoordinator
+    /// (`scheduleAutoSummarize` / `noteSummaryAffectingChange`).
+    private var autoSummarizeRow: some View {
+        HStack(spacing: 12) {
+            Text(String(localized: "settings.summarizer.auto"))
+                .font(.callout)
+            Spacer(minLength: 0)
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { recorder.summarizer.autoSummarizeEnabled },
+                    set: { recorder.summarizer.setAutoSummarizeEnabled($0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
+    }
+
     private var summaryModePickerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {

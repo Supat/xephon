@@ -19,9 +19,17 @@ struct LLMSheetBridge: ViewModifier {
                 SessionSummarySheet(
                     recorder: recorder,
                     summary: recorder.lastSessionSummary,
-                    isGenerating: recorder.summarizerInferenceRunning,
+                    // Exclude section passes: they share the
+                    // inferenceRunning gate, and without the
+                    // sectionID check this sheet showed a
+                    // "generating" spinner (and a Cancel button
+                    // that detached the wrong run) while a SECTION
+                    // summary was what was actually running.
+                    isGenerating: recorder.summarizerInferenceRunning
+                        && recorder.summarizingSectionID == nil,
                     onRegenerate: { coord.startSummarization(recorder: recorder) },
-                    onDismiss: { coord.dismissSummary(recorder: recorder) }
+                    onCancel: { coord.cancelSummarization(recorder: recorder) },
+                    onDismiss: { coord.closeSummary() }
                 )
             }
             .sheet(isPresented: $coord.showingReview) {
@@ -30,7 +38,8 @@ struct LLMSheetBridge: ViewModifier {
                     issues: recorder.transcriptionIssues,
                     isReviewing: recorder.transcriptionReviewRunning,
                     onReview: { coord.startReview(recorder: recorder) },
-                    onDismiss: { coord.dismissReview(recorder: recorder) }
+                    onCancel: { coord.cancelReview(recorder: recorder) },
+                    onDismiss: { coord.closeReview() }
                 )
             }
             .sheet(isPresented: $coord.showingSearchReplace) {
@@ -43,9 +52,12 @@ struct LLMSheetBridge: ViewModifier {
             // through a synthetic Identifiable wrapper around the
             // resolved section so the sheet auto-dismisses if the
             // section is deleted out from under it (e.g. the user
-            // taps trash on the row mid-generation). Inflight
-            // cancellation is wired through `dismissSectionSummary`
-            // so MLX stops on the same path as the overall sheet.
+            // taps trash on the row mid-generation). Dismissal here
+            // (swipe-down, or the section vanishing) only CLOSES —
+            // a running pass finishes in the background; if its
+            // section was deleted meanwhile, the writeback lands on
+            // a missing id and no-ops. Explicit cancellation is the
+            // sheet's Cancel button.
             .sheet(
                 item: Binding<SectionSummaryPresentation?>(
                     get: {
@@ -56,7 +68,7 @@ struct LLMSheetBridge: ViewModifier {
                     },
                     set: { newValue in
                         if newValue == nil {
-                            coord.dismissSectionSummary(recorder: recorder)
+                            coord.closeSectionSummary()
                         }
                     }
                 )
@@ -73,7 +85,10 @@ struct LLMSheetBridge: ViewModifier {
                             recorder: recorder
                         )
                     },
-                    onDismiss: { coord.dismissSectionSummary(recorder: recorder) }
+                    onCancel: {
+                        coord.cancelSectionSummarization(recorder: recorder)
+                    },
+                    onDismiss: { coord.closeSectionSummary() }
                 )
             }
     }

@@ -103,6 +103,69 @@ final class SummarizerCoordinator {
     private static let enabledKey = "xephon.summarizerEnabled"
     private static let backendKey = "xephon.summarizerBackend"
     private static let modeKey    = "xephon.summarizerMode"
+    private static let autoKey    = "xephon.autoSummarize"
+
+    // MARK: - Auto-summarize (post-session grace + settings re-run)
+
+    /// Master switch for both auto behaviors: (A) fire the
+    /// summarizer `autoSummarizeGraceSec` after a session ends, and
+    /// (B) re-run it (debounced) when a summary-affecting setting
+    /// changes while a summary exists. Default ON; `object(forKey:)`
+    /// distinguishes "never touched" from a deliberate false.
+    private(set) var autoSummarizeEnabled: Bool = true
+    /// Non-nil while the post-session grace countdown is armed —
+    /// the instant the run will fire. Drives the countdown banner
+    /// in ControlPaneView's status line.
+    private(set) var autoSummarizeFireAt: Date?
+    /// Headless "start a summarization" entry, wired by ContentView
+    /// to `LLMSheetCoordinator.startSummarization` so the in-flight
+    /// Task ownership (dismiss / background cancellation) stays in
+    /// one place. The coordinator never spawns the run itself.
+    @ObservationIgnored var requestAutoSummary: (() -> Void)?
+    /// Cancels every in-flight LLM task (summary, section summary,
+    /// review) at the owning LLMSheetCoordinator. Wired by
+    /// ContentView alongside `requestAutoSummary`; used when a new
+    /// recording supersedes running inference.
+    @ObservationIgnored var requestCancelInference: (() -> Void)?
+    /// Headless "start a transcription review" entry — the chained
+    /// stage after a successful auto-summary. Wired by ContentView
+    /// to `LLMSheetCoordinator.startReview` (same Task-ownership
+    /// reasoning as `requestAutoSummary`).
+    @ObservationIgnored var requestAutoReview: (() -> Void)?
+    /// Set by the auto-fire path right before it requests a
+    /// summarization; consumed at `summarize()` entry so ONLY the
+    /// auto-initiated run chains into a review — a manual
+    /// Summarize tap never spawns work the user didn't ask for.
+    @ObservationIgnored private var chainReviewAfterSummary = false
+    /// Whether a background-deferred auto-summary should still
+    /// chain into review when it eventually fires.
+    @ObservationIgnored private var deferredChainsReview = false
+    /// In-flight chained-review scheduler (waits out the post-
+    /// summary unload/rewarm before firing). Tracked so session
+    /// reset / recording start can cancel the chain.
+    @ObservationIgnored private var autoReviewChainTask: Task<Void, Never>?
+    /// The post-run unload + pipeline-rewarm task (see
+    /// `scheduleUnloadAndPipelineRewarm`). Tracked so the chained
+    /// review can await it — starting the review mid-rewarm would
+    /// let the pipeline warm underneath the reviewer weights,
+    /// exactly the co-residency the memory orchestration exists to
+    /// prevent.
+    @ObservationIgnored private var unloadRewarmTask: Task<Void, Never>?
+    @ObservationIgnored private var autoSummarizeGraceTask: Task<Void, Never>?
+    @ObservationIgnored private var autoReRunDebounceTask: Task<Void, Never>?
+    /// Set when a fire attempt found the app backgrounded (GPU work
+    /// from the background is fatal for MLX — see ContentView's
+    /// scenePhase doc). `retryDeferredAutoSummarize()` consumes it
+    /// on foreground return.
+    @ObservationIgnored private var autoSummarizeDeferred = false
+    /// Grace between session end and auto-fire: long enough to tap
+    /// Cancel or start reviewing rows, short enough that the summary
+    /// is ready soon after. The pipeline stays warm during the grace
+    /// — release happens inside `runSummarize` as always.
+    static let autoSummarizeGraceSec: TimeInterval = 15
+    /// Debounce for setting-change re-runs so a burst of changes
+    /// (keyword edits, picker exploration) coalesces into one pass.
+    static let autoReRunDebounceSec: TimeInterval = 2.5
 
     init(parent: RecordingController) {
         self.parent = parent
@@ -112,6 +175,211 @@ final class SummarizerCoordinator {
         let rawMode = UserDefaults.standard.string(forKey: Self.modeKey) ?? ""
         self.mode = SummarizeMode(rawValue: rawMode) ?? .trailing
         self.appleFMAvailable = SystemLanguageModel.default.isAvailable
+        if UserDefaults.standard.object(forKey: Self.autoKey) != nil {
+            self.autoSummarizeEnabled = UserDefaults.standard.bool(forKey: Self.autoKey)
+        }
+    }
+
+    func setAutoSummarizeEnabled(_ value: Bool) {
+        guard autoSummarizeEnabled != value else { return }
+        autoSummarizeEnabled = value
+        UserDefaults.standard.set(value, forKey: Self.autoKey)
+        AppLog.app.info("autoSummarize → \(value, privacy: .public)")
+        if !value { cancelAutoRuns(reason: "preference off") }
+    }
+
+    /// Feature A: arm the post-session grace timer. Called from
+    /// `RecordingController.stop()`'s tail once the session is idle.
+    /// No-op unless the summarizer is fully configured, the session
+    /// has content, and no summary exists yet (a restored/manual
+    /// summary means the user's already covered).
+    func scheduleAutoSummarize() {
+        guard autoSummarizeEnabled, enabled, ready,
+              !parent.utterances.isEmpty,
+              lastSessionSummary == nil,
+              !inferenceRunning, !reviewRunning else { return }
+        autoSummarizeGraceTask?.cancel()
+        autoSummarizeFireAt = Date().addingTimeInterval(Self.autoSummarizeGraceSec)
+        AppLog.app.info("auto-summarize armed (fires in \(Self.autoSummarizeGraceSec, privacy: .public)s)")
+        autoSummarizeGraceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.autoSummarizeGraceSec))
+            guard !Task.isCancelled, let self else { return }
+            self.autoSummarizeFireAt = nil
+            // A-specific: don't fire over a summary that appeared
+            // during the grace (manual run finished, session load).
+            guard self.lastSessionSummary == nil else { return }
+            // The post-session pass chains into a transcription
+            // review; the settings-change re-run path doesn't
+            // (review output doesn't depend on summarizer settings).
+            self.fireAutoSummary(
+                context: "post-session grace",
+                supersede: false,
+                chainReview: true
+            )
+        }
+    }
+
+    /// Feature B: debounced re-run after a summary-affecting setting
+    /// change. Only when a summary already exists — a settings tweak
+    /// on a never-summarized session must not spontaneously spin up
+    /// a model.
+    func noteSummaryAffectingChange(_ what: String) {
+        guard autoSummarizeEnabled, enabled, ready,
+              lastSessionSummary != nil else { return }
+        autoReRunDebounceTask?.cancel()
+        AppLog.app.info("summary-affecting change (\(what, privacy: .public)); re-run in \(Self.autoReRunDebounceSec, privacy: .public)s")
+        autoReRunDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.autoReRunDebounceSec))
+            guard !Task.isCancelled, let self else { return }
+            guard self.lastSessionSummary != nil else { return }
+            self.fireAutoSummary(
+                context: "settings change: \(what)",
+                supersede: true,
+                chainReview: false
+            )
+        }
+    }
+
+    /// A new recording supersedes any in-flight summarization or
+    /// review: cancel the tasks (via the llmCoord hook) and clear
+    /// the gate flags eagerly so the record path's pipeline warm
+    /// doesn't wait on a stale inference gate. The cancelled task's
+    /// own defers unload the MLX weights and kick the pipeline
+    /// rewarm, which converges with start()'s ensurePipeline. The
+    /// brief overlap (MLX mid-teardown while capture + pipeline
+    /// spin up) is transient — the Jetsam hazard the memory
+    /// orchestration guards against is sustained co-residency, not
+    /// a teardown crossing a warm-up.
+    func cancelForRecordingStart() {
+        cancelAutoRuns(reason: "recording starting")
+        // A set-but-unconsumed chain flag belongs to a summarize
+        // run this recording is about to cancel — don't let the
+        // NEXT session's first manual summarize inherit it.
+        chainReviewAfterSummary = false
+        guard inferenceRunning || reviewRunning else { return }
+        AppLog.app.info("cancelling in-flight LLM inference: new recording supersedes it")
+        requestCancelInference?()
+        if inferenceRunning { userCancelledSummary() }
+        if reviewRunning { userCancelledReview() }
+    }
+
+    /// Consume a background-deferred fire on foreground return
+    /// (called from `RecordingController.setBackgroundMode(false)`).
+    func retryDeferredAutoSummarize() {
+        guard autoSummarizeDeferred else { return }
+        autoSummarizeDeferred = false
+        let chain = deferredChainsReview
+        deferredChainsReview = false
+        fireAutoSummary(
+            context: "foreground return",
+            supersede: true,
+            chainReview: chain
+        )
+    }
+
+    /// Cancel every pending auto-run (grace timer, debounce,
+    /// background deferral). Fired on session reset, manual
+    /// summarize, banner Cancel, and preference-off.
+    func cancelAutoRuns(reason: String) {
+        if autoSummarizeGraceTask != nil || autoReRunDebounceTask != nil || autoSummarizeDeferred {
+            AppLog.app.info("auto-summarize cancelled (\(reason, privacy: .public))")
+        }
+        autoSummarizeGraceTask?.cancel()
+        autoSummarizeGraceTask = nil
+        autoReRunDebounceTask?.cancel()
+        autoReRunDebounceTask = nil
+        autoReviewChainTask?.cancel()
+        autoReviewChainTask = nil
+        autoSummarizeFireAt = nil
+        autoSummarizeDeferred = false
+        deferredChainsReview = false
+        // Deliberately NOT cleared here: `chainReviewAfterSummary`.
+        // The auto path itself routes through
+        // LLMSheetCoordinator.startSummarization, whose first line
+        // calls this method — clearing the flag here wiped it in
+        // the gap between fireAutoSummary setting it and
+        // summarize() consuming it, so the chained review never
+        // fired. The flag's lifecycle is: set at auto-fire, consumed
+        // at the next summarize() entry, defensively cleared by
+        // cancelForRecordingStart; a stale set flag is harmless
+        // (scheduleAutoReview re-checks the whole world, including
+        // autoSummarizeEnabled, at its own fire time).
+    }
+
+    /// Shared fire-time gate. Conditions are re-checked HERE, not
+    /// only at arm time — the world can change during the grace /
+    /// debounce sleep. `supersede` distinguishes the two features:
+    /// the post-session fire must never restart a run the user
+    /// started manually; a settings-change fire deliberately
+    /// replaces an in-flight run whose parameters just went stale.
+    private func fireAutoSummary(context: String, supersede: Bool, chainReview: Bool) {
+        guard autoSummarizeEnabled, enabled, ready,
+              !parent.utterances.isEmpty,
+              parent.phase == .idle,
+              !reviewRunning else {
+            AppLog.app.info("auto-summarize [\(context, privacy: .public)]: conditions no longer hold; skipping")
+            return
+        }
+        if inferenceRunning {
+            guard supersede else {
+                AppLog.app.info("auto-summarize [\(context, privacy: .public)]: run already in flight; skipping")
+                return
+            }
+            // Clear the gate flags eagerly (same as the sheet's
+            // Regenerate path) so the fresh run's precondition
+            // passes; the actual Task cancel happens inside
+            // startSummarization.
+            userCancelledSummary()
+        }
+        if parent.latestBackgroundMode {
+            // MLX GPU work from the background crashes the process
+            // and the scenePhase watcher would cancel us anyway —
+            // defer to foreground return instead of losing the run.
+            autoSummarizeDeferred = true
+            deferredChainsReview = chainReview
+            AppLog.app.info("auto-summarize [\(context, privacy: .public)]: app backgrounded; deferred to foreground return")
+            return
+        }
+        guard let requestAutoSummary else {
+            AppLog.app.warning("auto-summarize [\(context, privacy: .public)]: no requestAutoSummary hook wired")
+            return
+        }
+        AppLog.app.info("auto-summarize firing [\(context, privacy: .public)]\(chainReview ? " (will chain review)" : "", privacy: .public)")
+        chainReviewAfterSummary = chainReview
+        requestAutoSummary()
+    }
+
+    /// Chained stage: fire the transcription review once the post-
+    /// summary unload/rewarm settles. Re-checks the world at fire
+    /// time (same discipline as fireAutoSummary). A backgrounded
+    /// app just skips — the review is a bonus stage, not worth its
+    /// own deferral machinery.
+    private func scheduleAutoReview() {
+        autoReviewChainTask?.cancel()
+        autoReviewChainTask = Task { @MainActor [weak self] in
+            // Wait out the summary's unload + pipeline rewarm.
+            // Starting review mid-rewarm lets the pipeline warm
+            // underneath the reviewer weights (Jetsam recipe); the
+            // review's own release then snapshots the warmed
+            // pipeline's speaker DB properly instead of missing it.
+            await self?.unloadRewarmTask?.value
+            guard !Task.isCancelled, let self else { return }
+            guard self.autoSummarizeEnabled, self.enabled, self.ready,
+                  !self.parent.utterances.isEmpty,
+                  self.parent.phase == .idle,
+                  !self.inferenceRunning, !self.reviewRunning,
+                  self.issues.isEmpty,
+                  !self.parent.latestBackgroundMode else {
+                AppLog.app.info("auto-review skipped: conditions no longer hold")
+                return
+            }
+            guard let requestAutoReview = self.requestAutoReview else {
+                AppLog.app.warning("auto-review: no requestAutoReview hook wired")
+                return
+            }
+            AppLog.app.info("auto-review firing (chained after auto-summary)")
+            requestAutoReview()
+        }
     }
 
     /// Persist + apply a new mode preference. No side effects
@@ -121,6 +389,7 @@ final class SummarizerCoordinator {
         guard mode != newMode else { return }
         mode = newMode
         UserDefaults.standard.set(newMode.rawValue, forKey: Self.modeKey)
+        noteSummaryAffectingChange("mode")
     }
 
     /// True iff the chosen backend is ready to summarize. Apple FM
@@ -209,6 +478,11 @@ final class SummarizerCoordinator {
             await triggerDownload()
         }
         syncAppleFMAvailability()
+        // Auto re-run silently no-ops when the new backend isn't
+        // ready (e.g. weights still downloading) — accepted gap:
+        // download completion doesn't retrigger; the user
+        // regenerates manually in that case.
+        noteSummaryAffectingChange("backend")
     }
 
     func syncAppleFMAvailability() {
@@ -297,13 +571,25 @@ final class SummarizerCoordinator {
         guard !inferenceRunning else { return nil }
         guard !reviewRunning else { return nil }
         guard !parent.utterances.isEmpty else { return nil }
-        return await withInferenceGate {
+        // Consume the chain flag at entry: it belongs to the run
+        // the auto-fire path just requested. Reading it here (not
+        // after the gate) means a manual run that raced in front
+        // would inherit the chain — harmless, the review is
+        // idempotent-per-session — while a later manual run never
+        // picks it up.
+        let chainReview = chainReviewAfterSummary
+        chainReviewAfterSummary = false
+        let result = await withInferenceGate {
             await runSummarize(
                 utterances: parent.utterances,
                 logLabelPrefix: "summarize",
                 writeback: { summary in self.lastSessionSummary = summary }
             )
         }
+        if chainReview, result != nil {
+            scheduleAutoReview()
+        }
+        return result
     }
 
     /// Run the summarizer over a single user-defined section's
@@ -921,7 +1207,7 @@ final class SummarizerCoordinator {
     /// or failed. Restores the pre-summarize speaker DB snapshot
     /// after the fresh diarizer is warm.
     private func scheduleUnloadAndPipelineRewarm() {
-        Task { @MainActor [weak self] in
+        unloadRewarmTask = Task { @MainActor [weak self] in
             guard let self else { return }
             // Unload BOTH Qwen actors. Only one is loaded at a time
             // by construction, but a stale reference here would keep

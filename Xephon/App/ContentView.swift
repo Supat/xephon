@@ -353,7 +353,7 @@ struct ContentView: View {
         // on a recorded file existing, not on the transcript — the
         // audio is exportable even when a session produced zero
         // utterances.
-        menuCommands.canExportRecordedAudio = recorder.canExportRecordedAudio
+        menuCommands.canExportRecordedAudio = recorder.canExportSessionAudio
     }
 }
 
@@ -462,15 +462,39 @@ private struct EventBridgeModifier: ViewModifier {
             .onChange(of: menuCommands.presentSearchReplaceToken) { _, _ in
                 llmCoord.presentSearchReplace()
             }
-            .onAppear { syncMenuItemGates() }
+            .onAppear {
+                syncMenuItemGates()
+                // Headless auto-summarize entry: the coordinator
+                // (model layer) asks; the sheet coordinator owns the
+                // in-flight Task so dismiss / scenePhase-background
+                // cancellation stays unified with the manual path.
+                recorder.summarizer.requestAutoSummary = { [weak recorder] in
+                    guard let recorder else { return }
+                    llmCoord.startSummarization(recorder: recorder)
+                }
+                // Inverse hook: the coordinator asks the sheet
+                // coordinator (which owns the in-flight Tasks) to
+                // cancel everything — used when a new recording
+                // supersedes running inference.
+                recorder.summarizer.requestCancelInference = {
+                    llmCoord.cancelInflightTasks()
+                }
+                // Chained stage: auto-review after a successful
+                // auto-summary. Headless, same Task ownership as
+                // the summarize hook.
+                recorder.summarizer.requestAutoReview = { [weak recorder] in
+                    guard let recorder else { return }
+                    llmCoord.startReview(recorder: recorder)
+                }
+            }
             .onChange(of: recorder.isIdleWithTranscript) { _, _ in syncMenuItemGates() }
             .onChange(of: recorder.summarizerInferenceRunning) { _, _ in syncMenuItemGates() }
             .onChange(of: recorder.transcriptionReviewRunning) { _, _ in syncMenuItemGates() }
-            // Export Recorded Audio gate — flips when a recording
-            // finalizes (URL set) or a new session / load cleans
-            // the temp up (URL nil). isIdleWithTranscript above
-            // covers the phase half of the predicate.
-            .onChange(of: recorder.recordedAudioFileURL) { _, _ in syncMenuItemGates() }
+            // Export Session Audio gate — flips when a recording
+            // finalizes, a session with embedded audio loads, or a
+            // new session clears the playback source.
+            // isIdleWithTranscript above covers the phase half.
+            .onChange(of: recorder.sessionAudioFileURL) { _, _ in syncMenuItemGates() }
             .onChange(of: recorder.sessionToken) { _, _ in
                 visibleUtteranceIDs.removeAll()
                 expandedUtteranceIDs.removeAll()
