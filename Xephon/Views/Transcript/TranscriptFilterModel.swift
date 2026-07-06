@@ -98,6 +98,8 @@ final class TranscriptFilterModel {
     @ObservationIgnored
     private let keywordCountsMemo = KeywordCountsMemo()
     private let keywordTagMatchesMemo = KeywordTagMatchesMemo()
+    @ObservationIgnored
+    private let keywordHighlightMemo = KeywordHighlightMemo()
 
     // MARK: - Filter controls
 
@@ -266,6 +268,39 @@ final class TranscriptFilterModel {
         keywordTagMatchesMemo.lastKey = key
         keywordTagMatchesMemo.matches = matches
         return matches
+    }
+
+    /// Memoized keyword-tag highlight rendering for one utterance
+    /// row — see KeywordHighlightMemo for why per-render compute
+    /// was too expensive. Lazy per-row fill: only rows the List
+    /// actually materializes pay the tokenizer cost, once per
+    /// (transcript edit × tagged-keyword change) generation.
+    func highlightedTranscript(
+        for utterance: UtteranceEstimate,
+        in recorder: RecordingController
+    ) -> AttributedString {
+        let kws = recorder.keywords.keywords
+        let signature: [String] = kws.compactMap {
+            guard let tag = $0.tagColor else { return nil }
+            return "\($0.id.uuidString)|\($0.text)|\(tag.rawValue)"
+        }
+        let key = KeywordHighlightMemo.Key(
+            utterancesVersion: recorder.utterancesVersion,
+            taggedKeywordSignature: signature
+        )
+        if keywordHighlightMemo.lastKey != key {
+            keywordHighlightMemo.lastKey = key
+            keywordHighlightMemo.rendered.removeAll(keepingCapacity: true)
+        }
+        if let cached = keywordHighlightMemo.rendered[utterance.id] {
+            return cached
+        }
+        let rendered = KeywordHighlighter.attributedTranscript(
+            utterance.transcript,
+            keywords: kws
+        )
+        keywordHighlightMemo.rendered[utterance.id] = rendered
+        return rendered
     }
 
     // MARK: - Filtered slice + summary

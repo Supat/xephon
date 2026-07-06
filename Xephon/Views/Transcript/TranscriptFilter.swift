@@ -113,6 +113,24 @@ final class KeywordCountsMemo {
     var counts: [UUID: Int] = [:]
 }
 
+/// Memo for the per-row keyword-highlighted transcript rendering.
+/// The highlighter runs CFStringTokenizer + builds an
+/// AttributedString; computing that per visible row on every list
+/// body re-eval (which scroll-visibility tracking fires several
+/// times per second) made scrolling visibly jitter. Lazily filled
+/// per utterance; wholesale-cleared when the generation key moves.
+/// Signature covers TAGGED keywords only — untagged keyword edits
+/// can't change any highlight, so they shouldn't evict the cache.
+@MainActor
+final class KeywordHighlightMemo {
+    struct Key: Equatable {
+        let utterancesVersion: Int
+        let taggedKeywordSignature: [String]
+    }
+    var lastKey: Key?
+    var rendered: [UUID: AttributedString] = [:]
+}
+
 /// Memo for the keyword-timeline strip's utteranceID → matched-tag
 /// map. Same shape as KeywordCountsMemo; the signature includes
 /// each keyword's tagColor because a swatch change alters the

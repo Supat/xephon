@@ -200,7 +200,10 @@ struct TranscriptList: View {
         UtteranceRow(
             number: item.idx + 1,
             utterance: item.u,
-            keywords: recorder.keywords.keywords,
+            transcriptDisplay: filterModel.highlightedTranscript(
+                for: item.u,
+                in: recorder
+            ),
             isExpanded: expandedUtteranceIDs.contains(item.u.id),
             onToggleExpanded: { onToggleExpansion(item.u.id) },
             playback: .resolve(for: item.u, recorder: recorder),
@@ -378,10 +381,21 @@ struct TranscriptList: View {
         let timeline = recorder.diarizationTimeline
         var result: [UUID: [DiarizationRun]] = [:]
         if !timeline.isEmpty {
+            // Pre-sort ONCE + longest-segment bound, then each row
+            // binary-searches its window's candidates instead of
+            // scanning the whole timeline (see the sortedByStart
+            // overload's doc for the quadratic-growth math this
+            // avoids — the recompute fires every diarizer tick
+            // while recording).
+            let sorted = timeline.sorted { $0.start < $1.start }
+            let maxSegmentDuration = timeline.lazy
+                .map { $0.end - $0.start }
+                .max() ?? 0
             result.reserveCapacity(recorder.utterances.count)
             for u in recorder.utterances {
                 let runs = UtteranceDiarizationStrip.computeRuns(
-                    segments: timeline,
+                    sortedByStart: sorted,
+                    maxSegmentDuration: maxSegmentDuration,
                     utteranceStart: u.start,
                     utteranceEnd: u.end
                 )

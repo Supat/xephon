@@ -62,25 +62,12 @@ struct UtteranceRow: View {
 
     let number: Int
     let utterance: UtteranceEstimate
-    /// Full keyword list (tag filtering happens in the
-    /// highlighter). Drives the tag-colored match highlights in
-    /// the transcript text; rows re-render on keyword mutations
-    /// because the list flows down from TranscriptList's
-    /// @Observable store read.
-    let keywords: [Keyword]
-
-    /// Transcript with color-tagged keyword matches painted as
-    /// background runs (see KeywordHighlighter). Empty transcript
-    /// renders the em-dash placeholder, unhighlighted.
-    private var highlightedTranscript: AttributedString {
-        guard !utterance.transcript.isEmpty else {
-            return AttributedString("—")
-        }
-        return KeywordHighlighter.attributedTranscript(
-            utterance.transcript,
-            keywords: keywords
-        )
-    }
+    /// Pre-rendered transcript with keyword-tag highlights, memoized
+    /// by TranscriptFilterModel.highlightedTranscript — a dictionary
+    /// lookup at row-construction time. Computing it per render
+    /// (CFStringTokenizer + AttributedString build) made scrolling
+    /// jitter; see KeywordHighlightMemo.
+    let transcriptDisplay: AttributedString
     let isExpanded: Bool
     let onToggleExpanded: () -> Void
     let playback: PlaybackAvailability
@@ -418,7 +405,7 @@ struct UtteranceRow: View {
             // bounds (same pattern as the speaker chip) so the
             // re-evaluate button's 3 s revert long-press elsewhere
             // in the row isn't pre-empted.
-            Text(highlightedTranscript)
+            Text(utterance.transcript.isEmpty ? AttributedString("—") : transcriptDisplay)
                 .font(.body)
                 .onLongPressGesture(minimumDuration: Self.editLongPressSec) {
                     onEditTranscript()

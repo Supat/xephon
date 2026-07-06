@@ -55,10 +55,16 @@ struct TranscriptPaneView: View {
                     model: filterModel,
                     searchFieldFocused: searchFieldFocused
                 )
-                diarizationTimelineStrip
-                emotionTimelineStrip
-                fusionContributionStrip
-                keywordTimelineStrip
+                // Hoisted: this O(filtered-count) sweep used to be
+                // a computed property evaluated once PER STRIP (4×)
+                // on every body re-eval — and scroll-visibility
+                // tracking re-evals this body several times per
+                // second. One sweep, four consumers.
+                let stripRange = selectedUtteranceRange
+                diarizationTimelineStrip(range: stripRange)
+                emotionTimelineStrip(range: stripRange)
+                fusionContributionStrip(range: stripRange)
+                keywordTimelineStrip(range: stripRange)
                 if filterModel.filteredIndexedUtterances(in: recorder).isEmpty {
                     TranscriptNoMatchesView(model: filterModel)
                 } else {
@@ -90,14 +96,16 @@ struct TranscriptPaneView: View {
     /// in the list outlines the strip region for that row's audio
     /// range.
     @ViewBuilder
-    private var diarizationTimelineStrip: some View {
+    private func diarizationTimelineStrip(
+        range: (start: TimeInterval, end: TimeInterval)?
+    ) -> some View {
         let timeline = recorder.diarizationTimeline
         let total = transcriptTotalDuration
         if showDiarizationStrip, !timeline.isEmpty, total > 0 {
             DiarizationTimelineStrip(
                 segments: timeline,
                 totalDuration: total,
-                selectedRange: selectedUtteranceRange,
+                selectedRange: range,
                 onTapAtTime: { t in
                     guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
@@ -116,14 +124,16 @@ struct TranscriptPaneView: View {
     /// at least one utterance has a fused top label — before the
     /// first analysis finishes there's nothing to colour.
     @ViewBuilder
-    private var emotionTimelineStrip: some View {
+    private func emotionTimelineStrip(
+        range: (start: TimeInterval, end: TimeInterval)?
+    ) -> some View {
         let total = transcriptTotalDuration
         let hasAnyLabel = recorder.utterances.contains { $0.fusedTopLabel != nil }
         if showEmotionStrip, hasAnyLabel, total > 0 {
             EmotionTimelineStrip(
                 utterances: recorder.utterances,
                 totalDuration: total,
-                selectedRange: selectedUtteranceRange,
+                selectedRange: range,
                 onTapAtTime: { t in
                     guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
@@ -145,7 +155,9 @@ struct TranscriptPaneView: View {
     /// modality dominated the fused label. Hidden until at least
     /// one utterance carries one of the two modality outputs.
     @ViewBuilder
-    private var fusionContributionStrip: some View {
+    private func fusionContributionStrip(
+        range: (start: TimeInterval, end: TimeInterval)?
+    ) -> some View {
         let total = transcriptTotalDuration
         let hasAnyModality = recorder.utterances.contains {
             $0.acousticCategorical != nil || $0.plutchik != nil
@@ -156,7 +168,7 @@ struct TranscriptPaneView: View {
                 totalDuration: total,
                 acousticWeight: recorder.fusionAcousticWeight,
                 textWeightFloor: recorder.fusionTextWeightFloor,
-                selectedRange: selectedUtteranceRange,
+                selectedRange: range,
                 onTapAtTime: { t in
                     guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
@@ -173,7 +185,9 @@ struct TranscriptPaneView: View {
     /// one tagged keyword matches something (assigning colors is
     /// the opt-in; sessions without tags see no extra strip).
     @ViewBuilder
-    private var keywordTimelineStrip: some View {
+    private func keywordTimelineStrip(
+        range: (start: TimeInterval, end: TimeInterval)?
+    ) -> some View {
         let total = transcriptTotalDuration
         let tagMatches = filterModel.keywordTagMatches(in: recorder)
         if showKeywordStrip, !tagMatches.isEmpty, total > 0 {
@@ -181,7 +195,7 @@ struct TranscriptPaneView: View {
                 utterances: recorder.utterances,
                 tagsByUtterance: tagMatches,
                 totalDuration: total,
-                selectedRange: selectedUtteranceRange,
+                selectedRange: range,
                 onTapAtTime: { t in
                     guard let target = recorder.nearestUtterance(toTime: t) else { return }
                     selectedUtteranceID = target.id
