@@ -15,7 +15,14 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    CURRENT_PROJECT_VERSION: 1
+    # Build number, applied uniformly to the app AND the widget
+    # extension — iOS refuses to install when an extension's
+    # CFBundleVersion differs from its parent app's. Bump it HERE,
+    # never in Xcode's General tab: the Xcode UI writes a target-
+    # level override into the GENERATED pbxproj, which touches only
+    # one target (app=2, widget=1 → install failure) and is wiped by
+    # the next generate_project.sh anyway.
+    CURRENT_PROJECT_VERSION: 2
     MARKETING_VERSION: "0.1.0"
     # DEVELOPMENT_TEAM (+ CODE_SIGN_STYLE) live in
     # Config/Local.xcconfig — gitignored per-developer. The xcconfig
