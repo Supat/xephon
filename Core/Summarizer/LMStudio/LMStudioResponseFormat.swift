@@ -192,10 +192,11 @@ internal enum LMStudioSchemas {
                     ("kind", .string(allowedValues: [
                         "homophone", "contextual", "grammar", "other"
                     ])),
+                    ("excerpt", .string(allowedValues: nil)),
                     ("reason", .string(allowedValues: nil)),
                     ("confidence", .number),
                 ],
-                required: ["rowIndex", "kind", "reason", "confidence"]
+                required: ["rowIndex", "kind", "excerpt", "reason", "confidence"]
             )))
         ],
         required: ["issues"]

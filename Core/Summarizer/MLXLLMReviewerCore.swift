@@ -51,6 +51,12 @@ internal protocol MLXLLMReviewerSpec: Sendable {
     /// Output-token cap per chunk inference.
     var maxOutputTokens: Int { get }
 
+    /// Rows of the PREVIOUS chunk replayed at the top of each
+    /// chunk's prompt as unindexed, non-flaggable context. Gives
+    /// the `contextual` (non-sequitur) kind real topic continuity
+    /// at chunk boundaries instead of a cold start. 0 disables.
+    var contextOverlapRows: Int { get }
+
     /// Stop tokens for `ModelConfiguration.extraEOSTokens`.
     /// Same shape + rationale as the summarizer spec.
     var extraEOSTokens: Set<String> { get }
@@ -69,7 +75,8 @@ internal protocol MLXLLMReviewerSpec: Sendable {
         speakerNames: [String: String],
         language: ReviewLanguage,
         chunkIndex: Int,
-        totalChunks: Int
+        totalChunks: Int,
+        contextPrefix: [UtteranceEstimate]
     ) -> String
 }
 
@@ -87,32 +94,41 @@ internal enum MLXLLMReviewerCore {
         spec: any MLXLLMReviewerSpec
     ) async throws -> [TranscriptionIssue] {
         guard !utterances.isEmpty else { return [] }
-        let chunks = stride(from: 0, to: utterances.count, by: spec.maxPromptUtterances).map {
-            offset -> [UtteranceEstimate] in
-            let end = min(offset + spec.maxPromptUtterances, utterances.count)
-            return Array(utterances[offset..<end])
-        }
+        // Chunk starts (not materialized chunks) so each iteration
+        // can also carve the previous rows as boundary context.
+        let chunkStarts = Array(stride(from: 0, to: utterances.count, by: spec.maxPromptUtterances))
         AppLog.app.info(
-            "MLX reviewer (\(spec.family.rawValue, privacy: .public)) reviewing \(utterances.count, privacy: .public) utterances in \(chunks.count, privacy: .public) chunk(s)"
+            "MLX reviewer (\(spec.family.rawValue, privacy: .public)) reviewing \(utterances.count, privacy: .public) utterances in \(chunkStarts.count, privacy: .public) chunk(s)"
         )
         var allIssues: [TranscriptionIssue] = []
-        for (chunkIndex, chunk) in chunks.enumerated() {
+        for (chunkIndex, start) in chunkStarts.enumerated() {
             if Task.isCancelled { throw CancellationError() }
+            let end = min(start + spec.maxPromptUtterances, utterances.count)
+            let chunk = Array(utterances[start..<end])
+            // Boundary context: the tail of the previous chunk,
+            // replayed unindexed (prompted as non-flaggable; also
+            // absent from indexToID, so a flag against it can't
+            // parse into an issue).
+            let ctxStart = max(0, start - spec.contextOverlapRows)
+            let contextPrefix = start == 0 ? [] : Array(utterances[ctxStart..<start])
             let issues = try await reviewChunk(
                 container: container,
                 chunk: chunk,
                 speakerNames: speakerNames,
                 language: language,
                 chunkIndex: chunkIndex,
-                totalChunks: chunks.count,
+                totalChunks: chunkStarts.count,
+                contextPrefix: contextPrefix,
                 spec: spec
             )
             allIssues.append(contentsOf: issues)
             AppLog.app.info(
-                "MLX reviewer chunk \(chunkIndex + 1, privacy: .public)/\(chunks.count, privacy: .public) yielded \(issues.count, privacy: .public) issue(s)"
+                "MLX reviewer chunk \(chunkIndex + 1, privacy: .public)/\(chunkStarts.count, privacy: .public) yielded \(issues.count, privacy: .public) issue(s)"
             )
         }
-        return allIssues
+        // Post-parse grounding/sanity filter — see
+        // ReviewIssueValidator for the failure classes it kills.
+        return ReviewIssueValidator.filter(allIssues, utterances: utterances)
     }
 
     /// Single-chunk inference + parse. 1-based row indices are
@@ -126,6 +142,7 @@ internal enum MLXLLMReviewerCore {
         language: ReviewLanguage,
         chunkIndex: Int,
         totalChunks: Int,
+        contextPrefix: [UtteranceEstimate],
         spec: any MLXLLMReviewerSpec
     ) async throws -> [TranscriptionIssue] {
         let indexToID: [Int: UUID] = Dictionary(
@@ -136,7 +153,8 @@ internal enum MLXLLMReviewerCore {
             speakerNames: speakerNames,
             language: language,
             chunkIndex: chunkIndex,
-            totalChunks: totalChunks
+            totalChunks: totalChunks,
+            contextPrefix: contextPrefix
         )
         let chunkLabel = "MLX reviewer (\(spec.family.rawValue)) chunk \(chunkIndex + 1)/\(totalChunks)"
         AppLog.app.info(
@@ -261,6 +279,7 @@ internal enum MLXLLMReviewerCore {
                 let kind: String
                 let reason: String
                 let confidence: Float?
+                let excerpt: String?
             }
             let issues: [Entry]
         }
@@ -303,7 +322,8 @@ internal enum MLXLLMReviewerCore {
                 utteranceID: utteranceID,
                 kind: kind,
                 reason: entry.reason,
-                confidence: entry.confidence
+                confidence: entry.confidence,
+                excerpt: entry.excerpt
             )
         }
     }
@@ -420,6 +440,24 @@ internal enum MLXLLMReviewerRendering {
     ) -> String {
         var fields: [String] = []
         fields.append("row=\(rowIndex)")
+        fields.append("speaker=\(u.speakerID)")
+        if let name = speakerNames[u.speakerID], !name.isEmpty {
+            fields.append("name=\(name)")
+        }
+        fields.append(String(format: "t=%.1fs", u.start))
+        fields.append("text=\"\(escapedTranscript(u.transcript))\"")
+        return "- " + fields.joined(separator: " ")
+    }
+
+    /// Unindexed variant for boundary-context rows: `- ctx
+    /// speaker=S01 t=12.3s text="..."`. No row index by design —
+    /// context rows must not be flaggable, and a model that flags
+    /// one anyway has no index that maps in `indexToID`.
+    static func contextLine(
+        for u: UtteranceEstimate,
+        speakerNames: [String: String]
+    ) -> String {
+        var fields: [String] = ["ctx"]
         fields.append("speaker=\(u.speakerID)")
         if let name = speakerNames[u.speakerID], !name.isEmpty {
             fields.append("name=\(name)")

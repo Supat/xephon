@@ -47,18 +47,28 @@ public struct TranscriptionIssue: Sendable, Hashable, Codable, Identifiable {
     /// backend emits one; the UI can sort or filter by it when
     /// present.
     public let confidence: Float?
+    /// EXACT substring of the target transcript the model flagged —
+    /// a LOCATOR, not a suggestion (the no-suggestedText rule above
+    /// stands). Grounding lever: `ReviewIssueValidator` drops any
+    /// issue whose excerpt doesn't appear verbatim in the row, which
+    /// mechanically kills the "flag unrelated to the instructions"
+    /// output class (content commentary, invented text, row-index
+    /// drift). Optional so pre-excerpt saved sessions still decode.
+    public let excerpt: String?
 
     public init(
         id: UUID = UUID(),
         utteranceID: UUID,
         kind: Kind,
         reason: String,
-        confidence: Float?
+        confidence: Float?,
+        excerpt: String? = nil
     ) {
         self.id = id
         self.utteranceID = utteranceID
         self.kind = kind
         self.reason = reason
         self.confidence = confidence
+        self.excerpt = excerpt
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Fusion
+import XephonLogging
 
 /// Errors a `TranscriptionReviewer` can raise. Mirrors
 /// `SummarizerError` because the two surfaces share the same
@@ -95,4 +96,78 @@ public protocol TranscriptionReviewer: Sendable {
         speakerNames: [String: String],
         language: ReviewLanguage
     ) async throws -> [TranscriptionIssue]
+}
+
+/// Post-parse validation shared by every reviewer backend. The
+/// LLMs — especially the small quantized ones — regularly emit
+/// flags outside the prompt's scope: content/opinion commentary,
+/// tautologies, invented text, low-conviction noise. Prompts alone
+/// can't stop that; this filter makes the core failure classes
+/// mechanically detectable and drops them before the UI:
+///
+/// - GROUNDING: word-level kinds (homophone / grammar) must quote
+///   the offending span (`excerpt`) and the quote must appear
+///   verbatim in the target row's transcript. A model commenting
+///   on content or hallucinating text can't produce a passing
+///   quote; row-index drift fails it too. Whole-row kinds
+///   (contextual / other) may omit the excerpt, but a present
+///   excerpt must still match.
+/// - CONFIDENCE FLOOR: self-reported confidence below
+///   `confidenceFloor` reads as noise. nil passes (not every
+///   backend emits one).
+/// - REASON SANITY: empty reasons and transcript echoes drop.
+/// - DEDUPE: one issue per (row, kind); first (model-order) wins.
+public enum ReviewIssueValidator {
+    /// Below this the model itself says it's guessing; matches the
+    /// prompt's "do not emit below 0.5" calibration line with a
+    /// little slack for backends that calibrate low.
+    public static let confidenceFloor: Float = 0.4
+
+    public static func filter(
+        _ issues: [TranscriptionIssue],
+        utterances: [UtteranceEstimate]
+    ) -> [TranscriptionIssue] {
+        guard !issues.isEmpty else { return issues }
+        let transcriptByID = Dictionary(
+            uniqueKeysWithValues: utterances.map { ($0.id, $0.transcript) }
+        )
+        var ungrounded = 0, lowConfidence = 0, emptyReason = 0, duplicate = 0
+        var seen = Set<String>()
+        var kept: [TranscriptionIssue] = []
+        for issue in issues {
+            guard let transcript = transcriptByID[issue.utteranceID] else {
+                ungrounded += 1
+                continue
+            }
+            let reason = issue.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !reason.isEmpty, reason != transcript else {
+                emptyReason += 1
+                continue
+            }
+            if let c = issue.confidence, c < Self.confidenceFloor {
+                lowConfidence += 1
+                continue
+            }
+            let excerpt = issue.excerpt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !excerpt.isEmpty {
+                guard transcript.contains(excerpt) else {
+                    ungrounded += 1
+                    continue
+                }
+            } else if issue.kind == .homophone || issue.kind == .grammar {
+                ungrounded += 1
+                continue
+            }
+            guard seen.insert("\(issue.utteranceID)|\(issue.kind.rawValue)").inserted else {
+                duplicate += 1
+                continue
+            }
+            kept.append(issue)
+        }
+        let droppedTotal = issues.count - kept.count
+        if droppedTotal > 0 {
+            AppLog.app.info("review validator: kept \(kept.count, privacy: .public)/\(issues.count, privacy: .public) (ungrounded=\(ungrounded, privacy: .public) lowConf=\(lowConfidence, privacy: .public) emptyReason=\(emptyReason, privacy: .public) dupe=\(duplicate, privacy: .public))")
+        }
+        return kept
+    }
 }

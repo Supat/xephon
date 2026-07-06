@@ -165,7 +165,8 @@ public enum PromptCatalog {
                 speakerNames: sampleSpeakerNames,
                 language: .japanese,
                 chunkIndex: 0,
-                totalChunks: 1
+                totalChunks: 1,
+                contextPrefix: []
             )
         ))
 
@@ -178,7 +179,8 @@ public enum PromptCatalog {
                 speakerNames: sampleSpeakerNames,
                 language: .japanese,
                 chunkIndex: 0,
-                totalChunks: 1
+                totalChunks: 1,
+                contextPrefix: []
             )
         ))
 
@@ -192,7 +194,8 @@ public enum PromptCatalog {
                 speakerNames: sampleSpeakerNames,
                 language: .japanese,
                 chunkIndex: 0,
-                totalChunks: 1
+                totalChunks: 1,
+                contextPrefix: []
             )
         ))
 
@@ -274,7 +277,8 @@ public enum PromptCatalog {
                 speakerNames: speakerNames,
                 language: language,
                 chunkIndex: 0,
-                totalChunks: 1
+                totalChunks: 1,
+                contextPrefix: []
             )
         ))
 
@@ -296,7 +300,8 @@ public enum PromptCatalog {
                 speakerNames: speakerNames,
                 language: language,
                 chunkIndex: 0,
-                totalChunks: 1
+                totalChunks: 1,
+                contextPrefix: []
             )
         ))
 
@@ -551,7 +556,8 @@ public enum PromptCatalog {
                 speakerNames: speakerNames,
                 language: language,
                 chunkIndex: idx,
-                totalChunks: chunks.count
+                totalChunks: chunks.count,
+                contextPrefix: []
             )
         }
     }

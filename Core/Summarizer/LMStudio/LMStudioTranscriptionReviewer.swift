@@ -48,31 +48,35 @@ public actor LMStudioTranscriptionReviewer: TranscriptionReviewer {
         // sessions. Reviewer's purpose is per-utterance
         // proofreading, so silently dropping a trailing
         // prefix wouldn't be acceptable.
-        let chunks = stride(from: 0, to: utterances.count, by: spec.maxPromptUtterances).map {
-            offset -> [UtteranceEstimate] in
-            let end = min(offset + spec.maxPromptUtterances, utterances.count)
-            return Array(utterances[offset..<end])
-        }
+        let chunkStarts = Array(stride(from: 0, to: utterances.count, by: spec.maxPromptUtterances))
         AppLog.app.info(
-            "LMStudioReviewer reviewing \(utterances.count, privacy: .public) utterances in \(chunks.count, privacy: .public) chunk(s)"
+            "LMStudioReviewer reviewing \(utterances.count, privacy: .public) utterances in \(chunkStarts.count, privacy: .public) chunk(s)"
         )
 
         var allIssues: [TranscriptionIssue] = []
-        for (chunkIndex, chunk) in chunks.enumerated() {
+        for (chunkIndex, start) in chunkStarts.enumerated() {
             if Task.isCancelled { throw CancellationError() }
+            let end = min(start + spec.maxPromptUtterances, utterances.count)
+            let chunk = Array(utterances[start..<end])
+            // Boundary context — same carve as MLXLLMReviewerCore.
+            let ctxStart = max(0, start - spec.contextOverlapRows)
+            let contextPrefix = start == 0 ? [] : Array(utterances[ctxStart..<start])
             let issues = try await reviewChunk(
                 chunk: chunk,
                 speakerNames: speakerNames,
                 language: language,
                 chunkIndex: chunkIndex,
-                totalChunks: chunks.count
+                totalChunks: chunkStarts.count,
+                contextPrefix: contextPrefix
             )
             allIssues.append(contentsOf: issues)
             AppLog.app.info(
-                "LMStudioReviewer chunk \(chunkIndex + 1, privacy: .public)/\(chunks.count, privacy: .public) yielded \(issues.count, privacy: .public) issue(s)"
+                "LMStudioReviewer chunk \(chunkIndex + 1, privacy: .public)/\(chunkStarts.count, privacy: .public) yielded \(issues.count, privacy: .public) issue(s)"
             )
         }
-        return allIssues
+        // Post-parse grounding/sanity filter — see
+        // ReviewIssueValidator for the failure classes it kills.
+        return ReviewIssueValidator.filter(allIssues, utterances: utterances)
     }
 
     private func reviewChunk(
@@ -80,7 +84,8 @@ public actor LMStudioTranscriptionReviewer: TranscriptionReviewer {
         speakerNames: [String: String],
         language: ReviewLanguage,
         chunkIndex: Int,
-        totalChunks: Int
+        totalChunks: Int,
+        contextPrefix: [UtteranceEstimate]
     ) async throws -> [TranscriptionIssue] {
         let indexToID: [Int: UUID] = Dictionary(
             uniqueKeysWithValues: chunk
@@ -92,7 +97,8 @@ public actor LMStudioTranscriptionReviewer: TranscriptionReviewer {
             speakerNames: speakerNames,
             language: language,
             chunkIndex: chunkIndex,
-            totalChunks: totalChunks
+            totalChunks: totalChunks,
+            contextPrefix: contextPrefix
         )
         AppLog.app.info(
             "LMStudioReviewer chunk \(chunkIndex + 1, privacy: .public)/\(totalChunks, privacy: .public): \(chunk.count, privacy: .public) utterances (prompt \(prompt.count, privacy: .public) chars)"

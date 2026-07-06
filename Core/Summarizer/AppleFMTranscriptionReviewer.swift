@@ -31,6 +31,11 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
     /// window when the session is long.
     private static let maxPromptUtterances = 20
 
+    /// Previous-chunk rows replayed as unindexed context. Smaller
+    /// than the MLX specs' 6 — the 4096-token shared budget is
+    /// tight and each context row costs the same as a review row.
+    private static let contextOverlapRows = 4
+
     public func review(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
@@ -59,19 +64,28 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         var allIssues: [TranscriptionIssue] = []
         for (chunkIndex, chunk) in chunks.enumerated() {
             if Task.isCancelled { throw CancellationError() }
+            // Boundary context — tail of the previous chunk,
+            // replayed unindexed (see the ctx block in reviewChunk).
+            let start = chunkIndex * Self.maxPromptUtterances
+            let ctxStart = max(0, start - Self.contextOverlapRows)
+            let contextPrefix = start == 0 ? [] : Array(utterances[ctxStart..<start])
             let issues = try await reviewChunk(
                 chunk: chunk,
                 speakerNames: speakerNames,
                 language: language,
                 chunkIndex: chunkIndex,
-                totalChunks: chunks.count
+                totalChunks: chunks.count,
+                contextPrefix: contextPrefix
             )
             allIssues.append(contentsOf: issues)
             AppLog.app.info(
                 "AppleFMTranscriptionReviewer chunk \(chunkIndex + 1, privacy: .public)/\(chunks.count, privacy: .public) yielded \(issues.count, privacy: .public) issue(s)"
             )
         }
-        return allIssues
+        // Constrained decoding guarantees SHAPE, not grounding —
+        // the validator still applies (verbatim-excerpt check,
+        // confidence floor, dedupe).
+        return ReviewIssueValidator.filter(allIssues, utterances: utterances)
     }
 
     /// Inference on a single chunk. Row indices are 1-based
@@ -85,7 +99,8 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         speakerNames: [String: String],
         language: ReviewLanguage,
         chunkIndex: Int,
-        totalChunks: Int
+        totalChunks: Int,
+        contextPrefix: [UtteranceEstimate]
     ) async throws -> [TranscriptionIssue] {
         let indexToID: [Int: UUID] = Dictionary(
             uniqueKeysWithValues: chunk
@@ -108,11 +123,31 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         // Reason in the conversation's language so meaning +
         // homophone analysis works, but emit the `reason`
         // field in the user's app-language pick.
+        // Context block: unindexed, non-flaggable rows from the
+        // previous chunk for topic continuity. A model flag against
+        // one can't parse anyway (no rowIndex in indexToID).
+        let contextBlock: String
+        if contextPrefix.isEmpty {
+            contextBlock = ""
+        } else {
+            let ctxLines = contextPrefix.map { u in
+                "ctx " + Self.compactLine(rowIndex: 0, for: u, speakerNames: speakerNames)
+                    .split(separator: " ", maxSplits: 1)
+                    .dropFirst()
+                    .joined()
+            }.joined(separator: "\n")
+            contextBlock = """
+                Context from the previous chunk — for topic continuity ONLY; these rows have no row index and MUST NOT be flagged:
+                \(ctxLines)
+
+
+                """
+        }
         let userMessage = """
             The conversation is in \(language.label). Reason about meaning and homophones in \(language.label) only.
             Write each issue's "reason" field in \(SummarizerLocale.responseLanguageNameInEnglish). Use no other language for the reason text.
 
-            \(preface)Utterances (rowIndex speaker t=time text):
+            \(preface)\(contextBlock)Utterances (rowIndex speaker t=time text):
             \(lines)
             """
 
@@ -143,7 +178,8 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
                 utteranceID: utteranceID,
                 kind: kind,
                 reason: entry.reason,
-                confidence: entry.confidence
+                confidence: entry.confidence,
+                excerpt: entry.excerpt.isEmpty ? nil : entry.excerpt
             )
         }
     }
@@ -165,11 +201,20 @@ public actor AppleFMTranscriptionReviewer: TranscriptionReviewer {
         transcript — that's a tautology and not an issue. Omitting rows is
         ALWAYS preferred over flagging without a real candidate.
 
+        You are NOT reviewing content, opinions, emotions, or facts. The
+        ONLY question is whether the transcription matches what was likely
+        said. Anything else is out of scope and must not be flagged.
+
         For each issue, return rowIndex, a short kind tag from
-        ["homophone","contextual","grammar","other"], a one-sentence reason
-        explaining what looks wrong, and a 0.0–1.0 confidence. DO NOT
-        propose a corrected transcript — the human user will edit the row
-        themselves. Skip rows that read correctly.
+        ["homophone","contextual","grammar","other"], the EXACT substring
+        of that row's transcript that looks wrong (copied verbatim — issues
+        whose excerpt doesn't appear character-for-character in the row are
+        discarded automatically; empty string only for a contextual issue
+        about the whole row), a one-sentence reason explaining what looks
+        wrong, and a 0.0–1.0 confidence (0.9 = near-certain, 0.6 =
+        plausible; do not emit below 0.5). DO NOT propose a corrected
+        transcript — the human user will edit the row themselves. Skip rows
+        that read correctly.
         """
 
     /// `1 S01 t=12.3 「テキスト」` — minimal so the prompt fits.
@@ -200,6 +245,8 @@ private struct GenerableIssue {
     var rowIndex: Int
     @Guide(description: "Issue kind: homophone, contextual, grammar, or other")
     var kind: String
+    @Guide(description: "EXACT substring of the flagged row's transcript that looks wrong, copied verbatim; empty string only for a whole-row contextual issue")
+    var excerpt: String
     @Guide(description: "One short sentence explaining what looks wrong")
     var reason: String
     @Guide(description: "Self-reported confidence in this flag, 0.0–1.0")
