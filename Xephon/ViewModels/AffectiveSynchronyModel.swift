@@ -8,7 +8,7 @@ import Fusion
 /// the user has selected.
 @MainActor
 @Observable
-final class AffectiveSynchronyViewModel {
+final class AffectiveSynchronyModel {
     var axis: SynchronyAxis = .valence
 
     /// Pair whose inspector popover is currently open, if any.

@@ -51,7 +51,7 @@ struct AffectiveSynchronyCard: View {
     /// `rankedPairs(from:)` helper. View binds via `$model.axis` /
     /// `$model.inspectedPair`; methods that derive sort order from
     /// the current axis live on the model.
-    @State private var model = AffectiveSynchronyViewModel()
+    @State private var model = AffectiveSynchronyModel()
 
     /// Trailing value-column width (correlation + sample count).
     /// Sized for the widest plausible "−0.99 · 999" rendering at

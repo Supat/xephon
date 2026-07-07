@@ -4,6 +4,13 @@ import XephonUtilities
 
 /// Owns the transcript-list filter state and its derived caches.
 ///
+/// Lives in Xephon/ViewModels/ — the app's presentation-model layer
+/// (@MainActor @Observable companions owned by views via @State).
+/// See docs/mvvm_audit.md for the layer's conventions: models here
+/// derive presentation state from RecordingController reads, hold
+/// sheet/workflow state, and memoize; they never touch AVFoundation
+/// or the Core inference modules directly.
+///
 /// Extracted from `ContentView` so the view body stays focused on
 /// layout. The filter inputs (search text, label / speaker chips,
 /// mismatch toggle) feed two derived products — the filtered slice
