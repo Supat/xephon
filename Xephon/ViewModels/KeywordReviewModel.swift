@@ -62,21 +62,24 @@ final class KeywordReviewModel {
     /// (they still work).
     @ObservationIgnored weak var undoManager: UndoManager?
 
-    /// Monotonic mutation counter for the memo key. A plain
-    /// rejection COUNT collides across undo cycles — reject A,
-    /// undo, reject B leaves the count at 1 twice with two
-    /// different sets, and the memo would happily serve the
-    /// {A}-generation result for the {B} state.
-    @ObservationIgnored private var rejectionGeneration = 0
-
     @ObservationIgnored private var memoKey: MemoKey?
     @ObservationIgnored private var memoSuspects: [UUID: [KeywordSuspect]] = [:]
 
+    /// Keyed on the rejection SET itself, not a count or generation
+    /// counter: a plain count collides across undo cycles (reject A,
+    /// undo, reject B → count 1 twice for two different sets), and —
+    /// critically — building the key reads the observable
+    /// `rejectedIDs` on EVERY `suspects` call, so a view whose call
+    /// lands on the memo-hit path still registers the observation.
+    /// (A prior generation-counter design read nothing observable on
+    /// memo hits; the review sheet never re-rendered after a
+    /// rejection because the Keywords card had already warmed the
+    /// memo.)
     private struct MemoKey: Equatable {
         let utterancesVersion: Int
         let utteranceCount: Int
         let keywordSignature: [String]
-        let rejectionCount: Int
+        let rejectedIDs: Set<String>
     }
 
     /// Cap per keyword so a pathological keyword (e.g. a particle)
@@ -92,7 +95,6 @@ final class KeywordReviewModel {
     /// both update via observation).
     func reject(_ suspect: KeywordSuspect) {
         applyRejection(id: suspect.id, rejected: true)
-        undoManager?.setActionName(String(localized: "undo.keywords.reject"))
     }
 
     private func applyRejection(id: String, rejected: Bool) {
@@ -101,9 +103,23 @@ final class KeywordReviewModel {
         } else {
             rejectedIDs.remove(id)
         }
-        rejectionGeneration += 1
-        undoManager?.registerUndo(withTarget: self) { target in
+        guard let undoManager else { return }
+        // The session manager runs groupsByEvent = false (see
+        // RecordingController.registerUndoStep), so a bare
+        // registerUndo outside a group throws
+        // NSInternalInconsistencyException. Open a group per
+        // user-initiated registration — but NOT while an undo/redo
+        // invocation is running, where the manager is already inside
+        // its own group and the re-registration must land bare (same
+        // split as RecordingController's registerUndoStep / apply).
+        let needsGroup = !undoManager.isUndoing && !undoManager.isRedoing
+        if needsGroup { undoManager.beginUndoGrouping() }
+        undoManager.registerUndo(withTarget: self) { target in
             target.applyRejection(id: id, rejected: !rejected)
+        }
+        if needsGroup {
+            undoManager.setActionName(String(localized: "undo.keywords.reject"))
+            undoManager.endUndoGrouping()
         }
     }
 
@@ -119,7 +135,7 @@ final class KeywordReviewModel {
             utterancesVersion: recorder.utterancesVersion,
             utteranceCount: recorder.utterances.count,
             keywordSignature: keywords.map { "\($0.id.uuidString)|\($0.text)" },
-            rejectionCount: rejectionGeneration
+            rejectedIDs: rejectedIDs
         )
         if memoKey == key { return memoSuspects }
         memoKey = key
