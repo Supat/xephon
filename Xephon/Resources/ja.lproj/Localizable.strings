@@ -550,3 +550,7 @@
 "undo.keywords.reject" = "誤認識候補の却下";
 
 "session.loading" = "セッションを読み込み中…";
+
+"settings.summarizer.mode.meetingExperimental" = "ミーティング（実験）";
+"settings.summarizer.mode.meetingExperimental.caption" = "各発言の根拠行の引用、専門用語の補正、長いセッションでの全文マップリデュースを備えた議事録。実験的機能 — オンデバイスモデルではミーティングモードより要約の一貫性が下がる場合があります。";
+"summary.footer.mode.meetingExperimental" = "ミーティング（実験）";

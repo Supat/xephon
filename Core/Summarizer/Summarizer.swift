@@ -88,6 +88,16 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
     /// and each speaker's main talking points (`SessionSummary.topics`
     /// + `SpeakerSummary.talkingPoints`).
     case meeting
+    /// EXPERIMENTAL meeting minutes: the `.meeting` schema plus
+    /// per-stance evidence citations (single best-supporting row,
+    /// validated at parse), a domain-term glossary hint, and — over
+    /// the single-pass cap — chronological map-reduce instead of
+    /// TF-IDF sampling. Kept separate from `.meeting` because the
+    /// evidence-bearing output measurably reads less coherent on
+    /// the 4-bit on-device models (field comparison 2026-07-08);
+    /// `.meeting` stays the trusted baseline while this variant
+    /// is evaluated.
+    case meetingExperimental
 
     /// Custom rawValue initializer for backward compatibility.
     /// Accepts the legacy `"fast"` string (used before the case
@@ -102,6 +112,7 @@ public enum SummarizeMode: String, Sendable, Hashable, Codable, CaseIterable {
         case "deep":      self = .deep
         case "all":       self = .all
         case "meeting":   self = .meeting
+        case "meetingExperimental": self = .meetingExperimental
         case "fast":      self = .trailing   // legacy
         default:          return nil
         }
@@ -161,11 +172,19 @@ public protocol SessionSummarizer: Sendable {
     /// the trailing window regardless of content, and `.deep`
     /// processes every utterance so no selection bias applies.
     /// Default empty (no boost).
+    ///
+    /// `glossaryTerms` — the user's curated domain vocabulary
+    /// (keyword bank + custom glossary). Meeting mode folds these
+    /// into the prompt as "terms that may appear mis-transcribed
+    /// as homophones" so ASR errors on domain terms get normalized
+    /// instead of propagated into the minutes. Other modes ignore
+    /// the list. Default empty.
     func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         mode: SummarizeMode,
-        boostedUtteranceIDs: Set<UUID>
+        boostedUtteranceIDs: Set<UUID>,
+        glossaryTerms: [String]
     ) async throws -> SessionSummary
 }
 
@@ -183,7 +202,8 @@ extension SessionSummarizer {
             utterances: utterances,
             speakerNames: speakerNames,
             mode: .trailing,
-            boostedUtteranceIDs: []
+            boostedUtteranceIDs: [],
+            glossaryTerms: []
         )
     }
 
@@ -200,7 +220,26 @@ extension SessionSummarizer {
             utterances: utterances,
             speakerNames: speakerNames,
             mode: mode,
-            boostedUtteranceIDs: []
+            boostedUtteranceIDs: [],
+            glossaryTerms: []
+        )
+    }
+
+    /// Glossary-less overload preserving the previous canonical
+    /// four-argument signature for callers without a domain
+    /// vocabulary (tests, the reviewer's parallel pathway).
+    public func summarize(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        mode: SummarizeMode,
+        boostedUtteranceIDs: Set<UUID>
+    ) async throws -> SessionSummary {
+        try await summarize(
+            utterances: utterances,
+            speakerNames: speakerNames,
+            mode: mode,
+            boostedUtteranceIDs: boostedUtteranceIDs,
+            glossaryTerms: []
         )
     }
 }

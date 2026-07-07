@@ -63,7 +63,8 @@ public actor MLXLlamaSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         mode: SummarizeMode,
-        boostedUtteranceIDs: Set<UUID>
+        boostedUtteranceIDs: Set<UUID>,
+        glossaryTerms: [String]
     ) async throws -> SessionSummary {
         try await load()
         guard let container else {
@@ -76,6 +77,7 @@ public actor MLXLlamaSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
             speakerNames: speakerNames,
             mode: mode,
             boostedUtteranceIDs: boostedUtteranceIDs,
+            glossaryTerms: glossaryTerms,
             spec: spec
         )
     }

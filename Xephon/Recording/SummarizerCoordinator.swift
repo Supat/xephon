@@ -819,12 +819,14 @@ final class SummarizerCoordinator {
         let boostedIDs = (mode == .heuristic || mode == .meeting)
             ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
+        let glossaryTerms = mode == .meetingExperimental ? meetingGlossaryTerms() : []
         do {
             let summary = try await backend.summarize(
                 utterances: utterances,
                 speakerNames: parent.speakerNameOverrides,
                 mode: mode,
-                boostedUtteranceIDs: boostedIDs
+                boostedUtteranceIDs: boostedIDs,
+                glossaryTerms: glossaryTerms
             )
             logAvailableMemory(label: "\(logLabelPrefix) Apple FM (after respond)")
             writeback(summary)
@@ -891,12 +893,14 @@ final class SummarizerCoordinator {
         let boostedIDs = (mode == .heuristic || mode == .meeting)
             ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
+        let glossaryTerms = mode == .meetingExperimental ? meetingGlossaryTerms() : []
         do {
             let summary = try await actor.summarize(
                 utterances: utterances,
                 speakerNames: parent.speakerNameOverrides,
                 mode: mode,
-                boostedUtteranceIDs: boostedIDs
+                boostedUtteranceIDs: boostedIDs,
+                glossaryTerms: glossaryTerms
             )
             writeback(summary)
             return summary
@@ -951,12 +955,14 @@ final class SummarizerCoordinator {
         let boostedIDs = (mode == .heuristic || mode == .meeting)
             ? Self.keywordBoostedIDs(keywords: parent.keywords.keywords, in: utterances)
             : Set<UUID>()
+        let glossaryTerms = mode == .meetingExperimental ? meetingGlossaryTerms() : []
         do {
             let summary = try await backend.summarize(
                 utterances: utterances,
                 speakerNames: parent.speakerNameOverrides,
                 mode: mode,
-                boostedUtteranceIDs: boostedIDs
+                boostedUtteranceIDs: boostedIDs,
+                glossaryTerms: glossaryTerms
             )
             logAvailableMemory(label: "\(logLabelPrefix) LM Studio (after request)")
             writeback(summary)
@@ -1321,6 +1327,29 @@ final class SummarizerCoordinator {
     /// they care about so the helper works for both the whole
     /// session (overall summary) and a single section's range
     /// (per-section summary).
+    /// Meeting mode's domain vocabulary: the keyword bank plus the
+    /// custom glossary's terms, trimmed / deduped / capped. Folded
+    /// into the meeting prompt as "terms that may appear
+    /// mis-transcribed as homophones" so ASR errors on domain
+    /// terms (資料/飼料 class) get normalized by the model instead
+    /// of propagated into the minutes. Capped so a pathological
+    /// glossary can't crowd the prompt.
+    private static let meetingGlossaryTermCap = 50
+
+    private func meetingGlossaryTerms() -> [String] {
+        var seen = Set<String>()
+        var terms: [String] = []
+        let candidates = parent.keywords.keywords.map(\.text)
+            + parent.glossary.entries.map(\.term)
+        for raw in candidates {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty, seen.insert(t.lowercased()).inserted else { continue }
+            terms.append(t)
+            if terms.count >= Self.meetingGlossaryTermCap { break }
+        }
+        return terms
+    }
+
     static func keywordBoostedIDs(
         keywords: [Keyword],
         in utterances: [UtteranceEstimate]

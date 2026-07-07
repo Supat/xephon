@@ -321,6 +321,8 @@ struct SummaryResultView: View {
             case .heuristic: modeLabel = String(localized: "summary.footer.mode.heuristic")
             case .deep:      modeLabel = String(localized: "summary.footer.mode.deep")
             case .meeting:   modeLabel = String(localized: "summary.footer.mode.meeting")
+            case .meetingExperimental:
+                modeLabel = String(localized: "summary.footer.mode.meetingExperimental")
             case .all:       modeLabel = String(localized: "summary.footer.mode.all")
             }
             return "\(base) · \(modeLabel)"

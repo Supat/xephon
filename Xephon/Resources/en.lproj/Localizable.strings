@@ -550,3 +550,7 @@
 "undo.keywords.reject" = "Reject Suspected Mis-transcription";
 
 "session.loading" = "Opening Session…";
+
+"settings.summarizer.mode.meetingExperimental" = "Meeting (Experiment)";
+"settings.summarizer.mode.meetingExperimental.caption" = "Meeting minutes with per-stance row citations, domain-term correction, and full-coverage map-reduce on long sessions. Experimental — output can read less coherent than Meeting on the on-device models.";
+"summary.footer.mode.meetingExperimental" = "Meeting (Experiment)";

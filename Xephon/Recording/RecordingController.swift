@@ -816,7 +816,7 @@ final class RecordingController {
         keywords.onChange = { [weak self] in
             guard let self else { return }
             let mode = self.summarizer.mode
-            guard mode == .heuristic || mode == .meeting else { return }
+            guard mode == .heuristic || mode == .meeting || mode == .meetingExperimental else { return }
             self.summarizer.noteSummaryAffectingChange("keywords")
         }
         lmStudioSettings.onChange = { [weak self] in

@@ -149,6 +149,7 @@ internal enum LMStudioSchemas {
     /// tolerates empty strings / arrays so requiring `raisedBy` (which
     /// is genuinely optional in the data model) costs nothing on the
     /// emit side; the parser maps an empty `raisedBy` back to nil.
+    /// Classic (baseline) meeting schema — no evidence fields.
     static let meetingSchema: JSONSchemaNode = .object(
         properties: [
             ("topic", .string(allowedValues: nil)),
@@ -162,6 +163,39 @@ internal enum LMStudioSchemas {
                             ("stance", .string(allowedValues: nil)),
                         ],
                         required: ["speaker", "stance"]
+                    ))),
+                ],
+                required: ["title", "raisedBy", "positions"]
+            ))),
+            ("perSpeaker", .array(items: .object(
+                properties: [
+                    ("speakerID", .string(allowedValues: nil)),
+                    ("talkingPoints", .array(items: .string(allowedValues: nil))),
+                ],
+                required: ["speakerID", "talkingPoints"]
+            ))),
+        ],
+        required: ["topic", "topics", "perSpeaker"]
+    )
+
+    static let meetingSchemaExperimental: JSONSchemaNode = .object(
+        properties: [
+            ("topic", .string(allowedValues: nil)),
+            ("topics", .array(items: .object(
+                properties: [
+                    ("title", .string(allowedValues: nil)),
+                    ("raisedBy", .string(allowedValues: nil)),
+                    ("positions", .array(items: .object(
+                        properties: [
+                            ("speaker", .string(allowedValues: nil)),
+                            ("stance", .string(allowedValues: nil)),
+                            // ONE row number per stance — array-
+                            // valued evidence let the model spray
+                            // dozens of numbers per claim and blow
+                            // the output budget (observed on MLX).
+                            ("evidence", .number),
+                        ],
+                        required: ["speaker", "stance", "evidence"]
                     ))),
                 ],
                 required: ["title", "raisedBy", "positions"]

@@ -146,6 +146,10 @@ struct SummarizerCard: View {
                     // every backend, so no gate.
                     Text(String(localized: "settings.summarizer.mode.meeting"))
                         .tag(SummarizeMode.meeting)
+                    // Evidence-citing variant under evaluation —
+                    // see SummarizeMode.meetingExperimental.
+                    Text(String(localized: "settings.summarizer.mode.meetingExperimental"))
+                        .tag(SummarizeMode.meetingExperimental)
                     // `.all` is only viable on the LM Studio
                     // remote backend — on-device LLMs would
                     // either OOM or hit their context cap.
@@ -203,6 +207,8 @@ struct SummarizerCard: View {
             return String(localized: "settings.summarizer.mode.deep.caption")
         case .meeting:
             return String(localized: "settings.summarizer.mode.meeting.caption")
+        case .meetingExperimental:
+            return String(localized: "settings.summarizer.mode.meetingExperimental.caption")
         case .all:
             return String(localized: "settings.summarizer.mode.all.caption")
         }

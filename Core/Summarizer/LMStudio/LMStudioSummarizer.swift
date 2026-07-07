@@ -77,7 +77,8 @@ public actor LMStudioSummarizer: SessionSummarizer {
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         mode: SummarizeMode,
-        boostedUtteranceIDs: Set<UUID>
+        boostedUtteranceIDs: Set<UUID>,
+        glossaryTerms: [String]
     ) async throws -> SessionSummary {
         guard !utterances.isEmpty else {
             return SessionSummary(
@@ -107,12 +108,20 @@ public actor LMStudioSummarizer: SessionSummarizer {
         case .meeting:
             // Content-focused minutes: text-only rows, topics +
             // talking points out, no affect. Own prompt / schema /
-            // parser, so short-circuit the shared single-pass plumbing
-            // below entirely.
-            return try await summarizeMeeting(
+            // parser, so short-circuit the shared single-pass
+            // plumbing below entirely. Trusted baseline schema —
+            // see SummarizeMode.meeting vs .meetingExperimental.
+            return try await summarizeMeetingClassic(
                 utterances: utterances,
                 speakerNames: speakerNames,
                 boostedUtteranceIDs: boostedUtteranceIDs
+            )
+        case .meetingExperimental:
+            return try await summarizeMeetingExperimental(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                boostedUtteranceIDs: boostedUtteranceIDs,
+                glossaryTerms: glossaryTerms
             )
         case .trailing:
             resolvedMode = .trailing
@@ -257,7 +266,9 @@ public actor LMStudioSummarizer: SessionSummarizer {
     /// only rows), a content-only prompt + schema, and a meeting
     /// parser that fills `SessionSummary.topics` +
     /// `SpeakerSummary.talkingPoints` while zeroing every affect field.
-    private func summarizeMeeting(
+    // MARK: Meeting (classic baseline)
+
+    private func summarizeMeetingClassic(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         boostedUtteranceIDs: Set<UUID>
@@ -268,7 +279,7 @@ public actor LMStudioSummarizer: SessionSummarizer {
             selection: .heuristicTopN,
             boostedUtteranceIDs: boostedUtteranceIDs
         )
-        let prompt = buildMeetingPrompt(
+        let prompt = buildMeetingPromptClassic(
             utterances: promptUtterances,
             speakerNames: speakerNames,
             truncatedFromTotal: truncatedFrom
@@ -296,14 +307,70 @@ public actor LMStudioSummarizer: SessionSummarizer {
             throw SummarizerError.inferenceFailed(reason: String(describing: error))
         }
         if Task.isCancelled { throw CancellationError() }
+        // Shared parser; the classic prompt requests no evidence so
+        // the summary carries none.
+        return try MLXLLMSummarizerCore.parseMeeting(
+            raw: raw,
+            rows: promptUtterances,
+            speakerNames: speakerNames,
+            modelIdentifier: modelIdentifier,
+            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs
+        )
+    }
+
+    private func summarizeMeetingExperimental(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        boostedUtteranceIDs: Set<UUID>,
+        glossaryTerms: [String]
+    ) async throws -> SessionSummary {
+        let (promptUtterances, truncatedFrom) = selectUtterances(
+            from: utterances,
+            cap: Self.meetingMaxPromptUtterances,
+            selection: .heuristicTopN,
+            boostedUtteranceIDs: boostedUtteranceIDs
+        )
+        let prompt = buildMeetingPromptExperimental(
+            utterances: promptUtterances,
+            speakerNames: speakerNames,
+            glossaryTerms: glossaryTerms,
+            truncatedFromTotal: truncatedFrom
+        )
+        AppLog.app.info(
+            "LMStudioSummarizer meeting summarizing \(promptUtterances.count, privacy: .public) utterances (prompt \(prompt.count, privacy: .public) chars)"
+        )
+        let raw: String
+        do {
+            let responseFormatJSON = useStructuredOutput
+                ? try? JSONEncoder().encode(LMStudioResponseFormat.jsonSchema(
+                    name: "meeting_summary",
+                    schema: LMStudioSchemas.meetingSchemaExperimental
+                ))
+                : nil
+            raw = try await client.chat(
+                userMessage: prompt,
+                temperature: 0.2,
+                maxTokens: spec.maxOutputTokens,
+                responseFormatJSON: responseFormatJSON
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw SummarizerError.inferenceFailed(reason: String(describing: error))
+        }
+        if Task.isCancelled { throw CancellationError() }
         let preview = raw.count > 400
             ? String(raw.prefix(400)) + "…[truncated]"
             : raw
         AppLog.app.info(
             "LMStudioSummarizer meeting raw output: \(raw.count, privacy: .public) chars, preview: \(preview, privacy: .public)"
         )
-        return try Self.parseMeeting(
+        // Shared parser: same tolerant decode, evidence validation
+        // (row numbers are 1-based into promptUtterances), and
+        // per-speaker fill the MLX meeting path uses.
+        return try MLXLLMSummarizerCore.parseMeeting(
             raw: raw,
+            rows: promptUtterances,
             speakerNames: speakerNames,
             modelIdentifier: modelIdentifier,
             expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs
@@ -316,7 +383,7 @@ public actor LMStudioSummarizer: SessionSummarizer {
     /// with attribution + per-speaker positions, and each speaker's
     /// talking points. Kept local to this file (not in
     /// `PromptCatalog` / `MLXQwenSpec`) since it's LM-Studio-specific.
-    private func buildMeetingPrompt(
+    private func buildMeetingPromptClassic(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         truncatedFromTotal: Int?
@@ -343,7 +410,66 @@ public actor LMStudioSummarizer: SessionSummarizer {
         lines.append("")
         lines.append("Transcript:")
         for u in utterances {
-            lines.append(meetingLine(for: u, speakerNames: speakerNames))
+            lines.append(meetingLineClassic(for: u, speakerNames: speakerNames))
+        }
+        lines.append("")
+        lines.append("---")
+        lines.append("IMPORTANT: Follow the instructions above and produce exactly one valid JSON object with fields topic, topics, perSpeaker. The FIRST character of your output MUST be `{`. Do NOT echo the transcript above; do NOT add any prose.")
+        // Restate the language directive LAST — recency wins on
+        // long prompts (same reason the JSON-shape rule is
+        // restated in this sandwich). The copy mid-prompt sits
+        // thousands of tokens back, above the utterance list, and
+        // the small quantized models drift to the transcript's
+        // (or the prompt's own) language without this reminder —
+        // Apple FM honored the early copy, these did not.
+        lines.append(SummarizerLocale.responseLanguageInstruction)
+        return lines.joined(separator: "\n")
+    }
+
+    private func meetingLineClassic(
+        for u: UtteranceEstimate,
+        speakerNames: [String: String]
+    ) -> String {
+        var label = u.speakerID
+        if let name = speakerNames[u.speakerID], !name.isEmpty {
+            label += " (\(name))"
+        }
+        return "- \(label): \(u.transcript)"
+    }
+
+    private func buildMeetingPromptExperimental(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        glossaryTerms: [String],
+        truncatedFromTotal: Int?
+    ) -> String {
+        let speakers = utterances.orderedSpeakerIDs
+        let speakerList = speakers.joined(separator: ", ")
+        var lines: [String] = []
+        lines.reserveCapacity(utterances.count + 16)
+        lines.append("You are an analyst writing the minutes of a multi-speaker meeting.")
+        lines.append("Read every line of the transcript below and produce a JSON object with three fields:")
+        lines.append("  \"topic\" — one or two sentences giving an overall overview of what the meeting was about.")
+        lines.append("  \"topics\" — array of the main subjects discussed. Each entry is { \"title\": <short topic name>, \"raisedBy\": <speaker id or name who first brought it up, or \"\" if unclear>, \"positions\": [ { \"speaker\": <id or name>, \"stance\": <that speaker's opinion / position on this topic, in ONE short sentence>, \"evidence\": <the SINGLE row number that best supports this stance> } ] }. Capture every distinct topic the meeting actually covered.")
+        lines.append("  \"perSpeaker\" — array, one entry per speaker id in this list: \(speakerList). Each entry is { \"speakerID\": <id>, \"talkingPoints\": [ <short string>, … ] } listing that speaker's main points / contributions. Maximize coverage — list every substantive point the speaker made.")
+        lines.append("Each transcript line below is numbered like [1]. Every \"evidence\" value is ONE integer — the row number that best supports the stance — and must actually appear below (1–\(utterances.count)). NEVER invent or guess numbers.")
+        lines.append("Focus ONLY on content: who said what, and the positions taken. Do NOT comment on emotion, mood, tone, or affect.")
+        if !glossaryTerms.isEmpty {
+            lines.append("Domain terms curated by the user: \(glossaryTerms.joined(separator: ", ")). The transcript is speech-recognition output — when a transcript word is a plausible mis-hearing (same or similar reading) of one of these terms, treat it as that term and use the term's correct spelling in the minutes.")
+        }
+        lines.append("Return ONLY valid JSON, no prose before or after.")
+        lines.append(SummarizerLocale.responseLanguageInstruction)
+        // Disable Qwen3 thinking for a single turn (harmless literal
+        // text for Llama-served models — see the type-level note).
+        lines.append("/no_think")
+        if let total = truncatedFromTotal {
+            lines.append("")
+            lines.append("NOTE: This meeting has \(total) lines total; the \(utterances.count) most distinctive lines (chosen by session-relative TF-IDF, NOT the most recent) are shown below in chronological order. Cover the whole meeting; gaps between lines are expected.")
+        }
+        lines.append("")
+        lines.append("Transcript:")
+        for (offset, u) in utterances.enumerated() {
+            lines.append(meetingLineExperimental(index: offset + 1, for: u, speakerNames: speakerNames))
         }
         lines.append("")
         lines.append("---")
@@ -364,7 +490,8 @@ public actor LMStudioSummarizer: SessionSummarizer {
     /// deliberately dropped. The rename map is applied so the model
     /// can refer to speakers by their friendly name in `raisedBy` /
     /// `positions`.
-    private func meetingLine(
+    private func meetingLineExperimental(
+        index: Int,
         for u: UtteranceEstimate,
         speakerNames: [String: String]
     ) -> String {
@@ -372,7 +499,9 @@ public actor LMStudioSummarizer: SessionSummarizer {
         if let name = speakerNames[u.speakerID], !name.isEmpty {
             label += " (\(name))"
         }
-        return "- \(label): \(u.transcript)"
+        // The [n] prefix is the row's citation number — the
+        // evidence arrays in the output refer back to it.
+        return "[\(index)] \(label): \(u.transcript)"
     }
 
     /// Parse the meeting JSON into a `SessionSummary`. Reuses the
@@ -382,77 +511,4 @@ public actor LMStudioSummarizer: SessionSummarizer {
     /// field zeroed (`overallMood` / `dominantMood` empty, no setting).
     /// `fillMissingPerSpeaker` guarantees a roster entry per input
     /// speaker even when the model drops one.
-    static func parseMeeting(
-        raw: String,
-        speakerNames: [String: String],
-        modelIdentifier: String,
-        expectedSpeakerIDs: [String]
-    ) throws -> SessionSummary {
-        let dethought = MLXLLMSummarizerCore.stripThinkBlocks(raw)
-        let stripped = MLXLLMSummarizerCore.stripCodeFence(dethought)
-        guard let braceStart = stripped.firstIndex(of: "{"),
-              let braceEnd = stripped.lastIndex(of: "}"),
-              braceStart < braceEnd else {
-            throw SummarizerError.decodeFailed(reason: "no JSON object found")
-        }
-        struct Wire: Decodable {
-            struct Position: Decodable {
-                let speaker: String?
-                let stance: String?
-            }
-            struct Topic: Decodable {
-                let title: String?
-                let raisedBy: String?
-                let positions: [Position]?
-            }
-            struct PerSpeaker: Decodable {
-                let speakerID: String
-                let talkingPoints: [String]?
-            }
-            let topic: String?
-            let topics: [Topic]?
-            let perSpeaker: [PerSpeaker]?
-        }
-        let jsonSlice = String(stripped[braceStart...braceEnd])
-        guard let data = jsonSlice.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(Wire.self, from: data) else {
-            throw SummarizerError.decodeFailed(reason: "meeting JSON did not parse")
-        }
-        let topics: [SessionSummary.TopicSummary]? = decoded.topics.map { list in
-            list.map { t in
-                let by = t.raisedBy?.trimmingCharacters(in: .whitespacesAndNewlines)
-                return SessionSummary.TopicSummary(
-                    title: t.title ?? "",
-                    raisedBy: (by?.isEmpty == false) ? by : nil,
-                    positions: (t.positions ?? []).map { p in
-                        .init(speaker: p.speaker ?? "", stance: p.stance ?? "")
-                    }
-                )
-            }
-        }
-        let perSpeaker = (decoded.perSpeaker ?? []).map { entry in
-            SessionSummary.SpeakerSummary(
-                speakerID: entry.speakerID,
-                speakerName: speakerNames[entry.speakerID],
-                summary: "",
-                dominantMood: "",
-                talkingPoints: entry.talkingPoints
-            )
-        }
-        let filled = SessionSummary.fillMissingPerSpeaker(
-            perSpeaker,
-            expectedSpeakerIDs: expectedSpeakerIDs,
-            speakerNames: speakerNames
-        )
-        return SessionSummary(
-            inferredSetting: nil,
-            topic: decoded.topic ?? "",
-            overallMood: "",
-            perSpeaker: filled,
-            topics: topics,
-            model: modelIdentifier,
-            generatedAt: Date(),
-            mode: .meeting
-        )
-    }
 }

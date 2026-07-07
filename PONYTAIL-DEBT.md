@@ -119,3 +119,27 @@ a deeper-indented line (substring, not line match) and left four strip
 files half-rewritten. **Rule:** structural refactors over near-identical
 files need line-anchored (or brace-counted) edits, then a build before
 moving on — the build caught it immediately.
+
+## Tombstones — on-device LLM prompting (2026-07-08, audiorecord)
+
+### Soft numeric bounds don't constrain 4-bit models; schemas do
+Qwen3-8B-4bit ignored "cite the 3-5 most representative rows" and
+enumerated 20+ rows per claim, spending the entire 4096-token
+output budget on numbers (meeting summary truncated mid-JSON, twice).
+**Rule:** never rely on "at most N" prose for output-cost control on
+small quantized models — make the field's TYPE enforce the bound
+(a scalar can't be sprayed; LM Studio strict schema `.number`, FM
+Generable `Int`). Corollary: any schema change that grows output
+must be checked against `maxOutputTokens` × decode speed before
+shipping — output tokens are ~10× more expensive than prompt
+tokens at meeting scale (12 t/s decode vs 100+ t/s prefill).
+
+### Prompt-schema changes are model-behavior changes — keep the
+### trusted baseline selectable
+The evidence experiment degraded perceived coherence even after the
+token-budget fix; the user's validated baseline had to come back
+verbatim (byte-identical prompt restored from git). **Rule:** when
+changing a generation schema the user already relies on, ship the
+change as a SEPARATE mode next to the baseline (Meeting vs Meeting
+(Experiment)) and let eval data decide the promotion — don't edit
+the trusted path in place.

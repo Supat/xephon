@@ -55,9 +55,21 @@ public struct SessionSummary: Sendable, Hashable, Codable {
             public let speaker: String
             /// Their opinion / position on this topic.
             public let stance: String
-            public init(speaker: String, stance: String) {
+            /// IDs of the utterances the model cited as evidence for
+            /// this stance (prompt row numbers, validated and mapped
+            /// back to IDs at parse time — invalid citations are
+            /// stripped, never invented). Nil for affect modes and
+            /// pre-evidence `.xph` bundles; empty means the model
+            /// cited nothing that survived validation.
+            public let evidenceUtteranceIDs: [UUID]?
+            public init(
+                speaker: String,
+                stance: String,
+                evidenceUtteranceIDs: [UUID]? = nil
+            ) {
                 self.speaker = speaker
                 self.stance = stance
+                self.evidenceUtteranceIDs = evidenceUtteranceIDs
             }
         }
         /// The topic / subject discussed.
@@ -66,10 +78,20 @@ public struct SessionSummary: Sendable, Hashable, Codable {
         public let raisedBy: String?
         /// Other participants' positions / opinions on the topic.
         public let positions: [Position]
-        public init(title: String, raisedBy: String?, positions: [Position]) {
+        /// IDs of the utterances where this topic was discussed —
+        /// same provenance/validation contract as
+        /// `Position.evidenceUtteranceIDs`.
+        public let evidenceUtteranceIDs: [UUID]?
+        public init(
+            title: String,
+            raisedBy: String?,
+            positions: [Position],
+            evidenceUtteranceIDs: [UUID]? = nil
+        ) {
             self.title = title
             self.raisedBy = raisedBy
             self.positions = positions
+            self.evidenceUtteranceIDs = evidenceUtteranceIDs
         }
     }
 
@@ -182,7 +204,7 @@ public struct SessionSummary: Sendable, Hashable, Codable {
             lines.append("## Setting")
             lines.append(setting)
         }
-        let isMeeting = mode == .meeting || (topics?.isEmpty == false)
+        let isMeeting = mode == .meeting || mode == .meetingExperimental || (topics?.isEmpty == false)
         lines.append("")
         lines.append("## Topic")
         lines.append(topic.isEmpty ? "—" : topic)
