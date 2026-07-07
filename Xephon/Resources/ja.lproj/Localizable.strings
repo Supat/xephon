@@ -426,11 +426,9 @@
 "glossary.entry.asrHint.off.a11y" = "ASRヒントから除外";
 "glossary.entry.bias.on.a11y" = "テキストSERバイアスに使用";
 "glossary.entry.bias.off.a11y" = "テキストSERバイアスから除外";
-"glossary.entries" = "登録語";
 "glossary.add" = "語を追加";
 "glossary.empty.title" = "登録語はまだありません。";
 "glossary.empty.hint" = "上のメニューから追加するか、辞書JSONを取り込んでください。";
-"glossary.weight.hint" = "重み 0.0 = 無視、1.0 = この語の感情へ強く傾ける。部分一致・大文字小文字を区別しません。";
 "glossary.entry.term.placeholder" = "語（例: 残業）";
 "glossary.entry.label" = "感情";
 "glossary.entry.weight" = "重み";
@@ -556,3 +554,6 @@
 "summary.footer.mode.meetingExperimental" = "ミーティング（実験）";
 
 "error.capture.file_read_failed" = "音声ファイルを最後まで読み込めませんでした — 解析はファイルの一部のみを対象としています。";
+
+"setup.title" = "Xephon をセットアップ中";
+"setup.waiting" = "待機中";

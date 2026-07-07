@@ -426,11 +426,9 @@
 "glossary.entry.asrHint.off.a11y" = "Excluded from ASR hints";
 "glossary.entry.bias.on.a11y" = "Contributes to text-SER bias";
 "glossary.entry.bias.off.a11y" = "Excluded from text-SER bias";
-"glossary.entries" = "Entries";
 "glossary.add" = "Add Entry";
 "glossary.empty.title" = "No glossary entries yet.";
 "glossary.empty.hint" = "Add an entry via the menu above, or import a glossary JSON.";
-"glossary.weight.hint" = "Weight 0.0 = ignore; 1.0 = strong tilt toward this term's emotion. Substring match, case-insensitive.";
 "glossary.entry.term.placeholder" = "Term (e.g. 残業)";
 "glossary.entry.label" = "Emotion";
 "glossary.entry.weight" = "Weight";
@@ -556,3 +554,6 @@
 "summary.footer.mode.meetingExperimental" = "Meeting (Experiment)";
 
 "error.capture.file_read_failed" = "The audio file could not be fully read — the analysis covers only part of the file.";
+
+"setup.title" = "Setting up Xephon";
+"setup.waiting" = "waiting";

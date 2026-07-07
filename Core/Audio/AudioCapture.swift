@@ -807,6 +807,10 @@ public actor AVAudioEngineCapture: AudioCapture {
         guard cap > 0,
               let out = AVAudioPCMBuffer(pcmFormat: recordFormat, frameCapacity: cap) else { return }
         var convError: NSError?
+        // `@unchecked Sendable` is safe: one-shot latch consumed only
+        // by the AVAudioConverter input block, which the converter
+        // calls serially on a single thread per `convert(...)` call.
+        // (Same latch pattern as AudioFileCapture's pump.)
         final class Once: @unchecked Sendable { var fired = false }
         let once = Once()
         let inputBlock: AVAudioConverterInputBlock = { _, status in

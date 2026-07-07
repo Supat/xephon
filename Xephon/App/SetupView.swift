@@ -14,7 +14,7 @@ struct SetupView: View {
                 Image(systemName: "waveform.and.mic")
                     .font(.system(size: 48))
                     .foregroundStyle(.tint)
-                Text("Setting up Xephon")
+                Text(String(localized: "setup.title"))
                     .font(.title2.bold())
                 Text("Downloading the on-device emotion models. About \(formatMB(ModelManifest.approximateTotalBytes)) over Wi-Fi — only happens once.")
                     .font(.subheadline)
@@ -126,7 +126,7 @@ private struct FileLine: View {
     private var statusText: some View {
         switch state.fileStatus[file.assetName] ?? .pending {
         case .pending:
-            Text("waiting").font(.caption2)
+            Text(String(localized: "setup.waiting")).font(.caption2)
         case .satisfied(let source):
             Text(source).font(.caption2)
         case .downloading:

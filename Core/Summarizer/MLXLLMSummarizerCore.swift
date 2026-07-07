@@ -144,6 +144,19 @@ extension MLXLLMSpec {
     var meetingDeepWindowSize: Int { 150 }
 }
 
+/// Family-gated single-turn prompt directives, shared by the
+/// static prompt builders (which receive `family`, not a spec
+/// instance). Qwen3's "thinking" mode emits a `<think>…</think>`
+/// block before the answer; `/no_think` disables it for the turn —
+/// literal (corrupting) text for Llama, hence per-family. Per the
+/// core/spec split's own rule, this family conditional lives in
+/// the spec layer, not in the shared orchestration.
+internal enum MLXLLMSpecDirectives {
+    static func turnDirectives(family: LLMModelFamily) -> [String] {
+        family == .qwen ? ["/no_think"] : []
+    }
+}
+
 // MARK: - Selection strategy for single-pass modes
 
 /// How to pick which utterances feed a single-pass prompt
@@ -521,12 +534,7 @@ internal enum MLXLLMSummarizerCore {
         lines.append("Each row below carries only a speaker label and the transcript text — no emotion data is provided, and none is wanted in the output.")
         lines.append("Return ONLY valid JSON, no prose before or after.")
         lines.append(SummarizerLocale.responseLanguageInstruction)
-        // Qwen3's "thinking" mode emits a `<think>…</think>`
-        // block before the answer; `/no_think` disables it for
-        // this turn. Literal text for Llama, so family-gated.
-        if family == .qwen {
-            lines.append("/no_think")
-        }
+        lines.append(contentsOf: MLXLLMSpecDirectives.turnDirectives(family: family))
         if let total = truncatedFromTotal {
             lines.append("")
             lines.append("NOTE: This conversation has \(total) utterances total; the \(utterances.count) most distinctive utterances (chosen by session-relative TF-IDF, NOT the most recent) are shown below in chronological order. Treat them as a representative sample of the whole meeting — gaps between rows are expected.")
@@ -682,12 +690,7 @@ internal enum MLXLLMSummarizerCore {
         }
         lines.append("Return ONLY valid JSON, no prose before or after.")
         lines.append(SummarizerLocale.responseLanguageInstruction)
-        // Qwen3's "thinking" mode emits a `<think>…</think>`
-        // block before the answer; `/no_think` disables it for
-        // this turn. Literal text for Llama, so family-gated.
-        if family == .qwen {
-            lines.append("/no_think")
-        }
+        lines.append(contentsOf: MLXLLMSpecDirectives.turnDirectives(family: family))
         lines.append("")
         lines.append("Utterances:")
         for (offset, u) in utterances.enumerated() {
@@ -737,9 +740,7 @@ internal enum MLXLLMSummarizerCore {
         }
         lines.append("Return ONLY valid JSON with fields topic, topics, perSpeaker — same schema as the windows.")
         lines.append(SummarizerLocale.responseLanguageInstruction)
-        if family == .qwen {
-            lines.append("/no_think")
-        }
+        lines.append(contentsOf: MLXLLMSpecDirectives.turnDirectives(family: family))
         lines.append("")
         lines.append(contentsOf: windowJSONs)
         lines.append("")
