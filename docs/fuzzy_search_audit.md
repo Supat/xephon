@@ -135,6 +135,19 @@ balance; the fixture set is what proves each moved it the right way.
 - **Fused-token boundary forms**: ジーパン never matches letter "G" — the
   documented, intended tightening.
 
+## Implementation status (same day)
+
+R1–R6 implemented; R7's scheme concern was a false alarm (Swift Testing
+output had been mis-read as "0 tests" — the suite was running all along)
+and its real deliverable, the labeled fixture suite, lives in
+`Tests/UnitTests/FuzzySearchFixtureTests.swift` (all green). Two
+adjustments discovered during implementation: the filter already fuzzed
+over the joined transcript — R4's actual fix was reconstructing
+joined-level highlight ranges and dropping the `hasHighlightableSimilarToken`
+gate; and R5's containment-ratio example was internally inconsistent, so
+R5 landed as scoping only (LCS stays in opt-in search, removed from
+keyword review).
+
 ## Suggested order
 
 R2 (one line) → R1 (table) → R7 (fixtures) → R3 (phonetic key) → R4
