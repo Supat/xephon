@@ -1841,7 +1841,15 @@ final class RecordingController {
         // Mic recording finished (capture.stop() has flushed the file):
         // expose it for playback / re-eval / save, exactly like a
         // file-opened source. Keyed off playbackSourceURL downstream.
-        if let url = currentRecordingURL {
+        // MIC MODE ONLY: stop() is shared with file analysis, and a
+        // stale currentRecordingURL from a PREVIOUS live session
+        // survives into a file session (file starts never cleaned it
+        // up — fixed in startFromFile, this gate is the belt).
+        // Without it, the file session's stop() re-finalized the old
+        // mic recording and stomped playbackSourceURL — replay
+        // buttons played the previous session's audio instead of the
+        // freshly analyzed file.
+        if case .microphone = sourceMode, let url = currentRecordingURL {
             finalizeMicRecording(url: url)
         }
         phase = .idle

@@ -29,6 +29,13 @@ extension RecordingController {
         // a new ref later (e.g. when the user taps Playback) can fail
         // with permErr (-54). Holding our own ref here keeps the URL
         // readable for the lifetime of `playbackSourceURL`.
+        // Starting a file session abandons the previous session the
+        // same way loadSession does — drop its mic-recording temp
+        // (and nil currentRecordingURL) so the shared stop() tail
+        // can't later re-finalize the OLD recording over this
+        // session's playback source. Mic starts and session loads
+        // already did this; file starts were the gap.
+        cleanupRecordingFile()
         setPlaybackSourceURL(url)
         // Probe the file's length so the status line can render a
         // completion percentage. AVAudioFile open is cheap and is
