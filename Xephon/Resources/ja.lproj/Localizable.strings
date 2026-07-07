@@ -546,3 +546,5 @@
 
 "keywords.review.play" = "発話音声を再生";
 "keywords.review.stop" = "再生を停止";
+
+"undo.keywords.reject" = "誤認識候補の却下";

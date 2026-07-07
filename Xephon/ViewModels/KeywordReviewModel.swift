@@ -55,6 +55,20 @@ final class KeywordReviewModel {
     /// counts and the sheet update the instant a claim is rejected.
     private(set) var rejectedIDs: Set<String> = []
 
+    /// The session UndoManager (the recorder's), assigned by
+    /// ControlPaneView before the review sheet presents. Weak —
+    /// this model must not keep the controller's manager alive,
+    /// and a nil manager just means rejections aren't undoable
+    /// (they still work).
+    @ObservationIgnored weak var undoManager: UndoManager?
+
+    /// Monotonic mutation counter for the memo key. A plain
+    /// rejection COUNT collides across undo cycles — reject A,
+    /// undo, reject B leaves the count at 1 twice with two
+    /// different sets, and the memo would happily serve the
+    /// {A}-generation result for the {B} state.
+    @ObservationIgnored private var rejectionGeneration = 0
+
     @ObservationIgnored private var memoKey: MemoKey?
     @ObservationIgnored private var memoSuspects: [UUID: [KeywordSuspect]] = [:]
 
@@ -69,8 +83,28 @@ final class KeywordReviewModel {
     /// can't flood the sheet or the scan budget.
     private static let maxSuspectsPerKeyword = 20
 
+    /// Reject a suspect, undoably. Same inverse-inside-the-closure
+    /// pattern as RecordingController's step system: re-registering
+    /// the opposite operation while an undo invocation is running
+    /// makes UndoManager route it to the redo stack automatically,
+    /// so one method yields the full undo/redo cycle. Undoing a
+    /// rejection resurfaces the suspect (chip count and open sheet
+    /// both update via observation).
     func reject(_ suspect: KeywordSuspect) {
-        rejectedIDs.insert(suspect.id)
+        applyRejection(id: suspect.id, rejected: true)
+        undoManager?.setActionName(String(localized: "undo.keywords.reject"))
+    }
+
+    private func applyRejection(id: String, rejected: Bool) {
+        if rejected {
+            rejectedIDs.insert(id)
+        } else {
+            rejectedIDs.remove(id)
+        }
+        rejectionGeneration += 1
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.applyRejection(id: id, rejected: !rejected)
+        }
     }
 
     /// keywordID → suspects, memoized on (utterances, keyword texts,
@@ -85,7 +119,7 @@ final class KeywordReviewModel {
             utterancesVersion: recorder.utterancesVersion,
             utteranceCount: recorder.utterances.count,
             keywordSignature: keywords.map { "\($0.id.uuidString)|\($0.text)" },
-            rejectionCount: rejectedIDs.count
+            rejectionCount: rejectionGeneration
         )
         if memoKey == key { return memoSuspects }
         memoKey = key

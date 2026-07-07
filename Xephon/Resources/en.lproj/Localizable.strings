@@ -546,3 +546,5 @@
 
 "keywords.review.play" = "Play utterance audio";
 "keywords.review.stop" = "Stop playback";
+
+"undo.keywords.reject" = "Reject Suspected Mis-transcription";

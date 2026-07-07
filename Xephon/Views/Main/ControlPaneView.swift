@@ -451,7 +451,14 @@ struct ControlPaneView: View {
                     registerUndo: { name in recorder.registerKeywordsUndo(actionName: name) },
                     keywordCounts: filterModel.keywordOccurrenceCounts(in: recorder),
                     suspectCounts: keywordReview.suspects(in: recorder).mapValues(\.count),
-                    onReviewKeyword: { reviewingKeyword = $0 }
+                    onReviewKeyword: { keyword in
+                        // Late-bound: the model is @State-created
+                        // without recorder access; wire the session
+                        // UndoManager here so rejections register
+                        // on the same stack as every other edit.
+                        keywordReview.undoManager = recorder.undoManager
+                        reviewingKeyword = keyword
+                    }
                 )
                 .sheet(item: $reviewingKeyword) { keyword in
                     KeywordReviewSheet(
