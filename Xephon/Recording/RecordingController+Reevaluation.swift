@@ -23,16 +23,20 @@ extension RecordingController {
 
 
 
-    /// Front-only padding applied before the original utterance's
-    /// start when re-feeding audio to offline ASR. The streaming
-    /// pass's finalizer cuts segments at the volatile-stabilization
-    /// boundary, which often clips the first phoneme of an utterance;
-    /// 500 ms of lead-in gives offline ASR a chance to recover it.
-    /// No back padding is applied in the long-utterance path — the
-    /// segment's tail is already preserved by streaming, and the
-    /// sentence-aware trim in `AnalysisPipeline.reevaluate` drops
-    /// anything past the last terminator anyway.
-    static let reevaluationPaddingSec: TimeInterval = 0.5
+    /// Front-pad CAP before the original utterance's start when
+    /// re-feeding audio to offline ASR. The streaming pass's
+    /// finalizer cuts segments at the volatile-stabilization
+    /// boundary, which often clips the first phoneme; the pad gives
+    /// offline ASR room to recover it. The actual pad is MEASURED,
+    /// not fixed: bounded below by the previous row's end (never
+    /// import the prior sentence's tail) and snapped to the last
+    /// silence gap inside the pad region (see `frontSnappedChunk`),
+    /// so this cap only bites when no boundary signal exists.
+    /// Wider than the old fixed 0.5 s because the neighbor bound +
+    /// silence snap make a generous cap safe. No back padding on
+    /// the long path — the tail is already preserved by streaming
+    /// and the sentence-aware trim drops unterminated fragments.
+    static let reevaluationPaddingSec: TimeInterval = 1.0
 
     /// USB-C audio plug/unplug polling cadence while idle — there's
     /// no public notification for it, so we diff `availableInputs`
@@ -63,9 +67,17 @@ extension RecordingController {
     /// loop, growing the back pad in steps until offline ASR
     /// produces a transcript containing a sentence terminator.
     private static let shortUtteranceThresholdSec: TimeInterval = 1.0
-    /// Initial and per-iteration step for back padding when retrying
-    /// the short-utterance case.
+    /// Minimum back-extension for the short-utterance path, so a
+    /// too-tight speaker-turn estimate from the streaming timeline
+    /// can't starve the read of its continuation audio.
     private static let reevaluationBackPadStepSec: TimeInterval = 1.0
+    /// Trailing-silence whisker kept after a gap-scan cut so the
+    /// offline ASR sees the sentence actually END rather than a
+    /// hard truncation at the last voiced frame.
+    private static let gapCutTrailSec: TimeInterval = 0.15
+    /// Lead-silence whisker kept before the front snap's speech
+    /// onset — same reasoning, mirrored.
+    private static let frontSnapLeadSec: TimeInterval = 0.1
     /// Hard cap on back padding so a recording with no clean sentence
     /// boundary anywhere ahead doesn't keep growing the read forever.
     /// 10 s is comfortably longer than any realistic Japanese
@@ -99,8 +111,9 @@ extension RecordingController {
         let volatileHandler: @Sendable @MainActor (String) -> Void
     }
 
-    /// Re-feed the utterance's audio (padded by `reevaluationPaddingSec`
-    /// on each side) to offline ASR, then run SER + fusion on the new
+    /// Re-feed the utterance's audio (front pad measured against the
+    /// previous row + silence snap, capped by `reevaluationPaddingSec`)
+    /// to offline ASR, then run SER + fusion on the new
     /// result and replace the utterance in `utterances` in place. The
     /// utterance's `id`, `start`, `end`, `speakerID`, and `speechBoost`
     /// are preserved so list position, selection, and Save/Load
@@ -171,17 +184,31 @@ extension RecordingController {
     private func reevaluateLong(
         ctx: ReevaluationContext
     ) async throws -> (fresh: UtteranceEstimate, chunk: AudioChunk)? {
-        let extendedStart = max(0, ctx.originalStart - Self.reevaluationPaddingSec)
+        // Front pad: capped fixed distance, bounded below by the
+        // previous row's end (never import the prior sentence's
+        // tail — data already in memory, zero cost), then snapped
+        // to the last silence gap inside the pad region so the read
+        // starts just before the utterance's true onset instead of
+        // a blind 0.5 s early.
+        let capStart = max(0, ctx.originalStart - Self.reevaluationPaddingSec)
+        let neighborBound = previousRowEnd(
+            before: ctx.originalStart, excluding: ctx.utteranceID
+        )
+        let extendedStart = max(capStart, neighborBound ?? capStart)
         let url = ctx.url
-        let chunk = try await Task.detached(priority: .userInitiated) {
+        let raw = try await Task.detached(priority: .userInitiated) {
             try Self.readAudioChunkForReevaluation(
                 fileURL: url, start: extendedStart, end: ctx.originalEnd
             )
         }.value
-        guard !chunk.samples.isEmpty else {
+        guard !raw.samples.isEmpty else {
             AppLog.app.warning("reevaluate: extended audio range was empty")
             return nil
         }
+        let chunk = Self.frontSnappedChunk(
+            raw,
+            utteranceLocalStart: ctx.originalStart - extendedStart
+        )
         guard let (fresh, _) = try await ctx.pipeline.reevaluate(
             audio: chunk,
             // ASR hears the levelled copy when the toggle is on —
@@ -201,45 +228,70 @@ extension RecordingController {
         return (fresh, chunk)
     }
 
-    /// Short-path body: grow back-padding in steps and rerun offline
-    /// ASR until the transcript contains a sentence terminator (or
-    /// the pad cap is reached, or the file is exhausted). No front
-    /// pad on this path — when the original is shorter than 1 s the
-    /// streaming pass usually finalized late so `start` already sits
-    /// well inside the sentence; adding lead-in drags in the
+    /// Short-path body: a sub-1 s fragment is a sentence cut mid-
+    /// stream, so its continuation lives in the audio (usually the
+    /// next row's span). Instead of the old grow-1s-and-rerun-ASR
+    /// loop (up to 10 offline passes), the extension boundary is
+    /// MEASURED: one read out to the speaker-turn end (cumulative
+    /// diarization timeline; another speaker's sentence can't
+    /// terminate ours), then cut at the first sustained silence gap
+    /// after the fragment. ASR runs once per candidate cut — first
+    /// gap, second gap, full bounded window — three passes worst
+    /// case, one typically. The terminator check remains as
+    /// VALIDATION of each cut rather than the search oracle.
+    ///
+    /// Still no front pad — when the original is shorter than 1 s
+    /// the streaming pass usually finalized late so `start` already
+    /// sits well inside the sentence; lead-in would drag in the
     /// previous sentence's tail and its terminator would fool the
     /// `segmentsContainFullSentence` check.
     private func reevaluateShortWithRetry(
         ctx: ReevaluationContext
     ) async throws -> (fresh: UtteranceEstimate, chunk: AudioChunk)? {
-        var backPad: TimeInterval = Self.reevaluationBackPadStepSec
-        var previousSampleCount = -1
+        let cap = ctx.originalEnd + Self.reevaluationMaxBackPadSec
+        let turnEnd = speakerTurnEnd(
+            after: ctx.originalEnd, speakerID: ctx.speakerID, cap: cap
+        )
+        // Never read less than one step past the fragment — the
+        // streaming timeline's turn estimate can run tight and the
+        // continuation needs SOME room.
+        let backBound = max(turnEnd, ctx.originalEnd + Self.reevaluationBackPadStepSec)
+        let url = ctx.url
+        let originalStart = ctx.originalStart
+        let window = try await Task.detached(priority: .userInitiated) {
+            try Self.readAudioChunkForReevaluation(
+                fileURL: url, start: originalStart, end: backBound
+            )
+        }.value
+        guard !window.samples.isEmpty else {
+            AppLog.app.warning("reevaluate: short-path read was empty")
+            return nil
+        }
+        let windowDuration = TimeInterval(window.samples.count) / window.sampleRate
+        let fragmentLocalEnd = ctx.originalEnd - ctx.originalStart
+
+        // Candidate cut points: the first two sustained gaps at or
+        // after the fragment's end (small tolerance for streaming
+        // boundary error), then the full bounded window as the
+        // no-gap / gaps-didn't-terminate fallback.
+        let gaps = SilenceGapScanner.gaps(
+            in: window.samples, sampleRate: window.sampleRate
+        ).filter { $0.start >= max(0, fragmentLocalEnd - 0.2) }
+        var cutCandidates: [TimeInterval] = gaps.prefix(2).map {
+            min(windowDuration, $0.start + Self.gapCutTrailSec)
+        }
+        if cutCandidates.last != windowDuration {
+            cutCandidates.append(windowDuration)
+        }
+        AppLog.app.info(
+            "reevaluate: short path turnEnd=\(turnEnd, privacy: .public)s bound=\(backBound, privacy: .public)s gaps=\(gaps.count, privacy: .public) candidates=\(cutCandidates.count, privacy: .public)"
+        )
+
         var matchedSegments: [ASRSegment]?
         var matchedAudio: AudioChunk?
-
-        while backPad <= Self.reevaluationMaxBackPadSec {
-            let currentEnd = ctx.originalEnd + backPad
-            let url = ctx.url
-            let originalStart = ctx.originalStart
-            let chunk = try await Task.detached(priority: .userInitiated) {
-                try Self.readAudioChunkForReevaluation(
-                    fileURL: url, start: originalStart, end: currentEnd
-                )
-            }.value
-            if chunk.samples.isEmpty {
-                AppLog.app.warning("reevaluate: empty read at backPad=\(backPad, privacy: .public)s")
-                break
-            }
-            if chunk.samples.count == previousSampleCount {
-                // File-end clamping returned the same audio as the
-                // previous iteration; growing further just repeats.
-                AppLog.app.info(
-                    "reevaluate: file exhausted at backPad=\(backPad, privacy: .public)s; stopping retry"
-                )
-                break
-            }
-            previousSampleCount = chunk.samples.count
-
+        for cutEnd in cutCandidates {
+            let chunk = Self.sliceChunk(window, toLocal: cutEnd)
+            guard !chunk.samples.isEmpty else { continue }
             // ASR-only consumer — level when enabled. `matchedAudio`
             // below deliberately keeps the RAW chunk: it flows on to
             // reevaluateFromSegments (SER) and embedding extraction.
@@ -251,16 +303,15 @@ extension RecordingController {
             )
             if AnalysisPipeline.segmentsContainFullSentence(segments) {
                 AppLog.app.info(
-                    "reevaluate: found full sentence at backPad=\(backPad, privacy: .public)s"
+                    "reevaluate: full sentence at cut=\(cutEnd, privacy: .public)s"
                 )
                 matchedSegments = segments
                 matchedAudio = chunk
                 break
             }
             AppLog.app.info(
-                "reevaluate: no terminator at backPad=\(backPad, privacy: .public)s; growing"
+                "reevaluate: no terminator at cut=\(cutEnd, privacy: .public)s; trying next candidate"
             )
-            backPad += Self.reevaluationBackPadStepSec
         }
 
         guard let segments = matchedSegments, let chunk = matchedAudio else {
@@ -460,6 +511,96 @@ extension RecordingController {
             return false
         }
         return true
+    }
+
+    /// End of the previous row's audio, for bounding the front pad.
+    /// nil when no earlier row ends at/before `start` (session head,
+    /// or every earlier row overlaps this one — overlapping speech
+    /// gets no neighbor bound and falls back to the fixed cap).
+    private func previousRowEnd(
+        before start: TimeInterval,
+        excluding id: UUID
+    ) -> TimeInterval? {
+        utterances.lazy
+            .filter { $0.id != id && $0.end <= start }
+            .map(\.end)
+            .max()
+    }
+
+    /// Where the current speaker's turn ends after `t`, per the
+    /// cumulative diarization timeline's per-instant majority —
+    /// the same vote the strips and mismatch glyph use. Advances in
+    /// half-second windows until the majority flips to another
+    /// speaker. Silence windows vote `fallback` (no overlapping
+    /// segments), so pure silence doesn't end the turn — the gap
+    /// scanner is the cut authority; this is only the CONTAMINATION
+    /// bound (another speaker's sentence can't terminate ours).
+    /// Returns `cap` when the timeline is empty (mic sessions
+    /// replayed from file, or diarizer never fired).
+    private func speakerTurnEnd(
+        after t: TimeInterval,
+        speakerID: String,
+        cap: TimeInterval
+    ) -> TimeInterval {
+        let timeline = diarizationTimeline
+        guard !timeline.isEmpty else { return cap }
+        var cursor = t
+        let step: TimeInterval = 0.5
+        while cursor < cap {
+            let windowEnd = min(cursor + step, cap)
+            let dominant = AnalysisPipeline.dominantSpeakerInSegments(
+                timeline, from: cursor, to: windowEnd, fallback: speakerID
+            )
+            if dominant != speakerID { return cursor }
+            cursor = windowEnd
+        }
+        return cap
+    }
+
+    /// Snap the front of a padded chunk to the last silence gap
+    /// inside its pad region: keep `frontSnapLeadSec` of silence
+    /// before the speech onset and everything after. When the pad
+    /// region contains no measurable gap (continuous speech, or
+    /// region shorter than the scanner's resolution), the chunk
+    /// passes through unchanged — the neighbor bound and the fixed
+    /// cap have already limited the damage.
+    static func frontSnappedChunk(
+        _ chunk: AudioChunk,
+        utteranceLocalStart: TimeInterval
+    ) -> AudioChunk {
+        guard utteranceLocalStart > SilenceGapScanner.frameSec * 3 else { return chunk }
+        let padSamples = Int(utteranceLocalStart * chunk.sampleRate)
+        guard padSamples > 0, padSamples <= chunk.samples.count else { return chunk }
+        let padRegion = Array(chunk.samples[0..<padSamples])
+        guard let lastGap = SilenceGapScanner.gaps(
+            in: padRegion,
+            sampleRate: chunk.sampleRate,
+            // The pad region is ≤1 s; accept shorter gaps than the
+            // back path's 300 ms — even a 150 ms breath before the
+            // onset is a reliable boundary here.
+            minGapSec: 0.15
+        ).last else { return chunk }
+        let cut = max(0, lastGap.end - frontSnapLeadSec)
+        return sliceChunk(chunk, fromLocal: cut)
+    }
+
+    /// Buffer-local slice with the timestamp adjusted so downstream
+    /// corrected-time math (`audio.timestamp + tokenLocal`) stays
+    /// anchored to the source file's absolute timeline.
+    static func sliceChunk(
+        _ chunk: AudioChunk,
+        fromLocal: TimeInterval = 0,
+        toLocal: TimeInterval? = nil
+    ) -> AudioChunk {
+        let rate = chunk.sampleRate
+        let startIdx = max(0, min(chunk.samples.count, Int(fromLocal * rate)))
+        let endIdx = toLocal.map { max(startIdx, min(chunk.samples.count, Int($0 * rate))) }
+            ?? chunk.samples.count
+        return AudioChunk(
+            samples: Array(chunk.samples[startIdx..<endIdx]),
+            sampleRate: rate,
+            timestamp: chunk.timestamp + fromLocal
+        )
     }
 
     /// Read a sub-range of `fileURL` and resample to the pipeline's
