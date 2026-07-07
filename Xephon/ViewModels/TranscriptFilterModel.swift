@@ -121,11 +121,17 @@ final class TranscriptFilterModel {
     /// Reset every filter knob — called from the "Clear filters"
     /// button on the empty-results placeholder and from the
     /// session-boundary handler when the utterance list empties.
-    func clearFilters() {
+    /// Takes the keyword store because the keyword SELECTION is a
+    /// fifth filter layer (`filteredIDs` ORs the selected keywords
+    /// on top of the search field) that lives in `KeywordStore`,
+    /// not here — clearing only the local knobs left a
+    /// keyword-only filter stuck on the no-matches placeholder.
+    func clearFilters(keywords: KeywordStore) {
         searchText = ""
         selectedLabelFilter = nil
         selectedSpeakerFilter = nil
         showingMismatchOnly = false
+        keywords.selectedKeywordIDs.removeAll()
     }
 
     /// Drop the per-utterance normalized cache. Called when a new

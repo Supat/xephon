@@ -234,6 +234,10 @@ struct TranscriptFilterBar: View {
 /// filter knobs the bar drives.
 struct TranscriptNoMatchesView: View {
     @Bindable var model: TranscriptFilterModel
+    /// Keyword selection is a filter layer too (the OR filter the
+    /// Keywords card drives); the clear button must release it or a
+    /// keyword-only no-match state can't be escaped from here.
+    let keywords: KeywordStore
 
     var body: some View {
         ContentUnavailableView {
@@ -245,7 +249,7 @@ struct TranscriptNoMatchesView: View {
             Text(String(localized: "filter.noMatches.subtitle"))
         } actions: {
             Button(String(localized: "filter.noMatches.clear")) {
-                model.clearFilters()
+                model.clearFilters(keywords: keywords)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

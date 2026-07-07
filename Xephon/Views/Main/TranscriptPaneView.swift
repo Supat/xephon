@@ -66,7 +66,7 @@ struct TranscriptPaneView: View {
                 fusionContributionStrip(range: stripRange)
                 keywordTimelineStrip(range: stripRange)
                 if filterModel.filteredIndexedUtterances(in: recorder).isEmpty {
-                    TranscriptNoMatchesView(model: filterModel)
+                    TranscriptNoMatchesView(model: filterModel, keywords: recorder.keywords)
                 } else {
                     transcriptList
                 }

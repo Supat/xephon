@@ -149,10 +149,11 @@ struct TranscriptList: View {
                     filterModel.resetForNewSession()
                     // New session (mic record or file analysis) just
                     // cleared the utterance list — reset the filter
-                    // controls so the empty list isn't shown through
-                    // a stale filter the user no longer remembers
-                    // setting.
-                    filterModel.clearFilters()
+                    // controls (keyword selection included; it's
+                    // session-scoped by design) so the empty list
+                    // isn't shown through a stale filter the user no
+                    // longer remembers setting.
+                    filterModel.clearFilters(keywords: recorder.keywords)
                 }
             }
             .onChange(of: recorder.utterances.count, initial: true) { _, _ in
