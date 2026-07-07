@@ -109,8 +109,8 @@ final class KeywordReviewModel {
     private struct PreparedKeyword {
         let keyword: Keyword
         let normalized: String
+        let phoneticKey: String
         let levThreshold: Int
-        let lcsMinRun: Int
         let fuzzyEligible: Bool
     }
 
@@ -132,8 +132,8 @@ final class KeywordReviewModel {
             return PreparedKeyword(
                 keyword: kw,
                 normalized: normalized,
+                phoneticKey: PhoneticKey.key(fromCanonicalRomaji: normalized),
                 levThreshold: SearchReplaceCoordinator.similarMatchThreshold(for: normalized.count),
-                lcsMinRun: SearchReplaceCoordinator.wideVariationMinRun(for: normalized.count),
                 fuzzyEligible: fuzzy
             )
         }
@@ -214,26 +214,64 @@ final class KeywordReviewModel {
                     )
                 }
 
-                // Tier 2 — fuzzy near-reading, per token, using the
-                // search feature's length-scaled thresholds. Only for
-                // keywords long enough that "close" is meaningful.
-                if pk.fuzzyEligible {
-                    for token in tokens {
+                // Tier 1.5 — phonetic-key equality over token runs:
+                // catches the STRUCTURED ASR confusion classes
+                // (long/short vowel, geminates, voicing, n/m) that
+                // generic edit distance spends its whole budget on.
+                // No length floor, so short keywords the fuzzy tier
+                // excludes still get coverage. Exact key equality
+                // only — keys are aggressive within their classes
+                // and containment would compound the collapses.
+                if !pk.phoneticKey.isEmpty {
+                    for start in tokens.indices {
                         if (result[pk.keyword.id]?.count ?? 0) >= maxSuspectsPerKeyword { break }
-                        guard token.normalized.count >= 2 else { continue }
-                        let hit = FuzzySubstringMatcher.hasSimilarSubstring(
-                            query: pk.normalized,
-                            in: token.normalized,
-                            threshold: pk.levThreshold
-                        ) || FuzzySubstringMatcher.hasLongCommonSubstring(
-                            query: pk.normalized,
-                            in: token.normalized,
-                            minLength: pk.lcsMinRun
-                        )
-                        if hit {
-                            appendSuspect(range: token.originalRange, isHomophone: false)
+                        var acc = ""
+                        var end = start
+                        while end < tokens.count {
+                            acc += tokens[end].normalized
+                            // A run whose canonical form already
+                            // overshoots the keyword's by more than
+                            // the collapse classes can absorb can't
+                            // key-match; stop extending.
+                            if acc.count > pk.normalized.count + 4 { break }
+                            if PhoneticKey.key(fromCanonicalRomaji: acc) == pk.phoneticKey {
+                                appendSuspect(
+                                    range: tokens[start].originalRange.lowerBound
+                                        ..< tokens[end].originalRange.upperBound,
+                                    isHomophone: true
+                                )
+                                break
+                            }
+                            end += 1
                         }
                     }
+                }
+
+                // Tier 2 — Levenshtein near-reading over the JOINED
+                // normalized text (semi-global matcher), so a near
+                // miss spanning tokenizer chunk boundaries is
+                // visible; the hit maps back to the covering token
+                // run. The LCS tier is deliberately ABSENT here
+                // (unlike the opt-in "Include similar" search):
+                // shared 3-char romaji runs are ubiquitous and every
+                // suspect demands user attention, so precision wins
+                // (fuzzy-search audit R5).
+                if pk.fuzzyEligible,
+                   (result[pk.keyword.id]?.count ?? 0) < maxSuspectsPerKeyword,
+                   let hit = FuzzySubstringMatcher.findSimilarSubstring(
+                       query: pk.normalized, in: joined, threshold: pk.levThreshold
+                   ),
+                   let firstTok = tokens.indices.last(where: { starts[$0] <= hit.lowerBound }) {
+                    var lastTok = firstTok
+                    while lastTok + 1 < tokens.count,
+                          starts[lastTok] + tokens[lastTok].normalized.count < hit.upperBound {
+                        lastTok += 1
+                    }
+                    appendSuspect(
+                        range: tokens[firstTok].originalRange.lowerBound
+                            ..< tokens[lastTok].originalRange.upperBound,
+                        isHomophone: false
+                    )
                 }
             }
         }

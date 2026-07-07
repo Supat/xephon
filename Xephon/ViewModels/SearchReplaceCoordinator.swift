@@ -108,39 +108,6 @@ final class SearchReplaceCoordinator {
         max(1, normalizedLength / 4)
     }
 
-    /// Same per-token Levenshtein/LCS sweep `similarMatchRanges`
-    /// uses, but returns Bool — used by the filter to gate row
-    /// inclusion so we don't surface non-raw matches that no token
-    /// can highlight. Without this gate, rows whose match only
-    /// exists on the concatenated normalized text (spanning
-    /// tokenizer chunks too small to clear the per-token min-run
-    /// individually) would appear in the list as bare cards with
-    /// no visual indication of what triggered the match.
-    /// `nonisolated` so the detached filter task can call it.
-    nonisolated static func hasHighlightableSimilarToken(
-        in transcript: String,
-        normalizedQuery: String,
-        threshold: Int,
-        minRun: Int
-    ) -> Bool {
-        guard !normalizedQuery.isEmpty else { return false }
-        let tokens = JapaneseSearchNormalizer.tokens(transcript)
-        for token in tokens {
-            if token.normalized.isEmpty { continue }
-            if FuzzySubstringMatcher.hasSimilarSubstring(
-                query: normalizedQuery,
-                in: token.normalized,
-                threshold: threshold
-            ) { return true }
-            if FuzzySubstringMatcher.hasLongCommonSubstring(
-                query: normalizedQuery,
-                in: token.normalized,
-                minLength: minRun
-            ) { return true }
-        }
-        return false
-    }
-
     /// Minimum contiguous-character run for the loose "wider
     /// variation" pass (longest common substring). Set to `max(3,
     /// ceil(L × 0.4))` so a 7-char query like "midiamu" needs a
@@ -328,19 +295,14 @@ final class SearchReplaceCoordinator {
                     )
                 )
                 guard isCrossScript || fuzzyHit else { continue }
-                // Highlight-availability gate. The sheet's
-                // similarMatchRanges paints purple per-token, and a
-                // row whose only match exists on the concatenated
-                // normalized text (no single token clears the
-                // per-token Levenshtein/LCS thresholds) would
-                // surface as a card with neither yellow nor purple
-                // highlight — unexplained noise. Skip those.
-                guard Self.hasHighlightableSimilarToken(
-                    in: u.transcript,
-                    normalizedQuery: normalizedQuery,
-                    threshold: threshold,
-                    minRun: minRun
-                ) else { continue }
+                // No highlight-availability gate anymore: matches
+                // that exist only on the JOINED normalized text
+                // (spanning tokenizer chunks) used to be undrawable
+                // and were filtered out here — a real recall loss,
+                // since chunk boundaries shift with context.
+                // `similarMatchRanges` now reconstructs joined-level
+                // hits through the tokens' cumulative offsets, so
+                // every surfaced row can explain itself.
                 out.append(u)
                 if !isCrossScript {
                     similar.insert(u.id)
@@ -478,6 +440,39 @@ final class SearchReplaceCoordinator {
             )
             if hit {
                 ranges.append(token.originalRange)
+            }
+        }
+        // R4 fallback: reconstruct a joined-text hit when no single
+        // token cleared the thresholds. The semi-global matcher's
+        // Character-position range in the joined normalized string
+        // maps back to the covering token run via cumulative
+        // offsets — same reconstruction the cross-script pass uses.
+        if ranges.isEmpty {
+            var starts: [Int] = []
+            starts.reserveCapacity(tokens.count)
+            var total = 0
+            for t in tokens {
+                starts.append(total)
+                total += t.normalized.count
+            }
+            let joined = tokens.map(\.normalized).joined()
+            let hitRange = FuzzySubstringMatcher.findSimilarSubstring(
+                query: normalizedQuery, in: joined, threshold: levThreshold
+            ) ?? FuzzySubstringMatcher.findLongCommonSubstring(
+                query: normalizedQuery, in: joined, minLength: minRun
+            )
+            if let hitRange,
+               let firstTok = tokens.indices.last(where: { starts[$0] <= hitRange.lowerBound }) {
+                var lastTok = firstTok
+                while lastTok + 1 < tokens.count,
+                      starts[lastTok] + tokens[lastTok].normalized.count < hitRange.upperBound {
+                    lastTok += 1
+                }
+                let original = tokens[firstTok].originalRange.lowerBound
+                    ..< tokens[lastTok].originalRange.upperBound
+                if !rawRanges.contains(where: { $0.overlaps(original) }) {
+                    ranges.append(original)
+                }
             }
         }
         return ranges
