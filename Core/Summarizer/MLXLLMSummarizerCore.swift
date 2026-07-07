@@ -1040,7 +1040,12 @@ internal enum MLXLLMSummarizerCore {
             let perSpeaker: [PerSpeaker]
         }
         let strict: String? = {
-            guard let braceEnd = stripped.lastIndex(of: "}") else { return nil }
+            // braceEnd >= braceStart: a stray `}` in prose BEFORE the
+            // JSON opens, with the output cap cutting generation off
+            // before any closing brace, inverts the pair — and the
+            // ClosedRange subscript would trap, not throw.
+            guard let braceEnd = stripped.lastIndex(of: "}"),
+                  braceEnd >= braceStart else { return nil }
             return String(stripped[braceStart...braceEnd])
         }()
         let decoded: Wire
@@ -1182,6 +1187,7 @@ internal enum MLXLLMSummarizerCore {
         let stripped = stripCodeFence(dethought)
         guard let braceStart = stripped.firstIndex(of: "{") else { return nil }
         if let braceEnd = stripped.lastIndex(of: "}"),
+           braceEnd >= braceStart,  // see parse(): inverted braces trap
            let data = String(stripped[braceStart...braceEnd]).data(using: .utf8),
            let ok = try? JSONDecoder().decode(MeetingWire.self, from: data) {
             return ok
@@ -1371,6 +1377,7 @@ internal enum MLXLLMSummarizerCore {
         let timeEnd = chunk.last?.end ?? 0
         if let braceStart = stripped.firstIndex(of: "{"),
            let braceEnd = stripped.lastIndex(of: "}"),
+           braceEnd >= braceStart,  // see parse(): inverted braces trap
            let data = String(stripped[braceStart...braceEnd]).data(using: .utf8),
            let decoded = try? JSONDecoder().decode(
                MLXLLMDeepWindowIntermediate.self,

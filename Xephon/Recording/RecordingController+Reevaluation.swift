@@ -103,6 +103,16 @@ extension RecordingController {
     func reevaluate(_ utterance: UtteranceEstimate) async {
         guard reevaluatingUtteranceID == nil else { return }
         guard phase == .idle else { return }
+        // Mirror of fireAutoSummary's reevaluatingUtteranceID guard,
+        // in the other direction: mid-summarize the pipeline is
+        // RELEASED, so ensurePipeline() here would load ~1.5 GB
+        // underneath the resident MLX weights (the co-residency the
+        // memory orchestration exists to prevent) — and the rebuilt
+        // pipeline's empty speaker DB would mis-vote the speaker.
+        guard !summarizer.inferenceRunning, !summarizer.reviewRunning else {
+            AppLog.app.info("reevaluate skipped: summarizer inference in flight")
+            return
+        }
         guard let url = playbackSourceURL else { return }
 
         reevaluatingUtteranceID = utterance.id
@@ -161,7 +171,7 @@ extension RecordingController {
                 )
                 return
             }
-            await finalizeReevaluation(fresh: fresh, chunk: chunk, ctx: ctx)
+            await finalizeReevaluation(fresh: fresh, chunk: chunk, ctx: ctx, sessionAtEntry: sessionAtEntry)
         } catch {
             AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
         }
@@ -329,7 +339,8 @@ extension RecordingController {
     private func finalizeReevaluation(
         fresh: UtteranceEstimate,
         chunk: AudioChunk,
-        ctx: ReevaluationContext
+        ctx: ReevaluationContext,
+        sessionAtEntry: UUID
     ) async {
         let speaker = await rediarizedSpeaker(
             url: ctx.url,
@@ -338,6 +349,16 @@ extension RecordingController {
             correctedEnd: fresh.end,
             fallback: ctx.speakerID
         )
+        // Re-check session identity AFTER the await above — the
+        // caller's check happened before this suspension, and a
+        // session swap during it would otherwise land the batch
+        // undo snapshot and the embedding write on the NEW
+        // session's state (a phantom "Undo Re-evaluate" reverting
+        // unrelated rows).
+        guard sessionToken == sessionAtEntry else {
+            AppLog.app.info("finalizeReevaluation: session changed mid-flight; discarding")
+            return
+        }
         // Push undo step only on successful re-eval (we reached this
         // point — fresh estimate produced, speaker rediarized). Done
         // here rather than at the top of `reevaluate(_:)` so retries
@@ -350,6 +371,8 @@ extension RecordingController {
         if let embedding = await ctx.pipeline.extractSpeakerEmbedding(
             audio: chunk.samples
         ) {
+            // Same recheck after the embedding await.
+            guard sessionToken == sessionAtEntry else { return }
             utteranceEmbeddings[ctx.utteranceID] = embedding
             await pinObservationSegmentID(
                 utteranceID: ctx.utteranceID,

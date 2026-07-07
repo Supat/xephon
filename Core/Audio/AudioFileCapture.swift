@@ -29,6 +29,13 @@ public actor AudioFileCapture: AudioCapture {
     private var processedCont: AsyncStream<AudioChunk>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var isAccessingScopedResource = false
+    /// Set when the pump ends on a mid-file read error; surfaced
+    /// through `captureEndReason()` so the controller's stream-end
+    /// watcher can distinguish "file fully processed" from "file
+    /// silently truncated" — previously indistinguishable, and the
+    /// user saw a partial transcript presented as complete.
+    private var endReason: CaptureEndReason?
+
     /// ASR-branch leveler toggle, propagated from RecordingController
     /// at session start (startFromFile) and live-flippable mid-run —
     /// the pump reads this per chunk. Default off so directly
@@ -126,6 +133,7 @@ public actor AudioFileCapture: AudioCapture {
     public func setPreferredInput(_ uid: String?) async throws {}
     public var isSpeechBoostEnabled: Bool { get async { false } }
     public func setSpeechBoostEnabled(_ enabled: Bool) async {}
+    public func captureEndReason() async -> CaptureEndReason? { endReason }
     public var isSpeechLevelerEnabled: Bool { get async { speechLevelerEnabled } }
     public func setSpeechLevelerEnabled(_ enabled: Bool) async {
         speechLevelerEnabled = enabled
@@ -161,9 +169,22 @@ public actor AudioFileCapture: AudioCapture {
                 try file.read(into: inputBuffer, frameCount: chunkFrames)
             } catch {
                 AppLog.audio.warning("file read error: \(String(describing: error), privacy: .public)")
+                endReason = .fileReadFailed(String(describing: error))
                 break
             }
             if inputBuffer.frameLength == 0 { break }
+            // Advance the file-time clock HERE, not at the loop
+            // bottom: the conversion guards below `continue` past
+            // the old accumulation point, and a single skipped
+            // chunk (converter error / zero output frames) shifted
+            // every later chunk's timestamp ~one chunk early —
+            // misaligning ASR/diarization/SER for the rest of the
+            // file. The read already consumed these frames, so the
+            // clock must advance whether or not they convert; the
+            // chunk itself is stamped with the PRE-advance time
+            // (its start position in the file).
+            let chunkStart = elapsed
+            elapsed += Double(inputBuffer.frameLength) / inputFormat.sampleRate
 
             let outputCapacity = AVAudioFrameCount(
                 (Double(inputBuffer.frameLength) * sampleRateRatio).rounded(.up)
@@ -194,7 +215,7 @@ public actor AudioFileCapture: AudioCapture {
             let chunk = AudioChunk(
                 samples: samples,
                 sampleRate: PipelineAudio.sampleRate,
-                timestamp: elapsed
+                timestamp: chunkStart
             )
             // Yield to both streams with retry-on-drop. Each call returns
             // promptly when the consumer has space; under sustained
@@ -209,13 +230,10 @@ public actor AudioFileCapture: AudioCapture {
                 ? AudioChunk(
                     samples: leveler.process(samples),
                     sampleRate: PipelineAudio.sampleRate,
-                    timestamp: elapsed
+                    timestamp: chunkStart
                 )
                 : chunk
             await Self.yieldWithBackpressure(processedChunk, to: processedCont)
-
-            // Advance by the actual input duration of this read.
-            elapsed += Double(inputBuffer.frameLength) / inputFormat.sampleRate
         }
 
         rawCont.finish()

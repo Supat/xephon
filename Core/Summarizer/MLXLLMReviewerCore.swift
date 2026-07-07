@@ -293,7 +293,12 @@ internal enum MLXLLMReviewerCore {
             let issues: [Entry]
         }
         let strict: String? = {
-            guard let braceEnd = stripped.lastIndex(of: "}") else { return nil }
+            // braceEnd >= braceStart: a stray `}` in prose BEFORE the
+            // JSON opens, with the output cap cutting generation off
+            // before any closing brace, inverts the pair — and the
+            // ClosedRange subscript would trap, not throw.
+            guard let braceEnd = stripped.lastIndex(of: "}"),
+                  braceEnd >= braceStart else { return nil }
             return String(stripped[braceStart...braceEnd])
         }()
         let decoded: Wire

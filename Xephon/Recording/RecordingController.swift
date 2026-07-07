@@ -952,9 +952,21 @@ final class RecordingController {
             self.pipeline = configured
             return configured
         }
-        let result = await AnalysisPipeline.autoConfigured(modelStore: modelStore)
+        // Install the in-flight sentinel BEFORE the await: two
+        // callers interleaving on this suspension (post-summarize
+        // rewarm + record-start is a real pairing) each observed
+        // pipeline == nil && pipelineTask == nil and each built a
+        // full ~1.5 GB pipeline, leaking one — a Jetsam recipe with
+        // MLX weights resident. The second caller now lands in the
+        // pipelineTask branch above and awaits this same task.
+        let buildTask = Task {
+            await AnalysisPipeline.autoConfigured(modelStore: modelStore)
+        }
+        self.pipelineTask = buildTask
+        let result = await buildTask.value
         self.pipelineDiagnostics = result.diagnostics
         self.pipeline = result.pipeline
+        self.pipelineTask = nil
         await applyConfiguration(to: result.pipeline)
         await syncTextSERStateFromPipeline(from: result.pipeline)
         return result.pipeline
@@ -1458,6 +1470,8 @@ final class RecordingController {
             return String(localized: "error.capture.interrupted")
         case .recoveryFailed:
             return String(localized: "error.capture.recovery_failed")
+        case .fileReadFailed:
+            return String(localized: "error.capture.file_read_failed")
         }
     }
 

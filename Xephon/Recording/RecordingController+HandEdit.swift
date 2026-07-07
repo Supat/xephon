@@ -108,20 +108,16 @@ extension RecordingController {
     ) async {
         guard reevaluatingUtteranceID == nil else { return }
         guard phase == .idle else { return }
+        // Same co-residency gate as reevaluate() — see its comment.
+        guard !summarizer.inferenceRunning, !summarizer.reviewRunning else {
+            AppLog.app.info("commitHandEdit skipped: summarizer inference in flight")
+            return
+        }
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return }
         let trimmedText = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
         let sentences = Self.splitTranscriptIntoSentences(trimmedText)
         guard !sentences.isEmpty else { return }
-
-        // Single undo step for the entire hand-edit, regardless of
-        // whether the path runs the file-mode pipeline, the mic-mode
-        // text-only branch, or the multi-sentence split (which inserts
-        // sibling rows + writes `handEditChildren` + new embeddings).
-        // A batch snapshot is the only thing that can reverse a 1→N
-        // split atomically. Capture BEFORE the first mutation
-        // (`preReevaluationSnapshots[utteranceID] = original` below).
-        registerUtteranceBatchUndo(actionName: String(localized: "undo.handEdit"))
 
         let original = utterances[index]
         // Two flows split on whether the session has source audio.
@@ -146,6 +142,13 @@ extension RecordingController {
                 newEnd: original.end
             )
             guard !plans.isEmpty else { return }
+            // Single undo step for the whole hand-edit, registered
+            // AFTER every failure guard — a bailed edit previously
+            // left a no-op step on the stack (Cmd-Z visibly did
+            // nothing once). Same register-on-success discipline as
+            // finalizeReevaluation. Must still precede the first
+            // mutation (the snapshot write below).
+            registerUtteranceBatchUndo(actionName: String(localized: "undo.handEdit"))
             let pipeline = await ensurePipeline()
             await runTextOnlyHandEdit(
                 utteranceID: utteranceID,
@@ -168,10 +171,6 @@ extension RecordingController {
         reevaluatingUtteranceID = utteranceID
         defer { reevaluatingUtteranceID = nil }
 
-        if preReevaluationSnapshots[utteranceID] == nil {
-            preReevaluationSnapshots[utteranceID] = original
-        }
-
         let fallbackSpeaker = original.speakerID
         let pipeline = await ensurePipeline()
 
@@ -181,6 +180,19 @@ extension RecordingController {
             newEnd: newEnd
         ) else { return }
         let (diarChunk, serChunk) = chunks
+
+        // Undo registration + first mutation (the snapshot write)
+        // happen AFTER the failure guards above — registration used
+        // to precede five of them, leaving a no-op step on the
+        // stack (one dead Cmd-Z). The audio read is side-effect-
+        // free, so deferring the mutation past it is safe.
+        // Residual: an ASR pass yielding zero results below still
+        // bails after registration — rare enough to accept, same
+        // trade re-evaluation makes.
+        registerUtteranceBatchUndo(actionName: String(localized: "undo.handEdit"))
+        if preReevaluationSnapshots[utteranceID] == nil {
+            preReevaluationSnapshots[utteranceID] = original
+        }
 
         if plans.count == 1 {
             await runSingleSentenceHandEdit(

@@ -42,6 +42,10 @@ public enum CaptureEndReason: Sendable, Equatable {
     /// Engine recovery after a config change, interruption, or
     /// media-services reset failed.
     case recoveryFailed(String)
+    /// A file-backed capture hit a read/decode error partway
+    /// through the source file — the session covers only a prefix
+    /// of the file and must not present as a complete analysis.
+    case fileReadFailed(String)
 }
 
 public protocol AudioCapture: Actor {

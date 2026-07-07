@@ -76,8 +76,14 @@ struct FusionContributionStrip: View {
             trackTintOpacity: Self.trackTintOpacity
         ) { width in
             ForEach(utterances) { utt in
-                let share = shareFor(utt)
-                if let geometry = slotGeometry(for: utt, width: width) {
+                // Skip rows with NEITHER modality: painting them
+                // would use the same neutral gray as a genuine
+                // 50/50 balance and read as false information —
+                // let the base track show through instead (same
+                // gate discipline as KeywordTimelineStrip).
+                if utt.acousticCategorical != nil || utt.plutchik != nil,
+                   let geometry = slotGeometry(for: utt, width: width) {
+                    let share = shareFor(utt)
                     Rectangle()
                         .fill(
                             Self.contributionColor(

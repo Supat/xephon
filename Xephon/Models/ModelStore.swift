@@ -469,8 +469,15 @@ actor ModelStore {
                         continuation.resume(throwing: error)
                     }
                 )
+                // The store's configured session can't be used
+                // directly (this transfer needs its own delegate),
+                // but its CONFIGURATION must apply — with .default
+                // the 30-min stall timeout and waitsForConnectivity
+                // never took effect (7-day default resource timeout
+                // instead), and injected test configurations were
+                // silently ignored.
                 let session = URLSession(
-                    configuration: .default,
+                    configuration: urlSession.configuration,
                     delegate: delegate,
                     delegateQueue: nil
                 )

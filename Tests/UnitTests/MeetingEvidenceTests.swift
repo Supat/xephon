@@ -130,3 +130,16 @@ struct MeetingTruncationTests {
         #expect(wire.perSpeaker?.count == 1)
     }
 }
+
+/// Pins the brace-inversion guard: a stray `}` in prose BEFORE the
+/// JSON opens, with generation cut off before any closing brace,
+/// previously trapped in the ClosedRange subscript (audit finding,
+/// crash-class). Must return nil, not crash.
+@Suite("Meeting parser brace inversion")
+struct MeetingBraceInversionTests {
+    @Test("Inverted braces return nil instead of trapping")
+    func invertedBracesSafe() {
+        let raw = "reasoning: score 8} then the JSON: {\"topic\":\"cut off"
+        #expect(MLXLLMSummarizerCore.decodeMeetingWire(raw: raw) == nil)
+    }
+}

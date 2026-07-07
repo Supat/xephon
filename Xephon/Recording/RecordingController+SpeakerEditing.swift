@@ -164,6 +164,11 @@ extension RecordingController {
         utteranceID: UUID,
         to targetSpeakerID: String
     ) async -> Bool {
+        // Same co-residency gate as reevaluate() — see its comment.
+        guard !summarizer.inferenceRunning, !summarizer.reviewRunning else {
+            AppLog.app.info("speaker edit skipped: summarizer inference in flight")
+            return false
+        }
         let trimmed = targetSpeakerID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         guard let url = playbackSourceURL else { return false }
@@ -232,6 +237,11 @@ extension RecordingController {
     /// true on success.
     @discardableResult
     func affirmUtteranceSpeaker(utteranceID: UUID) async -> Bool {
+        // Same co-residency gate as reevaluate() — see its comment.
+        guard !summarizer.inferenceRunning, !summarizer.reviewRunning else {
+            AppLog.app.info("speaker edit skipped: summarizer inference in flight")
+            return false
+        }
         guard let url = playbackSourceURL else { return false }
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return false }
         let utt = utterances[index]
@@ -308,6 +318,11 @@ extension RecordingController {
     /// on success, nil on any failure path — caller can surface
     /// a toast on nil.
     func promoteUtteranceToNewSpeaker(utteranceID: UUID) async -> String? {
+        // Same co-residency gate as reevaluate() — see its comment.
+        guard !summarizer.inferenceRunning, !summarizer.reviewRunning else {
+            AppLog.app.info("promote skipped: summarizer inference in flight")
+            return nil
+        }
         guard let url = playbackSourceURL else { return nil }
         guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else { return nil }
         let utt = utterances[index]
