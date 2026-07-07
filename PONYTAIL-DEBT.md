@@ -1,9 +1,41 @@
 # Ponytail debt ledger
 
-Deliberate shortcuts marked `ponytail:` in the codebase, plus tombstones of
-approaches that died on-device — so a deferral can't quietly become permanent
-and a dead end can't be re-walked. Regenerate the ledger rows with
-`grep -rnE '(#|//) ?ponytail:' .`; append tombstones as they're earned.
+Deliberate shortcuts marked `ponytail:` in the codebase, plus deferred gaps
+and tombstones of approaches that died on-device — so a deferral can't
+quietly become permanent and a dead end can't be re-walked. Regenerate the
+ledger rows with `grep -rnE '(#|//) ?ponytail:' .`; append deferrals and
+tombstones as they're earned.
+
+## Deferred — known gaps, revisit when they bite
+
+### MLX backgrounding: in-flight runs don't re-fire on foreground return
+`retryDeferredAutoSummarize` only re-fires runs whose fire attempt happened
+WHILE backgrounded (`autoSummarizeDeferred`). A run already in flight when
+the scenePhase watcher cancels it sets no deferred flag — the user returns
+to a regenerate state, not a resumed run (observed on-device, accepted for
+now). **upgrade:** `LLMSheetCoordinator.cancelInflightTasks` records which
+task kinds it killed; foreground return re-fires them through the existing
+deferral path.
+
+### MLX backgrounding: two residual crash windows
+`MLXCancellablePrefill` shrank the un-cancellable GPU window from the whole
+prompt to one 128-token chunk, but (a) a chunk in flight at the exact
+transition instant can still submit post-background (ms-scale), and
+(b) model WEIGHT LOADING is un-cancellable GPU work with no chunk
+boundaries at all. **upgrade if either bites:** cancel at `.inactive`
+instead of `.background` and re-fire on return to `.active` — costs
+spurious cancels on Control Center pulls, buys a ~1 s foreground runway.
+
+### Session-open progress popup is indeterminate
+`SessionFileBridge`'s overlay is a spinner; decode + `loadSession` expose
+no progress granularity. **upgrade:** phase plumbing (read / decode /
+restore) only if users ask "how long".
+
+### SpeakerScatterModel hand-rolls power-iteration PCA (~80 lines)
+Accelerate/LAPACK ships SVD natively, but the swap would change the
+deterministic-seed + sign-stabilization behavior the scatter relies on.
+**upgrade:** only with a fixture pinning projection stability across the
+swap. (Repo audit 2026-07-07, flagged-not-scored.)
 
 ## Ledger
 
@@ -63,3 +95,36 @@ The recorder's `UndoManager` runs `groupsByEvent = false`; a bare
 during an undo/redo invocation (`isUndoing`/`isRedoing`) → register bare,
 the manager is already inside its own group. Any new undoable surface must
 follow this split or route through `registerUndoStep`.
+
+## Tombstones — pipeline & lifecycle (2026-07-07, audiorecord)
+
+### Per-arrival memo invalidation is O(n²) during file ingest
+Memos keyed on `utterancesVersion`/`utterances.count` recompute on EVERY
+arriving utterance; file mode pumps arrivals faster than realtime, so an
+O(session) sweep in any always-materialized view (`.page` TabView keeps
+sibling pages alive) becomes O(n²·k) on the MainActor and throttles the
+pipeline itself. **Rule:** any O(session) UI sweep must gate on ingest and
+serve its stale memo until the phase flips to idle. Decisive cheap test:
+empty the keyword list (or equivalent input) and compare wall time.
+
+### File read-in runs under `phase == .recording`, not `.analyzing`
+`startFromFile` → `start()` — `.analyzing` is only the post-stop drain. A
+busy-gate written against `isAnalyzing` silently misses the entire file
+ingest; that exact miss shipped once. Gate on
+`RecordingController.isFileIngestRunning` (file source + not idle).
+
+### Library GPU loops can't be stopped by Task.cancel from outside
+MLXLMCommon prefills the whole prompt inside `TokenIterator.init` with no
+cancellation points; cancelling the wrapping Task does nothing until the
+loop finishes — fatal when iOS revokes GPU access on backgrounding. The
+scenePhase→cancel machinery was correct and still couldn't work. **Rule:**
+when a library loops GPU submissions, run the loop yourself in cancellable
+chunks (`MLXCancellablePrefill` pattern: prime the KV cache chunk-by-chunk
+with `Task.checkCancellation`, hand the iterator the remainder).
+
+### Blind subagent splices corrupt files that share substrings
+An automated body-replacement matched `.frame(height: Self.height)` inside
+a deeper-indented line (substring, not line match) and left four strip
+files half-rewritten. **Rule:** structural refactors over near-identical
+files need line-anchored (or brace-counted) edits, then a build before
+moving on — the build caught it immediately.
