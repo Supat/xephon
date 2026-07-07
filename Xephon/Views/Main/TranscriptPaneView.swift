@@ -95,6 +95,14 @@ struct TranscriptPaneView: View {
     /// can derive a positive total duration. Selecting an utterance
     /// in the list outlines the strip region for that row's audio
     /// range.
+    /// Shared tap handler for all four timeline strips: select and
+    /// scroll to the utterance nearest the tapped audio time.
+    private func scrollToTime(_ t: TimeInterval) {
+        guard let target = recorder.nearestUtterance(toTime: t) else { return }
+        selectedUtteranceID = target.id
+        scrollRequestUtteranceID = target.id
+    }
+
     @ViewBuilder
     private func diarizationTimelineStrip(
         range: (start: TimeInterval, end: TimeInterval)?
@@ -106,11 +114,7 @@ struct TranscriptPaneView: View {
                 segments: timeline,
                 totalDuration: total,
                 selectedRange: range,
-                onTapAtTime: { t in
-                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
-                    selectedUtteranceID = target.id
-                    scrollRequestUtteranceID = target.id
-                }
+                onTapAtTime: scrollToTime
             )
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -134,11 +138,7 @@ struct TranscriptPaneView: View {
                 utterances: recorder.utterances,
                 totalDuration: total,
                 selectedRange: range,
-                onTapAtTime: { t in
-                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
-                    selectedUtteranceID = target.id
-                    scrollRequestUtteranceID = target.id
-                }
+                onTapAtTime: scrollToTime
             )
             .padding(.horizontal, 12)
             // Tighter vertical pad than the speaker strip so the
@@ -169,11 +169,7 @@ struct TranscriptPaneView: View {
                 acousticWeight: recorder.fusionAcousticWeight,
                 textWeightFloor: recorder.fusionTextWeightFloor,
                 selectedRange: range,
-                onTapAtTime: { t in
-                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
-                    selectedUtteranceID = target.id
-                    scrollRequestUtteranceID = target.id
-                }
+                onTapAtTime: scrollToTime
             )
             .padding(.horizontal, 12)
             .padding(.bottom, 6)
@@ -196,11 +192,7 @@ struct TranscriptPaneView: View {
                 tagsByUtterance: tagMatches,
                 totalDuration: total,
                 selectedRange: range,
-                onTapAtTime: { t in
-                    guard let target = recorder.nearestUtterance(toTime: t) else { return }
-                    selectedUtteranceID = target.id
-                    scrollRequestUtteranceID = target.id
-                }
+                onTapAtTime: scrollToTime
             )
             .padding(.horizontal, 12)
             .padding(.bottom, 6)

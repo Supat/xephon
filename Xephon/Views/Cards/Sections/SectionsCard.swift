@@ -580,9 +580,7 @@ private struct SectionsCardRow: View {
     }
 
     private func formatTime(_ t: Double) -> String {
-        let minutes = Int(t) / 60
-        let seconds = Int(t) % 60
-        return String(format: "%d:%02d", minutes, seconds)
+        sectionTimeString(t)
     }
 
     /// SF Symbol for the complete-with-focus button — matches
@@ -652,4 +650,14 @@ private struct SectionsCardRow: View {
         }
         return false
     }
+}
+
+
+/// Shared m:ss formatter for the sections feature (card rows and
+/// the editor sheet). Distinct from `formatClock`, which emits the
+/// fractional `.s` form.
+func sectionTimeString(_ t: Double) -> String {
+    let minutes = Int(t) / 60
+    let seconds = Int(t) % 60
+    return String(format: "%d:%02d", minutes, seconds)
 }

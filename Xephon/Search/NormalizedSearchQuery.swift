@@ -69,14 +69,10 @@ struct NormalizedSearchQuery: Sendable, Hashable {
     /// reading forms while excluding the bare letter (which it
     /// handles via its own raw-substring pass).
     static func boundaryForms(for letter: Character) -> [String] {
-        var forms: [String] = []
-        func add(_ form: String) {
-            guard !form.isEmpty, !forms.contains(form) else { return }
-            forms.append(form)
-        }
-        add(JapaneseSearchNormalizer.normalize(String(letter)))
-        for reading in LatinLetterReadings.readingForms(for: letter) {
-            add(JapaneseSearchNormalizer.normalize(reading))
+        let bare = JapaneseSearchNormalizer.normalize(String(letter))
+        var forms: [String] = bare.isEmpty ? [] : [bare]
+        for reading in readingBoundaryForms(for: letter) where !forms.contains(reading) {
+            forms.append(reading)
         }
         return forms
     }

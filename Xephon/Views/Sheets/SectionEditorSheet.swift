@@ -160,9 +160,7 @@ struct SectionEditorSheet: View {
     }
 
     private func formatTime(_ t: Double) -> String {
-        let minutes = Int(t) / 60
-        let seconds = Int(t) % 60
-        return String(format: "%d:%02d", minutes, seconds)
+        sectionTimeString(t)
     }
 }
 

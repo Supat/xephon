@@ -7,13 +7,7 @@ import XephonUtilities
 
 // FluidAudio Sortformer (≤4 speakers, very stable) or LS-EEND (≤10, lighter), ANE-targeted.
 // Models are downloaded by FluidAudio on first use into its cache directory.
-public enum FluidDiarizerKind: Sendable {
-    case sortformer
-    case lseend
-}
-
 public actor FluidAudioDiarizer: Diarizer {
-    private let kind: FluidDiarizerKind
     // FluidAudio's DiarizerManager isn't formally Sendable; it's an internal
     // class with its own thread safety. Mark unsafe so Swift 6 lets us hold it
     // inside an actor and call its async methods.
@@ -65,10 +59,8 @@ public actor FluidAudioDiarizer: Diarizer {
     )
 
     public init(
-        kind: FluidDiarizerKind = .sortformer,
         config: DiarizerConfig = FluidAudioDiarizer.conversationalConfig
     ) {
-        self.kind = kind
         self.manager = DiarizerManager(config: config)
     }
 
@@ -97,7 +89,7 @@ public actor FluidAudioDiarizer: Diarizer {
             atTime: buffer.timestamp
         )
         AppLog.diarization.info(
-            "Diarized \(result.segments.count, privacy: .public) segments (kind=\(String(describing: self.kind), privacy: .public))"
+            "Diarized \(result.segments.count, privacy: .public) segments"
         )
         return result.segments.map {
             DiarizedSegment(

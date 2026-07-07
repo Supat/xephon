@@ -46,44 +46,22 @@ struct EmotionTimelineStrip: View {
 
     var body: some View {
         let runs = Self.coalescedRuns(utterances: utterances)
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .glassEffect(
-                        .regular.tint(.secondary.opacity(Self.trackTintOpacity)),
-                        in: Capsule()
-                    )
-                    .frame(height: Self.height)
-                ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
-                    let x = geo.size.width * CGFloat(run.start / totalDuration)
-                    let w = geo.size.width * CGFloat((run.end - run.start) / totalDuration)
-                    Rectangle()
-                        .fill(emotionTint(for: run.label).opacity(Self.runFillOpacity))
-                        .frame(width: max(1, w), height: Self.height)
-                        .offset(x: x)
-                }
-            }
-            .overlay(alignment: .leading) {
-                if let sel = selectedRange, totalDuration > 0 {
-                    let clampedStart = sel.start.clamped(to: 0...totalDuration)
-                    let clampedEnd = sel.end.clamped(to: clampedStart...totalDuration)
-                    let x = geo.size.width * CGFloat(clampedStart / totalDuration)
-                    let w = geo.size.width * CGFloat((clampedEnd - clampedStart) / totalDuration)
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.9), lineWidth: 1.5)
-                        .frame(width: max(2, w), height: Self.height)
-                        .offset(x: x)
-                }
-            }
-            .clipShape(Capsule())
-            .contentShape(Rectangle())
-            .onTapGesture(coordinateSpace: .local) { location in
-                guard let onTapAtTime, totalDuration > 0, geo.size.width > 0 else { return }
-                let t = totalDuration * Double(location.x / geo.size.width)
-                onTapAtTime(t.clamped(to: 0...totalDuration))
+        TimelineStripCanvas(
+            totalDuration: totalDuration,
+            selectedRange: selectedRange,
+            onTapAtTime: onTapAtTime,
+            height: Self.height,
+            trackTintOpacity: Self.trackTintOpacity
+        ) { width in
+            ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                let x = width * CGFloat(run.start / totalDuration)
+                let w = width * CGFloat((run.end - run.start) / totalDuration)
+                Rectangle()
+                    .fill(emotionTint(for: run.label).opacity(Self.runFillOpacity))
+                    .frame(width: max(1, w), height: Self.height)
+                    .offset(x: x)
             }
         }
-        .frame(height: Self.height)
     }
 
     /// Walk the utterance list in start-time order, emit one run

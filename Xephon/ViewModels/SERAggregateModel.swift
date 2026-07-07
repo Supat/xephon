@@ -43,49 +43,29 @@ final class SERAggregateModel {
     /// follows the per-utterance schema's missing-label-means-zero
     /// rule (not "missing"-as-NaN).
     func recompute(from utterances: [UtteranceEstimate]) {
-        plutchikMeans = Self.foldPlutchikMeans(utterances)
-        acousticMeans = Self.foldAcousticMeans(utterances)
+        plutchikMeans = Self.foldMeans(utterances) { $0.plutchik?.probabilities }
+        acousticMeans = Self.foldMeans(utterances) { $0.acousticCategorical?.probabilities }
         vaPoints = Self.collectVAPoints(utterances)
     }
 
-    private static func foldPlutchikMeans(
-        _ utterances: [UtteranceEstimate]
-    ) -> [PlutchikScore.Label: Float] {
-        var sums: [PlutchikScore.Label: Float] = [:]
+    /// Label-generic per-label mean over the utterances that carry
+    /// the modality at all (missing label within a carried modality
+    /// means zero, per the output schema).
+    private static func foldMeans<Label: CaseIterable & Hashable>(
+        _ utterances: [UtteranceEstimate],
+        probs: (UtteranceEstimate) -> [Label: Float]?
+    ) -> [Label: Float] {
+        var sums: [Label: Float] = [:]
         var count: Int = 0
         for utt in utterances {
-            guard let probs = utt.plutchik?.probabilities else { continue }
+            guard let probs = probs(utt) else { continue }
             count += 1
-            for label in PlutchikScore.Label.allCases {
+            for label in Label.allCases {
                 sums[label, default: 0] += probs[label] ?? 0
             }
         }
         guard count > 0 else { return [:] }
-        var out: [PlutchikScore.Label: Float] = [:]
-        for label in PlutchikScore.Label.allCases {
-            out[label] = (sums[label] ?? 0) / Float(count)
-        }
-        return out
-    }
-
-    private static func foldAcousticMeans(
-        _ utterances: [UtteranceEstimate]
-    ) -> [CategoricalEmotion.Label: Float] {
-        var sums: [CategoricalEmotion.Label: Float] = [:]
-        var count: Int = 0
-        for utt in utterances {
-            guard let probs = utt.acousticCategorical?.probabilities else { continue }
-            count += 1
-            for label in CategoricalEmotion.Label.allCases {
-                sums[label, default: 0] += probs[label] ?? 0
-            }
-        }
-        guard count > 0 else { return [:] }
-        var out: [CategoricalEmotion.Label: Float] = [:]
-        for label in CategoricalEmotion.Label.allCases {
-            out[label] = (sums[label] ?? 0) / Float(count)
-        }
-        return out
+        return sums.mapValues { $0 / Float(count) }
     }
 
     /// One dot per utterance with both fused V and fused A

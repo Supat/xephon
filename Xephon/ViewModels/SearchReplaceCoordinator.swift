@@ -606,8 +606,8 @@ final class SearchReplaceCoordinator {
     }
 
     /// True while a `commitAll` Task is in flight. Drives the
-    /// "Commit All" button's disabled state alongside
-    /// `hasStagedAny` so a second tap during the loop can't
+    /// "Commit All" button's disabled state via
+    /// `canCommitAll` so a second tap during the loop can't
     /// snapshot a half-processed dict and re-fire commits for
     /// rows the first call hasn't drained yet.
     private(set) var commitAllInflight: Bool = false
@@ -617,13 +617,6 @@ final class SearchReplaceCoordinator {
     /// enabled state in the sheet header.
     var canCommitAll: Bool {
         !stagedReplacements.isEmpty && !commitAllInflight
-    }
-
-    /// True when at least one row is staged. Kept around for
-    /// older readers; new code should prefer `canCommitAll` for
-    /// button gating.
-    var hasStagedAny: Bool {
-        !stagedReplacements.isEmpty
     }
 
     /// Commit every staged row in one pass. Snapshots

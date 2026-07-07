@@ -118,7 +118,7 @@ actor ModelStore {
         }
 
         for (idx, entry) in manifest.enumerated() {
-            await state.startEntry(index: idx, displayName: entry.displayName)
+            await state.startEntry(displayName: entry.displayName)
             for file in entry.files {
                 try Task.checkCancellation()
                 let url = try await resolve(file: file, in: entry)
@@ -192,7 +192,7 @@ actor ModelStore {
         }
         await state.begin(totalEntries: 1)
         defer { Task { @MainActor in state.markIdleIfRunning() } }
-        await state.startEntry(index: 0, displayName: entry.displayName)
+        await state.startEntry(displayName: entry.displayName)
         for file in entry.files {
             try Task.checkCancellation()
             let url = try await resolve(file: file, in: entry)
@@ -234,12 +234,6 @@ actor ModelStore {
             throw ModelStoreError.notResolved(installPath)
         }
         return url
-    }
-
-    /// The directory containing a given file. Convenience for the wrime
-    /// tokenizer init which needs the parent dir.
-    func resolvedDirectory(for installPath: String) throws -> URL {
-        try resolvedURL(for: installPath).deletingLastPathComponent()
     }
 
     // MARK: - Per-file resolution
@@ -592,8 +586,6 @@ final class ModelDownloadState {
     private(set) var phase: Phase = .idle
     private(set) var totalEntries: Int = 0
     private(set) var completedEntries: Int = 0
-    /// Active file being downloaded (assetName).
-    private(set) var currentFile: String?
     /// Active entry's user-facing label.
     private(set) var currentEntry: String?
 
@@ -622,17 +614,15 @@ final class ModelDownloadState {
         self.phase = .running
         self.totalEntries = totalEntries
         self.completedEntries = 0
-        self.currentFile = nil
         self.currentEntry = nil
     }
 
-    func startEntry(index: Int, displayName: String) {
+    func startEntry(displayName: String) {
         currentEntry = displayName
     }
 
     func completeEntry(index: Int) {
         completedEntries = index + 1
-        currentFile = nil
     }
 
     func fileSatisfied(name: String, source: String) {
@@ -642,7 +632,6 @@ final class ModelDownloadState {
     }
 
     func startFile(name: String, expectedBytes: Int64) {
-        currentFile = name
         var nextExpected = fileExpected
         nextExpected[name] = expectedBytes
         fileExpected = nextExpected
@@ -694,7 +683,6 @@ final class ModelDownloadState {
 
     func markCompleted() {
         phase = .completed
-        currentFile = nil
         currentEntry = nil
     }
 
@@ -713,7 +701,6 @@ final class ModelDownloadState {
         phase = .idle
         totalEntries = 0
         completedEntries = 0
-        currentFile = nil
         currentEntry = nil
         fileBytes.removeAll()
         fileExpected.removeAll()

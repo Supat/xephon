@@ -168,23 +168,3 @@ public protocol Diarizer: Actor {
     /// observations keep their id.
     func setClusteringThreshold(_ value: Float) async
 }
-
-public extension Diarizer {
-    func preload() async throws {}
-    func resetSpeakers() async {}
-    func embedding(for audio: [Float]) async throws -> [Float]? { nil }
-    func findSpeaker(byEmbedding embedding: [Float]) async -> SpeakerMatch? { nil }
-    func exportSpeakerDatabase() async -> Data? { nil }
-    func importSpeakerDatabase(_ data: Data) async throws {}
-    func promoteSpeaker(id: String, embedding: [Float]) async throws {}
-    func correctSpeaker(id: String, embedding: [Float], duration: Float) async throws {}
-    func removeSpeakerFromDB(id: String, keepIfPermanent: Bool) async throws {}
-    func clusterSnapshot(maxObservationsPerSpeaker: Int) async -> SpeakerClusterSnapshot {
-        SpeakerClusterSnapshot(speakers: [])
-    }
-    func bestMatchingObservationID(
-        forEmbedding: [Float],
-        speakerID: String
-    ) async -> UUID? { nil }
-    func setClusteringThreshold(_ value: Float) async {}
-}

@@ -40,7 +40,10 @@ extension RecordingController {
         // its models yet — both are normal and don't surface to the
         // user. Awaiting the pipeline here is what forced this
         // function to become async; callers run it from a Task.
-        let speakerDB = await pipelineForExport()?.exportSpeakerDatabase()
+        // Optional-chained so a session with no pipeline (e.g. an
+        // imported session never re-analyzed) skips the diarizer DB
+        // snapshot without forcing initialization.
+        let speakerDB = await pipeline?.exportSpeakerDatabase()
         // Carry the pre-edit revert state alongside the utterances
         // so a long-press revert on a row that was hand-edited or
         // re-evaluated keeps working after Save → Open. Filter
@@ -181,13 +184,6 @@ extension RecordingController {
         )
     }
 
-    /// Read-only access to the existing pipeline, without forcing
-    /// initialization. `makeSessionDocument` uses it to skip the
-    /// diarizer DB snapshot when no pipeline ever spun up (e.g.
-    /// saving an imported session that was never re-analyzed).
-    private func pipelineForExport() -> AnalysisPipeline? {
-        pipeline
-    }
 
     /// Replace the current session state with the contents of a
     /// previously-saved bundle. No-op when not idle so we never
@@ -310,7 +306,6 @@ extension RecordingController {
         lastChunkSentenceCount = 0
         lastAcousticDuration = nil
         lastTextDuration = nil
-        lastSegmentTotal = nil
         lastASRFinalizeLatency = nil
         // Imported sessions act like a finished file analysis: in
         // the .microphone source mode (so Record starts fresh) with

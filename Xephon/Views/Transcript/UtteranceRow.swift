@@ -553,15 +553,10 @@ struct UtteranceRow: View {
     /// chunk may be shorter. Returns an empty array when the input
     /// is empty so `ForEach` over the result is a no-op.
     private static func chunked<T>(_ array: [T], size: Int) -> [[T]] {
-        guard size > 0, !array.isEmpty else { return [] }
-        var result: [[T]] = []
-        var index = 0
-        while index < array.count {
-            let end = min(index + size, array.count)
-            result.append(Array(array[index..<end]))
-            index = end
+        guard size > 0 else { return [] }
+        return stride(from: 0, to: array.count, by: size).map {
+            Array(array[$0..<min($0 + size, array.count)])
         }
-        return result
     }
 
     /// Styling applied to every capsule inside the speaker

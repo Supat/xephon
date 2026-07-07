@@ -217,7 +217,6 @@ final class RecordingController {
     var volatileText: String = ""
     var lastAcousticDuration: TimeInterval?
     var lastTextDuration: TimeInterval?
-    var lastSegmentTotal: TimeInterval?
     /// Wall-clock delay from "speaker finished this utterance"
     /// (`sessionStartedAt + segment.end`) to "analyzer emitted the final
     /// for it" (Date() at the analysisTask receipt). Indicates how long
@@ -1311,7 +1310,6 @@ final class RecordingController {
         // new session has even processed.
         lastAcousticDuration = nil
         lastTextDuration = nil
-        lastSegmentTotal = nil
     }
 
     /// External-state half of session startup: stop any prior
@@ -2146,7 +2144,6 @@ final class RecordingController {
         }
         lastAcousticDuration = metrics.acousticDuration
         lastTextDuration = metrics.textDuration
-        lastSegmentTotal = metrics.totalDuration
         // Coalesce Live Activity updates instead of spawning one task per
         // segment — dense turn-taking can fire segments faster than the
         // system can process Activity updates, and the queued tasks

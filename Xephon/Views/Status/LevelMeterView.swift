@@ -8,12 +8,6 @@ struct LevelMeterView: View {
     let channelLevels: [Float]
     private let segmentCount = 24
 
-    /// Backwards-compat convenience for callers that still pass a
-    /// single `level:` value (e.g. PipelineCard's binding).
-    init(level: Float) {
-        self.channelLevels = [level]
-    }
-
     init(channelLevels: [Float]) {
         self.channelLevels = channelLevels.isEmpty ? [0] : channelLevels
     }

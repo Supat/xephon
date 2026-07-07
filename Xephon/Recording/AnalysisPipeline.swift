@@ -361,12 +361,6 @@ final class AnalysisPipeline: @unchecked Sendable {
         }
     }
 
-    /// Snapshot the cumulative VAD speech timeline. Used by
-    /// `processSegment` when `applyDiarizerTrim` is on.
-    func vadTimelineSnapshot() async -> [SpeechSegment] {
-        await vadTracker.cumulativeSnapshot()
-    }
-
     /// Run the diarizer on `audio` in isolation and resolve a
     /// speaker for each requested sub-range from **only the fresh
     /// segments** — i.e. without consulting the cumulative timeline

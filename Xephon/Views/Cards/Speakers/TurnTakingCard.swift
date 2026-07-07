@@ -118,21 +118,18 @@ struct TurnTakingCard: View {
         )
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle(String(localized: "turntaking.section.perSpeaker"))
-            HStack(spacing: 0) {
-                Color.clear.frame(width: Self.speakerLabelWidth)
-                Text(String(localized: "turntaking.col.floor"))
-                    .font(.caption2.bold())
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                Text(String(localized: "turntaking.col.backchannel"))
-                    .font(.caption2.bold())
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            ForEach(speakers, id: \.self) { spk in
-                HStack(spacing: 0) {
-                    speakerChip(spk)
-                        .frame(width: Self.speakerLabelWidth, alignment: .leading)
+            // Same generic gutter-plus-columns table ReactivityCard
+            // uses on this page — one table implementation, two
+            // consumers.
+            SpeakerTallyTable(
+                rows: speakers,
+                rowID: \.self,
+                speakerID: { $0 },
+                columnHeaders: [
+                    String(localized: "turntaking.col.floor"),
+                    String(localized: "turntaking.col.backchannel"),
+                ],
+                cells: { spk in
                     Text(floorMap[spk].map { formatClock($0.medianSeconds) } ?? "—")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.primary)
@@ -141,8 +138,9 @@ struct TurnTakingCard: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, alignment: .center)
-                }
-            }
+                },
+                labelWidth: Self.speakerLabelWidth
+            )
         }
     }
 
@@ -293,14 +291,5 @@ struct TurnTakingCard: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
-    }
-
-    @ViewBuilder
-    private func speakerChip(_ id: String) -> some View {
-        Text(id)
-            .font(.caption2.bold())
-            .foregroundStyle(speakerTint(for: id))
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
     }
 }

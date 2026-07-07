@@ -3,11 +3,10 @@ import Foundation
 import Audio
 import XephonLogging
 
-// File-backed source mode split out of RecordingController.swift.
-// Two paired entry points: `startFromFile` swaps in an
-// `AudioFileCapture` and kicks the analysis loop; `resetToMicrophone`
-// undoes that swap. Same cross-file extension pattern as the
-// other splits.
+// File-backed source mode split out of RecordingController.swift:
+// `startFromFile` swaps in an `AudioFileCapture` and kicks the
+// analysis loop; `stop()` restores the mic source. Same cross-file
+// extension pattern as the other splits.
 extension RecordingController {
 
 
@@ -69,15 +68,6 @@ extension RecordingController {
         // ordering the assignment after avoids the wipe. The
         // user can still edit it freely after.
         sessionTitle = url.deletingPathExtension().lastPathComponent
-    }
-
-    /// Restore the microphone as the active source. Called automatically when
-    /// a file-backed session ends.
-    func resetToMicrophone() async {
-        guard phase == .idle else { return }
-        sourceMode = .microphone
-        capture = micCapture
-        await refreshInputs()
     }
 
 }
