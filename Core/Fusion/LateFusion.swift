@@ -5,16 +5,6 @@ import ASR
 import SERAcoustic
 import SERText
 
-public protocol Fuser: Actor {
-    func fuse(
-        asr: ASRSegment,
-        speakerID: String,
-        dimensional: VADScore?,
-        acousticCategorical: CategoricalEmotion?,
-        plutchik: PlutchikScore?
-    ) async throws -> UtteranceEstimate
-}
-
 // Default fusion: ASR-confidence-aware weighted late fusion.
 // Per CLAUDE.md: do NOT introduce a trained cross-modal head without an
 // in-domain calibration dataset and explicit go-ahead.
@@ -26,7 +16,7 @@ public protocol Fuser: Actor {
 //   - top_label: argmax over the union of acoustic categorical and Plutchik
 //     after a coarse mapping onto a shared label space.
 //   - Missing modalities are skipped, not zero-imputed.
-public actor LateFusion: Fuser {
+public actor LateFusion {
     /// Floor applied to the text weight when ASR confidence is low,
     /// so a noisy transcript still contributes something instead of
     /// being silently dropped. Also re-exposed as

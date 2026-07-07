@@ -71,7 +71,7 @@ Core/
     Acoustic/         W2V2 + emotion2vec inference (Core ML / ONNX)
     Text/             WRIME text SER inference (RoBERTa today, DeBERTa-v3-large target), Foundation Models adapter
   Fusion/             Late-fusion logic, calibration, V/A/D mapping
-  Export/             JSON / CSV writers
+  Export/             JSON writers
 Models/               *.mlpackage and *.onnx (git-lfs, see below)
 Tests/
   UnitTests/

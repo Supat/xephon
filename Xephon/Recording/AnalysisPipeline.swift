@@ -121,7 +121,7 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// sliders. New utterances fuse under the new weights; old
     /// utterances keep their cached fused V/A/D until manually
     /// re-evaluated.
-    private var fuser: any Fuser
+    private var fuser: LateFusion
     /// Bridges per-call diarizer outputs to session-stable speaker IDs
     /// by time-overlap matching. Reset between sessions via
     /// `resetSpeakerTracking()`.
@@ -147,7 +147,6 @@ final class AnalysisPipeline: @unchecked Sendable {
         ageGenderSER: (any AgeGenderSER)? = nil,
         textSER: (any TextSER)? = nil,
         hasDeBERTaTextSER: Bool = false,
-        fuser: any Fuser = LateFusion(),
         speakerTracker: StreamingSpeakerTracker = StreamingSpeakerTracker(),
         vadTracker: StreamingVADTracker = StreamingVADTracker()
     ) {
@@ -167,7 +166,7 @@ final class AnalysisPipeline: @unchecked Sendable {
         self.ageGenderSER = ageGenderSER
         self.textSER = textSER
         self.hasDeBERTaTextSER = hasDeBERTaTextSER
-        self.fuser = fuser
+        self.fuser = LateFusion()
         self.speakerTracker = speakerTracker
         self.vadTracker = vadTracker
     }
