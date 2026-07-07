@@ -27,29 +27,7 @@ enum FuzzySubstringMatcher {
         in text: String,
         threshold: Int
     ) -> Bool {
-        guard !query.isEmpty, !text.isEmpty, threshold >= 0 else { return false }
-        let qChars = Array(query)
-        let tChars = Array(text)
-        let qLen = qChars.count
-        let tLen = tChars.count
-        let minW = max(1, qLen - threshold)
-        let maxW = min(qLen + threshold, tLen)
-        if tLen < minW {
-            return levenshtein(qChars, tChars, threshold: threshold) <= threshold
-        }
-        for w in minW...maxW {
-            let lastStart = tLen - w
-            if lastStart < 0 { continue }
-            var start = 0
-            while start <= lastStart {
-                let slice = Array(tChars[start..<(start + w)])
-                if levenshtein(qChars, slice, threshold: threshold) <= threshold {
-                    return true
-                }
-                start += 1
-            }
-        }
-        return false
+        findSimilarSubstring(query: query, in: text, threshold: threshold) != nil
     }
 
     /// True when `query` and `text` share a contiguous run of at
@@ -118,63 +96,65 @@ enum FuzzySubstringMatcher {
         threshold: Int
     ) -> Range<Int>? {
         guard !query.isEmpty, !text.isEmpty, threshold >= 0 else { return nil }
-        let qChars = Array(query)
-        let tChars = Array(text)
-        let qLen = qChars.count
-        let tLen = tChars.count
-        let minW = max(1, qLen - threshold)
-        let maxW = min(qLen + threshold, tLen)
-        if tLen < minW {
-            return levenshtein(qChars, tChars, threshold: threshold) <= threshold
-                ? 0..<tLen
-                : nil
-        }
-        for w in minW...maxW {
-            let lastStart = tLen - w
-            if lastStart < 0 { continue }
-            var start = 0
-            while start <= lastStart {
-                let slice = Array(tChars[start..<(start + w)])
-                if levenshtein(qChars, slice, threshold: threshold) <= threshold {
-                    return start..<(start + w)
-                }
-                start += 1
-            }
-        }
-        return nil
-    }
+        let q = Array(query)
+        let t = Array(text)
+        let m = q.count
+        let n = t.count
+        // Semi-global (Sellers) alignment with Damerau
+        // transpositions: row 0 is all zeros so a match may START at
+        // any text position; the best END is the column with the
+        // lowest final-row value ≤ threshold. Each cell carries the
+        // start index its alignment began at, so the hit range comes
+        // out of the same single O(m·n) pass — replacing the old
+        // window-sliding loop that recomputed a full Levenshtein per
+        // (window length × start) pair, O((2t+1)·n·m²)-ish. Same
+        // semantics, orders of magnitude cheaper on long texts,
+        // which is what makes whole-transcript fuzzy passes and
+        // joined-token highlighting affordable.
+        var prevPrevDist: [Int] = []
+        var prevPrevStart: [Int] = []
+        var prevDist = [Int](repeating: 0, count: n + 1)
+        var prevStart = [Int](0...n)          // row 0: start = own column
+        var currDist = [Int](repeating: 0, count: n + 1)
+        var currStart = [Int](repeating: 0, count: n + 1)
 
-    /// Bounded Levenshtein. Returns `threshold + 1` (i.e. "too far")
-    /// as soon as the row minimum exceeds `threshold`, so the caller
-    /// can early-exit without a wrong-sentinel ambiguity. Standard
-    /// two-row DP otherwise.
-    private static func levenshtein(
-        _ a: [Character],
-        _ b: [Character],
-        threshold: Int
-    ) -> Int {
-        let m = a.count
-        let n = b.count
-        if abs(m - n) > threshold { return threshold + 1 }
-        if m == 0 { return n }
-        if n == 0 { return m }
-        var prev = Array(0...n)
-        var curr = Array(repeating: 0, count: n + 1)
+        var bestDist = threshold + 1
+        var bestRange: Range<Int>?
+
         for i in 1...m {
-            curr[0] = i
-            var rowMin = curr[0]
+            currDist[0] = i
+            currStart[0] = 0
+            var rowMin = currDist[0]
             for j in 1...n {
-                let cost = a[i - 1] == b[j - 1] ? 0 : 1
-                let del = prev[j] + 1
-                let ins = curr[j - 1] + 1
-                let sub = prev[j - 1] + cost
-                let v = min(del, min(ins, sub))
-                curr[j] = v
-                if v < rowMin { rowMin = v }
+                let cost = q[i - 1] == t[j - 1] ? 0 : 1
+                // substitution / deletion / insertion
+                var d = prevDist[j - 1] + cost
+                var s = prevStart[j - 1]
+                let del = prevDist[j] + 1
+                if del < d { d = del; s = prevStart[j] }
+                let ins = currDist[j - 1] + 1
+                if ins < d { d = ins; s = currStart[j - 1] }
+                // Damerau adjacent transposition (R6): "ie" ↔ "ei"
+                // costs one edit instead of two.
+                if i > 1, j > 1,
+                   q[i - 1] == t[j - 2], q[i - 2] == t[j - 1] {
+                    let tr = prevPrevDist[j - 2] + 1
+                    if tr < d { d = tr; s = prevPrevStart[j - 2] }
+                }
+                currDist[j] = d
+                currStart[j] = s
+                if d < rowMin { rowMin = d }
             }
-            if rowMin > threshold { return threshold + 1 }
-            swap(&prev, &curr)
+            if rowMin > threshold { return nil }
+            prevPrevDist = prevDist
+            prevPrevStart = prevStart
+            swap(&prevDist, &currDist)
+            swap(&prevStart, &currStart)
         }
-        return prev[n]
+        for j in 1...n where prevDist[j] < bestDist {
+            bestDist = prevDist[j]
+            bestRange = prevStart[j]..<j
+        }
+        return bestRange
     }
 }
