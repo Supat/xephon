@@ -70,7 +70,9 @@ struct InfluenceContagionCard: View {
     var body: some View {
         let c = computed ?? Computed(utterances: [])
         let leadership = c.leadership
-        let rescues = c.rescues
+        // (c.synchrony / c.rescues are intermediates consumed inside
+        // Computed's init — leadership and rescueTallies are their
+        // derived products; no local bindings needed.)
         let rescueTallies = c.rescueTallies
         let windows = c.windows
         let modalityTallies = c.modalityTallies
