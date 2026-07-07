@@ -28,6 +28,18 @@ deterministic-seed + sign-stabilization behavior the scatter relies on.
 **upgrade:** only with a fixture pinning projection stability across the
 swap. (Repo audit 2026-07-07, flagged-not-scored.)
 
+### Meeting (Experiment) needs a promotion-or-removal verdict
+`.meetingExperimental` duplicates the meeting path on all three
+backends (classic + experimental prompt/schema/dispatch per
+backend) while the experiment is evaluated — deliberate, but it's
+2× maintenance on every meeting-mode change and must not become
+permanent. **upgrade:** run the eval_log TODO (side-by-side topic
+recall / claim precision / coherence on 2-3 held-out meetings);
+then either promote the experiment to `.meeting` and delete the
+classic copies, or delete the experiment and keep the evidence
+lessons in the tombstones. Decide by the next meeting-mode feature
+request at the latest.
+
 ## Ledger
 
 ### Core/Summarizer/MLXLLMSummarizerCore.swift:131
@@ -143,3 +155,14 @@ changing a generation schema the user already relies on, ship the
 change as a SEPARATE mode next to the baseline (Meeting vs Meeting
 (Experiment)) and let eval data decide the promotion — don't edit
 the trusted path in place.
+
+### Make expected failure modes self-diagnosing before they recur
+The first meeting-summary parse failure cost a full device round to
+diagnose (paste the whole log, infer truncation from the token
+count). Adding the explicit `output hit the N-token cap` warning
+made the SECOND failure diagnosable from one log line — the fix
+round targeted the real cause (evidence-array spray) immediately.
+**Rule:** when a failure class is predicted (truncation, cap-hit,
+recovery-attempted), log it by name at the moment it happens; a
+warning line costs nothing and converts the next field failure from
+a round-trip into a glance.
