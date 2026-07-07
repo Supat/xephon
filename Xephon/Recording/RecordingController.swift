@@ -371,6 +371,17 @@ final class RecordingController {
 
     var isRecording: Bool { phase == .recording }
     var isAnalyzing: Bool { phase == .analyzing }
+    /// True while a file-backed source is being pumped through the
+    /// pipeline. NOTE: file read-in runs under `phase == .recording`
+    /// (`startFromFile` → `start()`), NOT `.analyzing` — that phase
+    /// is only the post-stop drain. Utterances arrive faster than
+    /// realtime here, so per-arrival O(session) UI sweeps (keyword
+    /// counts, suspect detection) must gate on THIS, not on
+    /// `isAnalyzing`.
+    var isFileIngestRunning: Bool {
+        if case .file = sourceMode { return phase != .idle }
+        return false
+    }
     /// True for the whole span of `stop()` — including the drain
     /// window where `phase` is still `.recording` (see stop()'s
     /// comment). Drives the finalize presentation in the control

@@ -130,6 +130,18 @@ final class KeywordReviewModel {
     func suspects(
         in recorder: RecordingController
     ) -> [UUID: [KeywordSuspect]] {
+        // Detection is O(all utterances × keywords) with a tokenizer
+        // + phonetic + Levenshtein pass per pair, and the memo key
+        // includes the utterance count — so during recording / file
+        // analysis EVERY arriving utterance forced a full MainActor
+        // rescan, O(n²·k) over a session (measured: emptying the
+        // keyword list restored file-processing speed). Serve the
+        // stale snapshot while busy; the phase flip to idle is
+        // observed here, so completion re-renders and recomputes
+        // against the final list.
+        if recorder.isAnalyzing || recorder.isRecording {
+            return memoSuspects
+        }
         let keywords = recorder.keywords.keywords
         let key = MemoKey(
             utterancesVersion: recorder.utterancesVersion,

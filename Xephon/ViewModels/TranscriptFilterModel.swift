@@ -215,6 +215,19 @@ final class TranscriptFilterModel {
     func keywordOccurrenceCounts(
         in recorder: RecordingController
     ) -> [UUID: Int] {
+        // File ingest pumps utterances faster than realtime and
+        // every arrival invalidates the memo (count is in the key),
+        // so this O(utterances × keywords) sweep re-ran per arrival
+        // on the MainActor and slowed the pipeline. Serve the stale
+        // map while the pump runs (file read-in happens under
+        // phase == .recording, hence the dedicated flag — a plain
+        // isAnalyzing gate missed it); the phase flip is observed,
+        // so completion recomputes. Live mic recording stays exact —
+        // arrivals are seconds apart and the badge ticking up live
+        // is part of the feature.
+        if recorder.isAnalyzing || recorder.isFileIngestRunning {
+            return keywordCountsMemo.counts
+        }
         let kws = recorder.keywords.keywords
         let signature = kws.map { "\($0.id.uuidString)|\($0.text)" }
         let key = KeywordCountsMemo.Key(
@@ -260,6 +273,12 @@ final class TranscriptFilterModel {
     func keywordTagMatches(
         in recorder: RecordingController
     ) -> [UUID: [KeywordTagColor]] {
+        // Same per-arrival invalidation as the counts above — serve
+        // the stale map while the file pump runs, recompute on the
+        // observed phase flip to idle.
+        if recorder.isAnalyzing || recorder.isFileIngestRunning {
+            return keywordTagMatchesMemo.matches
+        }
         let kws = recorder.keywords.keywords
         let signature = kws.map {
             "\($0.id.uuidString)|\($0.text)|\($0.tagColor?.rawValue ?? "-")"
