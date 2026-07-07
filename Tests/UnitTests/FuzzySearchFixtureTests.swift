@@ -18,6 +18,22 @@ struct FuzzySearchFixtureTests {
         return q.matches(normalized: tokens.joined(), tokens: tokens)
     }
 
+    // MARK: Termination — retranscription recursion
+
+    /// Regression: tokens("、") recursed on itself (the tokenizer's
+    /// latin attribute for 、 yields a variant form that NFKC folds
+    /// straight back) and froze the main thread on session open.
+    /// The nested retranscription pass is depth-limited to one; if
+    /// that limit regresses, this test hangs instead of passing.
+    @Test("Punctuation chunks terminate", .timeLimit(.minutes(1)))
+    func punctuationTerminates() {
+        _ = JapaneseSearchNormalizer.tokens("、")
+        _ = JapaneseSearchNormalizer.normalize(
+            "こここで Dって書いてありましたけど、さっき清形君は E3と Fって書いてあるんで、"
+        )
+        #expect(Bool(true))
+    }
+
     // MARK: R1 — romaji canonicalization
 
     @Test("Kunrei digraphs fold to Hepburn")

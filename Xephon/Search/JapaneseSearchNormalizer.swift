@@ -53,6 +53,13 @@ enum JapaneseSearchNormalizer {
     /// produced no characters after lowercasing and whitespace
     /// stripping are dropped so the offsets stay tight.
     static func tokens(_ input: String) -> [Token] {
+        tokens(input, allowRetranscription: true)
+    }
+
+    private static func tokens(
+        _ input: String,
+        allowRetranscription: Bool
+    ) -> [Token] {
         guard !input.isEmpty else { return [] }
         let nsInput = input as NSString
         let mutable = NSMutableString(string: input) as CFMutableString
@@ -103,13 +110,21 @@ enum JapaneseSearchNormalizer {
             // (the tokenizer treats them as symbols), so the fold
             // above leaves KANA in the normalized stream where
             // every other path produces romaji. One nested pass
-            // over the folded text picks up the transcription;
-            // guarded on "the fold changed something" so ordinary
-            // punctuation/ASCII chunks can't recurse.
-            if normalized != raw.lowercased()
+            // over the folded text picks up the transcription.
+            // HARD depth limit of one: the old "the fold changed
+            // something" equality guard couldn't terminate a
+            // fold/transcription 1-cycle — for 、 the tokenizer's
+            // latin attribute yields a variant form that NFKC folds
+            // straight back, so tokens("、") recursed on itself
+            // until the main thread froze (seen on-device, ~1800
+            // frames). One level is always sufficient: fold → kana
+            // → latin/ASCII.
+            if allowRetranscription,
+               normalized != raw.lowercased()
                 .components(separatedBy: .whitespacesAndNewlines).joined(),
                normalized.contains(where: { !$0.isASCII }) {
-                let retranscribed = tokens(normalized).map(\.normalized).joined()
+                let retranscribed = tokens(normalized, allowRetranscription: false)
+                    .map(\.normalized).joined()
                 if !retranscribed.isEmpty { normalized = retranscribed }
             }
             normalized = Self.canonicalizeRomaji(normalized)
