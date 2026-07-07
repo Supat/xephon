@@ -91,6 +91,37 @@ struct KeywordReviewSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                // Replay the utterance's audio — hearing the span is
+                // usually how the user decides between the three
+                // verdicts. Same playRange(owner:) pattern as the
+                // transcription-review sheet's cards; only rendered
+                // when the session has audio (same gate as commits)
+                // and the row still exists.
+                if let current, canCommit {
+                    let isThisPlaying = recorder.isPreviewPlaying
+                        && recorder.playingUtteranceID == current.id
+                    Button {
+                        if isThisPlaying {
+                            recorder.stopPlayback()
+                        } else {
+                            recorder.playRange(
+                                start: current.start,
+                                end: current.end,
+                                owner: current.id
+                            )
+                        }
+                    } label: {
+                        Image(systemName: isThisPlaying
+                            ? "stop.circle.fill"
+                            : "play.circle.fill")
+                            .font(.title3)
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(String(localized: isThisPlaying
+                        ? "keywords.review.stop"
+                        : "keywords.review.play"))
+                }
             }
             Text(String(
                 format: String(localized: "keywords.review.proposal"),

@@ -543,3 +543,6 @@
 "keywords.review.cancel" = "Cancel";
 "keywords.review.stale" = "This row was edited after detection — re-open the sheet to refresh.";
 "keywords.review.noAudio" = "Corrections need session audio (they re-run analysis on the edited row); this session has none. Claims can still be rejected.";
+
+"keywords.review.play" = "Play utterance audio";
+"keywords.review.stop" = "Stop playback";

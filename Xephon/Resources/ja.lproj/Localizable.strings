@@ -543,3 +543,6 @@
 "keywords.review.cancel" = "キャンセル";
 "keywords.review.stale" = "検出後にこの行が編集されました — シートを開き直して更新してください。";
 "keywords.review.noAudio" = "修正にはセッション音声が必要です（編集行の解析を再実行するため）。このセッションには音声がありません。主張の却下は可能です。";
+
+"keywords.review.play" = "発話音声を再生";
+"keywords.review.stop" = "再生を停止";
