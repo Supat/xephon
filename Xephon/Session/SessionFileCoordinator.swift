@@ -46,6 +46,11 @@ final class SessionFileCoordinator {
     /// Last error from a save/load attempt; surfaces as an alert
     /// in `SessionFileBridge`.
     var sessionIOError: String?
+    /// True while a picked `.xph` is being read + decoded + loaded
+    /// into the recorder. Drives the blocking progress overlay in
+    /// `SessionFileBridge` — big bundles (embedded audio) take long
+    /// enough that a silent gap reads as a hang.
+    var isLoadingSession = false
     /// Drives the JSON-export ShareSheet presentation. Identifiable
     /// via the `URL: @retroactive Identifiable` extension so it
     /// plugs into `.sheet(item:)`.
@@ -346,7 +351,11 @@ final class SessionFileCoordinator {
         recorder: RecordingController
     ) async {
         let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        isLoadingSession = true
+        defer {
+            isLoadingSession = false
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
         do {
             // Detached, not `Task {}` — this method is MainActor-
             // isolated, so an inheriting Task would run the read +

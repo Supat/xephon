@@ -548,3 +548,5 @@
 "keywords.review.stop" = "Stop playback";
 
 "undo.keywords.reject" = "Reject Suspected Mis-transcription";
+
+"session.loading" = "Opening Session…";

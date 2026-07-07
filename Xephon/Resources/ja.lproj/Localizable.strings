@@ -548,3 +548,5 @@
 "keywords.review.stop" = "再生を停止";
 
 "undo.keywords.reject" = "誤認識候補の却下";
+
+"session.loading" = "セッションを読み込み中…";

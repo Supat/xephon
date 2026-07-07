@@ -26,6 +26,29 @@ struct SessionFileBridge: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // Blocking progress popup while a picked .xph is read,
+            // decoded, and loaded — big bundles (embedded audio)
+            // take seconds, and a silent gap reads as a hang. An
+            // overlay rather than a .sheet: sheets animate in/out
+            // and can race a fast load's dismissal; the overlay
+            // appears and vanishes with the flag. Indeterminate —
+            // decode/load expose no progress granularity.
+            .overlay {
+                if coord.isLoadingSession {
+                    ZStack {
+                        Color.black.opacity(0.2).ignoresSafeArea()
+                        ProgressView(String(localized: "session.loading"))
+                            .padding(24)
+                            .background(
+                                .regularMaterial,
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            )
+                    }
+                    // Swallow taps so the user can't re-open the
+                    // picker or start a recording mid-load.
+                    .contentShape(Rectangle())
+                }
+            }
             .sheet(item: $coord.shareURL) { url in
                 ShareSheet(items: [url])
             }
