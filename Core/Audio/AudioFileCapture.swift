@@ -168,8 +168,25 @@ public actor AudioFileCapture: AudioCapture {
             do {
                 try file.read(into: inputBuffer, frameCount: chunkFrames)
             } catch {
-                AppLog.audio.warning("file read error: \(String(describing: error), privacy: .public)")
-                endReason = .fileReadFailed(String(describing: error))
+                // AVAudioFile.read THROWS at exact end-of-file for
+                // some containers (YouTube-sourced AAC observed
+                // on-device) instead of returning zero frames — a
+                // blanket fileReadFailed here flagged a fully-read
+                // file as truncated. Only frames genuinely left
+                // unread count as truncation; a sub-chunk remainder
+                // is a trailing partial packet (< ~85 ms, inaudible)
+                // and completes normally.
+                let remaining = file.length - file.framePosition
+                if remaining >= AVAudioFramePosition(chunkFrames) {
+                    AppLog.audio.warning(
+                        "file read error with \(remaining, privacy: .public) frames unread: \(String(describing: error), privacy: .public)"
+                    )
+                    endReason = .fileReadFailed(String(describing: error))
+                } else {
+                    AppLog.audio.info(
+                        "file read ended at EOF (\(remaining, privacy: .public) frames of trailing packet); treating as normal completion"
+                    )
+                }
                 break
             }
             if inputBuffer.frameLength == 0 { break }

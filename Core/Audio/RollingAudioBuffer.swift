@@ -302,6 +302,18 @@ public struct RollingAudioBuffer: Sendable {
     /// `anchors[0].sampleIndex == 0` afterwards.
     private mutating func dropHead(_ count: Int) {
         guard count > 0, count <= samples.count else { return }
+        // Dropping EVERYTHING leaves no sample for an anchor to
+        // describe — clear the anchor list instead of pinning a
+        // stale head anchor at index 0 (the next append seeds a
+        // fresh anchor from its own chunk timestamp; two anchors
+        // at the same index degenerate interpolation). Latent
+        // today (no production caller reaches count == count),
+        // but the empty-buffer state machine was wrong.
+        if count == samples.count {
+            samples.removeAll(keepingCapacity: true)
+            anchors.removeAll(keepingCapacity: true)
+            return
+        }
         // Compute the file-time at the new head BEFORE mutating anchors.
         let newOriginFileTime = fileTimeForIndex(count)
         samples.removeFirst(count)

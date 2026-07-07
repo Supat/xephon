@@ -1185,6 +1185,17 @@ final class RecordingController {
     /// (post-volatile) ASR segment is processed through SER+fusion and appended
     /// to `utterances` live.
     func start() async {
+        // Both entry points (Record toggle, startFromFile) check
+        // phase == .idle before calling — but startFromFile has an
+        // await gap between swapping the capture and calling here,
+        // and a Record tap inside that gap double-started the
+        // session (second streamingTranscriber.start() = the leak
+        // the comment below warns about). Own the check.
+        guard phase == .idle else {
+            AppLog.app.info("start() ignored: phase is \(String(describing: self.phase), privacy: .public)")
+            return
+        }
+
         AppLog.app.info("RecordingController[\(self.instanceTag, privacy: .public)] start()")
         // Claim the spin-up window BEFORE the first await. `phase`
         // stayed `.idle` through the whole chime → transcriber →

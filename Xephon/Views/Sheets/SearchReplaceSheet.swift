@@ -536,13 +536,19 @@ private struct MatchCard: View {
         var text = coord.staged(for: utterance.id) ?? original
 
         let insertAt: Range<String.Index>
-        if case .selection(let range) = textSelection?.indices {
-            // Clamp the cached range to the current text — if the
-            // user typed since the selection was captured, the
-            // indices may point past the new end.
-            let lower = min(range.lowerBound, text.endIndex)
-            let upper = min(range.upperBound, text.endIndex)
-            insertAt = lower..<upper
+        if case .selection(let range) = textSelection?.indices,
+           // Rebase the cached range through UTF-16 offsets against
+           // the CURRENT text: the raw indices may belong to a
+           // prior string revision (manual staged edit between
+           // selection capture and this tap), and using a foreign
+           // String.Index in replaceSubrange can trap. NSRange →
+           // Range re-derivation both bounds-checks and produces
+           // indices valid for this text value (audit finding).
+           case let ns = NSRange(range, in: text),
+           ns.location != NSNotFound,
+           ns.location + ns.length <= text.utf16.count,
+           let rebased = Range(ns, in: text) {
+            insertAt = rebased
         } else {
             insertAt = text.endIndex..<text.endIndex
         }

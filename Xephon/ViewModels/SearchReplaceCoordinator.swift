@@ -648,6 +648,13 @@ final class SearchReplaceCoordinator {
                 }
                 return (id, text, u.start, u.end)
             }
+        // Purge staged entries whose utterance no longer exists —
+        // they used to linger forever, keeping "Commit All" enabled
+        // as a permanent no-op (audit finding).
+        let pendingIDs = Set(pending.map(\.id))
+        for orphanID in snapshot.keys where !pendingIDs.contains(orphanID) {
+            stagedReplacements.removeValue(forKey: orphanID)
+        }
         commitAllInflight = true
         Task { @MainActor in
             defer { commitAllInflight = false }

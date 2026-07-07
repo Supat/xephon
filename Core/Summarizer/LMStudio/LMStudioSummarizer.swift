@@ -307,14 +307,16 @@ public actor LMStudioSummarizer: SessionSummarizer {
             throw SummarizerError.inferenceFailed(reason: String(describing: error))
         }
         if Task.isCancelled { throw CancellationError() }
-        // Shared parser; the classic prompt requests no evidence so
-        // the summary carries none.
+        // Shared parser with evidence REJECTED — the classic prompt
+        // has no row numbering, so volunteered numbers are
+        // unanchored (see MLX classic path).
         return try MLXLLMSummarizerCore.parseMeeting(
             raw: raw,
             rows: promptUtterances,
             speakerNames: speakerNames,
             modelIdentifier: modelIdentifier,
-            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs
+            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs,
+            acceptEvidence: false
         )
     }
 

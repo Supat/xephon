@@ -488,16 +488,16 @@ internal enum MLXLLMSummarizerCore {
         AppLog.app.info(
             "MLX meeting (\(spec.family.rawValue, privacy: .public)) raw output: \(raw.count, privacy: .public) chars, preview: \(outputPreview, privacy: .public)"
         )
-        // Shared parser: the classic prompt requests no evidence,
-        // so the wire's evidence fields decode nil and the summary
-        // carries none — byte-compatible with the pre-experiment
-        // output.
+        // Shared parser with evidence REJECTED, not just unrequested:
+        // the classic prompt has no row numbering, so any evidence
+        // the model volunteers is unanchored noise.
         return try parseMeeting(
             raw: raw,
             rows: promptUtterances,
             speakerNames: speakerNames,
             modelIdentifier: modelIdentifier,
-            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs
+            expectedSpeakerIDs: promptUtterances.orderedSpeakerIDs,
+            acceptEvidence: false
         )
     }
 
@@ -1283,7 +1283,8 @@ internal enum MLXLLMSummarizerCore {
         rows: [UtteranceEstimate],
         speakerNames: [String: String],
         modelIdentifier: String,
-        expectedSpeakerIDs: [String]
+        expectedSpeakerIDs: [String],
+        acceptEvidence: Bool = true
     ) throws -> SessionSummary {
         guard let decoded = decodeMeetingWire(raw: raw) else {
             throw SummarizerError.decodeFailed(reason: "meeting JSON parse failed")
@@ -1305,7 +1306,13 @@ internal enum MLXLLMSummarizerCore {
         // not the content.
         var strippedEvidenceCount = 0
         func mapEvidence(_ evidence: MeetingWire.Evidence?) -> [UUID]? {
-            MeetingEvidence.map(evidence?.numbers, rows: rows, stripped: &strippedEvidenceCount)
+            // Classic meeting mode never numbers its prompt rows, so
+            // a VOLUNTEERED evidence number is unanchored — binding
+            // it to rows[k-1] cited a semantically unrelated row
+            // (audit finding). Callers whose prompt carries no [n]
+            // numbering pass acceptEvidence: false.
+            guard acceptEvidence else { return nil }
+            return MeetingEvidence.map(evidence?.numbers, rows: rows, stripped: &strippedEvidenceCount)
         }
         let topics: [SessionSummary.TopicSummary]? = decoded.topics?.map { t in
             SessionSummary.TopicSummary(

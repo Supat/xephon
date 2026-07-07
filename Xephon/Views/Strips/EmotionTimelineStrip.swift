@@ -53,13 +53,19 @@ struct EmotionTimelineStrip: View {
             height: Self.height,
             trackTintOpacity: Self.trackTintOpacity
         ) { width in
-            ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
-                let x = width * CGFloat(run.start / totalDuration)
-                let w = width * CGFloat((run.end - run.start) / totalDuration)
-                Rectangle()
-                    .fill(emotionTint(for: run.label).opacity(Self.runFillOpacity))
-                    .frame(width: max(1, w), height: Self.height)
-                    .offset(x: x)
+            // Local guard, not just the caller's: this was the one
+            // strip whose ÷ totalDuration safety lived entirely in
+            // TranscriptPaneView's gate — any future reuse without
+            // that gate produced NaN offsets.
+            if totalDuration > 0 {
+                ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                    let x = width * CGFloat(run.start / totalDuration)
+                    let w = width * CGFloat((run.end - run.start) / totalDuration)
+                    Rectangle()
+                        .fill(emotionTint(for: run.label).opacity(Self.runFillOpacity))
+                        .frame(width: max(1, w), height: Self.height)
+                        .offset(x: x)
+                }
             }
         }
     }

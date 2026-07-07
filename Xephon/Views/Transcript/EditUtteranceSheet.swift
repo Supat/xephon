@@ -278,6 +278,15 @@ struct EditUtteranceSheet: View {
             // .title3 monospaced — covers any realistic session
             // length.
             .frame(minWidth: 110, alignment: .trailing)
+            // Clamp TYPED values into the same range the ± buttons
+            // enforce — previously only the buttons clamped, so a
+            // typed end past EOF sailed through commitEnabled and
+            // reached commitHandEdit/playRange with an out-of-file
+            // range (audit finding).
+            .onChange(of: value.wrappedValue) { _, newValue in
+                let clamped = min(max(newValue, range.lowerBound), range.upperBound)
+                if clamped != newValue { value.wrappedValue = clamped }
+            }
             stepButton(systemImage: "minus") {
                 let next = max(range.lowerBound, value.wrappedValue - 0.1)
                 value.wrappedValue = (next * 100).rounded() / 100
