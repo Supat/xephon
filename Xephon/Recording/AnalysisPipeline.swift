@@ -1012,9 +1012,14 @@ final class AnalysisPipeline: @unchecked Sendable {
             trimmedText = chosen.map(\.text).joined()
             let firstBufferLocal = chosen.first?.start ?? 0
             let lastBufferLocal = chosen.last?.end ?? firstBufferLocal
-            trimmedAudio = Self.sliceAudioFromStart(
+            // Slice BOTH ends: the front pad before the first kept
+            // token is lead-in (silence or a prior sentence's tail),
+            // and letting it through coloured acoustic SER's V/A/D
+            // with prosody the trimmed text doesn't contain.
+            trimmedAudio = Self.sliceAudio(
                 audio,
-                upToBufferLocalEnd: lastBufferLocal
+                fromBufferLocal: firstBufferLocal,
+                toBufferLocal: lastBufferLocal
             )
             correctedStart = audio.timestamp + firstBufferLocal
             correctedEnd = audio.timestamp + lastBufferLocal
@@ -1104,18 +1109,25 @@ final class AnalysisPipeline: @unchecked Sendable {
     /// sample count so a slightly-overshooting token end doesn't
     /// crash. Preserves `timestamp` so downstream code interpreting
     /// the chunk as "starts at absolute time X" still works.
-    private static func sliceAudioFromStart(
+    private static func sliceAudio(
         _ audio: AudioChunk,
-        upToBufferLocalEnd end: TimeInterval
+        fromBufferLocal start: TimeInterval,
+        toBufferLocal end: TimeInterval
     ) -> AudioChunk {
+        let startSample = min(
+            audio.samples.count,
+            max(0, Int((start * audio.sampleRate).rounded()))
+        )
         let endSample = min(
             audio.samples.count,
-            max(0, Int((end * audio.sampleRate).rounded()))
+            max(startSample, Int((end * audio.sampleRate).rounded()))
         )
         return AudioChunk(
-            samples: Array(audio.samples[0..<endSample]),
+            samples: Array(audio.samples[startSample..<endSample]),
             sampleRate: audio.sampleRate,
-            timestamp: audio.timestamp
+            // Absolute-timeline anchor moves with the slice so
+            // downstream `timestamp + tokenLocal` math stays true.
+            timestamp: audio.timestamp + start
         )
     }
 

@@ -226,7 +226,8 @@ final class SummarizerCoordinator {
         guard autoSummarizeEnabled, enabled, ready,
               !parent.utterances.isEmpty,
               lastSessionSummary == nil,
-              !inferenceRunning, !reviewRunning else { return }
+              !inferenceRunning, !reviewRunning,
+              parent.reevaluatingUtteranceID == nil else { return }
         autoSummarizeGraceTask?.cancel()
         autoSummarizeFireAt = Date().addingTimeInterval(Self.autoSummarizeGraceSec)
         AppLog.app.info("auto-summarize armed (fires in \(Self.autoSummarizeGraceSec, privacy: .public)s)")
@@ -342,9 +343,16 @@ final class SummarizerCoordinator {
     /// started manually; a settings-change fire deliberately
     /// replaces an in-flight run whose parameters just went stale.
     private func fireAutoSummary(context: String, supersede: Bool, chainReview: Bool) {
+        // `reevaluatingUtteranceID == nil` is load-bearing: a
+        // re-evaluation holds a strong pipeline ref, so firing here
+        // would load the MLX weights ALONGSIDE the live SER/ASR
+        // actors — silently violating the release-pipeline-first
+        // memory orchestration — and the post-run rewarm would then
+        // build a second pipeline under the re-eval's feet.
         guard autoSummarizeEnabled, enabled, ready,
               !parent.utterances.isEmpty,
               parent.phase == .idle,
+              parent.reevaluatingUtteranceID == nil,
               !reviewRunning else {
             AppLog.app.info("auto-summarize [\(context, privacy: .public)]: conditions no longer hold; skipping")
             return
@@ -396,6 +404,7 @@ final class SummarizerCoordinator {
             guard self.autoSummarizeEnabled, self.enabled, self.ready,
                   !self.parent.utterances.isEmpty,
                   self.parent.phase == .idle,
+                  self.parent.reevaluatingUtteranceID == nil,
                   !self.inferenceRunning, !self.reviewRunning,
                   self.issues.isEmpty,
                   !self.parent.latestBackgroundMode else {

@@ -2250,6 +2250,32 @@ final class RecordingController {
     /// reliable — much shorter and the embedding noise dominates the
     /// turn-take signal. Going wider averages embeddings across more
     /// turns and undoes the whole reason we're running continuously.
+    // Recording-loop cadences (relocated from +Reevaluation.swift,
+    // where they had drifted — they configure the pumps and polls
+    // in THIS file, not the re-evaluation flow).
+    /// USB-C audio plug/unplug polling cadence while idle — there's
+    /// no public notification for it, so we diff `availableInputs`
+    /// at this rate. 2 s is comfortably below human reaction time
+    /// for a "plug it in, tap record" workflow.
+    static let inputPollIntervalSec: TimeInterval = 2.0
+    /// Continuous-diarize outer-loop tick. Diarize fires on every
+    /// stride boundary; this is just the polling cadence between
+    /// checks, so it can be much finer than the stride itself.
+    static let continuousDiarizeTickSec: TimeInterval = 0.1
+    /// Wait when the ASR pump is ahead of the diarize cursor by
+    /// more than `maxDiarizeLagSeconds`. Sleeping a beat here lets
+    /// diarize catch up instead of growing the buffer unbounded.
+    static let diarizeBackpressurePollSec: TimeInterval = 0.1
+    /// `volatileText` UI poll cadence — 5 Hz reads fluid without
+    /// taxing the analyzer actor.
+    static let volatilePumpIntervalSec: TimeInterval = 0.2
+    /// Drain wait while `stop()` waits for the continuous-diarize
+    /// task to cover the final captured audio.
+    static let diarizeDrainPollSec: TimeInterval = 0.2
+    /// Slot-availability poll for the bounded concurrent-SER pool.
+    /// Tiny because SER tasks complete in tens of ms typically.
+    static let serSlotWaitSec: TimeInterval = 0.005
+
     private static let continuousDiarizeWindowSec: TimeInterval = 10
     /// Stride between consecutive continuous-diarize calls. 2 s gives
     /// each new boundary < 2 s of latency before the timeline learns

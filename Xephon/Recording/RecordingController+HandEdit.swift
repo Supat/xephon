@@ -622,7 +622,7 @@ extension RecordingController {
             wasHandEdited: true
         )
         if !Self.isChronologicallyOrdered(utterances, around: index) {
-            utterances.sort { $0.start < $1.start }
+            utterances.sort { ($0.start, $0.id) < ($1.start, $1.id) }
         }
         commitUtteranceChanges()
     }
@@ -686,7 +686,7 @@ extension RecordingController {
         // in order, so their starts are already monotonic among
         // themselves. Resort once to be safe in case a neighbouring
         // row overlaps the window (e.g. overlapping speakers).
-        utterances.sort { $0.start < $1.start }
+        utterances.sort { ($0.start, $0.id) < ($1.start, $1.id) }
 
         commitUtteranceChanges()
     }

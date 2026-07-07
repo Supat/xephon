@@ -38,29 +38,6 @@ extension RecordingController {
     /// and the sentence-aware trim drops unterminated fragments.
     static let reevaluationPaddingSec: TimeInterval = 1.0
 
-    /// USB-C audio plug/unplug polling cadence while idle — there's
-    /// no public notification for it, so we diff `availableInputs`
-    /// at this rate. 2 s is comfortably below human reaction time
-    /// for a "plug it in, tap record" workflow.
-    static let inputPollIntervalSec: TimeInterval = 2.0
-    /// Continuous-diarize outer-loop tick. Diarize fires on every
-    /// stride boundary; this is just the polling cadence between
-    /// checks, so it can be much finer than the stride itself.
-    static let continuousDiarizeTickSec: TimeInterval = 0.1
-    /// Wait when the ASR pump is ahead of the diarize cursor by
-    /// more than `maxDiarizeLagSeconds`. Sleeping a beat here lets
-    /// diarize catch up instead of growing the buffer unbounded.
-    static let diarizeBackpressurePollSec: TimeInterval = 0.1
-    /// `volatileText` UI poll cadence — 5 Hz reads fluid without
-    /// taxing the analyzer actor.
-    static let volatilePumpIntervalSec: TimeInterval = 0.2
-    /// Drain wait while `stop()` waits for the continuous-diarize
-    /// task to cover the final captured audio.
-    static let diarizeDrainPollSec: TimeInterval = 0.2
-    /// Slot-availability poll for the bounded concurrent-SER pool.
-    /// Tiny because SER tasks complete in tens of ms typically.
-    static let serSlotWaitSec: TimeInterval = 0.005
-
     /// Below this duration, the original streaming utterance is
     /// probably an incomplete fragment (the volatile-stabilization
     /// boundary cut mid-sentence). Re-evaluate then enters a retry
@@ -143,6 +120,12 @@ extension RecordingController {
         // keeps re-evaluation idempotent (without this, a retry
         // anchored to the corrected values would compound the shift
         // and grow the utterance's duration without bound).
+        // Session identity at entry: a new recording, file analysis,
+        // or .xph load mid-re-eval replaces the utterance list; the
+        // finalize step must not land on the NEW session (the id
+        // lookup in applyReevaluation already no-ops, but the undo
+        // snapshot and embedding write would leak into it).
+        let sessionAtEntry = sessionToken
         let snapshot = preReevaluationSnapshots[utterance.id]
         let ctx = ReevaluationContext(
             utteranceID: utterance.id,
@@ -172,6 +155,12 @@ extension RecordingController {
                 result = try await reevaluateShortWithRetry(ctx: ctx)
             }
             guard let (fresh, chunk) = result else { return }
+            guard sessionToken == sessionAtEntry else {
+                AppLog.app.info(
+                    "reevaluate: session changed mid-flight; discarding result for \(ctx.utteranceID, privacy: .public)"
+                )
+                return
+            }
             await finalizeReevaluation(fresh: fresh, chunk: chunk, ctx: ctx)
         } catch {
             AppLog.app.error("reevaluate failed: \(String(describing: error), privacy: .public)")
@@ -445,12 +434,13 @@ extension RecordingController {
             wasHandEdited: nil
         )
         // If the corrected start moved the row out of chronological
-        // order with its neighbours, re-sort. Cheap (small N, stable
-        // sort) and keeps the list consistent for filtering /
-        // selection /scroll. No-op when the shift was small enough
-        // that the row's still in the right place.
+        // order with its neighbours, re-sort. Cheap (small N) and
+        // keeps the list consistent for filtering / selection /
+        // scroll. Swift's sort is NOT guaranteed stable, so ties
+        // break deterministically on id — equal-start rows keep one
+        // canonical order across re-sorts instead of swapping.
         if !Self.isChronologicallyOrdered(utterances, around: index) {
-            utterances.sort { $0.start < $1.start }
+            utterances.sort { ($0.start, $0.id) < ($1.start, $1.id) }
         }
         commitUtteranceChanges()
     }
@@ -491,7 +481,7 @@ extension RecordingController {
         utterances[index] = snapshot
         preReevaluationSnapshots.removeValue(forKey: utterance.id)
         if !Self.isChronologicallyOrdered(utterances, around: index) {
-            utterances.sort { $0.start < $1.start }
+            utterances.sort { ($0.start, $0.id) < ($1.start, $1.id) }
         }
         commitUtteranceChanges()
     }
