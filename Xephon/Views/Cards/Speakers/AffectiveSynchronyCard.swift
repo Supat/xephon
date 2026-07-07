@@ -22,6 +22,30 @@ import XephonUtilities
 /// bookkeeping than the work it saves.
 struct AffectiveSynchronyCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// See TurnTakingCard.Computed — same off-render-path pattern.
+    private struct Computed {
+        var result = AffectiveSynchrony.compute(utterances: [])
+        var leadership = AffectiveSynchrony.leadershipScores(
+            from: AffectiveSynchrony.compute(utterances: []), atLag: 1
+        )
+        var dyads = AffectiveSynchrony.plutchikDyadTallies(utterances: [])
+        init(utterances: [UtteranceEstimate]) {
+            result = AffectiveSynchrony.compute(utterances: utterances)
+            leadership = AffectiveSynchrony.leadershipScores(from: result, atLag: 1)
+            dyads = AffectiveSynchrony.plutchikDyadTallies(utterances: utterances)
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     /// Axis toggle + inspected-pair state + the
     /// `rankedPairs(from:)` helper. View binds via `$model.axis` /
@@ -37,9 +61,10 @@ struct AffectiveSynchronyCard: View {
     private static let valueColumnWidth: CGFloat = 64
 
     var body: some View {
-        let result = AffectiveSynchrony.compute(utterances: utterances)
-        let leadership = AffectiveSynchrony.leadershipScores(from: result, atLag: 1)
-        let dyads = AffectiveSynchrony.plutchikDyadTallies(utterances: utterances)
+        let c = computed ?? Computed(utterances: [])
+        let result = c.result
+        let leadership = c.leadership
+        let dyads = c.dyads
         VStack(alignment: .leading, spacing: 8) {
             header(pairCount: result.pairs.count)
             if result.pairs.isEmpty {
@@ -66,6 +91,9 @@ struct AffectiveSynchronyCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     // MARK: - Header

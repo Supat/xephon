@@ -17,16 +17,40 @@ import Fusion
 /// self-interruptions and self-responses aren't meaningful here.
 struct TurnTakingCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// Products of the O(N)+ turn-taking sweep, computed off the
+    /// render path (SERAggregateModel pattern). Default values give
+    /// the struct inferred property types without naming Fusion's
+    /// return types; init overwrites them with the real inputs.
+    private struct Computed {
+        var profile = TurnTakingDynamics.compute(utterances: [])
+        var speakers: [String] = []
+        init(utterances: [UtteranceEstimate]) {
+            profile = TurnTakingDynamics.compute(utterances: utterances)
+            speakers = utterances
+                .sorted(by: { $0.start < $1.start })
+                .orderedSpeakerIDs
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     private static let cellSize: CGFloat = 36
     private static let cellSpacing: CGFloat = 2
     private static let speakerLabelWidth: CGFloat = 44
 
     var body: some View {
-        let profile = TurnTakingDynamics.compute(utterances: utterances)
-        let speakers = utterances
-            .sorted(by: { $0.start < $1.start })
-            .orderedSpeakerIDs
+        let c = computed ?? Computed(utterances: [])
+        let profile = c.profile
+        let speakers = c.speakers
         VStack(alignment: .leading, spacing: 14) {
             header(speakerCount: speakers.count)
             if utterances.isEmpty || speakers.isEmpty {
@@ -52,6 +76,9 @@ struct TurnTakingCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     @ViewBuilder

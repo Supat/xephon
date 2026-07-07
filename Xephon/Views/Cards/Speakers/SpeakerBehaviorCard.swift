@@ -17,6 +17,24 @@ import XephonUtilities
 /// distinct speakers; not yet.
 struct SpeakerBehaviorCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// See TurnTakingCard.Computed — same off-render-path pattern.
+    private struct Computed {
+        var profiles = SpeakerBehavior.computeProfiles(utterances: [])
+        init(utterances: [UtteranceEstimate]) {
+            profiles = SpeakerBehavior.computeProfiles(utterances: utterances)
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     /// Inspector popover state — keyed by speaker id so tapping a
     /// row toggles a single raw-value popover at a time.
@@ -32,7 +50,7 @@ struct SpeakerBehaviorCard: View {
     private static let labelColumnWidth: CGFloat = 44
 
     var body: some View {
-        let profiles = SpeakerBehavior.computeProfiles(utterances: utterances)
+        let profiles = (computed ?? Computed(utterances: [])).profiles
         VStack(alignment: .leading, spacing: 8) {
             header(profileCount: profiles.count)
             if profiles.isEmpty {
@@ -52,6 +70,9 @@ struct SpeakerBehaviorCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     @ViewBuilder

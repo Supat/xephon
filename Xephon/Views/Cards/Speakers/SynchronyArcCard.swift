@@ -14,6 +14,30 @@ import XephonUtilities
 /// the session does convergence happen, narratively?"
 struct SynchronyArcCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// See TurnTakingCard.Computed — same off-render-path pattern.
+    private struct Computed {
+        var arc = AffectiveSynchrony.sessionArc(
+            utterances: [],
+            binCount: SynchronyArcCard.binCount
+        )
+        init(utterances: [UtteranceEstimate]) {
+            arc = AffectiveSynchrony.sessionArc(
+                utterances: utterances,
+                binCount: SynchronyArcCard.binCount
+            )
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     /// V/A toggle mirroring the sister card so the user reads
     /// "synchrony on V" or "synchrony on A" consistently across
@@ -22,13 +46,10 @@ struct SynchronyArcCard: View {
 
     private static let canvasHeight: CGFloat = 140
     private static let canvasInset: CGFloat = 12
-    private static let binCount: Int = 16
+    private nonisolated static let binCount: Int = 16
 
     var body: some View {
-        let arc = AffectiveSynchrony.sessionArc(
-            utterances: utterances,
-            binCount: Self.binCount
-        )
+        let arc = (computed ?? Computed(utterances: [])).arc
         VStack(alignment: .leading, spacing: 8) {
             header(speakerCount: arc.speakerIDs.count)
             if arc.bins.isEmpty || arc.speakerIDs.isEmpty {
@@ -55,6 +76,9 @@ struct SynchronyArcCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     @ViewBuilder

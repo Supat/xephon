@@ -21,23 +21,60 @@ import Fusion
 /// bookkeeping than the work it saves.
 struct InfluenceContagionCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// See TurnTakingCard.Computed — same off-render-path pattern.
+    /// This card is the heaviest of the seven (six analytics passes
+    /// including cross-correlation) — exactly the body-compute the
+    /// pattern exists to keep off the scroll path.
+    private struct Computed {
+        var synchrony = AffectiveSynchrony.compute(utterances: [])
+        var leadership = InfluenceDynamics.multiLagLeadership(
+            from: AffectiveSynchrony.compute(utterances: [])
+        )
+        var rescues = InfluenceDynamics.moodRescues(utterances: [])
+        var rescueTallies = InfluenceDynamics.moodRescueTallies(
+            from: InfluenceDynamics.moodRescues(utterances: []), in: []
+        )
+        var windows = InfluenceDynamics.contagionWindows(utterances: [])
+        var modalityTallies = ModalityDisagreement.tallies(utterances: [])
+        var speakers: [String] = []
+        init(utterances: [UtteranceEstimate]) {
+            synchrony = AffectiveSynchrony.compute(utterances: utterances)
+            leadership = InfluenceDynamics.multiLagLeadership(from: synchrony)
+            rescues = InfluenceDynamics.moodRescues(utterances: utterances)
+            rescueTallies = InfluenceDynamics.moodRescueTallies(
+                from: rescues, in: utterances
+            )
+            windows = InfluenceDynamics.contagionWindows(utterances: utterances)
+            modalityTallies = ModalityDisagreement.tallies(utterances: utterances)
+            speakers = utterances
+                .sorted(by: { $0.start < $1.start })
+                .orderedSpeakerIDs
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     private static let cellSize: CGFloat = 36
     private static let cellSpacing: CGFloat = 2
     private static let speakerLabelWidth: CGFloat = 44
 
     var body: some View {
-        let synchrony = AffectiveSynchrony.compute(utterances: utterances)
-        let leadership = InfluenceDynamics.multiLagLeadership(from: synchrony)
-        let rescues = InfluenceDynamics.moodRescues(utterances: utterances)
-        let rescueTallies = InfluenceDynamics.moodRescueTallies(
-            from: rescues, in: utterances
-        )
-        let windows = InfluenceDynamics.contagionWindows(utterances: utterances)
-        let modalityTallies = ModalityDisagreement.tallies(utterances: utterances)
-        let speakers = utterances
-            .sorted(by: { $0.start < $1.start })
-            .orderedSpeakerIDs
+        let c = computed ?? Computed(utterances: [])
+        let leadership = c.leadership
+        let rescues = c.rescues
+        let rescueTallies = c.rescueTallies
+        let windows = c.windows
+        let modalityTallies = c.modalityTallies
+        let speakers = c.speakers
 
         VStack(alignment: .leading, spacing: 14) {
             header(speakerCount: speakers.count)
@@ -59,6 +96,9 @@ struct InfluenceContagionCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     @ViewBuilder

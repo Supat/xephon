@@ -22,12 +22,30 @@ import Fusion
 /// speaker-analytics page.
 struct AccommodationCohesionCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// See TurnTakingCard.Computed — same off-render-path pattern.
+    private struct Computed {
+        var result = AccommodationCohesion.compute(utterances: [])
+        init(utterances: [UtteranceEstimate]) {
+            result = AccommodationCohesion.compute(utterances: utterances)
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     private static let plotHeight: CGFloat = 56
     private static let speakerLegendDotSize: CGFloat = 8
 
     var body: some View {
-        let result = AccommodationCohesion.compute(utterances: utterances)
+        let result = (computed ?? Computed(utterances: [])).result
         VStack(alignment: .leading, spacing: 14) {
             header(speakerCount: result.speakerIDs.count)
             if utterances.isEmpty || result.speakerIDs.isEmpty {
@@ -60,6 +78,9 @@ struct AccommodationCohesionCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     @ViewBuilder

@@ -373,25 +373,32 @@ struct ControlPaneView: View {
                     linkedSpeakerIDs: linkedSpeakerIDs
                 )
                 SpeakerBehaviorCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
                 TurnTakingCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
                 AffectiveSynchronyCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
                 InfluenceContagionCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
                 AccommodationCohesionCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
                 ReactivityCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
                 SynchronyArcCard(
-                    utterances: recorder.utterances
+                    utterances: recorder.utterances,
+                    utterancesVersion: recorder.utterancesVersion
                 )
             }
             .frame(maxWidth: .infinity)

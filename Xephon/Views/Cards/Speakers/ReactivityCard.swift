@@ -21,13 +21,36 @@ import XephonUtilities
 /// `AccommodationCohesionCard` on the speaker-analytics page.
 struct ReactivityCard: View {
     let utterances: [UtteranceEstimate]
+    /// Keys the `.task(id:)` recompute — the parent passes
+    /// `recorder.utterancesVersion` so the analytics below run once
+    /// per utterance-list change instead of on every body re-eval
+    /// (scroll/focus churn re-evals visible cards constantly).
+    let utterancesVersion: Int
+
+    /// See TurnTakingCard.Computed — same off-render-path pattern.
+    private struct Computed {
+        var ratios = ReactivityDynamics.roleRatios(utterances: [])
+        var recoveries = ReactivityDynamics.recoveryTimes(utterances: [])
+        var reactions = ReactivityDynamics.interruptionReactions(utterances: [])
+        init(utterances: [UtteranceEstimate]) {
+            ratios = ReactivityDynamics.roleRatios(utterances: utterances)
+            recoveries = ReactivityDynamics.recoveryTimes(utterances: utterances)
+            reactions = ReactivityDynamics.interruptionReactions(utterances: utterances)
+        }
+    }
+
+    /// nil until the first `.task` fires (one frame); body falls
+    /// back to empty-input products so the empty-state copy renders
+    /// rather than stale or missing sections.
+    @State private var computed: Computed?
 
     private static let speakerLabelWidth: CGFloat = 44
 
     var body: some View {
-        let ratios = ReactivityDynamics.roleRatios(utterances: utterances)
-        let recoveries = ReactivityDynamics.recoveryTimes(utterances: utterances)
-        let reactions = ReactivityDynamics.interruptionReactions(utterances: utterances)
+        let c = computed ?? Computed(utterances: [])
+        let ratios = c.ratios
+        let recoveries = c.recoveries
+        let reactions = c.reactions
         VStack(alignment: .leading, spacing: 14) {
             header(speakerCount: ratios.count)
             if utterances.isEmpty {
@@ -46,6 +69,9 @@ struct ReactivityCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: utterancesVersion) {
+            computed = Computed(utterances: utterances)
+        }
     }
 
     @ViewBuilder
