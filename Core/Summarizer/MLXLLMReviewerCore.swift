@@ -205,11 +205,20 @@ internal enum MLXLLMReviewerCore {
                 }
                 parameters.prefillStepSize = 128
                 let startTime = Date()
-                var firstTokenTime: Date? = nil
-                let result = try MLXLMCommon.generate(
+                // Cancellable prefill — same rationale as
+                // MLXLLMSummarizerCore.runInference (see
+                // MLXCancellablePrefill's doc for the backgrounding
+                // crash this prevents).
+                let (remaining, iterator) = try MLXCancellablePrefill.primedIterator(
                     input: lmInput,
-                    parameters: parameters,
                     context: context,
+                    parameters: parameters
+                )
+                var firstTokenTime: Date? = nil
+                let result = MLXLMCommon.generate(
+                    input: remaining,
+                    context: context,
+                    iterator: iterator,
                     didGenerate: { (tokens: [Int]) -> GenerateDisposition in
                         if firstTokenTime == nil {
                             firstTokenTime = Date()

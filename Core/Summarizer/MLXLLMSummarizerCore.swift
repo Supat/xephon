@@ -650,11 +650,21 @@ internal enum MLXLLMSummarizerCore {
                 // SIGABRT re-appears on any hardware revision.
                 parameters.prefillStepSize = 128
                 let startTime = Date()
-                var firstTokenTime: Date? = nil
-                let result = try MLXLMCommon.generate(
+                // Prefill OUTSIDE generate, with a cancellation
+                // check between chunks — the library's own prefill
+                // loop has none, so backgrounding mid-prefill kept
+                // submitting GPU work after iOS revoked access and
+                // aborted the process (see MLXCancellablePrefill).
+                let (remaining, iterator) = try MLXCancellablePrefill.primedIterator(
                     input: lmInput,
-                    parameters: parameters,
                     context: context,
+                    parameters: parameters
+                )
+                var firstTokenTime: Date? = nil
+                let result = MLXLMCommon.generate(
+                    input: remaining,
+                    context: context,
+                    iterator: iterator,
                     didGenerate: { (tokens: [Int]) -> GenerateDisposition in
                         if firstTokenTime == nil {
                             firstTokenTime = Date()
