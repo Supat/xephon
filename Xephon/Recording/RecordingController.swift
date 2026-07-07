@@ -228,25 +228,9 @@ final class RecordingController {
     private(set) var lastExportAt: Date?
     private(set) var inflightSegments: Int = 0
     var conversationSummary: ConversationSummary = ConversationSummary()
-    /// File URL whose utterances are currently loaded for playback.
-    /// Non-nil iff the most recent (or in-progress) session was a
-    /// file analysis. Cleared when a microphone session starts so
-    /// the playback button doesn't linger on mic-recorded rows.
-    /// Mutated through `setPlaybackSourceURL` so the matching
-    /// security-scoped access ref is balanced.
-    var playbackSourceURL: URL?
-    /// URL we currently hold a `startAccessingSecurityScopedResource`
-    /// ref on. Distinct from `playbackSourceURL` because the start
-    /// call can fail (e.g. for a non-scoped URL); we only stash here
-    /// after a successful start so the matching stop is balanced.
-    /// `AudioFileCapture` takes its own ref during analysis — refs
-    /// are independent, so dropping its ref at the end of analysis
-    /// doesn't invalidate ours.
-    var scopedPlaybackURL: URL?
-    /// ID of the utterance currently playing back, nil when nothing
-    /// is playing. The row uses this to flip its play icon to stop
-    /// and to disable other rows' buttons while one is mid-playback.
-    var playingUtteranceID: UUID?
+    // Playback state (playbackSourceURL / playingUtteranceID /
+    // player / preview flag) lives on PlaybackCoordinator — see the
+    // forwarders block below.
     /// ID of the utterance currently being re-evaluated, nil when no
     /// re-evaluation is in flight. Used to drive the per-row spinner
     /// and to disable all playback / re-evaluate buttons across the
@@ -298,8 +282,6 @@ final class RecordingController {
     /// per-speaker tint keying all keep operating on the original
     /// `S01`-style key.
     var speakerNameOverrides: [String: String] = [:]
-    var playbackPlayer: AVAudioPlayer?
-    var playbackStopTask: Task<Void, Never>?
     /// Latest snapshot of the cumulative diarizer timeline.
     /// Refreshed by the continuous-diarize task after each ingest;
     /// reset at session start / loadSession. Drives the per-session
@@ -382,14 +364,7 @@ final class RecordingController {
     /// projection step stays sub-10 ms even with 10 speakers.
     private static let clusterObservationsPerSpeaker = 50
 
-    /// True while a `playRange(start:end:)` preview is in flight.
-    /// Distinct from row-level playback (`playingUtteranceID`) so
-    /// the Edit Utterance sheet's play button can toggle to a stop
-    /// glyph without lighting up unrelated row controls. Flipped on
-    /// inside `playRange` immediately after `player.play()` returns
-    /// true, and back off in `stopPlayback()` (covers both the
-    /// duration-elapsed auto-stop and the user-initiated tap).
-    var isPreviewPlaying: Bool = false
+    // isPreviewPlaying moved to PlaybackCoordinator (see forwarders).
     /// Set once `modelStore.ensureModels()` succeeds. Until then the
     /// SetupView is shown in place of the main UI.
     private(set) var modelsReady: Bool = false
@@ -688,6 +663,22 @@ final class RecordingController {
     /// runloop tick. `levelsOfUndo = 50` caps memory; the heaviest
     /// step type (`UtteranceBatchSnapshot`) runs ~1 MB on a 1-hour
     /// session, so worst-case ≈50 MB. Tunable.
+    /// Playback machinery, extracted along the SummarizerCoordinator
+    /// seam (unowned parent, thin forwarders below keep the
+    /// controller's surface stable for the ~20 existing call sites).
+    private(set) var playback: PlaybackCoordinator!
+
+    // MARK: - Playback forwarders
+    var playbackSourceURL: URL? { playback.playbackSourceURL }
+    var playingUtteranceID: UUID? { playback.playingUtteranceID }
+    var isPreviewPlaying: Bool { playback.isPreviewPlaying }
+    func setPlaybackSourceURL(_ url: URL?) { playback.setPlaybackSourceURL(url) }
+    func togglePlayback(for utterance: UtteranceEstimate) { playback.togglePlayback(for: utterance) }
+    func playRange(start: TimeInterval, end: TimeInterval, owner: UUID? = nil) {
+        playback.playRange(start: start, end: end, owner: owner)
+    }
+    func stopPlayback(caller: String = #function) { playback.stopPlayback(caller: caller) }
+
     let undoManager: UndoManager = {
         let mgr = UndoManager()
         mgr.levelsOfUndo = 50
@@ -806,6 +797,7 @@ final class RecordingController {
         // Holds an unowned ref back to self, so init must finish here
         // before it's safe to construct.
         self.summarizer = SummarizerCoordinator(parent: self)
+        self.playback = PlaybackCoordinator(parent: self)
         // Feature-B auto re-run hooks. Keyword mutations change the
         // boosted-utterance set, but only the heuristic/meeting
         // prompts read it; LM Studio settings only matter when that
@@ -896,8 +888,8 @@ final class RecordingController {
                 // produced the periodic dropouts / hard silence
                 // (see playbackSessionOwner in +Playback).
                 guard self.phase == .idle,
-                      self.playbackPlayer == nil,
-                      !Self.playbackSessionActive else { continue }
+                      self.playback.playbackPlayer == nil,
+                      !PlaybackCoordinator.playbackSessionActive else { continue }
                 // Full enumerate every tick (refreshInputs does the
                 // category-swap that surfaces USB / Bluetooth ports).
                 // A bare `session.availableInputs` probe can't be used

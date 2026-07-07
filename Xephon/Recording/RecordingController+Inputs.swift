@@ -76,8 +76,8 @@ extension RecordingController {
         // swap/deactivate here while that instance plays kills its
         // audio (see the playbackSessionOwner doc).
         let canReconfigure = phase == .idle
-            && playbackPlayer == nil
-            && !Self.playbackSessionActive
+            && playback.playbackPlayer == nil
+            && !PlaybackCoordinator.playbackSessionActive
             && !alreadyExposesInputs
         let priorCategory = session.category
         let priorMode = session.mode
@@ -109,8 +109,8 @@ extension RecordingController {
             // and an inactive leftover .playAndRecord is harmless
             // (`alreadyExposesInputs` skips the next swap).
             let stillSafe = phase == .idle
-                && playbackPlayer == nil
-                && !Self.playbackSessionActive
+                && playback.playbackPlayer == nil
+                && !PlaybackCoordinator.playbackSessionActive
             if stillSafe {
                 try? session.setCategory(priorCategory, mode: priorMode, options: priorOptions)
             } else {
@@ -213,7 +213,7 @@ extension RecordingController {
         // `.oldDeviceUnavailable` is the unplugged-headphones case Apple
         // HIG wants playback to stop for.
         guard parsedReason == .oldDeviceUnavailable else { return }
-        if playbackPlayer != nil {
+        if playback.playbackPlayer != nil {
             stopPlayback()
         }
         try? AVAudioSession.sharedInstance().setActive(
