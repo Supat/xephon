@@ -531,3 +531,15 @@
 
 "summary.stale" = "この要約の生成後に文字起こしが変更されました。";
 "review.stale" = "この校閲の生成後に文字起こしが変更されました。";
+
+"keywords.review.chip.a11y" = "%2$@の誤認識の可能性：%1$d件";
+"keywords.review.title" = "キーワード校閲";
+"keywords.review.empty" = "このキーワードの誤認識候補はありません。";
+"keywords.review.proposal" = "「%@」の誤認識の可能性";
+"keywords.review.reject" = "誤りではない";
+"keywords.review.replace" = "置換";
+"keywords.review.edit" = "編集";
+"keywords.review.commit" = "確定";
+"keywords.review.cancel" = "キャンセル";
+"keywords.review.stale" = "検出後にこの行が編集されました — シートを開き直して更新してください。";
+"keywords.review.noAudio" = "修正にはセッション音声が必要です（編集行の解析を再実行するため）。このセッションには音声がありません。主張の却下は可能です。";

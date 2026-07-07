@@ -40,6 +40,14 @@ struct KeywordsCard: View {
     /// with zero matches; the row treats missing as 0.
     let keywordCounts: [UUID: Int]
 
+    /// Per-keyword count of suspected mis-transcriptions (see
+    /// KeywordReviewModel). Non-zero renders the warning chip on the
+    /// row; tapping it asks the parent to present the review sheet
+    /// (the sheet needs recorder + the review model, which this card
+    /// deliberately doesn't hold).
+    let suspectCounts: [UUID: Int]
+    let onReviewKeyword: (Keyword) -> Void
+
     /// Single-source-of-truth for the in-card alerts +
     /// confirmation dialogs (everything that isn't the file
     /// picker — that's the coordinator's job now). Same
@@ -545,6 +553,9 @@ struct KeywordsCard: View {
                         keywordCounts[keyword.id] ?? 0
                     )
                 )
+            if let suspectCount = suspectCounts[keyword.id], suspectCount > 0 {
+                suspectChip(for: keyword, count: suspectCount)
+            }
             colorTagButton(for: keyword)
             groupAssignMenu(for: keyword)
             Button {
@@ -630,6 +641,33 @@ struct KeywordsCard: View {
                 targetKeyword: keyword
             )
         }
+    }
+
+    /// Warning chip: N suspected mis-transcriptions of this keyword
+    /// exist in the session. Tap opens the adjudication sheet.
+    private func suspectChip(for keyword: Keyword, count: Int) -> some View {
+        Button {
+            onReviewKeyword(keyword)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit())
+            }
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.orange.opacity(0.15)))
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(
+            String(
+                format: String(localized: "keywords.review.chip.a11y"),
+                count,
+                keyword.text
+            )
+        )
     }
 
     /// Color-tag dot: shows the keyword's tag color (dashed circle

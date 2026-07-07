@@ -531,3 +531,15 @@
 
 "summary.stale" = "The transcript has changed since this summary was generated.";
 "review.stale" = "The transcript has changed since this review was generated.";
+
+"keywords.review.chip.a11y" = "%1$d possible mis-transcriptions of %2$@";
+"keywords.review.title" = "Keyword Review";
+"keywords.review.empty" = "No suspected mis-transcriptions for this keyword.";
+"keywords.review.proposal" = "Possible mis-transcription of \"%@\"";
+"keywords.review.reject" = "Not an Error";
+"keywords.review.replace" = "Replace";
+"keywords.review.edit" = "Edit";
+"keywords.review.commit" = "Commit";
+"keywords.review.cancel" = "Cancel";
+"keywords.review.stale" = "This row was edited after detection — re-open the sheet to refresh.";
+"keywords.review.noAudio" = "Corrections need session audio (they re-run analysis on the edited row); this session has none. Claims can still be rejected.";

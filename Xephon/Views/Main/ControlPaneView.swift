@@ -55,6 +55,14 @@ struct ControlPaneView: View {
     /// header, hiding the first few px of card content.
     @State private var headerHeight: CGFloat = 0
 
+    /// Keyword mis-transcription detection + rejection state (see
+    /// KeywordReviewModel). @State-owned here — cheap side-effect-
+    /// free init, so the autoclosure hazard that bit
+    /// RecordingController doesn't apply.
+    @State private var keywordReview = KeywordReviewModel()
+    /// Keyword whose review sheet is presented.
+    @State private var reviewingKeyword: Keyword?
+
     private static let dotsHideDelayNanos: UInt64 = 1_500_000_000
 
     var body: some View {
@@ -441,8 +449,17 @@ struct ControlPaneView: View {
                     store: recorder.keywords,
                     filePicker: filePicker,
                     registerUndo: { name in recorder.registerKeywordsUndo(actionName: name) },
-                    keywordCounts: filterModel.keywordOccurrenceCounts(in: recorder)
+                    keywordCounts: filterModel.keywordOccurrenceCounts(in: recorder),
+                    suspectCounts: keywordReview.suspects(in: recorder).mapValues(\.count),
+                    onReviewKeyword: { reviewingKeyword = $0 }
                 )
+                .sheet(item: $reviewingKeyword) { keyword in
+                    KeywordReviewSheet(
+                        recorder: recorder,
+                        model: keywordReview,
+                        keyword: keyword
+                    )
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)
