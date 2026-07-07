@@ -88,10 +88,31 @@ enum JapaneseSearchNormalizer {
             } else {
                 raw = ""
             }
-            let normalized = raw
+            var normalized = raw
+                // R2: NFKC compatibility fold BEFORE casing — folds
+                // full-width ASCII (ＡＢＣ１２３ → ABC123) and
+                // half-width katakana to their canonical forms so
+                // pasted/typed text can't silently miss. Applied to
+                // the per-token OUTPUT (not the tokenizer input) so
+                // `originalRange` keeps indexing the caller's string.
+                .precomposedStringWithCompatibilityMapping
                 .lowercased()
                 .components(separatedBy: .whitespacesAndNewlines)
                 .joined()
+            // Half-width katakana chunks carry no latin attribute
+            // (the tokenizer treats them as symbols), so the fold
+            // above leaves KANA in the normalized stream where
+            // every other path produces romaji. One nested pass
+            // over the folded text picks up the transcription;
+            // guarded on "the fold changed something" so ordinary
+            // punctuation/ASCII chunks can't recurse.
+            if normalized != raw.lowercased()
+                .components(separatedBy: .whitespacesAndNewlines).joined(),
+               normalized.contains(where: { !$0.isASCII }) {
+                let retranscribed = tokens(normalized).map(\.normalized).joined()
+                if !retranscribed.isEmpty { normalized = retranscribed }
+            }
+            normalized = Self.canonicalizeRomaji(normalized)
             if !normalized.isEmpty, tokenRange.length > 0 {
                 let nsRange = NSRange(
                     location: tokenRange.location,
@@ -107,5 +128,43 @@ enum JapaneseSearchNormalizer {
             type = CFStringTokenizerAdvanceToNextToken(tokenizer)
         }
         return out
+    }
+
+    /// R1: fold romaji spelling variants onto the tokenizer's
+    /// Hepburn-style output so typed Kunrei/Nihon-shiki queries
+    /// (`si`, `ti`, `tu`, `sya`…) and macron long vowels exact-match
+    /// instead of burning Levenshtein budget on systematic spelling
+    /// variance. Applied to EVERY normalized token — including plain
+    /// English passthrough, where it "corrupts" symmetrically
+    /// (query and transcript see the same fold, so English↔English
+    /// matching is unaffected; the normalized string is never
+    /// displayed). Order matters: trigraph digraphs before the
+    /// two-letter rules that would otherwise bite their substrings.
+    static func canonicalizeRomaji(_ input: String) -> String {
+        // Fast path: pure-romaji output without any of the trigger
+        // characters skips the replacement cascade.
+        guard input.contains(where: { "āīūēōâîûêôsyzjtdh".contains($0) }) else {
+            return input
+        }
+        var s = input
+        let rules: [(String, String)] = [
+            // Macron / circumflex long vowels → kana-spelling style.
+            ("ā", "aa"), ("ī", "ii"), ("ū", "uu"), ("ē", "ee"), ("ō", "ou"),
+            ("â", "aa"), ("î", "ii"), ("û", "uu"), ("ê", "ee"), ("ô", "ou"),
+            // Kunrei palatalized rows first (contain the two-letter
+            // patterns below as substrings).
+            ("sya", "sha"), ("syu", "shu"), ("syo", "sho"),
+            ("tya", "cha"), ("tyu", "chu"), ("tyo", "cho"),
+            ("zya", "ja"), ("zyu", "ju"), ("zyo", "jo"),
+            ("jya", "ja"), ("jyu", "ju"), ("jyo", "jo"),
+            ("dya", "ja"), ("dyu", "ju"), ("dyo", "jo"),
+            // Kunrei base rows.
+            ("si", "shi"), ("ti", "chi"), ("tu", "tsu"),
+            ("hu", "fu"), ("zi", "ji"), ("di", "ji"), ("du", "zu"),
+        ]
+        for (from, to) in rules where s.contains(from) {
+            s = s.replacingOccurrences(of: from, with: to)
+        }
+        return s
     }
 }
