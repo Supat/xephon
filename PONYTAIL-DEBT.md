@@ -8,15 +8,6 @@ tombstones as they're earned.
 
 ## Deferred — known gaps, revisit when they bite
 
-### MLX backgrounding: in-flight runs don't re-fire on foreground return
-`retryDeferredAutoSummarize` only re-fires runs whose fire attempt happened
-WHILE backgrounded (`autoSummarizeDeferred`). A run already in flight when
-the scenePhase watcher cancels it sets no deferred flag — the user returns
-to a regenerate state, not a resumed run (observed on-device, accepted for
-now). **upgrade:** `LLMSheetCoordinator.cancelInflightTasks` records which
-task kinds it killed; foreground return re-fires them through the existing
-deferral path.
-
 ### MLX backgrounding: two residual crash windows
 `MLXCancellablePrefill` shrank the un-cancellable GPU window from the whole
 prompt to one 128-token chunk, but (a) a chunk in flight at the exact

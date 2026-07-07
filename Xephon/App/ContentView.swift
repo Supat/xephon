@@ -420,8 +420,15 @@ private struct EventBridgeModifier: ViewModifier {
             .onChange(of: scenePhase) { _, newPhase in
                 let inBackground = newPhase != .active
                 Task { await recorder.setBackgroundMode(inBackground) }
-                guard newPhase == .background else { return }
-                llmCoord.cancelInflightTasks()
+                if newPhase == .background {
+                    // Records what it kills so the .active branch
+                    // can re-fire it — distinct from the plain
+                    // cancelInflightTasks the recording-start
+                    // supersede hook uses (that one must stay dead).
+                    llmCoord.cancelForBackground()
+                } else if newPhase == .active {
+                    llmCoord.refireAfterForeground(recorder: recorder)
+                }
             }
             .onChange(of: menuCommands.findToken) { _, _ in
                 searchFieldFocused = true

@@ -1,4 +1,5 @@
 import Foundation
+import XephonLogging
 
 /// Owns the presentation flags and in-flight `Task` handles for the
 /// three on-device LLM-adjacent sheets in the main toolbar:
@@ -225,19 +226,69 @@ final class LLMSheetCoordinator {
 
     // MARK: - Backgrounding
 
-    /// Called from the scenePhase observer when the app moves to
-    /// `.background`. Backgrounding while MLX is mid-`generate`
-    /// crashes the process — iOS revokes GPU access and the next
-    /// Metal command buffer comes back as
+    /// What the backgrounding cancel killed, so foreground return
+    /// can re-fire it. Cleared on consumption AND by the plain
+    /// `cancelInflightTasks` (the recording-start supersede path) —
+    /// a run superseded by a new recording must stay dead.
+    @ObservationIgnored private var refireSummaryOnForeground = false
+    @ObservationIgnored private var refireReviewOnForeground = false
+
+    /// scenePhase → `.background` entry. Backgrounding while MLX is
+    /// mid-`generate` crashes the process — iOS revokes GPU access
+    /// and the next Metal command buffer aborts as
     /// `kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`,
-    /// surfacing as an uncaught C++ exception that Swift can't
-    /// catch. Cancellation propagates into MLX's `didGenerate`
-    /// hook, which returns `.stop` and exits the loop before the
-    /// next forward pass submits to Metal. We intentionally do
-    /// NOT dismiss the sheets here: the user comes back to the
-    /// empty / partial state with the Regenerate button live,
-    /// which is the right resume behaviour.
+    /// an uncaught C++ exception Swift can't catch. Cancellation
+    /// propagates into the cancellable prefill / `didGenerate`
+    /// checks before the next forward pass submits. Records what
+    /// was in flight so `refireAfterForeground` can restart it.
+    /// Section passes are deliberately NOT recorded — they're
+    /// short, and their sheet's Regenerate covers the rare loss.
+    func cancelForBackground() {
+        let hadSummary = inflightSummarization != nil
+        let hadReview = inflightReview != nil
+        cancelInflightTasks()
+        refireSummaryOnForeground = hadSummary
+        refireReviewOnForeground = hadReview
+    }
+
+    /// scenePhase → `.active` entry: restart whatever the
+    /// backgrounding cancel killed, through the same start paths
+    /// the toolbar uses. Re-checks the world at fire time — the
+    /// summarizer may have been disabled, or the session replaced,
+    /// while backgrounded. If an auto-summarize deferral fires on
+    /// the same return (rare — it only exists for runs that hadn't
+    /// STARTED at background time), its supersede path wins; one
+    /// redundant cancel/start, no double run.
+    func refireAfterForeground(recorder: RecordingController) {
+        let summary = refireSummaryOnForeground
+        let review = refireReviewOnForeground
+        refireSummaryOnForeground = false
+        refireReviewOnForeground = false
+        guard summary || review else { return }
+        guard recorder.summarizerEnabled, recorder.summarizerReady,
+              !recorder.utterances.isEmpty,
+              !recorder.isRecording, !recorder.isAnalyzing else {
+            AppLog.app.info("foreground re-fire skipped: conditions no longer hold")
+            return
+        }
+        // The two can't have been running concurrently (shared
+        // inference gate), so at most one branch fires.
+        if summary {
+            AppLog.app.info("re-firing summarization cancelled by backgrounding")
+            startSummarization(recorder: recorder)
+        } else if review {
+            AppLog.app.info("re-firing transcription review cancelled by backgrounding")
+            startReview(recorder: recorder)
+        }
+    }
+
+    /// Cancel everything without recording a re-fire — the
+    /// recording-start supersede hook. We intentionally do NOT
+    /// dismiss the sheets here: the user comes back to the empty /
+    /// partial state with the Regenerate button live.
     func cancelInflightTasks() {
+        refireSummaryOnForeground = false
+        refireReviewOnForeground = false
         inflightSummarization?.cancel()
         inflightSummarization = nil
         inflightReview?.cancel()
