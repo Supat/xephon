@@ -345,9 +345,20 @@ struct TranscriptList: View {
         let timeline = recorder.diarizationTimeline
         var result: Set<UUID> = []
         if !timeline.isEmpty {
+            // Pre-sort ONCE and vote through the binary-search-
+            // windowed overload. The convenience form re-sorts the
+            // whole timeline per row AND scans every started segment
+            // per vote sample — O(rows × segments log segments) —
+            // which hard-froze the first render after loading a .xph
+            // that carried a long session's persisted timeline.
+            let sorted = timeline.sorted { $0.start < $1.start }
+            let maxSegmentDuration = timeline.lazy
+                .map { $0.end - $0.start }
+                .max() ?? 0
             for u in recorder.utterances {
                 let dominant = AnalysisPipeline.dominantSpeakerInSegments(
-                    timeline,
+                    sortedByStart: sorted,
+                    maxSegmentDuration: maxSegmentDuration,
                     from: u.start,
                     to: u.end,
                     fallback: u.speakerID

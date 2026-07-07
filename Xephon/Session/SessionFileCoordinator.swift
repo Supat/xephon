@@ -348,8 +348,16 @@ final class SessionFileCoordinator {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            let data = try Data(contentsOf: url)
-            let document = try SessionBundle.decode(data)
+            // Detached, not `Task {}` — this method is MainActor-
+            // isolated, so an inheriting Task would run the read +
+            // decode of the whole bundle (embedded audio included,
+            // easily tens of MB) on the main thread and beachball
+            // the UI for the duration. The security scope acquired
+            // above is process-wide, so the detached read is
+            // covered; `SessionDocument` is Sendable.
+            let document = try await Task.detached(priority: .userInitiated) {
+                try SessionBundle.decode(try Data(contentsOf: url))
+            }.value
             try await recorder.loadSession(document)
             // Always override the loaded `sessionTitle` with the
             // .xph file's base name. The user has just picked

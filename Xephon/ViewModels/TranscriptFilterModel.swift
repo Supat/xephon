@@ -168,9 +168,18 @@ final class TranscriptFilterModel {
         let timeline = recorder.diarizationTimeline
         var result: Set<UUID> = []
         if !timeline.isEmpty {
+            // Pre-sort ONCE + windowed voting — same fix as
+            // TranscriptList.speakerMismatchedIDs; the per-row
+            // convenience form re-sorts the whole timeline per
+            // utterance and goes quadratic on long sessions.
+            let sorted = timeline.sorted { $0.start < $1.start }
+            let maxSegmentDuration = timeline.lazy
+                .map { $0.end - $0.start }
+                .max() ?? 0
             for u in recorder.utterances {
                 let dominant = AnalysisPipeline.dominantSpeakerInSegments(
-                    timeline,
+                    sortedByStart: sorted,
+                    maxSegmentDuration: maxSegmentDuration,
                     from: u.start,
                     to: u.end,
                     fallback: u.speakerID

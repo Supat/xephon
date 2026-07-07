@@ -467,6 +467,15 @@ final class AnalysisPipeline: @unchecked Sendable {
     static let speakerVoteSampleCountMin: Int = 8
     static let speakerVoteSampleCountMax: Int = 256
 
+    /// Convenience single-shot variant: sorts + measures the segment
+    /// list itself. Fine for one-off calls on short, fresh segment
+    /// lists (hand-edit, re-evaluation, mismatch-correction taps).
+    /// Batch callers sweeping every utterance against the cumulative
+    /// timeline MUST pre-sort once and use the `sortedByStart:`
+    /// overload below — sorting per row plus the full-timeline vote
+    /// scan froze the main thread for minutes when a loaded `.xph`
+    /// restored a long session's persisted timeline (same quadratic
+    /// growth `UtteranceDiarizationStrip.computeRuns` was split for).
     static func dominantSpeakerInSegments(
         _ segments: [DiarizedSegment],
         from start: TimeInterval,
@@ -474,7 +483,46 @@ final class AnalysisPipeline: @unchecked Sendable {
         fallback: String
     ) -> String {
         guard !segments.isEmpty, end > start else { return fallback }
-        let sorted = segments.sorted { $0.start < $1.start }
+        return dominantSpeakerInSegments(
+            sortedByStart: segments.sorted { $0.start < $1.start },
+            maxSegmentDuration: segments.lazy.map { $0.end - $0.start }.max() ?? 0,
+            from: start,
+            to: end,
+            fallback: fallback
+        )
+    }
+
+    /// Batch-optimized voting: `sorted` pre-sorted by `start`,
+    /// `maxSegmentDuration` = the longest segment in the list. Vote
+    /// candidates are narrowed with two binary searches — a segment
+    /// can only overlap a sample in `(start, end)` if its own start
+    /// lies in `[start − maxSegmentDuration, end)` — so the per-call
+    /// cost is O(log S + samples × k) instead of O(S log S +
+    /// samples × S), with k the handful of observations overlapping
+    /// the window. The nearest-midpoint fallback still scans the
+    /// full list; it only fires for ranges with zero overlap.
+    static func dominantSpeakerInSegments(
+        sortedByStart sorted: [DiarizedSegment],
+        maxSegmentDuration: TimeInterval,
+        from start: TimeInterval,
+        to end: TimeInterval,
+        fallback: String
+    ) -> String {
+        guard !sorted.isEmpty, end > start else { return fallback }
+        let minStart = start - maxSegmentDuration
+        var lo = 0
+        var hi = sorted.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if sorted[mid].start < minStart { lo = mid + 1 } else { hi = mid }
+        }
+        let lower = lo
+        hi = sorted.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if sorted[mid].start < end { lo = mid + 1 } else { hi = mid }
+        }
+        let upper = lo
 
         let dt: TimeInterval = speakerVoteSampleStepSec
         let sampleCount = min(
@@ -484,14 +532,14 @@ final class AnalysisPipeline: @unchecked Sendable {
         let step = (end - start) / TimeInterval(sampleCount)
 
         var votes: [String: Int] = [:]
-        var upperBound = 0
+        var upperBound = lower
         for i in 0..<sampleCount {
             let t = start + (TimeInterval(i) + 0.5) * step
-            while upperBound < sorted.count && sorted[upperBound].start <= t {
+            while upperBound < upper && sorted[upperBound].start <= t {
                 upperBound += 1
             }
             var instant: [String: Int] = [:]
-            for j in 0..<upperBound where t <= sorted[j].end {
+            for j in lower..<upperBound where t <= sorted[j].end {
                 instant[sorted[j].speakerID, default: 0] += 1
             }
             // Stable tie-break — see the matching comment in
