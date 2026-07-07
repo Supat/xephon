@@ -350,7 +350,13 @@ public final class KeywordStore {
         }
         let newKeywords = document.keywords.map { old -> Keyword in
             let mappedGroup = old.groupID.flatMap { groupIDMap[$0] }
-            return Keyword(text: old.text, groupID: mappedGroup)
+            // Carry the color tag through the re-key — dropping it
+            // here silently stripped every tag on import.
+            return Keyword(
+                text: old.text,
+                groupID: mappedGroup,
+                tagColor: old.tagColor
+            )
         }
         groups = newGroups
         keywords = newKeywords
