@@ -3,6 +3,7 @@ import Foundation
 import Audio
 import Fusion
 import XephonLogging
+import XephonPluginKit
 
 // Utterance lookup helpers + shared post-edit commit pass. The
 // playback machinery that used to live here (setPlaybackSourceURL /
@@ -55,6 +56,7 @@ extension RecordingController {
         }
         lastKnownSpeakerIDs = current
         cachedKnownSpeakerIDs = current.sorted()
+        pluginEventSink?(.utterancesChanged(version: utterancesVersion))
     }
 
     /// Drop every trace of speakers that no row references

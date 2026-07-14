@@ -162,6 +162,18 @@ public struct SessionDocument: Codable, Sendable {
     /// (placeholder "Xephon" shows in the TextField).
     public let sessionTitle: String?
 
+    /// Per-plugin session payloads keyed by plugin id (see
+    /// docs/plugin_architecture.md). Each value is an opaque,
+    /// version-stamped blob owned entirely by its plugin — this
+    /// layer never interprets it, mirroring the `sessionSummary` /
+    /// `sections` pattern. CONTRACT: entries whose plugin isn't
+    /// installed in the current build must be preserved verbatim
+    /// through load → save, so opening a session on a leaner build
+    /// never destroys another build's plugin data. Optional +
+    /// missing-key tolerant for pre-plugin bundles; empty maps
+    /// round-trip as nil so plugin-free sessions stay byte-clean.
+    public let pluginPayloads: [String: PluginPayload]?
+
     public enum SourceKind: String, Codable, Sendable {
         case microphone, file
     }
@@ -190,7 +202,8 @@ public struct SessionDocument: Codable, Sendable {
         utteranceEmbeddings: [UUID: [Float]]? = nil,
         utteranceObservationSegmentIDs: [UUID: UUID]? = nil,
         sections: Data? = nil,
-        sessionTitle: String? = nil
+        sessionTitle: String? = nil,
+        pluginPayloads: [String: PluginPayload]? = nil
     ) {
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -210,6 +223,21 @@ public struct SessionDocument: Codable, Sendable {
         self.utteranceObservationSegmentIDs = utteranceObservationSegmentIDs
         self.sections = sections
         self.sessionTitle = sessionTitle
+        self.pluginPayloads = pluginPayloads
+    }
+}
+
+/// One plugin's opaque session payload as persisted in a `.xph`
+/// bundle. `version` is the writing plugin's `payloadVersion` at
+/// save time so the plugin can migrate old payloads on load;
+/// `data` is entirely the plugin's own encoding.
+public struct PluginPayload: Codable, Sendable, Equatable {
+    public let version: Int
+    public let data: Data
+
+    public init(version: Int, data: Data) {
+        self.version = version
+        self.data = data
     }
 }
 

@@ -11,6 +11,7 @@ import SERText
 import Summarizer
 import XephonLogging
 import XephonUtilities
+import XephonPluginKit
 
 @MainActor
 @Observable
@@ -138,6 +139,20 @@ final class RecordingController {
     /// session utterance IDs); the Sections page card on the
     /// left pane is the only surface that touches it.
     let sections: SectionStore = SectionStore()
+    /// Per-plugin session payloads (docs/plugin_architecture.md).
+    /// Bridged into `SessionDocument.pluginPayloads` on save,
+    /// replaced wholesale on load (unknown plugin ids included, so
+    /// they round-trip verbatim), cleared on session reset.
+    /// `@ObservationIgnored` — plugin payload writes are not render
+    /// state; plugin UI observes its own models.
+    @ObservationIgnored
+    let pluginPayloads = PluginPayloadStore()
+    /// Session-lifecycle event relay to the plugin registry. Set
+    /// once by XephonApp after construction; a closure (rather than
+    /// a registry reference) keeps the controller ignorant of the
+    /// plugin layer.
+    @ObservationIgnored
+    var pluginEventSink: ((SessionEvent) -> Void)?
     /// User-supplied session title rendered in the chrome's
     /// nav bar as a `TextField` (placeholder "Xephon" when
     /// empty). Free-form text — no validation, no uniqueness
@@ -1333,6 +1348,11 @@ final class RecordingController {
         // new session has even processed.
         lastAcousticDuration = nil
         lastTextDuration = nil
+        // Plugin payloads referenced the discarded session; clear
+        // BEFORE notifying so a plugin reacting to the event reads
+        // empty storage, not the stale table.
+        pluginPayloads.clear()
+        pluginEventSink?(.sessionCleared)
     }
 
     /// External-state half of session startup: stop any prior

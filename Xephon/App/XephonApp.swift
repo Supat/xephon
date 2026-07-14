@@ -45,6 +45,13 @@ struct XephonApp: App {
     /// RecordingController.init.
     @State private var recorder = RecordingController()
 
+    /// Installed-plugin registry (docs/plugin_architecture.md).
+    /// Same construct-once reasoning as `recorder` above. The
+    /// install list is intentionally hardcoded and currently empty —
+    /// the first shipped plugin (EvalForm, Phase 2) adds itself
+    /// here; test plugins live in the test target only.
+    @State private var pluginRegistry = PluginRegistry()
+
     init() {
         AppLog.app.info("Xephon launching")
     }
@@ -53,6 +60,21 @@ struct XephonApp: App {
         WindowGroup {
             ContentView(recorder: recorder)
                 .environment(menuCommands)
+                // Plugin wiring. In `.task` (not `init`) because
+                // reading @State wrappedValue before installation
+                // draws runtime warnings; idempotent by construction
+                // (duplicate install ids are ignored, re-assigning
+                // the sink to the same registry is harmless), so a
+                // second window scene re-running it is safe.
+                .task {
+                    pluginRegistry.install(
+                        [],  // first shipped plugin lands in Phase 2
+                        host: PluginHostServices(recorder: recorder)
+                    )
+                    recorder.pluginEventSink = { [weak pluginRegistry] event in
+                        pluginRegistry?.broadcast(event)
+                    }
+                }
         }
         // Hardware-keyboard menu integration. iPadOS 26's menu strip
         // (cmd-hold) and macOS / Catalyst menu bar both honor these.

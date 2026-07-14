@@ -7,6 +7,7 @@ import Fusion
 import Export
 import Summarizer
 import XephonLogging
+import XephonPluginKit
 
 // `.xph` session bundle save/load split out of
 // RecordingController.swift to keep the controller's source file
@@ -156,7 +157,8 @@ extension RecordingController {
                     utteranceEmbeddings: embeddings,
                     utteranceObservationSegmentIDs: segmentIDs,
                     sections: sectionsBlob,
-                    sessionTitle: sessionTitle.isEmpty ? nil : sessionTitle
+                    sessionTitle: sessionTitle.isEmpty ? nil : sessionTitle,
+                    pluginPayloads: pluginPayloads.forExport
                 )
             } catch {
                 throw SessionBundle.BundleError.ioFailure(
@@ -180,7 +182,8 @@ extension RecordingController {
             utteranceEmbeddings: embeddings,
             utteranceObservationSegmentIDs: segmentIDs,
             sections: sectionsBlob,
-            sessionTitle: sessionTitle.isEmpty ? nil : sessionTitle
+            sessionTitle: sessionTitle.isEmpty ? nil : sessionTitle,
+            pluginPayloads: pluginPayloads.forExport
         )
     }
 
@@ -299,6 +302,13 @@ extension RecordingController {
             diarizationTimeline = restored
         }
         speakerNameOverrides = document.speakerNames ?? [:]
+        // Adopt the bundle's plugin payload table wholesale —
+        // including entries for plugins not installed in this build,
+        // which must survive the next save verbatim. Restored BEFORE
+        // `commitUtteranceChanges` so a plugin reacting to that
+        // event already sees its payload; `.sessionLoaded` below is
+        // the authoritative load-complete signal.
+        pluginPayloads.replaceAll(document.pluginPayloads ?? [:])
         // Same-length imports would otherwise hit the filter memo;
         // bump defensively so the cache rebuilds for any load.
         commitUtteranceChanges()
@@ -375,6 +385,9 @@ extension RecordingController {
                 )
             }
         }
+        // Everything restored — tell active plugins. Fired LAST so a
+        // plugin's snapshot() at event time sees the complete state.
+        pluginEventSink?(.sessionLoaded)
     }
 
 }

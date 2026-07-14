@@ -35,6 +35,7 @@ let package = Package(
                 "Fusion",
                 "Export",
                 "Summarizer",
+                "XephonPluginKit",
             ]
         ),
         .library(name: "Audio",            targets: ["Audio"]),
@@ -48,6 +49,7 @@ let package = Package(
         .library(name: "Summarizer",       targets: ["Summarizer"]),
         .library(name: "XephonLogging",    targets: ["XephonLogging"]),
         .library(name: "XephonUtilities",  targets: ["XephonUtilities"]),
+        .library(name: "XephonPluginKit",  targets: ["XephonPluginKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.5.0"),
@@ -142,6 +144,18 @@ let package = Package(
             name: "Export",
             dependencies: ["XephonLogging", "Fusion"],
             path: "Core/Export"
+        ),
+        .target(
+            // Plugin API surface — see docs/plugin_architecture.md.
+            // Plugins and the app-side host both import this; a
+            // plugin target may depend ONLY on this (+ Core value-
+            // type modules), never on the app target. Keep the
+            // dependency list minimal on purpose: Fusion for
+            // UtteranceEstimate in session snapshots, Export for
+            // the PluginPayload persisted into .xph bundles.
+            name: "XephonPluginKit",
+            dependencies: ["XephonLogging", "Fusion", "Export"],
+            path: "Core/PluginKit"
         ),
         .target(
             name: "Summarizer",
