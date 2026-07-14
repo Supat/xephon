@@ -216,6 +216,8 @@ struct PluginKitTests {
 
         #expect(registry.activePages.map(\.id) == ["test.hello.page"])
         #expect(registry.activeMenuCommands.map(\.id) == ["test.hello.cmd"])
+        // Default gate is always-on.
+        #expect(registry.activeMenuCommands.first?.isEnabled() == true)
 
         // Disabling removes the contributions live; re-enabling
         // restores them (via a fresh activation).
@@ -254,6 +256,8 @@ struct PluginKitTests {
         // Activation seeds the sheet vocabulary into the bank.
         #expect(host.seededKeywords.contains("ヒョコヒョコ"))
         #expect(host.seededKeywords.contains("ハーシュネス"))
+        // Menu gating: no draft yet → the export item is disabled.
+        #expect(handle.menuCommands.first?.isEnabled() == false)
     }
 
     // MARK: - Payload round-trip

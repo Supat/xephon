@@ -54,6 +54,11 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
     /// Session-level 補足コメント distilled from substantive rows no
     /// item claimed.
     public var supplementaryComment: String?
+    /// Evidence rows behind `supplementaryComment`. Optional-
+    /// tolerant addition within payload v2 (missing key decodes
+    /// nil) — no version bump needed, same rule SessionDocument
+    /// uses for new optional fields.
+    public var supplementaryEvidenceRows: [Int]?
     /// Extracted header metadata (field name → value), stated-only.
     public var metadata: [String: String]
     /// Item ids the reviewer has marked confirmed (payload v2 —
@@ -65,6 +70,7 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
         generatedAtUtterancesVersion: Int? = nil,
         items: [ItemResult] = [],
         supplementaryComment: String? = nil,
+        supplementaryEvidenceRows: [Int]? = nil,
         metadata: [String: String] = [:],
         reviewedItemIDs: [String] = []
     ) {
@@ -72,6 +78,7 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
         self.generatedAtUtterancesVersion = generatedAtUtterancesVersion
         self.items = items
         self.supplementaryComment = supplementaryComment
+        self.supplementaryEvidenceRows = supplementaryEvidenceRows
         self.metadata = metadata
         self.reviewedItemIDs = reviewedItemIDs
     }

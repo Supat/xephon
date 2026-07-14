@@ -40,20 +40,25 @@ public struct PluginMenuCommand: Identifiable {
     public let id: String
     public let title: String
     public let systemImage: String?
-    /// Invoked on the MainActor when the item is selected. Gating
-    /// (enabled/disabled) is intentionally not modeled yet — a
-    /// command that can't run should present its own explanation.
+    /// Enablement gate, read at menu render time on the MainActor.
+    /// Reading the plugin's @Observable state here is what keeps
+    /// the menu live — the scene body tracks it exactly like the
+    /// built-in MenuCommands gate mirrors. Defaults to always-on.
+    public let isEnabled: @MainActor () -> Bool
+    /// Invoked on the MainActor when the item is selected.
     public let action: @MainActor () -> Void
 
     public init(
         id: String,
         title: String,
         systemImage: String? = nil,
+        isEnabled: @escaping @MainActor () -> Bool = { true },
         action: @escaping @MainActor () -> Void
     ) {
         self.id = id
         self.title = title
         self.systemImage = systemImage
+        self.isEnabled = isEnabled
         self.action = action
     }
 }

@@ -162,8 +162,9 @@ public struct DataFileDocument: FileDocument, Sendable {
     // Session Audio…) hands through whichever container the
     // session audio arrived in — the recorder produces m4a/wav;
     // imported source files can also be mp3/aiff.
-    public static var readableContentTypes: [UTType] { [.data, .json, .plainText, .xephonSession, .mpeg4Audio, .wav, .mp3, .aiff] }
-    public static var writableContentTypes: [UTType] { [.data, .json, .plainText, .xephonSession, .mpeg4Audio, .wav, .mp3, .aiff] }
+    // `.commaSeparatedText`: EvalFormPlugin's CSV export.
+    public static var readableContentTypes: [UTType] { [.data, .json, .plainText, .commaSeparatedText, .xephonSession, .mpeg4Audio, .wav, .mp3, .aiff] }
+    public static var writableContentTypes: [UTType] { [.data, .json, .plainText, .commaSeparatedText, .xephonSession, .mpeg4Audio, .wav, .mp3, .aiff] }
 
     public var data: Data
     public var contentType: UTType

@@ -304,4 +304,72 @@ struct EvalFormPluginTests {
             roadNames: template.roadNames
         ).isEmpty)
     }
+
+    // MARK: - Supplementary + metadata candidates
+
+    @Test func supplementaryCandidatesSkipClaimedAndBackchannels() {
+        let rows = [
+            utterance("ヒョコヒョコが気になりますね"),   // 1: claimed
+            utterance("うん"),                          // 2: backchannel
+            utterance("ステアリングの戻りが少し重いように感じます"), // 3: substantive
+            utterance("そう"),                          // 4: backchannel
+            utterance("リアシートだと突き上げがもっとはっきり出ます"), // 5: substantive
+        ]
+        let candidates = EvalFormExtractor.supplementaryCandidateRows(
+            utterances: rows,
+            claimedRows: [1]
+        )
+        #expect(candidates == [3, 5])
+    }
+
+    @Test func metadataCandidatesUnionOpeningAndCueHits() {
+        var rows = (1...25).map { utterance("走行コメント その\($0)ですね") }
+        rows.append(utterance("ここでアブソーバーを評価仕様に交換します"))  // row 26, cue hit
+        let candidates = EvalFormExtractor.metadataCandidateRows(
+            utterances: rows,
+            cues: template.metadataCues,
+            openingCount: 5,
+            limit: 30
+        )
+        #expect(candidates.prefix(5).elementsEqual(1...5))
+        #expect(candidates.contains(26))
+    }
+
+    @Test func draftWithoutSupplementaryEvidenceKeyDecodesNil() throws {
+        // Optional-tolerant v2 addition: a v2 payload written before
+        // the field existed still decodes.
+        let draft = EvalFormDraft(templateID: template.id, supplementaryComment: "x")
+        var object = try JSONSerialization.jsonObject(
+            with: draft.encoded()
+        ) as! [String: Any]
+        object.removeValue(forKey: "supplementaryEvidenceRows")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try EvalFormDraft.decode(stripped)
+        #expect(decoded.supplementaryComment == "x")
+        #expect(decoded.supplementaryEvidenceRows == nil)
+    }
+
+    // MARK: - CSV
+
+    @Test func csvEscapesQuotesCommasAndNewlines() {
+        #expect(EvalFormCSV.escaped("plain") == "plain")
+        #expect(EvalFormCSV.escaped("a,b") == "\"a,b\"")
+        #expect(EvalFormCSV.escaped("say \"hi\"") == "\"say \"\"hi\"\"\"")
+        #expect(EvalFormCSV.escaped("two\nlines") == "\"two\nlines\"")
+    }
+
+    @Test func csvRendersItemRowsAndSupplementary() {
+        var draft = EvalFormDraft(templateID: template.id)
+        draft.items = [
+            .init(itemID: "11_hyokohyoko", strengthScore: -0.25,
+                  comment: "収まり, 悪い", evidenceRows: [3, 5])
+        ]
+        draft.reviewedItemIDs = ["11_hyokohyoko"]
+        draft.supplementaryComment = "路面続き"
+        draft.supplementaryEvidenceRows = [9]
+        let csv = EvalFormCSV.render(draft: draft, template: template)
+        #expect(csv.contains("11,ヒョコヒョコ（過減衰感、バネ上の動き）,-0.25,,,\"収まり, 悪い\",3 5,yes,"))
+        #expect(csv.contains("supplementaryComment,路面続き"))
+        #expect(csv.contains("supplementaryEvidenceRows,9"))
+    }
 }

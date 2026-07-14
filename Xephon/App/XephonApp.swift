@@ -150,6 +150,7 @@ struct XephonApp: App {
                             Text(command.title)
                         }
                     }
+                    .disabled(!command.isEnabled())
                 }
             }
             // Edit > Undo / Edit > Redo. Backed by

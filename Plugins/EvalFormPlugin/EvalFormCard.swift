@@ -34,6 +34,7 @@ struct EvalFormCard: View {
                 }
                 metadataSection(draft)
                 itemsSection(draft)
+                supplementarySection(draft)
                 if let lastExport = model.lastExport {
                     Text(verbatim: "Export: \(lastExport)")
                         .font(.caption2)
@@ -71,15 +72,20 @@ struct EvalFormCard: View {
                     )
                 }
                 .disabled(!runEnabled)
-                Button {
-                    model.exportMarkdown()
+                Menu {
+                    Button(String(localized: "evalform.export.markdown", bundle: .module)) {
+                        model.exportMarkdown()
+                    }
+                    Button(String(localized: "evalform.export.csv", bundle: .module)) {
+                        model.exportCSV()
+                    }
                 } label: {
                     Label(
                         String(localized: "evalform.export", bundle: .module),
                         systemImage: "square.and.arrow.up"
                     )
                 }
-                .disabled(model.draft == nil)
+                .disabled(!model.canExport)
             }
             .font(.caption)
             .buttonStyle(.bordered)
@@ -177,6 +183,36 @@ struct EvalFormCard: View {
                 ) { field in
                     Text(verbatim: "\(field): \(draft.metadata[field] ?? "")")
                         .font(.caption2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func supplementarySection(_ draft: EvalFormDraft) -> some View {
+        if let supplementary = draft.supplementaryComment {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(String(localized: "evalform.supplementary", bundle: .module))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                Text(supplementary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let evidence = draft.supplementaryEvidenceRows, !evidence.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(evidence, id: \.self) { row in
+                            Button {
+                                model.playRow(row)
+                            } label: {
+                                Text(verbatim: "[\(row)]")
+                                    .font(.caption2.monospacedDigit())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tint)
+                        }
+                    }
                 }
             }
         }

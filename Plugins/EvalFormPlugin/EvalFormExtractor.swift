@@ -183,12 +183,103 @@ public enum EvalFormExtractor {
     /// anything unusable — the caller records an extraction
     /// failure for the item rather than guessing.
     public static func parseItemResponse(_ raw: String) -> ItemWire? {
+        parseJSONObject(raw)
+    }
+
+    /// The lenient-slice decode shared by every wire shape.
+    static func parseJSONObject<T: Decodable>(_ raw: String) -> T? {
         guard let start = raw.firstIndex(of: "{"),
               let end = raw.lastIndex(of: "}"),
               start <= end
         else { return nil }
         let slice = String(raw[start...end])
-        return try? JSONDecoder().decode(ItemWire.self, from: Data(slice.utf8))
+        return try? JSONDecoder().decode(T.self, from: Data(slice.utf8))
+    }
+
+    // MARK: - Supplementary comment (補足コメント)
+
+    /// Rows for the 補足コメント pass: substantive utterances no
+    /// item's vocabulary claimed. "Substantive" is a cheap length
+    /// floor — backchannels (うん, そう) carry nothing a sheet
+    /// comment needs. Chronological, capped.
+    public static func supplementaryCandidateRows(
+        utterances: [UtteranceEstimate],
+        claimedRows: Set<Int>,
+        limit: Int = 40
+    ) -> [Int] {
+        var rows: [Int] = []
+        for (idx, u) in utterances.enumerated() {
+            let row = idx + 1
+            guard !claimedRows.contains(row) else { continue }
+            let trimmed = u.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 8 else { continue }
+            rows.append(row)
+            if rows.count >= limit { break }
+        }
+        return rows
+    }
+
+    public static let supplementarySchemaJSON = """
+    {"type":"object","properties":{
+      "comment":{"type":["string","null"],"description":"two-to-four short Japanese sentences of observations not covered by the sheet items; null when nothing substantive remains"},
+      "evidenceRows":{"type":"array","items":{"type":"integer"}}
+    },"required":["comment","evidenceRows"]}
+    """
+
+    public struct SupplementaryWire: Codable, Equatable, Sendable {
+        public var comment: String?
+        public var evidenceRows: [Int]?
+    }
+
+    public static func supplementaryPrompt(
+        template: EvalFormTemplate,
+        rows: [(number: Int, speakerID: String, transcript: String)]
+    ) -> String {
+        var lines: [String] = []
+        lines.append("You are writing the 補足コメント (supplementary comment) block of a Japanese vehicle ride-quality evaluation sheet.")
+        lines.append("Sheet: \(template.name). The per-item rows are handled separately — below are ONLY the utterances none of the sheet items claimed.")
+        lines.append("Distill the observations worth recording (vehicle behaviours, test conditions, caveats) into two to four short Japanese sentences. Ignore small talk. When nothing is worth recording, use null.")
+        lines.append("evidenceRows: the [n] numbers the comment rests on; only numbers that appear below.")
+        lines.append("")
+        lines.append("Utterances (numbered [n] speaker: text):")
+        for row in rows {
+            lines.append("[\(row.number)] \(row.speakerID): \(row.transcript)")
+        }
+        lines.append("")
+        lines.append("Return ONLY the JSON object. The FIRST character of your output MUST be `{`.")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func parseSupplementaryResponse(_ raw: String) -> SupplementaryWire? {
+        parseJSONObject(raw)
+    }
+
+    // MARK: - Metadata candidates
+
+    /// Rows for the header-metadata pass: the session opening plus
+    /// any row mentioning a metadata cue (weather changes mid-
+    /// drive, specs restated at an absorber swap). Sorted, capped.
+    public static func metadataCandidateRows(
+        utterances: [UtteranceEstimate],
+        cues: [String]?,
+        openingCount: Int = 20,
+        limit: Int = 30
+    ) -> [Int] {
+        var rows = Set(1...min(openingCount, max(utterances.count, 1)))
+        if let cues, !cues.isEmpty {
+            let needles = cues.map {
+                $0.precomposedStringWithCompatibilityMapping.lowercased()
+            }
+            for (idx, u) in utterances.enumerated() {
+                let hay = u.transcript
+                    .precomposedStringWithCompatibilityMapping
+                    .lowercased()
+                if needles.contains(where: { hay.contains($0) }) {
+                    rows.insert(idx + 1)
+                }
+            }
+        }
+        return rows.filter { $0 <= utterances.count }.sorted().prefix(limit).map { $0 }
     }
 
     // MARK: - Merge policy

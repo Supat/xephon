@@ -21,6 +21,11 @@ public struct EvalFormTemplate: Codable, Sendable, Equatable {
     /// Header metadata fields the extractor asks the LLM to fill
     /// from session-start talk (vehicle, absorber specs, weather…).
     public var metadataFields: [String]
+    /// Surface cues marking a row as metadata-bearing anywhere in
+    /// the session (weather changes mid-drive, specs restated at a
+    /// swap). Optional so pre-cue packs decode; nil falls back to
+    /// session-start rows only.
+    public var metadataCues: [String]?
 
     public struct StrengthScale: Codable, Sendable, Equatable {
         public var minimum: Double
@@ -132,6 +137,10 @@ extension EvalFormTemplate {
             "評価車両", "評価アイテム", "評価者",
             "基準SA仕様", "評価SA仕様", "評価位置",
             "天気", "気温", "路面状況",
+        ],
+        metadataCues: [
+            "車両", "アブソーバー", "仕様", "SA",
+            "天気", "気温", "路面", "運転席", "助手席",
         ]
     )
 

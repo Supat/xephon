@@ -57,6 +57,10 @@ public enum EvalFormMarkdown {
         if let supplementary = draft.supplementaryComment {
             lines.append("## 補足コメント")
             lines.append(supplementary)
+            if let evidence = draft.supplementaryEvidenceRows, !evidence.isEmpty {
+                lines.append("")
+                lines.append("根拠発話: \(evidence.map { "[\($0)]" }.joined(separator: " "))")
+            }
             lines.append("")
         }
 

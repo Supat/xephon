@@ -41,7 +41,8 @@ public struct EvalFormPlugin: XephonPlugin {
                 PluginMenuCommand(
                     id: "xephon.evalform.export",
                     title: String(localized: "evalform.menu.export", bundle: .module),
-                    systemImage: "checklist"
+                    systemImage: "checklist",
+                    isEnabled: { model.canExport }
                 ) {
                     model.exportMarkdown()
                 }
