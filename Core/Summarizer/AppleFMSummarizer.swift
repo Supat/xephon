@@ -66,6 +66,27 @@ public actor AppleFMSummarizer: SessionSummarizer {
     // builder applies the same cap the live path does.
     internal static let meetingMaxPromptUtterances = 35
 
+    /// Mode-agnostic raw generation for the plugin-host inference
+    /// carve-out: no instructions block, no Generable schema —
+    /// callers own the whole prompt and parse the raw string.
+    /// Availability gating (SystemLanguageModel.isAvailable) is
+    /// the coordinator's job.
+    public static func generateRaw(
+        prompt: String,
+        maxOutputTokens: Int
+    ) async throws -> String {
+        let session = LanguageModelSession()
+        do {
+            let response = try await session.respond(
+                to: prompt,
+                options: GenerationOptions(maximumResponseTokens: maxOutputTokens)
+            )
+            return response.content
+        } catch {
+            throw SummarizerError.inferenceFailed(reason: String(describing: error))
+        }
+    }
+
     public func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],

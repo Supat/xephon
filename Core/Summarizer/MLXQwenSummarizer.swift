@@ -79,6 +79,20 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
         AppLog.app.info("MLXQwenSummarizer unloaded")
     }
 
+    public func generateRaw(prompt: String, maxOutputTokens: Int) async throws -> String {
+        try await load()
+        guard let container else {
+            throw SummarizerError.modelNotInstalled
+        }
+        return try await MLXLLMSummarizerCore.runInference(
+            container: container,
+            prompt: prompt,
+            maxTokens: maxOutputTokens,
+            repetitionPenalty: spec.repetitionPenalty,
+            label: "MLX[\(spec.family.rawValue)] plugin"
+        )
+    }
+
     public func summarize(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],

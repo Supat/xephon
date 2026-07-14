@@ -4,6 +4,7 @@ import Testing
 import UniformTypeIdentifiers
 @testable import Xephon
 import XephonPluginKit
+import EvalFormPlugin
 import Export
 
 /// Phase 0 exit tests for the plugin architecture
@@ -62,7 +63,8 @@ struct PluginKitTests {
     /// store, canned snapshot, placeholder inference, recording
     /// stubs for export + playback.
     @MainActor
-    final class StubPluginHost: PluginHost, SessionReading, ExportPresenting {
+    final class StubPluginHost: PluginHost, SessionReading, ExportPresenting,
+                                SessionAnnotating {
         let store: PluginPayloadStore
         private(set) var playbackRequests: [UUID] = []
         private(set) var exportedData: [Data] = []
@@ -72,8 +74,10 @@ struct PluginKitTests {
         }
 
         var session: any SessionReading { self }
-        var inference: any InferenceService { PluginInferencePlaceholder() }
+        var inference: any InferenceService { StubInference() }
         var export: any ExportPresenting { self }
+        var annotations: any SessionAnnotating { self }
+        private(set) var seededKeywords: [String] = []
 
         func storage(for plugin: any XephonPlugin.Type) -> any PluginStorage {
             PluginStorageAdapter(
@@ -85,6 +89,10 @@ struct PluginKitTests {
 
         func requestPlayback(utteranceID: UUID) {
             playbackRequests.append(utteranceID)
+        }
+
+        func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String) {
+            seededKeywords.append(contentsOf: seeds.map(\.text))
         }
 
         func presentExport(
@@ -105,6 +113,20 @@ struct PluginKitTests {
                 utterancesVersion: 0,
                 speakerNames: [:]
             )
+        }
+    }
+
+    struct StubInference: InferenceService {
+        @MainActor var availability: InferenceAvailability {
+            .unavailable(reason: "test")
+        }
+
+        func generate(
+            prompt: String,
+            schemaJSON: String?,
+            maxOutputTokens: Int
+        ) async throws -> String {
+            throw PluginInferenceError.unavailable(reason: "test")
         }
     }
 
@@ -200,6 +222,18 @@ struct PluginKitTests {
         ) { outcome = $0 }
         #expect(outcome == .saved)
         #expect(host.exportedData == [Data("x".utf8)])
+    }
+
+    // MARK: - Phase 2: EvalFormPlugin integration
+
+    @Test func evalFormPluginActivatesWithContributions() {
+        let host = StubPluginHost(store: PluginPayloadStore())
+        let handle = EvalFormPlugin().activate(host: host)
+        #expect(handle.pages.count == 1)
+        #expect(handle.menuCommands.count == 1)
+        // Activation seeds the sheet vocabulary into the bank.
+        #expect(host.seededKeywords.contains("ヒョコヒョコ"))
+        #expect(host.seededKeywords.contains("ハーシュネス"))
     }
 
     // MARK: - Payload round-trip

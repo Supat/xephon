@@ -35,6 +35,11 @@ import MLXLMCommon
 public protocol MLXLLMSummarizerActor: SessionSummarizer {
     func load() async throws
     func unload() async
+    /// Mode-agnostic raw generation for the plugin-host inference
+    /// carve-out: prompt in, raw model text out, no summary
+    /// parsing. Loads the model on demand (same lazy path
+    /// `summarize` uses).
+    func generateRaw(prompt: String, maxOutputTokens: Int) async throws -> String
 }
 
 // MARK: - Spec contract

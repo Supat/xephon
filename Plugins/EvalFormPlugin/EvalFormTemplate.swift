@@ -1,0 +1,142 @@
+import Foundation
+
+/// Declarative description of one evaluation sheet — the tier-T2
+/// "data pack" of docs/plugin_architecture.md. `Codable` so future
+/// packs import as JSON documents; the A-1 sheet ships embedded as
+/// the default (`.a1StraightRoad`).
+public struct EvalFormTemplate: Codable, Sendable, Equatable {
+    /// Stable template identity, stored in drafts so a draft knows
+    /// which sheet it belongs to.
+    public var id: String
+    /// Sheet display name.
+    public var name: String
+    /// Relative-strength scale: −1…+1 in 0.125 steps for A-1. The
+    /// parser accepts exactly these quantized values — anything
+    /// else spoken is not a score.
+    public var strengthScale: StrengthScale
+    /// Preference scale (好き/嫌い): 1…9 for A-1.
+    public var preferenceScale: PreferenceScale
+    /// The evaluation rows.
+    public var items: [Item]
+    /// Header metadata fields the extractor asks the LLM to fill
+    /// from session-start talk (vehicle, absorber specs, weather…).
+    public var metadataFields: [String]
+
+    public struct StrengthScale: Codable, Sendable, Equatable {
+        public var minimum: Double
+        public var maximum: Double
+        public var step: Double
+
+        /// The quantized values a stated score may take.
+        public var allowedValues: [Double] {
+            guard step > 0 else { return [] }
+            return stride(from: minimum, through: maximum, by: step)
+                .map { ($0 * 1000).rounded() / 1000 }
+        }
+    }
+
+    public struct PreferenceScale: Codable, Sendable, Equatable {
+        public var minimum: Int
+        public var maximum: Int
+    }
+
+    public struct Item: Codable, Sendable, Equatable, Identifiable {
+        /// Stable per-item id (draft results key on it).
+        public var id: String
+        /// The sheet's printed item number ("10", "11", …).
+        public var number: String
+        /// Japanese row title as printed on the sheet.
+        public var titleJa: String
+        /// English gloss.
+        public var titleEn: String
+        /// The perceptual definition column (what the item means).
+        public var definition: String
+        /// Reference roads / speeds this item is evaluated on.
+        public var referenceRoads: [String]
+        /// Surface forms that mark an utterance as being about this
+        /// item — the onomatopoeia and their common variants. Used
+        /// for candidate-row matching AND seeded into the keyword
+        /// bank on activation.
+        public var vocabulary: [String]
+    }
+}
+
+extension EvalFormTemplate {
+    /// The embedded default pack: 車両評価性能指標Ａ－１ (直線路走行専用).
+    /// Field content transcribed from the lab's sheet — see
+    /// docs/eval_form_autofill_research.md §1 for provenance. The
+    /// sheet itself is confidential; this template stays in the
+    /// private repo.
+    public static let a1StraightRoad = EvalFormTemplate(
+        id: "a1-straight-v1",
+        name: "車両評価性能指標Ａ－１（直線路走行専用）",
+        strengthScale: StrengthScale(minimum: -1.0, maximum: 1.0, step: 0.125),
+        preferenceScale: PreferenceScale(minimum: 1, maximum: 9),
+        items: [
+            Item(
+                id: "10_flat",
+                number: "10",
+                titleJa: "フラット感（あおり，ピッチ，ロール）",
+                titleEn: "Flat feel (at body)",
+                definition: "入力に対するバネ上の動きのバランス",
+                referenceRoads: ["E3路 60km/h", "D路 40km/h", "G路 60km/h"],
+                vocabulary: ["フラット感", "フラット", "あおり", "ピッチ", "ロール"]
+            ),
+            Item(
+                id: "11_hyokohyoko",
+                number: "11",
+                titleJa: "ヒョコヒョコ（過減衰感、バネ上の動き）",
+                titleEn: "Hyoko-hyoko",
+                definition: "ストローク感の伴わない収まり悪い動きの有無（周波数：3-8Hz想定）",
+                referenceRoads: ["E3路 60km/h", "F路 60km/h"],
+                vocabulary: ["ヒョコヒョコ", "ひょこひょこ"]
+            ),
+            Item(
+                id: "12_buruburu",
+                number: "12",
+                titleJa: "ブルブル（バネ下の収まり悪さ）",
+                titleEn: "Buru-buru",
+                definition: "減衰不足によるバタツキ（周波数：8-15Hz想定）",
+                referenceRoads: ["F路 60km/h", "G路 60km/h", "段差路"],
+                vocabulary: ["ブルブル", "ぶるぶる", "バタツキ", "ばたつき"]
+            ),
+            Item(
+                id: "13_gotsugotsu",
+                number: "13",
+                titleJa: "ゴツゴツ",
+                titleEn: "Gotsu-gotsu",
+                definition: "入力の質感（周波数：15-30Hz以上想定）",
+                referenceRoads: ["D路 40km/h", "G路 60km/h"],
+                vocabulary: ["ゴツゴツ", "ごつごつ"]
+            ),
+            Item(
+                id: "13_biribiri",
+                number: "13b",
+                titleJa: "ビリビリ",
+                titleEn: "Biri-biri",
+                definition: "入力の質感（周波数：30Hz以上想定）",
+                referenceRoads: ["H路 60km/h"],
+                vocabulary: ["ビリビリ", "びりびり"]
+            ),
+            Item(
+                id: "14_harshness",
+                number: "14",
+                titleJa: "ハーシュネス（ショック・ノイズ・減衰）",
+                titleEn: "Harshness (shock, noise, dumping)",
+                definition: "入力Gの大きさ、角感",
+                referenceRoads: ["段差路", "スペイン歩道"],
+                vocabulary: ["ハーシュネス", "ハーシュ"]
+            ),
+        ],
+        metadataFields: [
+            "評価車両", "評価アイテム", "評価者",
+            "基準SA仕様", "評価SA仕様", "評価位置",
+            "天気", "気温", "路面状況",
+        ]
+    )
+
+    /// Decode a template pack from imported JSON bytes.
+    public static func decode(_ data: Data) throws -> EvalFormTemplate {
+        try JSONDecoder().decode(EvalFormTemplate.self, from: data)
+    }
+}

@@ -17,16 +17,18 @@ final class PluginHostServices: PluginHost {
     /// back-references, and plugin exports must keep working even
     /// while ContentView is mid-reconstruction.
     private let filePicker: FilePickerCoordinator
-    private let inferenceAdapter = PluginInferencePlaceholder()
+    private let inferenceAdapter: PluginInferenceAdapter
 
     init(recorder: RecordingController, filePicker: FilePickerCoordinator) {
         self.recorder = recorder
         self.filePicker = filePicker
+        self.inferenceAdapter = PluginInferenceAdapter(recorder: recorder)
     }
 
     var session: any SessionReading { self }
     var inference: any InferenceService { inferenceAdapter }
     var export: any ExportPresenting { self }
+    var annotations: any SessionAnnotating { self }
 
     func storage(for plugin: any XephonPlugin.Type) -> any PluginStorage {
         PluginStorageAdapter(
@@ -44,6 +46,30 @@ final class PluginHostServices: PluginHost {
             return
         }
         recorder.togglePlayback(for: utterance)
+    }
+}
+
+extension PluginHostServices: SessionAnnotating {
+    func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String) {
+        let store = recorder.keywords
+        let existing = Set(store.keywords.map {
+            $0.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        let fresh = seeds.filter {
+            let t = $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !t.isEmpty && !existing.contains(t.lowercased())
+        }
+        guard !fresh.isEmpty else { return }
+        // Reuse the group when a prior seeding (or the user)
+        // already created it; only make a new one when absent.
+        let groupID = store.groups.first(where: { $0.name == groupName })?.id
+            ?? store.addGroup(name: groupName)
+        for seed in fresh {
+            store.add(seed.text, groupID: groupID)
+        }
+        AppLog.app.info(
+            "plugin keyword seeding: +\(fresh.count, privacy: .public) into \(groupName, privacy: .public)"
+        )
     }
 }
 
@@ -88,18 +114,29 @@ extension PluginHostServices: SessionReading {
     }
 }
 
-/// Phase 0 stand-in for the inference carve-out. The real adapter
-/// (schema-in/JSON-out over the configured summarizer backend)
-/// lands with its first consumer, EvalFormPlugin — carving
-/// SummarizerCoordinator's mode-coupled dispatch without a caller
-/// to shape it would be speculative. Honest surface until then:
-/// reports unavailable, throws typed.
-struct PluginInferencePlaceholder: InferenceService {
-    private static let reason =
-        "Plugin inference lands with the EvalForm plugin (Phase 2)."
+/// The Phase 2 inference carve-out: routes plugin generation
+/// through `SummarizerCoordinator.pluginGenerate`, which shares
+/// the built-in runs' inference gate and memory lifecycle
+/// (pipeline release → generate → unload + rewarm). Maps the
+/// coordinator's typed refusals onto `PluginInferenceError`.
+@MainActor
+final class PluginInferenceAdapter: InferenceService {
+    private unowned let recorder: RecordingController
 
-    @MainActor var availability: InferenceAvailability {
-        .unavailable(reason: Self.reason)
+    init(recorder: RecordingController) {
+        self.recorder = recorder
+    }
+
+    var availability: InferenceAvailability {
+        guard recorder.summarizer.enabled else {
+            return .unavailable(reason: "Summarizer is disabled in Settings.")
+        }
+        guard recorder.summarizer.ready else {
+            return .unavailable(
+                reason: "The selected summarizer backend isn't ready (model not installed / unavailable)."
+            )
+        }
+        return .available
     }
 
     func generate(
@@ -107,7 +144,21 @@ struct PluginInferencePlaceholder: InferenceService {
         schemaJSON: String?,
         maxOutputTokens: Int
     ) async throws -> String {
-        throw PluginInferenceError.unavailable(reason: Self.reason)
+        do {
+            return try await recorder.summarizer.pluginGenerate(
+                prompt: prompt,
+                schemaJSON: schemaJSON,
+                maxOutputTokens: maxOutputTokens
+            )
+        } catch let refusal as SummarizerCoordinator.PluginGenerateError {
+            throw PluginInferenceError.unavailable(reason: refusal.description)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw PluginInferenceError.generationFailed(
+                reason: String(describing: error)
+            )
+        }
     }
 }
 

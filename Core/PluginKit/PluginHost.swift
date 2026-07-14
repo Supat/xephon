@@ -13,6 +13,8 @@ public protocol PluginHost: AnyObject {
     var inference: any InferenceService { get }
     /// File export through the app's root picker.
     var export: any ExportPresenting { get }
+    /// The narrow session-write surface (keyword seeding today).
+    var annotations: any SessionAnnotating { get }
     /// Per-plugin persistent storage. Pass the plugin's own type
     /// (`Self.self`) — the host stamps writes with that plugin's
     /// `payloadVersion` and namespaces by its `id`.
@@ -62,6 +64,33 @@ public struct SessionSnapshot: Sendable {
         self.utterances = utterances
         self.utterancesVersion = utterancesVersion
         self.speakerNames = speakerNames
+    }
+}
+
+// MARK: - Annotation
+
+/// The narrow write surface plugins get into the session. Every
+/// write is user-visible, user-editable state — plugins propose,
+/// the user owns.
+@MainActor
+public protocol SessionAnnotating: AnyObject {
+    /// Seed keyword texts into the user's keyword bank under a
+    /// group named `groupName` (created if absent). Texts already
+    /// present anywhere in the bank are skipped (case-insensitive
+    /// on the trimmed form) — the bank is user-owned and seeding
+    /// must never duplicate or overwrite. Idempotent, so calling
+    /// on every activation is fine.
+    func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String)
+}
+
+/// One keyword a plugin wants in the bank. A neutral type — the
+/// app's own `Keyword` (ids, tag colors, selection) stays behind
+/// the boundary.
+public struct PluginKeywordSeed: Sendable, Hashable {
+    public let text: String
+
+    public init(_ text: String) {
+        self.text = text
     }
 }
 

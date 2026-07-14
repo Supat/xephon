@@ -36,6 +36,7 @@ let package = Package(
                 "Export",
                 "Summarizer",
                 "XephonPluginKit",
+                "EvalFormPlugin",
             ]
         ),
         .library(name: "Audio",            targets: ["Audio"]),
@@ -50,6 +51,7 @@ let package = Package(
         .library(name: "XephonLogging",    targets: ["XephonLogging"]),
         .library(name: "XephonUtilities",  targets: ["XephonUtilities"]),
         .library(name: "XephonPluginKit",  targets: ["XephonPluginKit"]),
+        .library(name: "EvalFormPlugin",   targets: ["EvalFormPlugin"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.5.0"),
@@ -156,6 +158,23 @@ let package = Package(
             name: "XephonPluginKit",
             dependencies: ["XephonLogging", "Fusion", "Export"],
             path: "Core/PluginKit"
+        ),
+        .target(
+            // First shipped plugin (docs/plugin_architecture.md §5,
+            // docs/eval_form_autofill_research.md): fills the A-1
+            // vehicle sensory-evaluation form from the session
+            // transcript. Depends on the plugin API + value-type
+            // modules ONLY — the app target is unreachable from
+            // here by construction.
+            name: "EvalFormPlugin",
+            dependencies: [
+                "XephonLogging",
+                "XephonUtilities",
+                "Fusion",
+                "XephonPluginKit",
+            ],
+            path: "Plugins/EvalFormPlugin",
+            resources: [.process("Resources")]
         ),
         .target(
             name: "Summarizer",

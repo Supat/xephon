@@ -683,10 +683,10 @@ final class SummarizerCoordinator {
     /// race window where a second tap could pass the
     /// `!inferenceRunning` precondition during the pipeline-
     /// release yield.
-    private func withInferenceGate(
+    private func withInferenceGate<T>(
         sectionID: UUID? = nil,
-        body: () async -> SessionSummary?
-    ) async -> SessionSummary? {
+        body: () async throws -> T
+    ) async rethrows -> T {
         inferenceGenerationToken &+= 1
         let myToken = inferenceGenerationToken
         inferenceRunning = true
@@ -706,7 +706,7 @@ final class SummarizerCoordinator {
                 summarizingSectionID = nil
             }
         }
-        return await body()
+        return try await body()
     }
 
     /// Monotonically-incrementing token used by `withInferenceGate`
@@ -858,33 +858,15 @@ final class SummarizerCoordinator {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
-        // Pick the right per-family actor type. `backend` is
-        // checked at the call site so the switch is exhaustive
-        // over the MLX backends (Apple FM is routed through
-        // `summarizeWithAppleFM` in `runSummarize`).
-        let actor: any MLXLLMSummarizerActor
-        if let existing = summarizerActor {
-            actor = existing
-        } else {
-            switch backend {
-            case .qwen:
-                actor = MLXQwenSummarizer(
-                    modelIdentifier: modelID,
-                    modelDirectory: directory
-                )
-            case .llamaSwallow:
-                actor = MLXLlamaSummarizer(
-                    modelIdentifier: modelID,
-                    modelDirectory: directory
-                )
-            case .appleFM, .lmStudio:
-                // Unreachable — Apple FM is routed via
-                // `summarizeWithAppleFM` and LM Studio via
-                // `summarizeWithLMStudio` from `runSummarize`.
-                scheduleUnloadAndPipelineRewarm()
-                return nil
-            }
-            summarizerActor = actor
+        guard let actor = ensureSummarizerActor(
+            modelID: modelID,
+            directory: directory
+        ) else {
+            // Unreachable for MLX backends — Apple FM is routed via
+            // `summarizeWithAppleFM` and LM Studio via
+            // `summarizeWithLMStudio` from `runSummarize`.
+            scheduleUnloadAndPipelineRewarm()
+            return nil
         }
         // Inference gating owned by the public entry method
         // (see comment in `summarizeWithAppleFM`).
@@ -913,6 +895,157 @@ final class SummarizerCoordinator {
                 "summarizeWithMLX failed: \(String(describing: error), privacy: .public)"
             )
             return nil
+        }
+    }
+
+    /// Reuse-or-create the per-family MLX summarizer actor. Nil
+    /// only when `backend` isn't an MLX family (programmer error at
+    /// the call site). Factored from `summarizeWithMLX` so the
+    /// plugin-generate path shares the exact resident-actor slot —
+    /// two slots would double the ~4 GB working set.
+    private func ensureSummarizerActor(
+        modelID: String,
+        directory: URL
+    ) -> (any MLXLLMSummarizerActor)? {
+        if let existing = summarizerActor { return existing }
+        let actor: (any MLXLLMSummarizerActor)?
+        switch backend {
+        case .qwen:
+            actor = MLXQwenSummarizer(
+                modelIdentifier: modelID,
+                modelDirectory: directory
+            )
+        case .llamaSwallow:
+            actor = MLXLlamaSummarizer(
+                modelIdentifier: modelID,
+                modelDirectory: directory
+            )
+        case .appleFM, .lmStudio:
+            actor = nil
+        }
+        summarizerActor = actor
+        return actor
+    }
+
+    // MARK: - Plugin inference (PluginHost carve-out)
+
+    /// Typed errors for the plugin-generate path — surfaced to
+    /// plugins through `PluginInferenceError` by the host adapter.
+    enum PluginGenerateError: Error, CustomStringConvertible {
+        case summarizerDisabled
+        case backendNotReady
+        case busy
+
+        var description: String {
+            switch self {
+            case .summarizerDisabled:
+                return "Summarizer is disabled in Settings."
+            case .backendNotReady:
+                return "The selected summarizer backend isn't ready (model not installed / unavailable)."
+            case .busy:
+                return "Another LLM run is in progress."
+            }
+        }
+    }
+
+    /// Mode-agnostic generation for the plugin layer
+    /// (docs/plugin_architecture.md §3, InferenceService). Same
+    /// lifecycle envelope as summarize/review — pipeline released
+    /// before, unload + rewarm scheduled after, `withInferenceGate`
+    /// serializing against the built-in runs — but the caller owns
+    /// the whole prompt and parses the raw output.
+    ///
+    /// Schema enforcement is per-backend best effort: LM Studio
+    /// gets a native `response_format` json_schema (when the user's
+    /// structured-output setting is on); Apple FM and MLX get the
+    /// schema appended to the prompt. Callers parse defensively
+    /// either way — the InferenceService contract says so.
+    func pluginGenerate(
+        prompt: String,
+        schemaJSON: String?,
+        maxOutputTokens: Int
+    ) async throws -> String {
+        guard enabled else { throw PluginGenerateError.summarizerDisabled }
+        guard ready else { throw PluginGenerateError.backendNotReady }
+        guard !inferenceRunning, !reviewRunning else {
+            throw PluginGenerateError.busy
+        }
+        // Native enforcement only on LM Studio with structured
+        // output enabled; every other combination embeds the schema
+        // as a prompt contract.
+        let nativeSchema = backend == .lmStudio
+            && parent.lmStudioSettings.useStructuredOutput
+        var effectivePrompt = prompt
+        if let schemaJSON, !nativeSchema {
+            effectivePrompt += """
+
+
+            Return ONLY a valid JSON object conforming to this JSON Schema. \
+            The FIRST character of your output MUST be `{`. No prose.
+            \(schemaJSON)
+            """
+        }
+        return try await withInferenceGate {
+            await releasePipelineForSummarization()
+            defer { scheduleUnloadAndPipelineRewarm() }
+            AppLog.app.info(
+                "pluginGenerate via \(self.backend.rawValue, privacy: .public): prompt \(effectivePrompt.count, privacy: .public) chars, schema \(schemaJSON != nil ? "yes" : "no", privacy: .public)"
+            )
+            switch backend {
+            case .appleFM:
+                return try await AppleFMSummarizer.generateRaw(
+                    prompt: effectivePrompt,
+                    maxOutputTokens: maxOutputTokens
+                )
+            case .qwen, .llamaSwallow:
+                guard let modelStore = parent.modelStore,
+                      let modelID = mlxModelID,
+                      let directory = await modelStore.optionalDirectory(id: modelID),
+                      let actor = ensureSummarizerActor(
+                          modelID: modelID,
+                          directory: directory
+                      )
+                else { throw PluginGenerateError.backendNotReady }
+                return try await actor.generateRaw(
+                    prompt: effectivePrompt,
+                    maxOutputTokens: maxOutputTokens
+                )
+            case .lmStudio:
+                guard parent.lmStudioSettings.enabled,
+                      let baseURL = parent.lmStudioSettings.baseURL else {
+                    throw PluginGenerateError.backendNotReady
+                }
+                let client = LMStudioClient(configuration: .init(
+                    baseURL: baseURL,
+                    modelID: parent.lmStudioSettings.modelID,
+                    requestTimeoutSeconds: parent.lmStudioSettings.requestTimeoutSeconds
+                ))
+                var responseFormat: Data?
+                if nativeSchema, let schemaJSON,
+                   let schemaObject = try? JSONSerialization.jsonObject(
+                       with: Data(schemaJSON.utf8)
+                   ) {
+                    // OpenAI-compatible response_format envelope
+                    // around the caller's raw schema — same wire
+                    // shape LMStudioSchemas produces for the
+                    // built-in modes.
+                    responseFormat = try? JSONSerialization.data(
+                        withJSONObject: [
+                            "type": "json_schema",
+                            "json_schema": [
+                                "name": "plugin_output",
+                                "schema": schemaObject,
+                            ],
+                        ]
+                    )
+                }
+                return try await client.chat(
+                    userMessage: effectivePrompt,
+                    temperature: 0.2,
+                    maxTokens: maxOutputTokens,
+                    responseFormatJSON: responseFormat
+                )
+            }
         }
     }
 
