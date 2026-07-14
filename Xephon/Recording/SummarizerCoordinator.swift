@@ -1336,7 +1336,10 @@ final class SummarizerCoordinator {
     /// glossary can't crowd the prompt.
     private static let meetingGlossaryTermCap = 50
 
-    private func meetingGlossaryTerms() -> [String] {
+    // Internal (not private): PromptsCard's Real Prompt export
+    // feeds the same terms into `PromptCatalog.realPrompts` so the
+    // exported meeting-experimental prompt matches the live one.
+    func meetingGlossaryTerms() -> [String] {
         var seen = Set<String>()
         var terms: [String] = []
         let candidates = parent.keywords.keywords.map(\.text)

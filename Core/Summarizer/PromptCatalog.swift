@@ -62,6 +62,16 @@ public enum PromptCatalog {
             title: "Apple FM · Summarize · Deep · Merge",
             body: AppleFMSummarizer.mergeInstructions
         ))
+        entries.append(PromptEntry(
+            id: "appleFM.summarizer.meeting",
+            title: "Apple FM · Summarize · Meeting",
+            body: AppleFMSummarizer.meetingInstructionsClassic
+        ))
+        entries.append(PromptEntry(
+            id: "appleFM.summarizer.meetingExperimental",
+            title: "Apple FM · Summarize · Meeting (Experiment)",
+            body: AppleFMSummarizer.meetingInstructionsExperimental
+        ))
 
         // Qwen3 (MLX).
         let qwen = MLXQwenSpec()
@@ -94,6 +104,14 @@ public enum PromptCatalog {
                 speakerNames: sampleSpeakerNames
             )
         ))
+        // Meeting prompts are family-parameterized statics shared by
+        // both MLX specs (rows are text-only, so the specs have
+        // nothing to vary beyond the per-family turn directives).
+        entries.append(contentsOf: mlxMeetingEntries(
+            family: .qwen,
+            idPrefix: "qwen",
+            titlePrefix: "Qwen3"
+        ))
 
         // LM Studio (remote backend, OpenAI-compatible HTTP).
         // Uses the same MLXQwenSpec.buildPrompt the on-device
@@ -108,6 +126,28 @@ public enum PromptCatalog {
                 speakerNames: sampleSpeakerNames,
                 truncatedFromTotal: nil,
                 selection: .trailing
+            )
+        ))
+        // Meeting modes have their OWN prompt on this backend
+        // (unlike trailing/heuristic above, which reuses the Qwen
+        // spec) — surface the real LMStudioSummarizer builders.
+        entries.append(PromptEntry(
+            id: "lmStudio.summarizer.meeting",
+            title: "LM Studio · Summarize · Meeting",
+            body: LMStudioSummarizer.buildMeetingPromptClassic(
+                utterances: sampleUtterances,
+                speakerNames: sampleSpeakerNames,
+                truncatedFromTotal: nil
+            )
+        ))
+        entries.append(PromptEntry(
+            id: "lmStudio.summarizer.meetingExperimental",
+            title: "LM Studio · Summarize · Meeting (Experiment)",
+            body: LMStudioSummarizer.buildMeetingPromptExperimental(
+                utterances: sampleUtterances,
+                speakerNames: sampleSpeakerNames,
+                glossaryTerms: sampleGlossaryTerms,
+                truncatedFromTotal: nil
             )
         ))
 
@@ -142,8 +182,61 @@ public enum PromptCatalog {
                 speakerNames: sampleSpeakerNames
             )
         ))
+        entries.append(contentsOf: mlxMeetingEntries(
+            family: .llama,
+            idPrefix: "llama",
+            titlePrefix: "Llama-3-Swallow"
+        ))
 
         return entries
+    }
+
+    /// The three meeting entries one MLX family contributes:
+    /// classic single-pass, experimental single-pass (the same
+    /// builder also produces the map-reduce window prompts — they
+    /// differ only by a window-context line), and the experimental
+    /// map-reduce merge. Classic has no merge: it is single-pass
+    /// only (over-cap sessions fall back to TF-IDF sampling).
+    private static func mlxMeetingEntries(
+        family: LLMModelFamily,
+        idPrefix: String,
+        titlePrefix: String
+    ) -> [PromptEntry] {
+        [
+            PromptEntry(
+                id: "\(idPrefix).summarizer.meeting",
+                title: "\(titlePrefix) · Summarize · Meeting",
+                body: MLXLLMSummarizerCore.buildMeetingPromptClassic(
+                    utterances: sampleUtterances,
+                    speakerNames: sampleSpeakerNames,
+                    truncatedFromTotal: nil,
+                    family: family
+                )
+            ),
+            PromptEntry(
+                id: "\(idPrefix).summarizer.meetingExperimental",
+                title: "\(titlePrefix) · Summarize · Meeting (Experiment)",
+                body: MLXLLMSummarizerCore.buildMeetingPrompt(
+                    utterances: sampleUtterances,
+                    firstRowNumber: 1,
+                    speakerNames: sampleSpeakerNames,
+                    glossaryTerms: sampleGlossaryTerms,
+                    windowContext: nil,
+                    family: family
+                )
+            ),
+            PromptEntry(
+                id: "\(idPrefix).summarizer.meetingExperimentalMerge",
+                title: "\(titlePrefix) · Summarize · Meeting (Experiment) · Merge",
+                body: MLXLLMSummarizerCore.buildMeetingMergePrompt(
+                    intermediates: sampleMeetingIntermediates,
+                    allUtterances: sampleUtterances,
+                    speakerNames: sampleSpeakerNames,
+                    glossaryTerms: sampleGlossaryTerms,
+                    family: family
+                )
+            ),
+        ]
     }
 
     /// Every transcription-reviewer prompt: one entry per backend.
@@ -422,11 +515,16 @@ public enum PromptCatalog {
     /// `summarize` / `review` constructs inline (formatting
     /// helpers + speakers roster + utterance lines + language
     /// directive).
+    /// `glossaryTerms` feeds only the meeting-experimental
+    /// entries (the live path folds the keyword bank + custom
+    /// glossary into those prompts); every other entry ignores it,
+    /// and the default keeps existing call sites source-compatible.
     public static func realPrompts(
         forEntryID entryID: String,
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
-        language: ReviewLanguage
+        language: ReviewLanguage,
+        glossaryTerms: [String] = []
     ) -> [String]? {
         switch entryID {
         // Apple FM
@@ -445,6 +543,20 @@ public enum PromptCatalog {
             // intermediates that only exist after a real
             // generate pass — can't construct deterministically.
             return nil
+        case "appleFM.summarizer.meeting":
+            return [appleFMMeetingRealPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                experimental: false,
+                glossaryTerms: []
+            )]
+        case "appleFM.summarizer.meetingExperimental":
+            return [appleFMMeetingRealPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                experimental: true,
+                glossaryTerms: glossaryTerms
+            )]
         case "appleFM.reviewer":
             return appleFMReviewerRealPrompts(
                 utterances: utterances,
@@ -471,6 +583,24 @@ public enum PromptCatalog {
             )
         case "qwen.summarizer.deepMerge":
             return nil
+        case "qwen.summarizer.meeting":
+            return [mlxMeetingClassicRealPrompt(
+                spec: MLXQwenSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames
+            )]
+        case "qwen.summarizer.meetingExperimental":
+            return mlxMeetingExperimentalRealPrompts(
+                spec: MLXQwenSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames,
+                glossaryTerms: glossaryTerms
+            )
+        case "qwen.summarizer.meetingExperimentalMerge":
+            // Like the deep merges: the live merge prompt embeds
+            // per-window intermediates that only exist after a real
+            // generate pass — can't construct deterministically.
+            return nil
         case "qwen.reviewer":
             return mlxReviewerRealPrompts(
                 spec: MLXQwenReviewerSpec(),
@@ -494,6 +624,21 @@ public enum PromptCatalog {
             )
         case "llama.summarizer.deepMerge":
             return nil
+        case "llama.summarizer.meeting":
+            return [mlxMeetingClassicRealPrompt(
+                spec: MLXLlamaSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames
+            )]
+        case "llama.summarizer.meetingExperimental":
+            return mlxMeetingExperimentalRealPrompts(
+                spec: MLXLlamaSpec(),
+                utterances: utterances,
+                speakerNames: speakerNames,
+                glossaryTerms: glossaryTerms
+            )
+        case "llama.summarizer.meetingExperimentalMerge":
+            return nil
         case "llama.reviewer":
             return mlxReviewerRealPrompts(
                 spec: MLXLlamaReviewerSpec(),
@@ -501,6 +646,24 @@ public enum PromptCatalog {
                 speakerNames: speakerNames,
                 language: language
             )
+
+        // LM Studio (meeting modes only — the trailing/heuristic
+        // entry reuses the Qwen spec and predates real-prompt
+        // support for this backend).
+        case "lmStudio.summarizer.meeting":
+            return [lmStudioMeetingRealPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                experimental: false,
+                glossaryTerms: []
+            )]
+        case "lmStudio.summarizer.meetingExperimental":
+            return [lmStudioMeetingRealPrompt(
+                utterances: utterances,
+                speakerNames: speakerNames,
+                experimental: true,
+                glossaryTerms: glossaryTerms
+            )]
 
         default:
             return nil
@@ -560,6 +723,163 @@ public enum PromptCatalog {
                 contextPrefix: []
             )
         }
+    }
+
+    // MARK: - Meeting real-prompt builders
+
+    // Over-cap selection for every meeting preview is the shared
+    // `applySinglePassSelection(_, cap:, .heuristicTopN)` — the
+    // same speaker-balanced TF-IDF the live paths run. The live
+    // paths additionally boost keyword-matched rows
+    // (`boostedUtteranceIDs`); the preview can't know the boost
+    // set from this static call site, so the unboosted selection
+    // is the representative case — same approximation precedent
+    // as `appleFMSinglePassRealPrompt`'s trailing default.
+
+    private static func mlxMeetingClassicRealPrompt(
+        spec: any MLXLLMSpec,
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String]
+    ) -> String {
+        let (selected, truncatedFromTotal) = applySinglePassSelection(
+            utterances: utterances,
+            cap: spec.meetingMaxPromptUtterances,
+            selection: .heuristicTopN
+        )
+        return MLXLLMSummarizerCore.buildMeetingPromptClassic(
+            utterances: selected,
+            speakerNames: speakerNames,
+            truncatedFromTotal: truncatedFromTotal,
+            family: spec.family
+        )
+    }
+
+    /// Mirrors `LMStudioSummarizer.summarizeMeetingClassic` /
+    /// `summarizeMeetingExperimental`: heuristic top-N over this
+    /// backend's own cap, then the matching prompt builder.
+    private static func lmStudioMeetingRealPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        experimental: Bool,
+        glossaryTerms: [String]
+    ) -> String {
+        let (selected, truncatedFromTotal) = applySinglePassSelection(
+            utterances: utterances,
+            cap: LMStudioSummarizer.meetingMaxPromptUtterances,
+            selection: .heuristicTopN
+        )
+        if experimental {
+            return LMStudioSummarizer.buildMeetingPromptExperimental(
+                utterances: selected,
+                speakerNames: speakerNames,
+                glossaryTerms: glossaryTerms,
+                truncatedFromTotal: truncatedFromTotal
+            )
+        }
+        return LMStudioSummarizer.buildMeetingPromptClassic(
+            utterances: selected,
+            speakerNames: speakerNames,
+            truncatedFromTotal: truncatedFromTotal
+        )
+    }
+
+    /// Mirrors `MLXLLMSummarizerCore.summarizeMeeting`: at or under
+    /// the single-pass cap → one prompt (no window context); over
+    /// it → the map-reduce's per-window prompts with globally-
+    /// numbered rows. The merge prompt is excluded for the same
+    /// reason as deep-merge (needs live intermediates).
+    private static func mlxMeetingExperimentalRealPrompts(
+        spec: any MLXLLMSpec,
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        glossaryTerms: [String]
+    ) -> [String] {
+        guard utterances.count > spec.meetingMaxPromptUtterances else {
+            return [MLXLLMSummarizerCore.buildMeetingPrompt(
+                utterances: utterances,
+                firstRowNumber: 1,
+                speakerNames: speakerNames,
+                glossaryTerms: glossaryTerms,
+                windowContext: nil,
+                family: spec.family
+            )]
+        }
+        let windows = splitWindows(utterances, size: spec.meetingDeepWindowSize)
+        var firstRowNumber = 1
+        return windows.enumerated().map { idx, window in
+            let prompt = MLXLLMSummarizerCore.buildMeetingPrompt(
+                utterances: window,
+                firstRowNumber: firstRowNumber,
+                speakerNames: speakerNames,
+                glossaryTerms: glossaryTerms,
+                windowContext: (index: idx, total: windows.count),
+                family: spec.family
+            )
+            firstRowNumber += window.count
+            return prompt
+        }
+    }
+
+    /// Mirrors `AppleFMSummarizer.summarizeMeetingClassic` /
+    /// `summarizeMeetingExperimental`'s user-message construction:
+    /// language directive, speakers roster, friendly-name roster,
+    /// (experimental only) domain-terms line, text-only rows, and
+    /// the TF-IDF truncation note.
+    private static func appleFMMeetingRealPrompt(
+        utterances: [UtteranceEstimate],
+        speakerNames: [String: String],
+        experimental: Bool,
+        glossaryTerms: [String]
+    ) -> String {
+        let (selected, truncatedFrom) = applySinglePassSelection(
+            utterances: utterances,
+            cap: AppleFMSummarizer.meetingMaxPromptUtterances,
+            selection: .heuristicTopN
+        )
+        let speakers = orderedSpeakerIDs(selected)
+        let utteranceLines = experimental
+            ? selected.enumerated()
+                .map { AppleFMSummarizer.meetingLineExperimental(index: $0.offset + 1, for: $0.element) }
+                .joined(separator: "\n")
+            : selected
+                .map { AppleFMSummarizer.meetingLineClassic(for: $0) }
+                .joined(separator: "\n")
+        let nameRoster = speakers
+            .compactMap { id -> String? in
+                guard let name = speakerNames[id], !name.isEmpty else { return nil }
+                return "\(id) = \(name)"
+            }
+            .joined(separator: ", ")
+        let nameRosterLine = nameRoster.isEmpty
+            ? ""
+            : "\n\nSpeaker names: \(nameRoster)."
+        let glossaryLine = (experimental && !glossaryTerms.isEmpty)
+            ? "\n\nDomain terms: \(glossaryTerms.joined(separator: ", "))."
+            : ""
+        let truncationNote: String
+        if let total = truncatedFrom {
+            truncationNote = "\n\n(Showing the \(selected.count) most distinctive of \(total) utterances by session-relative TF-IDF, in chronological order; treat as a representative sample of the meeting.)"
+        } else {
+            truncationNote = ""
+        }
+        let userMessage = """
+            \(SummarizerLocale.responseLanguageInstruction)
+
+            Speakers present: \(speakers.joined(separator: ", ")).\(nameRosterLine)\(glossaryLine)
+
+            Utterances:
+            \(utteranceLines)\(truncationNote)
+            """
+        let instructions = experimental
+            ? AppleFMSummarizer.meetingInstructionsExperimental
+            : AppleFMSummarizer.meetingInstructionsClassic
+        return [
+            "=== SYSTEM (instructions) ===",
+            instructions,
+            "",
+            "=== USER (per-call message) ===",
+            userMessage
+        ].joined(separator: "\n")
     }
 
     // MARK: - Apple FM real-prompt builders
@@ -810,6 +1130,45 @@ public enum PromptCatalog {
     private static let sampleSpeakerNames: [String: String] = [
         "S01": "Alice",
         "S02": "Bob",
+    ]
+
+    /// Sample glossary for the meeting-experimental previews. Two
+    /// terms keep the "Domain terms" line visible in the rendered
+    /// prompt; sessions without keywords/glossary entries simply
+    /// omit that line at inference time.
+    private static let sampleGlossaryTerms: [String] = ["Xephon", "diarization"]
+
+    /// Sample per-window PARTIAL minutes for the meeting merge-
+    /// prompt preview — same role as `sampleDeepIntermediates`
+    /// below, shaped like one decoded map-reduce window.
+    private static let sampleMeetingIntermediates: [MLXLLMSummarizerCore.MeetingWire] = [
+        MLXLLMSummarizerCore.MeetingWire(
+            topic: "Kick-off scheduling and venue budget.",
+            topics: [
+                MLXLLMSummarizerCore.MeetingWire.Topic(
+                    title: "Kick-off date",
+                    raisedBy: "S01",
+                    evidence: MLXLLMSummarizerCore.MeetingWire.Evidence(numbers: [1]),
+                    positions: [
+                        MLXLLMSummarizerCore.MeetingWire.Position(
+                            speaker: "S02",
+                            stance: "Prefers the later date to allow prep time.",
+                            evidence: MLXLLMSummarizerCore.MeetingWire.Evidence(numbers: [2])
+                        )
+                    ]
+                )
+            ],
+            perSpeaker: [
+                MLXLLMSummarizerCore.MeetingWire.PerSpeaker(
+                    speakerID: "S01",
+                    talkingPoints: ["proposed kick-off date"]
+                ),
+                MLXLLMSummarizerCore.MeetingWire.PerSpeaker(
+                    speakerID: "S02",
+                    talkingPoints: ["asked for prep time"]
+                ),
+            ]
+        )
     ]
 
     /// Sample deep-window intermediate for the merge-prompt

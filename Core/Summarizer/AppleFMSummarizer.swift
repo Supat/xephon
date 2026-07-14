@@ -62,7 +62,9 @@ public actor AppleFMSummarizer: SessionSummarizer {
     /// `exceededContextWindowSize`.
     // ponytail: 35 is the Apple-FM meeting ceiling; raising it risks
     // exceededContextWindowSize once topic/position output grows.
-    private static let meetingMaxPromptUtterances = 35
+    // Internal (not private) so PromptCatalog's real-prompt
+    // builder applies the same cap the live path does.
+    internal static let meetingMaxPromptUtterances = 35
 
     public func summarize(
         utterances: [UtteranceEstimate],
@@ -908,7 +910,9 @@ public actor AppleFMSummarizer: SessionSummarizer {
     /// demographics are dropped: meeting minutes don't use them, and
     /// the smaller line is what funds the wider utterance cap.
     /// Format: `S01: "text"`
-    private static func meetingLineExperimental(index: Int, for u: UtteranceEstimate) -> String {
+    // Internal (not private) so PromptCatalog renders the same
+    // row format the live path sends.
+    internal static func meetingLineExperimental(index: Int, for u: UtteranceEstimate) -> String {
         let escaped = u.transcript
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -1076,7 +1080,9 @@ private struct GenerableMeetingSummary {
 
 
 extension AppleFMSummarizer {
-    private static func meetingLineClassic(for u: UtteranceEstimate) -> String {
+    // Internal (not private) so PromptCatalog renders the same
+    // row format the live path sends.
+    internal static func meetingLineClassic(for u: UtteranceEstimate) -> String {
         let escaped = u.transcript
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")

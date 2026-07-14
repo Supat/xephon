@@ -260,7 +260,9 @@ public actor LMStudioSummarizer: SessionSummarizer {
     // server's context window; 400 distinct lines is plenty of meeting
     // coverage and stays well inside a typical LM Studio context. Same
     // heuristic top-N-balanced-by-speaker selection as `.heuristic`.
-    private static let meetingMaxPromptUtterances = 400
+    // Internal (not private) so PromptCatalog's real-prompt
+    // builder applies the same cap the live path does.
+    internal static let meetingMaxPromptUtterances = 400
 
     /// `.meeting` path. Heuristic top-N selection (larger cap, text-
     /// only rows), a content-only prompt + schema, and a meeting
@@ -279,7 +281,7 @@ public actor LMStudioSummarizer: SessionSummarizer {
             selection: .heuristicTopN,
             boostedUtteranceIDs: boostedUtteranceIDs
         )
-        let prompt = buildMeetingPromptClassic(
+        let prompt = Self.buildMeetingPromptClassic(
             utterances: promptUtterances,
             speakerNames: speakerNames,
             truncatedFromTotal: truncatedFrom
@@ -332,7 +334,7 @@ public actor LMStudioSummarizer: SessionSummarizer {
             selection: .heuristicTopN,
             boostedUtteranceIDs: boostedUtteranceIDs
         )
-        let prompt = buildMeetingPromptExperimental(
+        let prompt = Self.buildMeetingPromptExperimental(
             utterances: promptUtterances,
             speakerNames: speakerNames,
             glossaryTerms: glossaryTerms,
@@ -385,7 +387,10 @@ public actor LMStudioSummarizer: SessionSummarizer {
     /// with attribution + per-speaker positions, and each speaker's
     /// talking points. Kept local to this file (not in
     /// `PromptCatalog` / `MLXQwenSpec`) since it's LM-Studio-specific.
-    private func buildMeetingPromptClassic(
+    // Static + internal (not a private instance method) so
+    // PromptCatalog surfaces the exact prompt this backend sends;
+    // reads no actor state, only its arguments.
+    internal static func buildMeetingPromptClassic(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         truncatedFromTotal: Int?
@@ -428,7 +433,7 @@ public actor LMStudioSummarizer: SessionSummarizer {
         return lines.joined(separator: "\n")
     }
 
-    private func meetingLineClassic(
+    private static func meetingLineClassic(
         for u: UtteranceEstimate,
         speakerNames: [String: String]
     ) -> String {
@@ -439,7 +444,9 @@ public actor LMStudioSummarizer: SessionSummarizer {
         return "- \(label): \(u.transcript)"
     }
 
-    private func buildMeetingPromptExperimental(
+    // Static + internal for the same PromptCatalog reason as
+    // `buildMeetingPromptClassic` above.
+    internal static func buildMeetingPromptExperimental(
         utterances: [UtteranceEstimate],
         speakerNames: [String: String],
         glossaryTerms: [String],
@@ -492,7 +499,7 @@ public actor LMStudioSummarizer: SessionSummarizer {
     /// deliberately dropped. The rename map is applied so the model
     /// can refer to speakers by their friendly name in `raisedBy` /
     /// `positions`.
-    private func meetingLineExperimental(
+    private static func meetingLineExperimental(
         index: Int,
         for u: UtteranceEstimate,
         speakerNames: [String: String]

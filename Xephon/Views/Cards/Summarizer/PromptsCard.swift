@@ -294,7 +294,8 @@ private struct PromptDetailSheet: View {
                 forEntryID: entry.id,
                 utterances: recorder.utterances,
                 speakerNames: recorder.speakerNameOverrides,
-                language: language
+                language: language,
+                glossaryTerms: recorder.summarizer.meetingGlossaryTerms()
             ) else {
                 unsupportedAlert = true
                 return
