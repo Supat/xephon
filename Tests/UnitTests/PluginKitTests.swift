@@ -64,10 +64,13 @@ struct PluginKitTests {
     /// stubs for export + playback.
     @MainActor
     final class StubPluginHost: PluginHost, SessionReading, ExportPresenting,
-                                SessionAnnotating {
+                                ImportPresenting, SessionAnnotating {
         let store: PluginPayloadStore
         private(set) var playbackRequests: [UUID] = []
         private(set) var exportedData: [Data] = []
+        private(set) var proposedSections: [PluginSectionProposal] = []
+        /// Bytes the next `presentImport` hands back; nil → cancelled.
+        var nextImportData: Data?
 
         init(store: PluginPayloadStore) {
             self.store = store
@@ -76,6 +79,7 @@ struct PluginKitTests {
         var session: any SessionReading { self }
         var inference: any InferenceService { StubInference() }
         var export: any ExportPresenting { self }
+        var imports: any ImportPresenting { self }
         var annotations: any SessionAnnotating { self }
         private(set) var seededKeywords: [String] = []
 
@@ -93,6 +97,22 @@ struct PluginKitTests {
 
         func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String) {
             seededKeywords.append(contentsOf: seeds.map(\.text))
+        }
+
+        func proposeSections(_ proposals: [PluginSectionProposal]) -> Int {
+            proposedSections.append(contentsOf: proposals)
+            return proposals.count
+        }
+
+        func presentImport(
+            contentTypes: [UTType],
+            completion: @escaping @MainActor (PluginImportOutcome) -> Void
+        ) {
+            if let nextImportData {
+                completion(.loaded(nextImportData))
+            } else {
+                completion(.cancelled)
+            }
         }
 
         func presentExport(
@@ -267,6 +287,22 @@ struct PluginKitTests {
             writeVersion: 4
         )
         #expect(adapter.sessionPayloadVersion == 3)
+    }
+
+    @Test func persistentStorageRoundTripsAndRemoves() {
+        let adapter = PluginStorageAdapter(
+            store: PluginPayloadStore(),
+            id: PluginID("test.persistent"),
+            writeVersion: 1
+        )
+        // Clean slate, write, read, remove — standard defaults, so
+        // the test cleans up after itself.
+        adapter.setPersistentData(nil, forKey: "k")
+        #expect(adapter.persistentData(forKey: "k") == nil)
+        adapter.setPersistentData(Data([0x0A]), forKey: "k")
+        #expect(adapter.persistentData(forKey: "k") == Data([0x0A]))
+        adapter.setPersistentData(nil, forKey: "k")
+        #expect(adapter.persistentData(forKey: "k") == nil)
     }
 
     @Test func emptyPayloadTableRoundTripsAsNil() throws {

@@ -83,3 +83,23 @@ public enum PluginExportOutcome: Sendable, Equatable {
     case cancelled
     case failed(reason: String)
 }
+
+/// Host-presented file import. Same root-picker discipline as
+/// `ExportPresenting`; the host owns the security-scope dance and
+/// hands plugins bytes, never URLs.
+@MainActor
+public protocol ImportPresenting: AnyObject {
+    /// Present the system open dialog restricted to `contentTypes`
+    /// and read the picked file. `contentTypes` must be within the
+    /// app's compile-time readable whitelist.
+    func presentImport(
+        contentTypes: [UTType],
+        completion: @escaping @MainActor (PluginImportOutcome) -> Void
+    )
+}
+
+public enum PluginImportOutcome: Sendable, Equatable {
+    case loaded(Data)
+    case cancelled
+    case failed(reason: String)
+}

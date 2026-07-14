@@ -235,7 +235,73 @@ struct EvalFormPluginTests {
                   comment: "収まり悪い", evidenceRows: [3, 5])
         ]
         draft.metadata = ["評価車両": "ティグアン"]
+        draft.reviewedItemIDs = ["11_hyokohyoko"]
         let decoded = try EvalFormDraft.decode(try draft.encoded())
         #expect(decoded == draft)
+    }
+
+    // MARK: - Payload migration (v1 → v2)
+
+    @Test func v1PayloadMigratesWithEmptyReviewState() {
+        // A frozen v1 wire payload — no `reviewedItemIDs` key.
+        let v1JSON = """
+        {"templateID":"a1-straight-v1","generatedAtUtterancesVersion":7,
+         "items":[{"itemID":"11_hyokohyoko","strengthScore":-0.25,
+         "evidenceRows":[3],"conflicts":[]}],
+         "metadata":{"評価車両":"ティグアン"}}
+        """
+        let restored = EvalFormDraft.restore(
+            data: Data(v1JSON.utf8), storedVersion: 1
+        )
+        #expect(restored?.items.first?.strengthScore == -0.25)
+        #expect(restored?.metadata["評価車両"] == "ティグアン")
+        #expect(restored?.reviewedItemIDs == [])
+    }
+
+    @Test func newerPayloadVersionIsLeftAlone() throws {
+        let draft = EvalFormDraft(templateID: template.id)
+        let data = try draft.encoded()
+        // A payload stamped by a FUTURE plugin build must not be
+        // guess-decoded — nil means "show no draft, keep the bytes".
+        #expect(EvalFormDraft.restore(data: data, storedVersion: 3) == nil)
+        #expect(EvalFormDraft.restore(data: data, storedVersion: 2) != nil)
+    }
+
+    // MARK: - Road sections
+
+    @Test func templateDerivesRoadNamesInFirstAppearanceOrder() {
+        #expect(template.roadNames == [
+            "E3路", "D路", "G路", "F路", "段差路", "H路", "スペイン歩道",
+        ])
+    }
+
+    @Test func roadCalloutsSegmentTheSession() {
+        let rows = [
+            utterance("それでは始めます"),          // before any callout
+            utterance("D路40キロで入ります"),        // D路 opens
+            utterance("ゴツゴツ強いね"),
+            utterance("次、F路60キロ"),              // F路 opens
+            utterance("ブルブル来る"),
+            utterance("もう一度D路に戻ります"),      // D路 second visit
+        ]
+        let proposals = EvalFormExtractor.roadSectionProposals(
+            utterances: rows,
+            roadNames: template.roadNames
+        )
+        #expect(proposals.map(\.title) == ["D路", "F路", "D路 (2)"])
+        #expect(proposals[0].startUtteranceID == rows[1].id)
+        #expect(proposals[0].endUtteranceID == rows[2].id)
+        #expect(proposals[1].startUtteranceID == rows[3].id)
+        #expect(proposals[1].endUtteranceID == rows[4].id)
+        #expect(proposals[2].startUtteranceID == rows[5].id)
+        #expect(proposals[2].endUtteranceID == rows[5].id)
+    }
+
+    @Test func noCalloutsMeansNoProposals() {
+        let rows = [utterance("ゴツゴツするね"), utterance("そうですね")]
+        #expect(EvalFormExtractor.roadSectionProposals(
+            utterances: rows,
+            roadNames: template.roadNames
+        ).isEmpty)
     }
 }

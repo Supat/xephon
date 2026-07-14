@@ -1,5 +1,6 @@
 import Foundation
 import Fusion
+import XephonPluginKit
 
 /// Pure extraction machinery: candidate-row selection, the
 /// deterministic stated-score pass, per-item prompt/schema
@@ -27,6 +28,48 @@ public enum EvalFormExtractor {
                 .precomposedStringWithCompatibilityMapping
                 .lowercased()
             return needles.contains(where: { hay.contains($0) }) ? idx + 1 : nil
+        }
+    }
+
+    // MARK: - Road sections
+
+    /// Segment the session by road callouts: a row mentioning a
+    /// road name opens that road's segment, which runs until the
+    /// row before the next callout (or the session end). Repeated
+    /// visits to the same road get numbered titles ("F路 (2)") so
+    /// proposals stay unique. Rows before the first callout belong
+    /// to no road.
+    public static func roadSectionProposals(
+        utterances: [UtteranceEstimate],
+        roadNames: [String]
+    ) -> [PluginSectionProposal] {
+        guard !utterances.isEmpty, !roadNames.isEmpty else { return [] }
+        // (start index, road) per callout, chronological.
+        var callouts: [(index: Int, road: String)] = []
+        for (index, u) in utterances.enumerated() {
+            let hay = u.transcript.precomposedStringWithCompatibilityMapping
+            if let road = roadNames.first(where: { hay.contains($0) }) {
+                // Consecutive rows re-mentioning the CURRENT road
+                // don't open a new segment.
+                if callouts.last?.road != road {
+                    callouts.append((index, road))
+                }
+            }
+        }
+        guard !callouts.isEmpty else { return [] }
+        var visits: [String: Int] = [:]
+        return callouts.enumerated().map { calloutIdx, callout in
+            let visit = (visits[callout.road] ?? 0) + 1
+            visits[callout.road] = visit
+            let title = visit == 1 ? callout.road : "\(callout.road) (\(visit))"
+            let endIndex = calloutIdx + 1 < callouts.count
+                ? callouts[calloutIdx + 1].index - 1
+                : utterances.count - 1
+            return PluginSectionProposal(
+                title: title,
+                startUtteranceID: utterances[callout.index].id,
+                endUtteranceID: utterances[max(callout.index, endIndex)].id
+            )
         }
     }
 

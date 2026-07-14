@@ -13,7 +13,10 @@ public protocol PluginHost: AnyObject {
     var inference: any InferenceService { get }
     /// File export through the app's root picker.
     var export: any ExportPresenting { get }
-    /// The narrow session-write surface (keyword seeding today).
+    /// File import through the app's root picker.
+    var imports: any ImportPresenting { get }
+    /// The narrow session-write surface (keyword seeding, section
+    /// proposals).
     var annotations: any SessionAnnotating { get }
     /// Per-plugin persistent storage. Pass the plugin's own type
     /// (`Self.self`) — the host stamps writes with that plugin's
@@ -81,6 +84,29 @@ public protocol SessionAnnotating: AnyObject {
     /// must never duplicate or overwrite. Idempotent, so calling
     /// on every activation is fine.
     func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String)
+
+    /// Propose named utterance-range sections (the Sections page).
+    /// Proposals whose title already exists in the session are
+    /// skipped — sections are user-owned once created, and a
+    /// re-detection run must not duplicate or clobber edits.
+    /// Returns the number actually added.
+    @discardableResult
+    func proposeSections(_ proposals: [PluginSectionProposal]) -> Int
+}
+
+/// One proposed section. Utterance ids come from the session
+/// snapshot; the host validates both ends still exist at proposal
+/// time and drops the proposal otherwise.
+public struct PluginSectionProposal: Sendable, Hashable {
+    public let title: String
+    public let startUtteranceID: UUID
+    public let endUtteranceID: UUID
+
+    public init(title: String, startUtteranceID: UUID, endUtteranceID: UUID) {
+        self.title = title
+        self.startUtteranceID = startUtteranceID
+        self.endUtteranceID = endUtteranceID
+    }
 }
 
 /// One keyword a plugin wants in the bank. A neutral type — the
@@ -151,4 +177,11 @@ public protocol PluginStorage: AnyObject {
     /// under — read it on `sessionLoaded` to migrate old payloads.
     /// Nil when no payload is stored.
     var sessionPayloadVersion: Int? { get }
+
+    /// Cross-session per-plugin storage (imported template packs,
+    /// plugin settings). Namespaced by plugin id; survives app
+    /// restarts and session resets. Small payloads only — this is
+    /// defaults-backed, not a file store.
+    func persistentData(forKey key: String) -> Data?
+    func setPersistentData(_ data: Data?, forKey key: String)
 }

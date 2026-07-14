@@ -139,4 +139,20 @@ extension EvalFormTemplate {
     public static func decode(_ data: Data) throws -> EvalFormTemplate {
         try JSONDecoder().decode(EvalFormTemplate.self, from: data)
     }
+
+    /// Distinct road labels across all items' reference roads,
+    /// speeds stripped ("F路 60km/h" → "F路"; "段差路" → itself),
+    /// in first-appearance order. Drives road-callout section
+    /// detection.
+    public var roadNames: [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for road in items.flatMap(\.referenceRoads) {
+            let base = road.split(separator: " ").first.map(String.init) ?? road
+            if seen.insert(base).inserted {
+                ordered.append(base)
+            }
+        }
+        return ordered
+    }
 }

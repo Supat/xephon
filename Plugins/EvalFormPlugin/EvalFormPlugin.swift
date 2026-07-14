@@ -13,24 +13,19 @@ public struct EvalFormPlugin: XephonPlugin {
     public static var displayName: String {
         String(localized: "evalform.displayName", bundle: .module)
     }
-    public static let payloadVersion = 1
+    /// v2 added `reviewedItemIDs` to the draft; v1 payloads migrate
+    /// on read (see `EvalFormDraft.restore(data:storedVersion:)`).
+    public static let payloadVersion = 2
 
     public init() {}
 
     public func activate(host: any PluginHost) -> PluginHandle {
-        // Seed the sheet's vocabulary (the onomatopoeia and their
-        // variants) into the keyword bank so the app's existing
+        let model = EvalFormModel(host: host)
+        // Seed the ACTIVE sheet's vocabulary (imported pack or the
+        // embedded A-1) into the keyword bank so the app's existing
         // matching, homophone review, and timeline strips light up
         // for the evaluation vocabulary. Idempotent by contract.
-        let seeds = EvalFormTemplate.a1StraightRoad.items
-            .flatMap(\.vocabulary)
-            .map(PluginKeywordSeed.init)
-        host.annotations.contributeKeywords(
-            seeds,
-            groupName: String(localized: "evalform.keywordGroup", bundle: .module)
-        )
-
-        let model = EvalFormModel(host: host)
+        model.seedKeywords()
         return PluginHandle(
             onSessionEvent: { model.handle($0) },
             pages: [

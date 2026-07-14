@@ -17,12 +17,19 @@ public final class EvalFormModel {
         case failed(String)
     }
 
-    public let template: EvalFormTemplate = .a1StraightRoad
+    /// The active sheet definition: an imported pack when one is
+    /// stored, else the embedded A-1 default. Cross-session
+    /// (persistent storage), not per-session.
+    public private(set) var template: EvalFormTemplate = .a1StraightRoad
     private let host: any PluginHost
 
     public private(set) var phase: Phase = .idle
     public private(set) var draft: EvalFormDraft?
     public private(set) var lastExport: String?
+    /// Feedback line after a road-section detection run.
+    public private(set) var lastSectionDetection: Int?
+
+    private static let templatePackKey = "templatePack"
 
     /// Per-item candidate counts for the pre-run coverage readout
     /// ("ヒョコヒョコ: 12 rows") so the user can see what a run
@@ -49,6 +56,11 @@ public final class EvalFormModel {
 
     public init(host: any PluginHost) {
         self.host = host
+        if let packData = storage.persistentData(forKey: Self.templatePackKey),
+           let pack = try? EvalFormTemplate.decode(packData),
+           !pack.items.isEmpty {
+            template = pack
+        }
         restoreDraft()
     }
 
@@ -69,9 +81,14 @@ public final class EvalFormModel {
     }
 
     private func restoreDraft() {
-        if let data = storage.sessionPayloadData,
-           let restored = try? EvalFormDraft.decode(data) {
-            draft = restored
+        if let data = storage.sessionPayloadData {
+            // Version-aware restore: v1 payloads migrate (empty
+            // review state); newer-than-us payloads stay untouched
+            // in the bundle and we show no draft.
+            draft = EvalFormDraft.restore(
+                data: data,
+                storedVersion: storage.sessionPayloadVersion
+            )
         } else {
             draft = nil
         }
@@ -216,6 +233,90 @@ public final class EvalFormModel {
             )
             return [:]
         }
+    }
+
+    // MARK: - Template packs
+
+    /// Whether the current draft was generated against the ACTIVE
+    /// template — a pack swap orphans the old draft's item ids.
+    public var draftMatchesTemplate: Bool {
+        draft.map { $0.templateID == template.id } ?? true
+    }
+
+    /// Import a JSON template pack through the root picker,
+    /// persist it as the active sheet, and seed its vocabulary
+    /// into the keyword bank.
+    public func importTemplatePack() {
+        host.imports.presentImport(contentTypes: [.json]) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .loaded(let data):
+                guard let pack = try? EvalFormTemplate.decode(data),
+                      !pack.items.isEmpty else {
+                    self.phase = .failed(
+                        String(localized: "evalform.error.badPack", bundle: .module)
+                    )
+                    return
+                }
+                self.storage.setPersistentData(data, forKey: Self.templatePackKey)
+                self.template = pack
+                self.seedKeywords()
+                self.phase = .idle
+            case .cancelled:
+                break
+            case .failed(let reason):
+                self.phase = .failed(reason)
+            }
+        }
+    }
+
+    /// Drop an imported pack and return to the embedded A-1 sheet.
+    public func resetTemplateToDefault() {
+        storage.setPersistentData(nil, forKey: Self.templatePackKey)
+        template = .a1StraightRoad
+        seedKeywords()
+    }
+
+    public var usesImportedTemplate: Bool {
+        storage.persistentData(forKey: Self.templatePackKey) != nil
+    }
+
+    /// Seed the ACTIVE template's vocabulary. Called on activation
+    /// and after a pack swap; idempotent by the host contract.
+    public func seedKeywords() {
+        host.annotations.contributeKeywords(
+            template.items.flatMap(\.vocabulary).map(PluginKeywordSeed.init),
+            groupName: template.name
+        )
+    }
+
+    // MARK: - Road sections
+
+    /// Detect road-callout segments and propose them as sections.
+    public func detectRoadSections() {
+        let proposals = EvalFormExtractor.roadSectionProposals(
+            utterances: host.session.snapshot().utterances,
+            roadNames: template.roadNames
+        )
+        lastSectionDetection = host.annotations.proposeSections(proposals)
+    }
+
+    // MARK: - Review state
+
+    public func isReviewed(_ itemID: String) -> Bool {
+        draft?.reviewedItemIDs.contains(itemID) ?? false
+    }
+
+    /// Toggle an item's reviewer-confirmed mark (payload v2 state).
+    public func toggleReviewed(_ itemID: String) {
+        guard var draft else { return }
+        if let idx = draft.reviewedItemIDs.firstIndex(of: itemID) {
+            draft.reviewedItemIDs.remove(at: idx)
+        } else {
+            draft.reviewedItemIDs.append(itemID)
+        }
+        self.draft = draft
+        persistDraft()
     }
 
     // MARK: - Row helpers + export

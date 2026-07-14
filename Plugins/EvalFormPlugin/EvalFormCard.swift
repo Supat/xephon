@@ -26,7 +26,7 @@ struct EvalFormCard: View {
             case .idle:
                 EmptyView()
             }
-            if let draft = model.draft {
+            if let draft = model.draft, model.draftMatchesTemplate {
                 if model.draftIsStale {
                     Text(String(localized: "evalform.stale", bundle: .module))
                         .font(.caption2)
@@ -40,6 +40,12 @@ struct EvalFormCard: View {
                         .foregroundStyle(.tertiary)
                 }
             } else {
+                if !model.draftMatchesTemplate {
+                    Text(String(localized: "evalform.templateMismatch", bundle: .module))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 coverageSection
             }
         }
@@ -77,6 +83,49 @@ struct EvalFormCard: View {
             }
             .font(.caption)
             .buttonStyle(.bordered)
+            // Template + section tooling. Menu keeps the row
+            // compact; every action is reversible or additive.
+            HStack(spacing: 12) {
+                Menu {
+                    Button {
+                        model.importTemplatePack()
+                    } label: {
+                        Label(
+                            String(localized: "evalform.importTemplate", bundle: .module),
+                            systemImage: "square.and.arrow.down.on.square"
+                        )
+                    }
+                    if model.usesImportedTemplate {
+                        Button {
+                            model.resetTemplateToDefault()
+                        } label: {
+                            Label(
+                                String(localized: "evalform.resetTemplate", bundle: .module),
+                                systemImage: "arrow.uturn.backward"
+                            )
+                        }
+                    }
+                } label: {
+                    Label(
+                        String(localized: "evalform.template", bundle: .module),
+                        systemImage: "doc.badge.gearshape"
+                    )
+                }
+                Button {
+                    model.detectRoadSections()
+                } label: {
+                    Label(
+                        String(localized: "evalform.detectSections", bundle: .module),
+                        systemImage: "road.lanes"
+                    )
+                }
+                if let added = model.lastSectionDetection {
+                    Text(verbatim: "+\(added)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
             if case .unavailable(let reason) = model.inferenceAvailability {
                 Text(reason)
                     .font(.caption2)
@@ -102,11 +151,11 @@ struct EvalFormCard: View {
                 .textCase(.uppercase)
             ForEach(model.candidateCounts, id: \.item.id) { entry in
                 HStack {
-                    Text("\(entry.item.number). \(entry.item.titleJa)")
+                    Text(verbatim: "\(entry.item.number). \(entry.item.titleJa)")
                         .font(.caption2)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text("\(entry.count)")
+                    Text(verbatim: "\(entry.count)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(entry.count == 0 ? .tertiary : .secondary)
                 }
@@ -154,7 +203,27 @@ struct EvalFormCard: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
-                Text("\(item.number). \(item.titleJa)")
+                // Reviewer-confirmed toggle (payload v2 state).
+                Button {
+                    model.toggleReviewed(item.id)
+                } label: {
+                    Image(
+                        systemName: model.isReviewed(item.id)
+                            ? "checkmark.circle.fill"
+                            : "circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        model.isReviewed(item.id)
+                            ? AnyShapeStyle(.green)
+                            : AnyShapeStyle(.tertiary)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    Text(String(localized: "evalform.reviewed", bundle: .module))
+                )
+                Text(verbatim: "\(item.number). \(item.titleJa)")
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer(minLength: 8)

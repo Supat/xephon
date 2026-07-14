@@ -56,19 +56,24 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
     public var supplementaryComment: String?
     /// Extracted header metadata (field name → value), stated-only.
     public var metadata: [String: String]
+    /// Item ids the reviewer has marked confirmed (payload v2 —
+    /// the review-workflow state that motivated the version bump).
+    public var reviewedItemIDs: [String]
 
     public init(
         templateID: String,
         generatedAtUtterancesVersion: Int? = nil,
         items: [ItemResult] = [],
         supplementaryComment: String? = nil,
-        metadata: [String: String] = [:]
+        metadata: [String: String] = [:],
+        reviewedItemIDs: [String] = []
     ) {
         self.templateID = templateID
         self.generatedAtUtterancesVersion = generatedAtUtterancesVersion
         self.items = items
         self.supplementaryComment = supplementaryComment
         self.metadata = metadata
+        self.reviewedItemIDs = reviewedItemIDs
     }
 
     public func encoded() throws -> Data {
@@ -77,5 +82,44 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
 
     public static func decode(_ data: Data) throws -> EvalFormDraft {
         try JSONDecoder().decode(EvalFormDraft.self, from: data)
+    }
+
+    // MARK: - Payload migration
+
+    /// Version-aware restore — THE migration seam
+    /// (docs/plugin_architecture.md §3: `payloadVersion` rides on
+    /// every stored payload; the plugin migrates on read). v1
+    /// payloads (before `reviewedItemIDs`) upgrade with an empty
+    /// review state; payloads from a NEWER plugin than this build
+    /// return nil rather than a lossy guess — the draft stays
+    /// untouched in the bundle for the newer build that wrote it.
+    public static func restore(data: Data, storedVersion: Int?) -> EvalFormDraft? {
+        switch storedVersion {
+        case 2:
+            return try? decode(data)
+        case 1, nil:
+            guard let v1 = try? JSONDecoder().decode(DraftV1.self, from: data)
+            else { return nil }
+            return EvalFormDraft(
+                templateID: v1.templateID,
+                generatedAtUtterancesVersion: v1.generatedAtUtterancesVersion,
+                items: v1.items,
+                supplementaryComment: v1.supplementaryComment,
+                metadata: v1.metadata,
+                reviewedItemIDs: []
+            )
+        default:
+            return nil
+        }
+    }
+
+    /// The payload-v1 wire shape, frozen. `ItemResult` is shared —
+    /// it did not change between v1 and v2.
+    private struct DraftV1: Codable {
+        var templateID: String
+        var generatedAtUtterancesVersion: Int?
+        var items: [ItemResult]
+        var supplementaryComment: String?
+        var metadata: [String: String]
     }
 }

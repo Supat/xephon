@@ -28,6 +28,7 @@ final class PluginHostServices: PluginHost {
     var session: any SessionReading { self }
     var inference: any InferenceService { inferenceAdapter }
     var export: any ExportPresenting { self }
+    var imports: any ImportPresenting { self }
     var annotations: any SessionAnnotating { self }
 
     func storage(for plugin: any XephonPlugin.Type) -> any PluginStorage {
@@ -49,7 +50,59 @@ final class PluginHostServices: PluginHost {
     }
 }
 
+extension PluginHostServices: ImportPresenting {
+    func presentImport(
+        contentTypes: [UTType],
+        completion: @escaping @MainActor (PluginImportOutcome) -> Void
+    ) {
+        filePicker.presentImport(allowedTypes: contentTypes) { result in
+            switch result {
+            case .success(let url):
+                // Scope + read stay host-side: plugins get bytes.
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    completion(.loaded(try Data(contentsOf: url)))
+                } catch {
+                    completion(.failed(reason: String(describing: error)))
+                }
+            case .failure(let error):
+                if let cocoa = error as? CocoaError, cocoa.code == .userCancelled {
+                    completion(.cancelled)
+                } else {
+                    completion(.failed(reason: String(describing: error)))
+                }
+            }
+        }
+    }
+}
+
 extension PluginHostServices: SessionAnnotating {
+    func proposeSections(_ proposals: [PluginSectionProposal]) -> Int {
+        let existingTitles = Set(recorder.sections.sections.map(\.title))
+        let liveIDs = Set(recorder.utterances.map(\.id))
+        var added = 0
+        for proposal in proposals {
+            guard !existingTitles.contains(proposal.title),
+                  liveIDs.contains(proposal.startUtteranceID),
+                  liveIDs.contains(proposal.endUtteranceID)
+            else { continue }
+            recorder.sections.add(ConversationSection(
+                id: UUID(),
+                title: proposal.title,
+                startUtteranceID: proposal.startUtteranceID,
+                endUtteranceID: proposal.endUtteranceID
+            ))
+            added += 1
+        }
+        if added > 0 {
+            AppLog.app.info(
+                "plugin section proposals: +\(added, privacy: .public) of \(proposals.count, privacy: .public)"
+            )
+        }
+        return added
+    }
+
     func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String) {
         let store = recorder.keywords
         let existing = Set(store.keywords.map {
@@ -227,5 +280,25 @@ final class PluginStorageAdapter: PluginStorage {
 
     var sessionPayloadVersion: Int? {
         store[id.rawValue]?.version
+    }
+
+    // Cross-session tier: defaults-backed, namespaced per plugin.
+    // Small payloads only (template packs, settings) — documented
+    // on the protocol.
+
+    private func persistentKey(_ key: String) -> String {
+        "plugin.data.\(id.rawValue).\(key)"
+    }
+
+    func persistentData(forKey key: String) -> Data? {
+        UserDefaults.standard.data(forKey: persistentKey(key))
+    }
+
+    func setPersistentData(_ data: Data?, forKey key: String) {
+        if let data {
+            UserDefaults.standard.set(data, forKey: persistentKey(key))
+        } else {
+            UserDefaults.standard.removeObject(forKey: persistentKey(key))
+        }
     }
 }

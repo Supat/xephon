@@ -1,7 +1,21 @@
 # Plugin architecture plan
 
-**Status:** plan only — nothing here is implemented.
-**Date:** 2026-07-14
+**Status (2026-07-16):** Phases 0–3 implemented on `plugin-arch`.
+Phase 0 (seams, registry, payloads) → Phase 1 (page/menu/export
+slots, DebugSamplePlugin) → Phase 2 (inference carve-out,
+EvalFormPlugin) → Phase 3 (persistent plugin storage, import
+service, section proposals, template-pack import, payload v1→v2
+migration exercise). Notable deltas from the plan as written:
+session events are a `PluginHandle` callback rather than an
+`AsyncSequence` (deterministic, less test flake); the settings
+toggle UI shipped with Phase 1 rather than Phase 0; the inference
+carve-out shipped with its consumer in Phase 2 rather than Phase 0.
+Phase 3 decision points: the first retrofit (keyword-review sheet)
+is DEFERRED until the EvalForm ground-truth eval exists — two
+in-flight reshapings of that surface at once isn't worth it; T3
+scripting still has no customer and stays deferred. Open:
+ground-truth eval per the research doc §6, on-device verification
+sweep, `supplementaryComment` distillation.
 **Companion:** `docs/eval_form_autofill_research.md` — the evaluation-form
 auto-fill is the first plugin and the forcing function for every extension
 point below.
