@@ -11,10 +11,18 @@ public protocol PluginHost: AnyObject {
     /// Schema-constrained LLM generation routed through the user's
     /// configured summarizer backend.
     var inference: any InferenceService { get }
+    /// File export through the app's root picker.
+    var export: any ExportPresenting { get }
     /// Per-plugin persistent storage. Pass the plugin's own type
     /// (`Self.self`) — the host stamps writes with that plugin's
     /// `payloadVersion` and namespaces by its `id`.
     func storage(for plugin: any XephonPlugin.Type) -> any PluginStorage
+    /// Toggle audio playback of the utterance with `id` — same
+    /// behavior as the transcript row's play button (tap to play,
+    /// tap again to stop; playing another row stops the first).
+    /// No-op when the id doesn't resolve or the session has no
+    /// playable audio (mic-mode sessions don't).
+    func requestPlayback(utteranceID: UUID)
 }
 
 // MARK: - Session reading

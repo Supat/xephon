@@ -557,3 +557,8 @@
 
 "setup.title" = "Setting up Xephon";
 "setup.waiting" = "waiting";
+
+"plugins.header" = "Plugins";
+"plugins.subtitle" = "Installed extensions. Disabling a plugin hides its pages and menu items; its saved data is kept.";
+"plugins.enabled" = "Enabled";
+"menu.plugins" = "Plugins";

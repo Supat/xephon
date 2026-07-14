@@ -50,17 +50,30 @@ public protocol XephonPlugin: Sendable {
 }
 
 /// What `activate(host:)` hands back: the plugin's live surface as
-/// seen by the host. Phase 0 carries only the session-event
-/// callback; UI contributions (control-pane pages, menu commands,
-/// exporters) attach here in Phase 1.
+/// seen by the host — the session-event callback plus declarative
+/// UI contributions. All fixed at activation; a plugin whose page
+/// content varies drives that variation through its own observable
+/// state, not by re-registering.
 @MainActor
 public final class PluginHandle {
     /// Invoked on the MainActor for every session-lifecycle event.
     /// Keep it cheap — kick real work into a Task.
     public let onSessionEvent: ((SessionEvent) -> Void)?
+    /// Control-pane pages, appended after the built-in pages while
+    /// the plugin is active.
+    public let pages: [PluginPageDescriptor]
+    /// Hardware-keyboard menu items, listed under the host-owned
+    /// Plugins menu while the plugin is active.
+    public let menuCommands: [PluginMenuCommand]
 
-    public init(onSessionEvent: ((SessionEvent) -> Void)? = nil) {
+    public init(
+        onSessionEvent: ((SessionEvent) -> Void)? = nil,
+        pages: [PluginPageDescriptor] = [],
+        menuCommands: [PluginMenuCommand] = []
+    ) {
         self.onSessionEvent = onSessionEvent
+        self.pages = pages
+        self.menuCommands = menuCommands
     }
 }
 

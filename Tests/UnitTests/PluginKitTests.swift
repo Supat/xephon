@@ -1,5 +1,7 @@
 import Foundation
+import SwiftUI
 import Testing
+import UniformTypeIdentifiers
 @testable import Xephon
 import XephonPluginKit
 import Export
@@ -38,17 +40,32 @@ struct PluginKitTests {
             // Write a payload immediately so the storage path is
             // exercised by plain activation.
             host.storage(for: Self.self).sessionPayloadData = Data("hello".utf8)
-            return PluginHandle { [log] event in
-                log.events.append(event)
-            }
+            return PluginHandle(
+                onSessionEvent: { [log] event in
+                    log.events.append(event)
+                },
+                pages: [
+                    PluginPageDescriptor(
+                        id: "test.hello.page",
+                        title: "Hello",
+                        systemImage: "hand.wave"
+                    ) { AnyView(EmptyView()) }
+                ],
+                menuCommands: [
+                    PluginMenuCommand(id: "test.hello.cmd", title: "Hello") {}
+                ]
+            )
         }
     }
 
     /// Minimal host: real storage adapters over a real payload
-    /// store, canned snapshot, placeholder inference.
+    /// store, canned snapshot, placeholder inference, recording
+    /// stubs for export + playback.
     @MainActor
-    final class StubPluginHost: PluginHost, SessionReading {
+    final class StubPluginHost: PluginHost, SessionReading, ExportPresenting {
         let store: PluginPayloadStore
+        private(set) var playbackRequests: [UUID] = []
+        private(set) var exportedData: [Data] = []
 
         init(store: PluginPayloadStore) {
             self.store = store
@@ -56,6 +73,7 @@ struct PluginKitTests {
 
         var session: any SessionReading { self }
         var inference: any InferenceService { PluginInferencePlaceholder() }
+        var export: any ExportPresenting { self }
 
         func storage(for plugin: any XephonPlugin.Type) -> any PluginStorage {
             PluginStorageAdapter(
@@ -63,6 +81,20 @@ struct PluginKitTests {
                 id: plugin.id,
                 writeVersion: plugin.payloadVersion
             )
+        }
+
+        func requestPlayback(utteranceID: UUID) {
+            playbackRequests.append(utteranceID)
+        }
+
+        func presentExport(
+            data: Data,
+            contentType: UTType,
+            suggestedFilename: String,
+            completion: @escaping @MainActor (PluginExportOutcome) -> Void
+        ) {
+            exportedData.append(data)
+            completion(.saved)
         }
 
         func snapshot() -> SessionSnapshot {
@@ -128,6 +160,46 @@ struct PluginKitTests {
         registry.broadcast(.sessionLoaded)
         #expect(log.events == [.sessionCleared])
         #expect(defaults.bool(forKey: "plugin.enabled.test.hello") == false)
+    }
+
+    // MARK: - Phase 1: UI contributions
+
+    @Test func uiContributionsTrackActivationState() {
+        let registry = PluginRegistry(defaults: freshDefaults("ui"))
+        let log = HelloPluginLog()
+        registry.install(
+            [HelloPlugin(log: log)],
+            host: StubPluginHost(store: PluginPayloadStore())
+        )
+
+        #expect(registry.activePages.map(\.id) == ["test.hello.page"])
+        #expect(registry.activeMenuCommands.map(\.id) == ["test.hello.cmd"])
+
+        // Disabling removes the contributions live; re-enabling
+        // restores them (via a fresh activation).
+        registry.setEnabled(false, id: HelloPlugin.id)
+        #expect(registry.activePages.isEmpty)
+        #expect(registry.activeMenuCommands.isEmpty)
+
+        registry.setEnabled(true, id: HelloPlugin.id)
+        #expect(registry.activePages.map(\.id) == ["test.hello.page"])
+        #expect(log.activations == 2)
+    }
+
+    @Test func hostStubsRecordExportAndPlayback() {
+        let host = StubPluginHost(store: PluginPayloadStore())
+        let rowID = UUID()
+        host.requestPlayback(utteranceID: rowID)
+        #expect(host.playbackRequests == [rowID])
+
+        var outcome: PluginExportOutcome?
+        host.presentExport(
+            data: Data("x".utf8),
+            contentType: .plainText,
+            suggestedFilename: "x.txt"
+        ) { outcome = $0 }
+        #expect(outcome == .saved)
+        #expect(host.exportedData == [Data("x".utf8)])
     }
 
     // MARK: - Payload round-trip

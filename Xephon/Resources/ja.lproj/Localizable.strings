@@ -557,3 +557,8 @@
 
 "setup.title" = "Xephon をセットアップ中";
 "setup.waiting" = "待機中";
+
+"plugins.header" = "プラグイン";
+"plugins.subtitle" = "インストール済みの拡張機能。無効にするとページとメニュー項目が非表示になります。保存済みデータは保持されます。";
+"plugins.enabled" = "有効";
+"menu.plugins" = "プラグイン";

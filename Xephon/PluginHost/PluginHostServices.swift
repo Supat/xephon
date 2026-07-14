@@ -1,5 +1,7 @@
 import Foundation
+import UniformTypeIdentifiers
 import Export
+import XephonLogging
 import XephonPluginKit
 
 /// The app-side implementation of `PluginHost` — the ONLY place
@@ -8,17 +10,23 @@ import XephonPluginKit
 /// drift"): resist adding one-off accessors per plugin request.
 @MainActor
 final class PluginHostServices: PluginHost {
-    /// Unowned: XephonApp owns both the controller and this object,
-    /// and the controller never outlives the process.
+    /// Unowned: the process-wide controller (owned by XephonApp)
+    /// never outlives this object.
     private unowned let recorder: RecordingController
+    /// Strong: the coordinator is a plain state object with no
+    /// back-references, and plugin exports must keep working even
+    /// while ContentView is mid-reconstruction.
+    private let filePicker: FilePickerCoordinator
     private let inferenceAdapter = PluginInferencePlaceholder()
 
-    init(recorder: RecordingController) {
+    init(recorder: RecordingController, filePicker: FilePickerCoordinator) {
         self.recorder = recorder
+        self.filePicker = filePicker
     }
 
     var session: any SessionReading { self }
     var inference: any InferenceService { inferenceAdapter }
+    var export: any ExportPresenting { self }
 
     func storage(for plugin: any XephonPlugin.Type) -> any PluginStorage {
         PluginStorageAdapter(
@@ -26,6 +34,45 @@ final class PluginHostServices: PluginHost {
             id: plugin.id,
             writeVersion: plugin.payloadVersion
         )
+    }
+
+    func requestPlayback(utteranceID: UUID) {
+        guard let utterance = recorder.utterances.first(where: { $0.id == utteranceID }) else {
+            AppLog.app.warning(
+                "plugin requestPlayback: unknown utterance \(utteranceID, privacy: .public)"
+            )
+            return
+        }
+        recorder.togglePlayback(for: utterance)
+    }
+}
+
+extension PluginHostServices: ExportPresenting {
+    func presentExport(
+        data: Data,
+        contentType: UTType,
+        suggestedFilename: String,
+        completion: @escaping @MainActor (PluginExportOutcome) -> Void
+    ) {
+        filePicker.presentExport(
+            data: data,
+            contentType: contentType,
+            defaultFilename: suggestedFilename
+        ) { result in
+            switch result {
+            case .success:
+                completion(.saved)
+            case .failure(let error):
+                // The root exporter reports user cancellation as a
+                // failure; distinguish the one signal Cocoa gives us
+                // and treat everything else as a real failure.
+                if let cocoa = error as? CocoaError, cocoa.code == .userCancelled {
+                    completion(.cancelled)
+                } else {
+                    completion(.failed(reason: String(describing: error)))
+                }
+            }
+        }
     }
 }
 

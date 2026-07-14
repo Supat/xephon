@@ -103,6 +103,18 @@ final class PluginRegistry {
         }
     }
 
+    /// Control-pane pages of every ACTIVE plugin, in install order.
+    /// Disabled plugins contribute nothing (their handle is nil),
+    /// so toggling a plugin adds/removes its pages live.
+    var activePages: [PluginPageDescriptor] {
+        entries.compactMap(\.handle).flatMap(\.pages)
+    }
+
+    /// Menu items of every ACTIVE plugin, in install order.
+    var activeMenuCommands: [PluginMenuCommand] {
+        entries.compactMap(\.handle).flatMap(\.menuCommands)
+    }
+
     private static func enabledKey(_ id: PluginID) -> String {
         "plugin.enabled.\(id.rawValue)"
     }

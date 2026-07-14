@@ -1,6 +1,7 @@
 import SwiftUI
 import Audio
 import Fusion
+import XephonPluginKit
 
 /// Left third of the main split: input picker, record / open
 /// buttons, level meter (during capture), status line, error
@@ -22,6 +23,7 @@ struct ControlPaneView: View {
     /// chrome, so this prop only carries the section
     /// presentation path through to `SectionsCard`.
     let llmCoord: LLMSheetCoordinator
+    @Environment(PluginRegistry.self) private var pluginRegistry
     @Binding var selectedUtteranceID: UUID?
     @Binding var scrollRequestUtteranceID: UUID?
     @Binding var showingDiscardConfirm: Bool
@@ -179,6 +181,24 @@ struct ControlPaneView: View {
                     sectionsPage.tag(3)
                     keywordsPage.tag(4)
                     summarizerPage.tag(5)
+                    // Plugin-contributed pages, appended after the
+                    // built-ins with position-based tags. Tags shift
+                    // when an EARLIER plugin is disabled — the
+                    // clamp in `.onChange(of: pluginPages.count)`
+                    // below keeps the selection in range; per-page
+                    // selection stability across toggles is not
+                    // promised (rare, user-initiated).
+                    ForEach(
+                        Array(pluginPages.enumerated()),
+                        id: \.element.id
+                    ) { offset, page in
+                        pluginPage(page).tag(Self.builtInPageCount + offset)
+                    }
+                }
+                .onChange(of: pluginPages.count) { _, count in
+                    if selectedTab >= Self.builtInPageCount + count {
+                        selectedTab = 0
+                    }
                 }
                 .tabViewStyle(.page(indexDisplayMode: dotsVisible ? .always : .never))
                 .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -297,7 +317,38 @@ struct ControlPaneView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 16) {
                 SettingsCard(recorder: recorder)
+                if !pluginRegistry.isEmpty {
+                    PluginsCard(registry: pluginRegistry)
+                }
                 PipelineCard(recorder: recorder)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 32)
+        }
+        .clipped()
+        .ignoresSafeArea(.container, edges: .bottom)
+    }
+
+    // MARK: - Plugin pages
+
+    /// Built-in page count — plugin tags start here. Keep in sync
+    /// with the literal `.tag(_:)` list in the TabView above.
+    private static let builtInPageCount = 6
+
+    /// Active plugins' contributed pages, in install order.
+    private var pluginPages: [PluginPageDescriptor] {
+        pluginRegistry.activePages
+    }
+
+    /// Wrap plugin card content in the same page chrome every
+    /// built-in page uses, so plugin pages scroll/clip/inset
+    /// identically.
+    @ViewBuilder
+    private func pluginPage(_ page: PluginPageDescriptor) -> some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                page.content()
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)

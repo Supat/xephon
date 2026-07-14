@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import XephonLogging
+import XephonPluginKit
 
 @main
 struct XephonApp: App {
@@ -60,21 +61,12 @@ struct XephonApp: App {
         WindowGroup {
             ContentView(recorder: recorder)
                 .environment(menuCommands)
-                // Plugin wiring. In `.task` (not `init`) because
-                // reading @State wrappedValue before installation
-                // draws runtime warnings; idempotent by construction
-                // (duplicate install ids are ignored, re-assigning
-                // the sink to the same registry is harmless), so a
-                // second window scene re-running it is safe.
-                .task {
-                    pluginRegistry.install(
-                        [],  // first shipped plugin lands in Phase 2
-                        host: PluginHostServices(recorder: recorder)
-                    )
-                    recorder.pluginEventSink = { [weak pluginRegistry] event in
-                        pluginRegistry?.broadcast(event)
-                    }
-                }
+                // Install + event-sink wiring happens in
+                // ContentView's `.task` — the host needs the
+                // FilePickerCoordinator, which lives as
+                // ContentView @State (plugin exports route through
+                // the single root exporter).
+                .environment(pluginRegistry)
         }
         // Hardware-keyboard menu integration. iPadOS 26's menu strip
         // (cmd-hold) and macOS / Catalyst menu bar both honor these.
@@ -136,6 +128,29 @@ struct XephonApp: App {
                     )
                 }
                 .disabled(!menuCommands.canExportRecordedAudio)
+            }
+            // Active plugins' menu items, surfaced in the File menu
+            // after the Save/Export block (its own CommandGroup so
+            // the system draws the divider — inline Divider() is
+            // the documented iPadOS-26 no-render trap; CommandMenu
+            // is the double-register trap). Contributes nothing
+            // while no plugin is active. Plugin actions are
+            // self-contained closures capturing their own state, so
+            // they dispatch directly — the MenuCommands token bus
+            // exists for items whose WORK lives in ContentView,
+            // which these don't.
+            CommandGroup(after: .saveItem) {
+                ForEach(pluginRegistry.activeMenuCommands) { command in
+                    Button {
+                        command.action()
+                    } label: {
+                        if let systemImage = command.systemImage {
+                            Label(command.title, systemImage: systemImage)
+                        } else {
+                            Text(command.title)
+                        }
+                    }
+                }
             }
             // Edit > Undo / Edit > Redo. Backed by
             // `RecordingController.undoManager`; both menu items are

@@ -9,6 +9,7 @@ import XephonUtilities
 
 struct ContentView: View {
     @Environment(MenuCommands.self) private var menuCommands
+    @Environment(PluginRegistry.self) private var pluginRegistry
     /// Backgrounding the app while an MLX summarize/review is in
     /// flight crashes the process: iOS revokes GPU access for
     /// background apps and MLX's next Metal command buffer comes
@@ -217,6 +218,11 @@ struct ContentView: View {
             // empty / partial state with the Regenerate button live,
             // which is the right resume behaviour.
             .modifier(eventBridges)
+            .modifier(PluginWiringModifier(
+                recorder: recorder,
+                filePicker: filePicker,
+                pluginRegistry: pluginRegistry
+            ))
             .modifier(SessionFileBridge(
                 recorder: recorder,
                 coord: fileCoord,
@@ -398,6 +404,37 @@ private struct SpeakerRenameAlertModifier: ViewModifier {
                 Text(String(format: String(localized: "speaker.rename.message"), stored))
             }
         }
+    }
+}
+
+/// Plugin install + event-sink wiring. Lives on ContentView (not
+/// XephonApp) because the host needs the root
+/// `FilePickerCoordinator` for plugin exports. Its own modifier —
+/// not another link in EventBridgeModifier's chain — both to stay
+/// under the type-check budget that file already documents and to
+/// keep plugin concerns out of the event bridge. Idempotent:
+/// duplicate install ids are ignored and re-assigning the sink to
+/// the same registry is harmless, so a re-fire on view
+/// reconstruction is safe.
+private struct PluginWiringModifier: ViewModifier {
+    let recorder: RecordingController
+    let filePicker: FilePickerCoordinator
+    let pluginRegistry: PluginRegistry
+
+    func body(content: Content) -> some View {
+        content
+            .task {
+                pluginRegistry.install(
+                    xephonInstalledPlugins(),
+                    host: PluginHostServices(
+                        recorder: recorder,
+                        filePicker: filePicker
+                    )
+                )
+                recorder.pluginEventSink = { [weak pluginRegistry] event in
+                    pluginRegistry?.broadcast(event)
+                }
+            }
     }
 }
 
