@@ -31,6 +31,25 @@ public struct EvalFormTemplate: Codable, Sendable, Equatable {
         public var minimum: Double
         public var maximum: Double
         public var step: Double
+        /// The sheet's ※ rubric: what each magnitude MEANS
+        /// (0.125 = arguable … 1.0 = totally different). Injected
+        /// into the extraction prompt so inferred magnitudes are
+        /// calibrated the same way a human reads the sheet, and
+        /// rendered as the card's footnote. Optional for packs
+        /// that predate the field.
+        public var anchors: [Anchor]?
+
+        public struct Anchor: Codable, Sendable, Equatable {
+            /// Unsigned magnitude the meaning applies to (±).
+            public var magnitude: Double
+            /// The rubric text as printed on the sheet.
+            public var meaning: String
+
+            public init(magnitude: Double, meaning: String) {
+                self.magnitude = magnitude
+                self.meaning = meaning
+            }
+        }
 
         /// The quantized values a stated score may take.
         public var allowedValues: [Double] {
@@ -75,7 +94,18 @@ extension EvalFormTemplate {
     public static let a1StraightRoad = EvalFormTemplate(
         id: "a1-straight-v1",
         name: "車両評価性能指標Ａ－１（直線路走行専用）",
-        strengthScale: StrengthScale(minimum: -1.0, maximum: 1.0, step: 0.125),
+        strengthScale: StrengthScale(
+            minimum: -1.0,
+            maximum: 1.0,
+            step: 0.125,
+            anchors: [
+                .init(magnitude: 0.125, meaning: "なんとなく違うレベル（5:5で賛否両論、議論要）"),
+                .init(magnitude: 0.25, meaning: "敏感な人が分かるレベル（30%の人が感じる）"),
+                .init(magnitude: 0.5, meaning: "ほとんどの人が感じる（70%の人が感じる）"),
+                .init(magnitude: 0.75, meaning: "明らかに差を感じられる（差は100%の人が感じる）"),
+                .init(magnitude: 1.0, meaning: "まったく違う"),
+            ]
+        ),
         preferenceScale: PreferenceScale(minimum: 1, maximum: 9),
         items: [
             Item(

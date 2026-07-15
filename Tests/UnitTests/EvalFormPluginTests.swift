@@ -266,6 +266,66 @@ struct EvalFormPluginTests {
         #expect(suppressed.strengthScoreInferred == nil)
     }
 
+    @Test func promptCarriesRubricAndPolarityRule() {
+        let item = template.items[1]
+        let prompt = EvalFormExtractor.extractionPrompt(
+            item: item,
+            template: template,
+            rows: [(number: 1, speakerID: "S01", transcript: "t")],
+            deterministic: .init(statedScores: [], statedPreference: nil)
+        )
+        #expect(prompt.contains("POLARITY"))
+        #expect(prompt.contains("まったく違う"))                 // rubric anchors injected
+        #expect(prompt.contains("敏感な人が分かるレベル"))
+    }
+
+    @Test func inferredPolarityContradictionIsFlagged() {
+        let item = template.items[1]
+        // Evidence says STRONGER; model inferred the weak (+) side.
+        let flipped = EvalFormExtractor.merge(
+            item: item, template: template,
+            deterministic: .init(statedScores: [], statedPreference: nil),
+            wire: .init(statedScore: nil, inferredScore: 0.375,
+                        likeDislike: nil, comment: "c", evidenceRows: [2]),
+            validRowNumbers: [2],
+            transcriptForRow: { _ in "ひょこひょこ感がかなり強い" }
+        )
+        #expect(flipped.conflicts.contains { $0.contains("極性要確認") })
+
+        // Evidence says WEAKER/gone; inferred the strong (−) side.
+        let flipped2 = EvalFormExtractor.merge(
+            item: item, template: template,
+            deterministic: .init(statedScores: [], statedPreference: nil),
+            wire: .init(statedScore: nil, inferredScore: -0.5,
+                        likeDislike: nil, comment: "c", evidenceRows: [2]),
+            validRowNumbers: [2],
+            transcriptForRow: { _ in "ビリビリ感はなくなっている" }
+        )
+        #expect(flipped2.conflicts.contains { $0.contains("極性要確認") })
+
+        // Consistent sign → no flag.
+        let consistent = EvalFormExtractor.merge(
+            item: item, template: template,
+            deterministic: .init(statedScores: [], statedPreference: nil),
+            wire: .init(statedScore: nil, inferredScore: -0.5,
+                        likeDislike: nil, comment: "c", evidenceRows: [2]),
+            validRowNumbers: [2],
+            transcriptForRow: { _ in "ひょこひょこ感がかなり強い" }
+        )
+        #expect(!consistent.conflicts.contains { $0.contains("極性要確認") })
+
+        // Mixed direction words → ambiguous, no flag; and a STATED
+        // score is never polarity-checked (evaluator's own words).
+        let stated = EvalFormExtractor.merge(
+            item: item, template: template,
+            deterministic: .init(statedScores: [(row: 2, value: 0.25)], statedPreference: nil),
+            wire: nil,
+            validRowNumbers: [2],
+            transcriptForRow: { _ in "強い" }
+        )
+        #expect(!stated.conflicts.contains { $0.contains("極性要確認") })
+    }
+
     @Test func evidenceRowsFilterToValidNumbers() {
         let item = template.items[0]
         let merged = EvalFormExtractor.merge(

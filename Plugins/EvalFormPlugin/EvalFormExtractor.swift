@@ -195,6 +195,13 @@ public enum EvalFormExtractor {
         lines.append("Sheet: \(template.name)")
         lines.append("Item \(item.number): \(item.titleJa) — \(item.definition)")
         lines.append("Strength scale: \(template.strengthScale.minimum) (strong) to +\(template.strengthScale.maximum) (weak) relative to the baseline spec, in steps of \(template.strengthScale.step). Preference scale: \(template.preferenceScale.minimum) (嫌い) to \(template.preferenceScale.maximum) (好き).")
+        lines.append("POLARITY: negative = the sensation is STRONGER than the baseline (強い・増えた side); positive = WEAKER (弱い・減った・なくなった side). The score's sign MUST agree with the direction the evaluator described.")
+        if let anchors = template.strengthScale.anchors, !anchors.isEmpty {
+            let rubric = anchors
+                .map { "±\(String(format: "%g", $0.magnitude)) = \($0.meaning)" }
+                .joined(separator: "; ")
+            lines.append("Magnitude rubric (the sheet's own calibration — apply it when choosing inferredScore): \(rubric).")
+        }
         lines.append("STRICT RULES:")
         lines.append("- statedScore / likeDislike: ONLY values the evaluator explicitly SAID. Never convert qualitative wording into a stated value. When nothing was said, use null.")
         lines.append("- inferredScore: your suggestion from qualitative wording, only when statedScore is null and the wording clearly implies a direction; must be one of the scale's quantized steps; otherwise null.")
@@ -496,16 +503,28 @@ extension EvalFormExtractor {
 
     // MARK: - Merge policy
 
+    /// Direction words for the polarity sanity check. On the
+    /// sheet, negative = stronger than baseline — an inferred
+    /// score whose sign contradicts the evidence rows' direction
+    /// words gets a review flag (never a silent sign flip; the
+    /// heuristic can't see negation like 強くない).
+    private static let strongerWords = ["強", "増え", "増加", "大きく", "悪化"]
+    private static let weakerWords = ["弱", "減っ", "減り", "少なく", "なくなっ", "小さく", "改善"]
+
     /// Combine the deterministic findings with the model's wire
     /// output. Deterministic wins every disagreement (it cannot
-    /// hallucinate); disagreements and multi-value captures become
-    /// conflict notes instead of silent picks.
+    /// hallucinate); disagreements, multi-value captures, and
+    /// polarity contradictions become conflict notes instead of
+    /// silent picks. `transcriptForRow` feeds the polarity check
+    /// with the cited rows' text; the default disables the check
+    /// (callers without row access lose only the flag).
     public static func merge(
         item: EvalFormTemplate.Item,
         template: EvalFormTemplate,
         deterministic: DeterministicFindings,
         wire: ItemWire?,
-        validRowNumbers: Set<Int>
+        validRowNumbers: Set<Int>,
+        transcriptForRow: (Int) -> String? = { _ in nil }
     ) -> EvalFormDraft.ItemResult {
         var result = EvalFormDraft.ItemResult(itemID: item.id)
         var evidence = Set<Int>()
@@ -567,6 +586,31 @@ extension EvalFormExtractor {
         }
 
         result.evidenceRows = evidence.sorted()
+
+        // Polarity sanity check on the INFERRED score only — a
+        // stated score is the evaluator's own words. Compare the
+        // sign against the direction words in the cited rows; a
+        // clear contradiction (opposing hits, zero supporting)
+        // becomes a review flag.
+        if let inferred = result.strengthScoreInferred, inferred != 0 {
+            var strongerHits = 0
+            var weakerHits = 0
+            for row in result.evidenceRows {
+                guard let text = transcriptForRow(row) else { continue }
+                strongerHits += Self.strongerWords.filter { text.contains($0) }.count
+                weakerHits += Self.weakerWords.filter { text.contains($0) }.count
+            }
+            // inferred > 0 = weaker-than-baseline side.
+            let contradicted = inferred > 0
+                ? (strongerHits > 0 && weakerHits == 0)
+                : (weakerHits > 0 && strongerHits == 0)
+            if contradicted {
+                let direction = inferred > 0 ? "「強い」" : "「弱い・減少」"
+                result.conflicts.append(
+                    "推定スコアの極性要確認（根拠発話は\(direction)方向、スコアは逆側）"
+                )
+            }
+        }
         return result
     }
 }

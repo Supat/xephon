@@ -55,10 +55,29 @@ struct EvalFormCard: View {
                 }
                 coverageSection
             }
+            rubricFootnote
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// The sheet's ※ magnitude rubric, as printed on the form —
+    /// always visible so scores (and the model's inferred
+    /// suggestions) are read against the same calibration.
+    @ViewBuilder
+    private var rubricFootnote: some View {
+        if let anchors = model.template.strengthScale.anchors, !anchors.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(anchors, id: \.magnitude) { anchor in
+                    Text(verbatim: "※ \(String(format: "%g", anchor.magnitude)): \(anchor.meaning)")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.top, 4)
+        }
     }
 
     // MARK: - Sections

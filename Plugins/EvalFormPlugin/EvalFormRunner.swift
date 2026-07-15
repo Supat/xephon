@@ -119,7 +119,12 @@ public enum EvalFormRunner {
                 template: template,
                 deterministic: deterministic,
                 wire: wire,
-                validRowNumbers: Set(candidates)
+                validRowNumbers: Set(candidates),
+                transcriptForRow: { row in
+                    (row >= 1 && row <= utterances.count)
+                        ? utterances[row - 1].transcript
+                        : nil
+                }
             )
             if wire == nil {
                 merged.conflicts.append(
