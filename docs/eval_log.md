@@ -69,3 +69,22 @@ the model adds. Paste per-model reports below.
 | date | model | scores exact | false fills | comments | evidence | metadata |
 |------|-------|--------------|-------------|----------|----------|----------|
 | —    | —     | —            | —           | —        | —        | —        |
+
+### First real-session trial — Qwen3-8B-4bit on-device (2026-07-15)
+
+Tiguan session (.xph, ASR uncorrected). After the /no_think +
+batch-envelope fix: full fill completed, one model load for the
+whole run. Qualitative read (no ground truth yet):
+
+- Policy guards held on real data: zero fabricated STATED scores
+  (all four scores landed in the inferred channel, ?-marked), all
+  inferred values on legal 0.125 steps, two items left honestly
+  empty, evidence rows on every filled field + supplementary.
+- Metadata extracted verbatim incl. ASR garbles (オリジナジナル,
+  バネル上が) — stated-only working as designed, but 路面状況 got
+  "5ヘルツ,15ヘルツ": a field filled with topically-adjacent but
+  type-invalid content → template needs per-field allowed values.
+- Item 12 comment reads self-contradictory; item 10 cites 13
+  evidence rows (near the whole candidate set); ゴツゴツ has
+  evidence rows with no filled field. Prompt/merge tightening
+  candidates. Reviewer adjudication via evidence chips worked.
