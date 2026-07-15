@@ -207,6 +207,43 @@ struct EvalFormPluginTests {
 
     // MARK: - Response parsing
 
+    @Test func responseParserAcceptsStringTypedNumbers() {
+        // The quantized-model reality: numbers as strings, full-
+        // width minus, string row numbers, "null" strings.
+        let loose = """
+        {"statedScore":"−0.25","inferredScore":"null","likeDislike":"7",
+         "comment":"c","evidenceRows":["84","158"]}
+        """
+        let wire = EvalFormExtractor.parseItemResponse(loose)
+        #expect(wire?.statedScore == -0.25)
+        #expect(wire?.inferredScore == nil)
+        #expect(wire?.likeDislike == 7)
+        #expect(wire?.evidenceRows == [84, 158])
+    }
+
+    @Test func responseParserRepairsTruncatedOutput() {
+        // Cut off mid-comment (token cap) — the repair closes the
+        // string and braces; fields before the cut survive.
+        let truncated = """
+        {"statedScore":null,"inferredScore":-0.25,"likeDislike":null,
+         "comment":"ゴツゴツ感が増えており、突き上げ
+        """
+        let wire = EvalFormExtractor.parseItemResponse(truncated)
+        #expect(wire?.inferredScore == -0.25)
+        #expect(wire?.comment?.hasPrefix("ゴツゴツ感") == true)
+
+        // Cut off right after a key's colon → null-completed.
+        let danglingKey = "{\"statedScore\":-0.5,\"inferredScore\":"
+        let wire2 = EvalFormExtractor.parseItemResponse(danglingKey)
+        #expect(wire2?.statedScore == -0.5)
+        #expect(wire2?.inferredScore == nil)
+
+        // Balanced garbage stays nil — repair is for truncation,
+        // not for inventing structure.
+        #expect(EvalFormExtractor.repairTruncatedJSON("{\"a\":1}") == nil)
+        #expect(EvalFormExtractor.repairTruncatedJSON("{\"a\":1]") == nil)
+    }
+
     @Test func responseParserTolerantOfFencesAndProse() {
         let fenced = """
         Sure, here's the JSON:

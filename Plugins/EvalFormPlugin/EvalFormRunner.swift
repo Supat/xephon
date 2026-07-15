@@ -80,20 +80,34 @@ public enum EvalFormRunner {
                 rows: Array(promptRows),
                 deterministic: deterministic
             )
+            // Two attempts per item: quantized models occasionally
+            // emit unparseable output once and clean JSON on the
+            // retry; a failed item costs one extra generate, a
+            // succeeded one costs nothing. Parse failures log the
+            // raw tail — without it a failed item leaves no
+            // evidence to troubleshoot (the first field-trial
+            // lesson).
             var wire: EvalFormExtractor.ItemWire?
-            do {
-                let raw = try await inference.generate(
-                    prompt: prompt,
-                    schemaJSON: EvalFormExtractor.itemSchemaJSON,
-                    maxOutputTokens: 512
-                )
-                wire = EvalFormExtractor.parseItemResponse(raw)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                AppLog.app.warning(
-                    "EvalForm item \(item.id, privacy: .public) generate failed: \(String(describing: error), privacy: .public)"
-                )
+            for attempt in 1...2 where wire == nil {
+                do {
+                    let raw = try await inference.generate(
+                        prompt: prompt,
+                        schemaJSON: EvalFormExtractor.itemSchemaJSON,
+                        maxOutputTokens: 512
+                    )
+                    wire = EvalFormExtractor.parseItemResponse(raw)
+                    if wire == nil {
+                        AppLog.app.warning(
+                            "EvalForm item \(item.id, privacy: .public) parse failed (attempt \(attempt, privacy: .public)); raw tail: \(String(raw.suffix(240)), privacy: .public)"
+                        )
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    AppLog.app.warning(
+                        "EvalForm item \(item.id, privacy: .public) generate failed (attempt \(attempt, privacy: .public)): \(String(describing: error), privacy: .public)"
+                    )
+                }
             }
             var merged = EvalFormExtractor.merge(
                 item: item,

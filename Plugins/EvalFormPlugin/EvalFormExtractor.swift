@@ -170,30 +170,143 @@ public enum EvalFormExtractor {
 
     // MARK: - Response parsing
 
-    public struct ItemWire: Codable, Equatable, Sendable {
+    public struct ItemWire: Equatable, Sendable {
         public var statedScore: Double?
         public var inferredScore: Double?
         public var likeDislike: Int?
         public var comment: String?
         public var evidenceRows: [Int]?
+
+        public init(
+            statedScore: Double?,
+            inferredScore: Double?,
+            likeDislike: Int?,
+            comment: String?,
+            evidenceRows: [Int]?
+        ) {
+            self.statedScore = statedScore
+            self.inferredScore = inferredScore
+            self.likeDislike = likeDislike
+            self.comment = comment
+            self.evidenceRows = evidenceRows
+        }
     }
 
     /// Lenient parse: strip code fences / think blocks by slicing
-    /// the first `{` … last `}` window, then strict-decode. Nil on
-    /// anything unusable — the caller records an extraction
-    /// failure for the item rather than guessing.
+    /// from the first `{`, strict-decode the widest `{…}` window,
+    /// and fall back to truncation repair (close an unterminated
+    /// string, drop a dangling comma/colon, balance brackets) —
+    /// small quantized models routinely type numbers as strings
+    /// and run past the output cap mid-string. Nil on anything
+    /// unusable — the caller records an extraction failure rather
+    /// than guessing.
     public static func parseItemResponse(_ raw: String) -> ItemWire? {
         parseJSONObject(raw)
     }
 
-    /// The lenient-slice decode shared by every wire shape.
+    /// The lenient-slice + repair decode shared by every wire shape.
     static func parseJSONObject<T: Decodable>(_ raw: String) -> T? {
-        guard let start = raw.firstIndex(of: "{"),
-              let end = raw.lastIndex(of: "}"),
-              start <= end
-        else { return nil }
-        let slice = String(raw[start...end])
-        return try? JSONDecoder().decode(T.self, from: Data(slice.utf8))
+        guard let start = raw.firstIndex(of: "{") else { return nil }
+        let decoder = JSONDecoder()
+        // Widest well-formed window first.
+        if let end = raw.lastIndex(of: "}"), end >= start,
+           let ok = try? decoder.decode(
+               T.self, from: Data(String(raw[start...end]).utf8)
+           ) {
+            return ok
+        }
+        // Truncation repair over the whole tail.
+        if let repaired = repairTruncatedJSON(String(raw[start...])),
+           let ok = try? decoder.decode(T.self, from: Data(repaired.utf8)) {
+            return ok
+        }
+        return nil
+    }
+
+    /// Close a JSON object cut off mid-generation: terminate an
+    /// open string, drop a dangling comma or `key:` tail, then
+    /// close open brackets in reverse order. Returns nil when the
+    /// input is already balanced (repair can't help) or brackets
+    /// mismatch (garbage, not truncation).
+    static func repairTruncatedJSON(_ s: String) -> String? {
+        var closers: [Character] = []
+        var inString = false
+        var escaped = false
+        for ch in s {
+            if inString {
+                if escaped { escaped = false }
+                else if ch == "\\" { escaped = true }
+                else if ch == "\"" { inString = false }
+            } else {
+                switch ch {
+                case "\"": inString = true
+                case "{": closers.append("}")
+                case "[": closers.append("]")
+                case "}", "]":
+                    guard closers.last == ch else { return nil }
+                    closers.removeLast()
+                default: break
+                }
+            }
+        }
+        guard inString || !closers.isEmpty else { return nil }
+        var repaired = s
+        if inString { repaired += "\"" }
+        while let last = repaired.last, last.isWhitespace {
+            repaired.removeLast()
+        }
+        if repaired.hasSuffix(",") {
+            repaired.removeLast()
+        } else if repaired.hasSuffix(":") {
+            repaired += "null"
+        }
+        repaired += String(closers.reversed())
+        return repaired
+    }
+
+    // MARK: Lenient scalar decoding
+
+    /// "-0.25" / "−0.25" / 7 / "null" tolerance — quantized models
+    /// under a prompt contract frequently type numbers as strings.
+    static func looseNumber(_ s: String) -> Double? {
+        let folded = s.precomposedStringWithCompatibilityMapping
+            .replacingOccurrences(of: "−", with: "-")
+            .replacingOccurrences(of: "＋", with: "+")
+            .trimmingCharacters(in: .whitespaces)
+        guard !folded.isEmpty, folded.lowercased() != "null" else { return nil }
+        return Double(folded)
+    }
+
+    fileprivate static func lenientDouble<K: CodingKey>(
+        _ c: KeyedDecodingContainer<K>, _ key: K
+    ) -> Double? {
+        if let d = try? c.decodeIfPresent(Double.self, forKey: key) { return d }
+        if let s = try? c.decodeIfPresent(String.self, forKey: key) {
+            return looseNumber(s)
+        }
+        return nil
+    }
+
+    fileprivate static func lenientInt<K: CodingKey>(
+        _ c: KeyedDecodingContainer<K>, _ key: K
+    ) -> Int? {
+        if let i = try? c.decodeIfPresent(Int.self, forKey: key) { return i }
+        return lenientDouble(c, key).flatMap {
+            $0.truncatingRemainder(dividingBy: 1) == 0 ? Int($0) : nil
+        }
+    }
+
+    fileprivate static func lenientIntArray<K: CodingKey>(
+        _ c: KeyedDecodingContainer<K>, _ key: K
+    ) -> [Int]? {
+        if let ints = try? c.decodeIfPresent([Int].self, forKey: key) { return ints }
+        if let doubles = try? c.decodeIfPresent([Double].self, forKey: key) {
+            return doubles.map { Int($0) }
+        }
+        if let strings = try? c.decodeIfPresent([String].self, forKey: key) {
+            return strings.compactMap { looseNumber($0).map { Int($0) } }
+        }
+        return nil
     }
 
     // MARK: - Supplementary comment (補足コメント)
@@ -226,9 +339,14 @@ public enum EvalFormExtractor {
     },"required":["comment","evidenceRows"]}
     """
 
-    public struct SupplementaryWire: Codable, Equatable, Sendable {
+    public struct SupplementaryWire: Equatable, Sendable {
         public var comment: String?
         public var evidenceRows: [Int]?
+
+        public init(comment: String?, evidenceRows: [Int]?) {
+            self.comment = comment
+            self.evidenceRows = evidenceRows
+        }
     }
 
     public static func supplementaryPrompt(
@@ -253,7 +371,53 @@ public enum EvalFormExtractor {
     public static func parseSupplementaryResponse(_ raw: String) -> SupplementaryWire? {
         parseJSONObject(raw)
     }
+}
 
+// MARK: - Lenient Codable conformances
+
+extension EvalFormExtractor.ItemWire: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case statedScore, inferredScore, likeDislike, comment, evidenceRows
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        statedScore = EvalFormExtractor.lenientDouble(c, .statedScore)
+        inferredScore = EvalFormExtractor.lenientDouble(c, .inferredScore)
+        likeDislike = EvalFormExtractor.lenientInt(c, .likeDislike)
+        comment = try? c.decodeIfPresent(String.self, forKey: .comment)
+        evidenceRows = EvalFormExtractor.lenientIntArray(c, .evidenceRows)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(statedScore, forKey: .statedScore)
+        try c.encodeIfPresent(inferredScore, forKey: .inferredScore)
+        try c.encodeIfPresent(likeDislike, forKey: .likeDislike)
+        try c.encodeIfPresent(comment, forKey: .comment)
+        try c.encodeIfPresent(evidenceRows, forKey: .evidenceRows)
+    }
+}
+
+extension EvalFormExtractor.SupplementaryWire: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case comment, evidenceRows
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        comment = try? c.decodeIfPresent(String.self, forKey: .comment)
+        evidenceRows = EvalFormExtractor.lenientIntArray(c, .evidenceRows)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(comment, forKey: .comment)
+        try c.encodeIfPresent(evidenceRows, forKey: .evidenceRows)
+    }
+}
+
+extension EvalFormExtractor {
     // MARK: - Metadata candidates
 
     /// Rows for the header-metadata pass: the session opening plus
