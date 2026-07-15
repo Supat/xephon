@@ -118,7 +118,7 @@ public enum EvalFormExtractor {
                 .precomposedStringWithCompatibilityMapping
                 .lowercased()
             if let road = lexicon.first(where: { entry in
-                entry.surfaces.contains { hay.contains($0) }
+                entry.surfaces.contains { calloutSurfaceMatches($0, in: hay) }
             })?.road {
                 // Consecutive rows re-mentioning the CURRENT road
                 // don't open a new segment.
@@ -129,6 +129,39 @@ public enum EvalFormExtractor {
         }
         guard !callouts.isEmpty else { return [] }
         var visits: [String: Int] = [:]
+        return numberedProposals(callouts: callouts, utterances: utterances, visits: &visits)
+    }
+
+    /// Substring match, except single Latin letters must stand
+    /// alone: neither neighbour may be a Latin alphanumeric, so a
+    /// bare "D" surface matches "Dに入ります" but never 4WD / HD.
+    /// Both sides arrive folded + lowercased.
+    static func calloutSurfaceMatches(_ surface: String, in hay: String) -> Bool {
+        guard surface.count == 1,
+              let letter = surface.first,
+              letter.isASCII, letter.isLetter
+        else { return hay.contains(surface) }
+        var searchStart = hay.startIndex
+        while let found = hay.range(of: surface, range: searchStart..<hay.endIndex) {
+            let beforeOK = found.lowerBound == hay.startIndex
+                || !isLatinAlphanumeric(hay[hay.index(before: found.lowerBound)])
+            let afterOK = found.upperBound == hay.endIndex
+                || !isLatinAlphanumeric(hay[found.upperBound])
+            if beforeOK && afterOK { return true }
+            searchStart = found.upperBound
+        }
+        return false
+    }
+
+    private static func isLatinAlphanumeric(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber)
+    }
+
+    private static func numberedProposals(
+        callouts: [(index: Int, road: String)],
+        utterances: [UtteranceEstimate],
+        visits: inout [String: Int]
+    ) -> [PluginSectionProposal] {
         return callouts.enumerated().map { calloutIdx, callout in
             let visit = (visits[callout.road] ?? 0) + 1
             visits[callout.road] = visit

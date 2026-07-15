@@ -193,16 +193,17 @@ extension EvalFormTemplate {
             "車両", "アブソーバー", "仕様", "SA",
             "天気", "気温", "路面", "運転席", "助手席",
         ],
-        // Aliases only where the partial form is unambiguous —
-        // multi-character tokens. The single-letter roads (D/F/G/H)
-        // deliberately match their full label only: a bare Latin
-        // letter appears in ASR output far too often.
+        // Bare letters are acceptable callouts in Japanese-only
+        // conversation ("Dに入ります") — the detector additionally
+        // requires single-letter surfaces to stand alone (no Latin
+        // alphanumeric neighbours), so 4WD/HD in the transcript
+        // can't open a segment.
         roadCallouts: [
             .init(road: "E3路", surfaces: ["E3路", "E3"]),
-            .init(road: "D路", surfaces: ["D路"]),
-            .init(road: "G路", surfaces: ["G路"]),
-            .init(road: "F路", surfaces: ["F路"]),
-            .init(road: "H路", surfaces: ["H路"]),
+            .init(road: "D路", surfaces: ["D路", "D"]),
+            .init(road: "G路", surfaces: ["G路", "G"]),
+            .init(road: "F路", surfaces: ["F路", "F"]),
+            .init(road: "H路", surfaces: ["H路", "H"]),
             .init(road: "段差路", surfaces: ["段差路"]),
             .init(road: "スペイン歩道", surfaces: ["スペイン歩道", "スペイン"]),
         ]

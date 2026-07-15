@@ -491,14 +491,33 @@ struct EvalFormPluginTests {
         #expect(proposals.map(\.title) == ["E3路", "スペイン歩道", "E3路 (2)"])
     }
 
-    @Test func bareSingleLetterNeverMatches() {
-        // The lexicon deliberately has no bare "D" surface — a lone
-        // Latin letter is everywhere in ASR output.
-        let rows = [utterance("Dに入ります"), utterance("そうですね")]
+    @Test func bareLetterMatchesOnlyWhenStandalone() {
+        // Japanese-only conversation: a standalone Latin letter IS
+        // the road callout ("Dに入ります") — but a letter inside a
+        // Latin token (4WD, HD) must never open a segment.
+        let standalone = [utterance("Dに入ります"), utterance("ゴツゴツ強め")]
         #expect(EvalFormExtractor.roadSectionProposals(
-            utterances: rows,
+            utterances: standalone,
+            callouts: template.effectiveRoadCallouts
+        ).map(\.title) == ["D路"])
+
+        let embedded = [utterance("4WDの設定を確認します"), utterance("HDカメラは回ってる")]
+        #expect(EvalFormExtractor.roadSectionProposals(
+            utterances: embedded,
             callouts: template.effectiveRoadCallouts
         ).isEmpty)
+    }
+
+    @Test func standaloneLetterBoundaryRules() {
+        // Both sides arrive folded + lowercased in production.
+        #expect(EvalFormExtractor.calloutSurfaceMatches("d", in: "dに入ります"))
+        #expect(EvalFormExtractor.calloutSurfaceMatches("d", in: "次はd"))
+        #expect(!EvalFormExtractor.calloutSurfaceMatches("d", in: "4wdの設定"))
+        #expect(!EvalFormExtractor.calloutSurfaceMatches("d", in: "hdカメラ"))
+        // Second occurrence standalone after an embedded one.
+        #expect(EvalFormExtractor.calloutSurfaceMatches("d", in: "4wdからdに入ります"))
+        // Multi-char surfaces stay plain substring.
+        #expect(EvalFormExtractor.calloutSurfaceMatches("e3", in: "次はe3です"))
     }
 
     @Test func packsWithoutCalloutsFallBackToDerivedLabels() {
