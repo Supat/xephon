@@ -202,18 +202,7 @@ struct EvalFormCard: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let evidence = draft.supplementaryEvidenceRows, !evidence.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(evidence, id: \.self) { row in
-                            Button {
-                                model.playRow(row)
-                            } label: {
-                                Text(verbatim: "[\(row)]")
-                                    .font(.caption2.monospacedDigit())
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.tint)
-                        }
-                    }
+                    evidenceChips(evidence)
                 }
             }
         }
@@ -324,26 +313,40 @@ struct EvalFormCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let evidence = result?.evidenceRows, !evidence.isEmpty {
-                // Evidence chips: tap = toggle row playback (same
-                // semantics as a transcript row's play button).
-                HStack(spacing: 4) {
-                    ForEach(evidence, id: \.self) { row in
-                        Button {
-                            model.playRow(row)
-                        } label: {
-                            Text(verbatim: "[\(row)]")
-                                .font(.caption2.monospacedDigit())
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.tint)
-                    }
-                }
+                evidenceChips(evidence)
             }
             ForEach(result?.conflicts ?? [], id: \.self) { conflict in
                 Text(verbatim: "⚠ \(conflict)")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Evidence chips: tap = toggle row playback (same semantics
+    /// as a transcript row's play button). An adaptive grid, not
+    /// an HStack — the context window can put dozens of rows
+    /// behind one item, and an overflowing HStack compresses each
+    /// chip into a vertical character stack in the narrow pane.
+    private func evidenceChips(_ rows: [Int]) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 42), spacing: 4)],
+            alignment: .leading,
+            spacing: 2
+        ) {
+            ForEach(rows, id: \.self) { row in
+                Button {
+                    model.playRow(row)
+                } label: {
+                    Text(verbatim: "[\(row)]")
+                        .font(.caption2.monospacedDigit())
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
             }
         }
     }
