@@ -282,13 +282,20 @@ rows.
 
 ## 10. Road sections (adjacent deterministic feature)
 
-"Detect road sections" scans for the template's road names
-(derived from `referenceRoads`, speeds stripped) and proposes
-callout-to-callout segments to the Sections page (repeat visits
-numbered; existing titles never duplicated). It assumes live
-callouts ("次、F路60キロ"); frequency-designated courses
-(5ヘルツの路面…) need a pack whose road vocabulary matches — see
-eval_log notes.
+"Detect road sections" matches the template's road-callout lexicon
+and proposes callout-to-callout segments to the Sections page
+(repeat visits numbered; existing titles never duplicated). The
+lexicon is the pack's `roadCallouts` when present — per road, a
+canonical label (the section title) plus the surfaces that count
+as its callout, so partial forms are accepted exactly where
+they're unambiguous (A-1 ships "E3" for E3路 and "スペイン" for
+スペイン歩道, but never a bare "D") and course-specific naming
+(5ヘルツ…) is a pack edit. Without `roadCallouts` it falls back to
+the exact labels derived from `referenceRoads`. Matching folds
+width and case on both sides; different surfaces of one road are
+one road (no spurious segment splits). It assumes live callouts
+("次、F路60キロ") — retrospective references (一番最初の5ヘルツ…)
+still mis-segment, a known limitation.
 
 ## 11. Degradation table
 

@@ -81,22 +81,45 @@ public enum EvalFormExtractor {
 
     // MARK: - Road sections
 
-    /// Segment the session by road callouts: a row mentioning a
-    /// road name opens that road's segment, which runs until the
-    /// row before the next callout (or the session end). Repeated
-    /// visits to the same road get numbered titles ("F路 (2)") so
-    /// proposals stay unique. Rows before the first callout belong
-    /// to no road.
+    /// Segment the session by road callouts: a row matching any of
+    /// a road's callout surfaces opens that road's segment, which
+    /// runs until the row before the next different road's callout
+    /// (or the session end). Surfaces come from the template's
+    /// `effectiveRoadCallouts` — explicit per-road aliases when the
+    /// pack defines them ("E3" for E3路), else the exact derived
+    /// labels. Different surfaces of the SAME road are one road:
+    /// consecutive re-mentions don't open a new segment. Repeated
+    /// visits get numbered titles ("F路 (2)") so proposals stay
+    /// unique. Rows before the first callout belong to no road.
     public static func roadSectionProposals(
         utterances: [UtteranceEstimate],
-        roadNames: [String]
+        callouts roadCallouts: [EvalFormTemplate.RoadCallout]
     ) -> [PluginSectionProposal] {
-        guard !utterances.isEmpty, !roadNames.isEmpty else { return [] }
+        // Fold + lowercase both sides so full-width/Latin-case
+        // ASR variance can't break a match.
+        let lexicon: [(road: String, surfaces: [String])] = roadCallouts
+            .map { callout in
+                (
+                    road: callout.road,
+                    surfaces: callout.surfaces
+                        .map {
+                            $0.precomposedStringWithCompatibilityMapping
+                                .lowercased()
+                        }
+                        .filter { !$0.isEmpty }
+                )
+            }
+            .filter { !$0.surfaces.isEmpty }
+        guard !utterances.isEmpty, !lexicon.isEmpty else { return [] }
         // (start index, road) per callout, chronological.
         var callouts: [(index: Int, road: String)] = []
         for (index, u) in utterances.enumerated() {
-            let hay = u.transcript.precomposedStringWithCompatibilityMapping
-            if let road = roadNames.first(where: { hay.contains($0) }) {
+            let hay = u.transcript
+                .precomposedStringWithCompatibilityMapping
+                .lowercased()
+            if let road = lexicon.first(where: { entry in
+                entry.surfaces.contains { hay.contains($0) }
+            })?.road {
                 // Consecutive rows re-mentioning the CURRENT road
                 // don't open a new segment.
                 if callouts.last?.road != road {

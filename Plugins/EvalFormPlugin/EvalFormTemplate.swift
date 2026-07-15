@@ -26,6 +26,27 @@ public struct EvalFormTemplate: Codable, Sendable, Equatable {
     /// swap). Optional so pre-cue packs decode; nil falls back to
     /// session-start rows only.
     public var metadataCues: [String]?
+    /// Per-road callout surfaces for section detection. When
+    /// present this DEFINES the lexicon (order = match priority):
+    /// `road` is the section title, matched when any of its
+    /// `surfaces` appears in a row. Lets a pack accept partial
+    /// forms exactly where they're unambiguous ("E3" for E3路 —
+    /// but never a bare "D") and cover course-specific naming
+    /// (5ヘルツ…). Optional; nil falls back to the exact labels
+    /// derived from `referenceRoads`.
+    public var roadCallouts: [RoadCallout]?
+
+    public struct RoadCallout: Codable, Sendable, Equatable {
+        /// Section title (the road's canonical label).
+        public var road: String
+        /// Transcript forms that count as this road's callout.
+        public var surfaces: [String]
+
+        public init(road: String, surfaces: [String]) {
+            self.road = road
+            self.surfaces = surfaces
+        }
+    }
 
     public struct StrengthScale: Codable, Sendable, Equatable {
         public var minimum: Double
@@ -171,6 +192,19 @@ extension EvalFormTemplate {
         metadataCues: [
             "車両", "アブソーバー", "仕様", "SA",
             "天気", "気温", "路面", "運転席", "助手席",
+        ],
+        // Aliases only where the partial form is unambiguous —
+        // multi-character tokens. The single-letter roads (D/F/G/H)
+        // deliberately match their full label only: a bare Latin
+        // letter appears in ASR output far too often.
+        roadCallouts: [
+            .init(road: "E3路", surfaces: ["E3路", "E3"]),
+            .init(road: "D路", surfaces: ["D路"]),
+            .init(road: "G路", surfaces: ["G路"]),
+            .init(road: "F路", surfaces: ["F路"]),
+            .init(road: "H路", surfaces: ["H路"]),
+            .init(road: "段差路", surfaces: ["段差路"]),
+            .init(road: "スペイン歩道", surfaces: ["スペイン歩道", "スペイン"]),
         ]
     )
 
@@ -179,10 +213,20 @@ extension EvalFormTemplate {
         try JSONDecoder().decode(EvalFormTemplate.self, from: data)
     }
 
+    /// The section-detection lexicon: explicit `roadCallouts` when
+    /// the pack provides them, else the exact derived labels (one
+    /// surface each).
+    public var effectiveRoadCallouts: [RoadCallout] {
+        if let roadCallouts, !roadCallouts.isEmpty {
+            return roadCallouts
+        }
+        return roadNames.map { RoadCallout(road: $0, surfaces: [$0]) }
+    }
+
     /// Distinct road labels across all items' reference roads,
     /// speeds stripped ("F路 60km/h" → "F路"; "段差路" → itself),
-    /// in first-appearance order. Drives road-callout section
-    /// detection.
+    /// in first-appearance order. Fallback lexicon for packs
+    /// without explicit `roadCallouts`.
     public var roadNames: [String] {
         var seen = Set<String>()
         var ordered: [String] = []

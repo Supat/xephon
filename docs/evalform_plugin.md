@@ -151,9 +151,13 @@ draft); every other failure is absorbed per-stage by the runner
 - `preferenceScale` {minimum, maximum};
 - `items[]` {id, number, titleJa, titleEn, definition,
   referenceRoads[], vocabulary[]} — `vocabulary` drives candidate
-  matching AND keyword seeding; `referenceRoads` drive the road
-  lexicon (speeds stripped);
-- `metadataFields[]` + optional `metadataCues[]`.
+  matching AND keyword seeding; `referenceRoads` derive the
+  fallback road lexicon (speeds stripped);
+- `metadataFields[]` + optional `metadataCues[]`;
+- optional `roadCallouts[]` {road, surfaces[]} — the explicit
+  section-detection lexicon: canonical label + every transcript
+  form that counts as its callout (partial/alias forms, course
+  naming). When present it replaces the derived labels.
 
 **Import flow**: Template menu → Import Template… → root picker
 (JSON) → decode + validate (non-empty items; failures surface
@@ -228,15 +232,16 @@ without the plugin touching `CommandGroup` or the menu bus.
 
 ## 11. Road sections
 
-"Detect road sections" is deterministic: template road names
-(from `referenceRoads`, speeds stripped) matched as callouts;
-callout-to-callout segments proposed via
-`SessionAnnotating.proposeSections`, which validates bounds and
-skips existing titles (re-running never duplicates; sections are
-user-owned once created). Repeat visits get numbered titles. It
-assumes live-callout protocol speech; courses with different
-naming (e.g. 5ヘルツ路面) need a pack whose road vocabulary
-matches — a known gap recorded in eval_log.
+"Detect road sections" is deterministic: the pack's
+`roadCallouts` lexicon (canonical label + alias surfaces; falls
+back to labels derived from `referenceRoads`) matched
+width/case-folded against each row; callout-to-callout segments
+proposed via `SessionAnnotating.proposeSections`, which validates
+bounds and skips existing titles (re-running never duplicates;
+sections are user-owned once created). Repeat visits get numbered
+titles; all surfaces of one road count as one road. It assumes
+live-callout protocol speech; courses with different naming
+(e.g. 5ヘルツ路面) are a pack edit, not a code change.
 
 ## 12. Testing surfaces
 

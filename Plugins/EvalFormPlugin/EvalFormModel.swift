@@ -196,7 +196,7 @@ public final class EvalFormModel {
     public func detectRoadSections() {
         let proposals = EvalFormExtractor.roadSectionProposals(
             utterances: host.session.snapshot().utterances,
-            roadNames: template.roadNames
+            callouts: template.effectiveRoadCallouts
         )
         lastSectionDetection = host.annotations.proposeSections(proposals)
     }

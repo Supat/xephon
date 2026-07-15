@@ -456,7 +456,7 @@ struct EvalFormPluginTests {
         ]
         let proposals = EvalFormExtractor.roadSectionProposals(
             utterances: rows,
-            roadNames: template.roadNames
+            callouts: template.effectiveRoadCallouts
         )
         #expect(proposals.map(\.title) == ["D路", "F路", "D路 (2)"])
         #expect(proposals[0].startUtteranceID == rows[1].id)
@@ -471,7 +471,46 @@ struct EvalFormPluginTests {
         let rows = [utterance("ゴツゴツするね"), utterance("そうですね")]
         #expect(EvalFormExtractor.roadSectionProposals(
             utterances: rows,
-            roadNames: template.roadNames
+            callouts: template.effectiveRoadCallouts
+        ).isEmpty)
+    }
+
+    @Test func aliasSurfacesMatchUnderTheRoadLabel() {
+        let rows = [
+            utterance("次はE3に入ります"),          // alias "E3"
+            utterance("ゴツゴツ強め"),
+            utterance("スペインの区間に行きましょう"), // alias "スペイン"
+            utterance("完全にＥ3路に戻ります"),      // full-width E folds
+        ]
+        let proposals = EvalFormExtractor.roadSectionProposals(
+            utterances: rows,
+            callouts: template.effectiveRoadCallouts
+        )
+        // Titles use the canonical road label, not the alias; two
+        // E3 visits number the repeat.
+        #expect(proposals.map(\.title) == ["E3路", "スペイン歩道", "E3路 (2)"])
+    }
+
+    @Test func bareSingleLetterNeverMatches() {
+        // The lexicon deliberately has no bare "D" surface — a lone
+        // Latin letter is everywhere in ASR output.
+        let rows = [utterance("Dに入ります"), utterance("そうですね")]
+        #expect(EvalFormExtractor.roadSectionProposals(
+            utterances: rows,
+            callouts: template.effectiveRoadCallouts
+        ).isEmpty)
+    }
+
+    @Test func packsWithoutCalloutsFallBackToDerivedLabels() {
+        var bare = template
+        bare.roadCallouts = nil
+        let fallback = bare.effectiveRoadCallouts
+        #expect(fallback.map(\.road) == bare.roadNames)
+        #expect(fallback.allSatisfy { $0.surfaces == [$0.road] })
+        // Exact-label behaviour: the alias no longer matches.
+        let rows = [utterance("次はE3に入ります")]
+        #expect(EvalFormExtractor.roadSectionProposals(
+            utterances: rows, callouts: fallback
         ).isEmpty)
     }
 
