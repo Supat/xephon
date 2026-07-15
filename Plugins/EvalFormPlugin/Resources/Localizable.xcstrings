@@ -97,6 +97,38 @@
         }
       }
     },
+    "evalform.evidence.collapse" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collapse evidence rows"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "根拠発話を折りたたむ"
+          }
+        }
+      }
+    },
+    "evalform.evidence.expand" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show all evidence rows"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "根拠発話をすべて表示"
+          }
+        }
+      }
+    },
     "evalform.export" : {
       "localizations" : {
         "en" : {

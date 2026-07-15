@@ -8,6 +8,11 @@ import XephonPluginKit
 struct EvalFormCard: View {
     @Bindable var model: EvalFormModel
 
+    /// Evidence lists expanded past the one-line collapse — keyed
+    /// by item id (or the supplementary key). View-local state:
+    /// collapsing again on session/draft change is fine.
+    @State private var expandedEvidenceKeys: Set<String> = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -202,7 +207,7 @@ struct EvalFormCard: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let evidence = draft.supplementaryEvidenceRows, !evidence.isEmpty {
-                    evidenceChips(evidence)
+                    evidenceChips(evidence, key: "supplementary")
                 }
             }
         }
@@ -313,7 +318,7 @@ struct EvalFormCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let evidence = result?.evidenceRows, !evidence.isEmpty {
-                evidenceChips(evidence)
+                evidenceChips(evidence, key: item.id)
             }
             ForEach(result?.conflicts ?? [], id: \.self) { conflict in
                 Text(verbatim: "⚠ \(conflict)")
@@ -324,18 +329,31 @@ struct EvalFormCard: View {
         }
     }
 
+    /// Roughly one grid line of chips — past this the list
+    /// collapses behind a "+N" toggle.
+    private static let evidenceCollapseLimit = 7
+
     /// Evidence chips: tap = toggle row playback (same semantics
     /// as a transcript row's play button). An adaptive grid, not
     /// an HStack — the context window can put dozens of rows
     /// behind one item, and an overflowing HStack compresses each
     /// chip into a vertical character stack in the narrow pane.
-    private func evidenceChips(_ rows: [Int]) -> some View {
-        LazyVGrid(
+    /// Lists longer than ~one line collapse to the first chips
+    /// plus a "+N" expander; expanded lists get a collapse chip.
+    private func evidenceChips(_ rows: [Int], key: String) -> some View {
+        let isExpanded = expandedEvidenceKeys.contains(key)
+        // No toggle when it would hide a single chip — showing the
+        // chip costs the same space as the "+1".
+        let collapsible = rows.count > Self.evidenceCollapseLimit + 1
+        let visible = (collapsible && !isExpanded)
+            ? Array(rows.prefix(Self.evidenceCollapseLimit))
+            : rows
+        return LazyVGrid(
             columns: [GridItem(.adaptive(minimum: 42), spacing: 4)],
             alignment: .leading,
             spacing: 2
         ) {
-            ForEach(rows, id: \.self) { row in
+            ForEach(visible, id: \.self) { row in
                 Button {
                     model.playRow(row)
                 } label: {
@@ -347,6 +365,37 @@ struct EvalFormCard: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.tint)
+            }
+            if collapsible {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        if isExpanded {
+                            expandedEvidenceKeys.remove(key)
+                        } else {
+                            expandedEvidenceKeys.insert(key)
+                        }
+                    }
+                } label: {
+                    if isExpanded {
+                        Image(systemName: "chevron.up")
+                            .font(.caption2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(verbatim: "+\(rows.count - Self.evidenceCollapseLimit)")
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(Text(String(
+                    localized: isExpanded
+                        ? "evalform.evidence.collapse"
+                        : "evalform.evidence.expand",
+                    bundle: .module
+                )))
             }
         }
     }
