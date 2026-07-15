@@ -9,7 +9,9 @@ import XephonPluginKit
 ///
 /// Pages: 1) Settings + Pipeline. 2) Read-only affect output
 /// (Summary, Statistics, SER aggregate, Fusion legend). 3) Diarizer
-/// cluster + speaker-behavior cards. 4) Summarizer configuration.
+/// cluster + speaker-behavior cards. 4) Sections. 5) Keywords.
+/// Then the active plugins' pages, then the summarizer / model
+/// configuration page (which also hosts the plugin toggles).
 struct ControlPaneView: View {
     let recorder: RecordingController
     let filterModel: TranscriptFilterModel
@@ -180,23 +182,29 @@ struct ControlPaneView: View {
                     speakerAnalysisPage.tag(2)
                     sectionsPage.tag(3)
                     keywordsPage.tag(4)
-                    summarizerPage.tag(5)
-                    // Plugin-contributed pages, appended after the
-                    // built-ins with position-based tags. Tags shift
-                    // when an EARLIER plugin is disabled — the
-                    // clamp in `.onChange(of: pluginPages.count)`
-                    // below keeps the selection in range; per-page
-                    // selection stability across toggles is not
-                    // promised (rare, user-initiated).
+                    // Plugin-contributed pages sit BEFORE the
+                    // summarizer (model-settings) page, with
+                    // position-based tags. Tags shift when an
+                    // earlier plugin is disabled — the remap in
+                    // `.onChange(of: pluginPages.count)` below keeps
+                    // the summarizer selection pinned and everything
+                    // else in range; per-plugin-page selection
+                    // stability across toggles is not promised
+                    // (rare, user-initiated).
                     ForEach(
                         Array(pluginPages.enumerated()),
                         id: \.element.id
                     ) { offset, page in
-                        pluginPage(page).tag(Self.builtInPageCount + offset)
+                        pluginPage(page).tag(Self.pluginTagBase + offset)
                     }
+                    summarizerPage.tag(summarizerTag)
                 }
-                .onChange(of: pluginPages.count) { _, count in
-                    if selectedTab >= Self.builtInPageCount + count {
+                .onChange(of: pluginPages.count) { oldCount, newCount in
+                    // The summarizer tab's tag moves with the plugin
+                    // count; keep a user parked on it parked.
+                    if selectedTab == Self.pluginTagBase + oldCount {
+                        selectedTab = Self.pluginTagBase + newCount
+                    } else if selectedTab > Self.pluginTagBase + newCount {
                         selectedTab = 0
                     }
                 }
@@ -284,7 +292,10 @@ struct ControlPaneView: View {
             // the `.id` / `.onPreferenceChange` chain (which
             // already pushed the body past SwiftUI's type-check
             // budget when they lived inline).
-            .modifier(ViewMenuTabDispatch(selectedTab: $selectedTab))
+            .modifier(ViewMenuTabDispatch(
+                selectedTab: $selectedTab,
+                summarizerTag: summarizerTag
+            ))
         }
     }
 
@@ -317,9 +328,6 @@ struct ControlPaneView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 16) {
                 SettingsCard(recorder: recorder)
-                if !pluginRegistry.isEmpty {
-                    PluginsCard(registry: pluginRegistry)
-                }
                 PipelineCard(recorder: recorder)
             }
             .frame(maxWidth: .infinity)
@@ -332,9 +340,15 @@ struct ControlPaneView: View {
 
     // MARK: - Plugin pages
 
-    /// Built-in page count — plugin tags start here. Keep in sync
-    /// with the literal `.tag(_:)` list in the TabView above.
-    private static let builtInPageCount = 6
+    /// First plugin tag — plugin pages slot between the keywords
+    /// page (4) and the summarizer page. Keep in sync with the
+    /// literal `.tag(_:)` list in the TabView above.
+    private static let pluginTagBase = 5
+
+    /// The summarizer page's tag: after every active plugin page.
+    private var summarizerTag: Int {
+        Self.pluginTagBase + pluginPages.count
+    }
 
     /// Active plugins' contributed pages, in install order.
     private var pluginPages: [PluginPageDescriptor] {
@@ -532,6 +546,12 @@ struct ControlPaneView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 16) {
                 SummarizerCard(recorder: recorder)
+                // Plugin enable/disable lives with the model
+                // settings: plugins are LLM consumers, and their
+                // pages sit adjacent in the tab order.
+                if !pluginRegistry.isEmpty {
+                    PluginsCard(registry: pluginRegistry)
+                }
                 ModelsCard(recorder: recorder)
                 PromptsCard(recorder: recorder)
             }
@@ -841,6 +861,9 @@ struct ControlPaneView: View {
 private struct ViewMenuTabDispatch: ViewModifier {
     @Environment(MenuCommands.self) private var menuCommands
     @Binding var selectedTab: Int
+    /// Dynamic: the summarizer page sits AFTER the active plugin
+    /// pages, so its tag moves with the plugin count.
+    let summarizerTag: Int
 
     func body(content: Content) -> some View {
         content
@@ -849,7 +872,7 @@ private struct ViewMenuTabDispatch: ViewModifier {
             .onChange(of: menuCommands.viewSpeakersToken)   { _, _ in selectedTab = 2 }
             .onChange(of: menuCommands.viewSectionsToken)   { _, _ in selectedTab = 3 }
             .onChange(of: menuCommands.viewKeywordsToken)   { _, _ in selectedTab = 4 }
-            .onChange(of: menuCommands.viewSummarizerToken) { _, _ in selectedTab = 5 }
+            .onChange(of: menuCommands.viewSummarizerToken) { _, _ in selectedTab = summarizerTag }
     }
 }
 
