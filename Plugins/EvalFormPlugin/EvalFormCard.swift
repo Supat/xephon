@@ -35,6 +35,7 @@ struct EvalFormCard: View {
                 metadataSection(draft)
                 itemsSection(draft)
                 supplementarySection(draft)
+                undetectedSection(draft)
                 if let lastExport = model.lastExport {
                     Text(verbatim: "Export: \(lastExport)")
                         .font(.caption2)
@@ -212,6 +213,39 @@ struct EvalFormCard: View {
                             .buttonStyle(.plain)
                             .foregroundStyle(.tint)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The reviewer's to-fill list — same `EvalFormCoverage` data
+    /// the exports render, so the card and the report agree on
+    /// what remains manual.
+    @ViewBuilder
+    private func undetectedSection(_ draft: EvalFormDraft) -> some View {
+        let undetected = EvalFormCoverage.undetected(
+            draft: draft,
+            template: model.template
+        )
+        if !undetected.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(String(localized: "evalform.undetected", bundle: .module))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                if !undetected.missingHeaderFields.isEmpty {
+                    Text(verbatim: "ヘッダ: \(undetected.missingHeaderFields.joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(undetected.items, id: \.itemID) { gaps in
+                    if let item = model.template.items.first(where: { $0.id == gaps.itemID }) {
+                        Text(verbatim: "\(item.number). \(item.titleJa): \(EvalFormCoverage.gapPhrase(gaps))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

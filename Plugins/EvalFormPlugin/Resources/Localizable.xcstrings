@@ -306,6 +306,22 @@
         }
       }
     },
+    "evalform.undetected" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not detected — fill manually"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未検出（要手動記入）"
+          }
+        }
+      }
+    },
     "evalform.supplementary" : {
       "localizations" : {
         "en" : {
