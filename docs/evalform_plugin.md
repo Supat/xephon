@@ -190,9 +190,12 @@ the plugin ships one glass card:
    inferred orange + `?` / — when empty), then the sheet's two
    axes as printed — 強い −1…+1 弱い with 0.125 ticks and labeled
    majors, 嫌い 1…9 好き — marker coding matching the badge; the
-   comment; evidence chips (adaptive grid, tap = playback,
-   collapsed past 6 behind "+N"); orange conflict notes
-   (revision trails, llmFailed, 極性要確認).
+   a 走行路 line listing the full road names the item's evidence
+   came from (when road provenance exists); the comment; evidence
+   chips (adaptive grid, tap = playback, collapsed past 6 behind
+   "+N", grouped under small road labels when provenance exists);
+   orange conflict notes (revision trails, llmFailed, 極性要確認,
+   評価路以外).
 4. **補足コメント** with its own evidence chips.
 5. **未検出（要手動記入）** — the reviewer's to-fill list
    (`EvalFormCoverage`, same data the exports render).
@@ -213,7 +216,8 @@ review state; a payload stamped by a NEWER plugin build returns
 nil — the draft doesn't render, but the bytes remain in the bundle
 untouched for the build that wrote them (the host preserves
 unknown/undecoded payloads verbatim through load → save). New
-optional fields inside v2 are missing-key tolerant.
+optional fields inside v2 (`supplementaryEvidenceRows`,
+`roadByRow`) are missing-key tolerant.
 
 **Template pack** → plugin persistent storage (cross-session,
 survives restarts and session resets; not part of any `.xph`).

@@ -1,7 +1,13 @@
 # LLM-based auto-fill of the vehicle sensory-evaluation form — research & design options
 
-**Status:** research only — nothing here is implemented.
-**Date:** 2026-07-14
+**Status:** implemented — the recommended design (option A+D) ships
+as EvalFormPlugin on the `plugin-arch` branch. This document is
+the design rationale; the as-built references are
+`docs/evalform_plugin.md` (component) and
+`docs/evalform_pipeline.md` (extraction mechanics). The §6
+ground-truth eval remains open; the model-independent synthetic
+tier exists (see docs/eval_log.md).
+**Date:** 2026-07-14 (status updated 2026-07-16)
 **Scope note:** the target form (車両評価性能指標Ａ－１, 直線路走行専用) is marked
 関係者外秘. This document describes its *structure* for engineering purposes and
 must stay in this private repository; no form specifics were sent to external

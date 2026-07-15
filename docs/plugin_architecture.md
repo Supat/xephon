@@ -13,9 +13,12 @@ carve-out shipped with its consumer in Phase 2 rather than Phase 0.
 Phase 3 decision points: the first retrofit (keyword-review sheet)
 is DEFERRED until the EvalForm ground-truth eval exists — two
 in-flight reshapings of that surface at once isn't worth it; T3
-scripting still has no customer and stays deferred. Open:
-ground-truth eval per the research doc §6, on-device verification
-sweep, `supplementaryComment` distillation.
+scripting still has no customer and stays deferred. Post-Phase-3
+the EvalForm plugin kept evolving on this branch (supplementary
+distillation, CSV export, synthetic eval harness, rubric
+conformance, road provenance — see docs/evalform_plugin.md /
+docs/evalform_pipeline.md). Open: ground-truth eval per the
+research doc §6, on-device verification sweep.
 **Companion:** `docs/eval_form_autofill_research.md` — the evaluation-form
 auto-fill is the first plugin and the forcing function for every extension
 point below.

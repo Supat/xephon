@@ -275,7 +275,11 @@ axes as printed — 強い −1…+1 弱い with 0.125 minor ticks, and
 嫌い 1…9 好き. Marker coding: solid tint = stated; orange (+`?`
 badge) = inferred suggestion; empty track = undetected. Evidence
 chips (tap = row playback) wrap in an adaptive grid and collapse
-past 6 chips behind a "+N" expander. Conflicts render orange.
+past 6 chips behind a "+N" expander; when the draft carries road
+provenance the chips group under small road labels and the item
+gains a 走行路 line listing the distinct full road names its
+evidence came from (canonical labels, first-appearance order).
+Conflicts render orange.
 
 Exports (markdown + CSV, through the root file picker) mirror the
 card: detections with evidence numbers, inferred values explicitly
@@ -295,7 +299,10 @@ lexicon is the pack's `roadCallouts` when present — per road, a
 canonical label (the section title) plus the surfaces that count
 as its callout, so partial forms are accepted exactly where
 they're unambiguous (A-1 ships "E3" for E3路 and "スペイン" for
-スペイン歩道, but never a bare "D") and course-specific naming
+スペイン歩道; the single-letter roads also accept the bare letter,
+which the matcher restricts to STANDALONE occurrences — neither
+neighbour a Latin alphanumeric — so 「Dに入ります」 opens D路 while
+4WD/HD never can) and course-specific naming
 (5ヘルツ…) is a pack edit. Without `roadCallouts` it falls back to
 the exact labels derived from `referenceRoads`. Matching folds
 width and case on both sides; different surfaces of one road are
@@ -306,8 +313,9 @@ still mis-segment, a known limitation.
 The same segmentation feeds the fill: each cited row's road is
 frozen into the draft (`roadByRow`) at fill time, rendered as
 grouped evidence in the card and exports ("D路 [16] [36] ・ F路
-[7]"; CSV `evidenceRoads` column), and drives the merge's
-reference-road cross-check (§4e·8).
+[7]"; CSV `evidenceRoads` column), summarized per item as the
+走行路 line (card + markdown, via `roadsForItem`), and drives the
+merge's reference-road cross-check (§4e·8).
 
 ## 11. Degradation table
 
