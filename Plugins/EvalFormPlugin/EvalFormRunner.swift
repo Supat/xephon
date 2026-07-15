@@ -51,8 +51,12 @@ public enum EvalFormRunner {
         var claimedRows = Set<Int>()
         for (index, item) in template.items.enumerated() {
             onProgress?("\(item.titleJa) (\(index + 1)/\(template.items.count))")
-            let candidates = EvalFormExtractor.candidateRowNumbers(
-                for: item, utterances: utterances
+            // Mention rows ±2 context — ASR splits the verdict
+            // (often the spoken score) into the row AFTER the
+            // onomatopoeia; both tiers read the neighbourhood.
+            // Empty iff the item was never mentioned.
+            let candidates = EvalFormExtractor.contextExpandedRows(
+                for: item, template: template, utterances: utterances
             )
             guard !candidates.isEmpty else {
                 draft.items.append(.init(itemID: item.id))
@@ -64,10 +68,11 @@ public enum EvalFormRunner {
                 utterances: utterances,
                 template: template
             )
-            // Cap the prompt at the first 40 candidate rows — a
-            // pathological vocabulary hit ("フラット" in unrelated
-            // talk) must not blow the context window.
-            let promptRows = candidates.prefix(40).map { row in
+            // Cap the prompt rows — a pathological vocabulary hit
+            // ("フラット" in unrelated talk) times the ±2 window
+            // must not blow the context budget. 60 rows ≈ 2k
+            // prompt tokens on typical utterance lengths.
+            let promptRows = candidates.prefix(60).map { row in
                 (
                     number: row,
                     speakerID: utterances[row - 1].speakerID,

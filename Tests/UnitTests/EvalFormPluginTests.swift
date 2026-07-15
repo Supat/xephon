@@ -104,6 +104,79 @@ struct EvalFormPluginTests {
         ) == [1, 2])
     }
 
+    // MARK: - Context window
+
+    @Test func contextWindowPullsNeighborsAroundMentions() {
+        let rows = [
+            utterance("それでは行きます"),               // 1: context (−2)
+            utterance("次の区間に入ります"),             // 2: context (−1)
+            utterance("ヒョコヒョコが気になりますね"),   // 3: mention
+            utterance("マイナス0.25ぐらいかな"),         // 4: context (+1)
+            utterance("そうですね"),                     // 5: context (+2)
+            utterance("今日は天気がいい"),               // 6: outside
+        ]
+        let hyoko = template.items.first { $0.id == "11_hyokohyoko" }!
+        #expect(EvalFormExtractor.contextExpandedRows(
+            for: hyoko, template: template, utterances: rows
+        ) == [1, 2, 3, 4, 5])
+    }
+
+    @Test func contextRowAttachesToNearestItemOnly() {
+        let rows = [
+            utterance("ヒョコヒョコが強いですね"),       // 1: hyoko mention
+            utterance("マイナス0.25ぐらいかな"),         // 2: 1 from hyoko, 2 from gotsu
+            utterance("うん、そう思います"),             // 3: 2 from hyoko, 1 from gotsu
+            utterance("ゴツゴツも見ておきましょう"),     // 4: gotsu mention
+        ]
+        let hyoko = template.items.first { $0.id == "11_hyokohyoko" }!
+        let gotsu = template.items.first { $0.id == "13_gotsugotsu" }!
+        // Row 2 is nearer hyoko; row 3 nearer gotsu; each other's
+        // mention rows (distance 0 to their own item) never leak.
+        #expect(EvalFormExtractor.contextExpandedRows(
+            for: hyoko, template: template, utterances: rows
+        ) == [1, 2])
+        #expect(EvalFormExtractor.contextExpandedRows(
+            for: gotsu, template: template, utterances: rows
+        ) == [3, 4])
+    }
+
+    @Test func equidistantContextRowAttachesToBoth() {
+        let rows = [
+            utterance("ヒョコヒョコが強いですね"),       // 1: hyoko
+            utterance("マイナス0.25ぐらいかな"),         // 2: tie (1 from each)
+            utterance("ゴツゴツはどうでしょう"),         // 3: gotsu
+        ]
+        let hyoko = template.items.first { $0.id == "11_hyokohyoko" }!
+        let gotsu = template.items.first { $0.id == "13_gotsugotsu" }!
+        #expect(EvalFormExtractor.contextExpandedRows(
+            for: hyoko, template: template, utterances: rows
+        ) == [1, 2])
+        #expect(EvalFormExtractor.contextExpandedRows(
+            for: gotsu, template: template, utterances: rows
+        ) == [2, 3])
+    }
+
+    @Test func statedScoreInFollowUpRowIsCaptured() {
+        // The recall gap that motivated the window: keyword in one
+        // ASR segment, the spoken score in the next.
+        let rows = [
+            utterance("ヒョコヒョコはどうですか"),
+            utterance("マイナス0.25ぐらいですね"),
+        ]
+        let hyoko = template.items.first { $0.id == "11_hyokohyoko" }!
+        let expanded = EvalFormExtractor.contextExpandedRows(
+            for: hyoko, template: template, utterances: rows
+        )
+        let findings = EvalFormExtractor.deterministicFindings(
+            candidateRows: expanded,
+            utterances: rows,
+            template: template
+        )
+        #expect(findings.statedScores.count == 1)
+        #expect(findings.statedScores.first?.value == -0.25)
+        #expect(findings.statedScores.first?.row == 2)
+    }
+
     // MARK: - Merge policy
 
     @Test func singleStatedScoreWinsWithoutConflict() {

@@ -31,6 +31,54 @@ public enum EvalFormExtractor {
         }
     }
 
+    /// The item's mention rows expanded with ±`window` context
+    /// rows. ASR splits Japanese judgments across segments — the
+    /// onomatopoeia lands in one row and the verdict (often the
+    /// SPOKEN SCORE) in the next — so both the deterministic pass
+    /// and the LLM prompt need the neighbourhood, not just the
+    /// mention.
+    ///
+    /// Attribution guard: a context row is attached to the item
+    /// whose mention is NEAREST (ties attach to every tied item —
+    /// the merge conflict machinery covers the rare ambiguity).
+    /// Another item's own mention row sits at distance 0 of that
+    /// item and therefore can never be captured as context here,
+    /// which is what keeps a ±2 window from cross-attributing
+    /// neighbouring items' remarks.
+    public static func contextExpandedRows(
+        for item: EvalFormTemplate.Item,
+        template: EvalFormTemplate,
+        utterances: [UtteranceEstimate],
+        window: Int = 2
+    ) -> [Int] {
+        let allCores = template.items.map {
+            ($0.id, candidateRowNumbers(for: $0, utterances: utterances))
+        }
+        guard let mine = allCores.first(where: { $0.0 == item.id })?.1,
+              !mine.isEmpty
+        else { return [] }
+        let otherCores = allCores
+            .filter { $0.0 != item.id }
+            .map(\.1)
+            .filter { !$0.isEmpty }
+
+        var rows = Set(mine)
+        for core in mine {
+            let lo = max(1, core - window)
+            let hi = min(utterances.count, core + window)
+            guard lo <= hi else { continue }
+            for neighbor in lo...hi where !rows.contains(neighbor) {
+                let myDistance = mine.map { abs($0 - neighbor) }.min() ?? .max
+                let otherDistance = otherCores
+                    .compactMap { cores in cores.map { abs($0 - neighbor) }.min() }
+                    .min()
+                if let otherDistance, otherDistance < myDistance { continue }
+                rows.insert(neighbor)
+            }
+        }
+        return rows.sorted()
+    }
+
     // MARK: - Road sections
 
     /// Segment the session by road callouts: a row mentioning a
@@ -159,7 +207,7 @@ public enum EvalFormExtractor {
             lines.append("Pre-verified stated scores (regex-captured; treat as ground truth): \(stated)")
         }
         lines.append("")
-        lines.append("Utterances (numbered [n] speaker: text):")
+        lines.append("Utterances (numbered [n] speaker: text; the rows mentioning the item plus their immediate neighbours — a verdict or score often lands in the row AFTER the mention):")
         for row in rows {
             lines.append("[\(row.number)] \(row.speakerID): \(row.transcript)")
         }
