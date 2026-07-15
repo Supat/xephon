@@ -349,8 +349,9 @@ struct EvalFormCard: View {
     }
 
     /// Roughly one grid line of chips — past this the list
-    /// collapses behind a "+N" toggle.
-    private static let evidenceCollapseLimit = 7
+    /// collapses behind a "+N" toggle. 6, not 7: the portrait
+    /// pane is narrower and 7 chips + the toggle overflow it.
+    private static let evidenceCollapseLimit = 6
 
     /// Evidence chips: tap = toggle row playback (same semantics
     /// as a transcript row's play button). An adaptive grid, not
