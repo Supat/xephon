@@ -90,6 +90,24 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
         self.roadByRow = roadByRow
     }
 
+    /// Distinct roads where the item's cited evidence appeared —
+    /// canonical full labels, first-appearance order over the
+    /// (sorted) evidence rows. Empty when the draft carries no
+    /// road provenance or the item cites nothing.
+    public func roadsForItem(_ itemID: String) -> [String] {
+        guard let roadByRow, !roadByRow.isEmpty,
+              let result = items.first(where: { $0.itemID == itemID })
+        else { return [] }
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for row in result.evidenceRows {
+            if let road = roadByRow[row], seen.insert(road).inserted {
+                ordered.append(road)
+            }
+        }
+        return ordered
+    }
+
     public func encoded() throws -> Data {
         try JSONEncoder().encode(self)
     }

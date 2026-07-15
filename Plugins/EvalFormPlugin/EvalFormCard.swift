@@ -317,6 +317,14 @@ struct EvalFormCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // Where this item's cited evidence was actually driven
+            // — full road names from the fill-time segmentation.
+            if let roads = model.draft?.roadsForItem(item.id), !roads.isEmpty {
+                Text(verbatim: "走行路: \(roads.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             // The sheet's two scales, as printed on the form:
             // strength (強い −1 … +1 弱い) and preference (嫌い 1 …
             // 9 好き). Empty tracks read as unfilled rows.

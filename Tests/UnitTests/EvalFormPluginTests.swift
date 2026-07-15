@@ -733,8 +733,25 @@ struct EvalFormPluginTests {
             draft: draft, template: template, sessionTitle: ""
         )
         #expect(markdown.contains("根拠発話: D路 [3] [5] ・ F路 [7]"))
+        #expect(markdown.contains("- 走行路: D路, F路"))
 
         let csv = EvalFormCSV.render(draft: draft, template: template)
         #expect(csv.contains("3:D路 5:D路 7:F路"))
+    }
+
+    @Test func roadsForItemDedupesInFirstAppearanceOrder() {
+        var draft = EvalFormDraft(templateID: template.id)
+        draft.items = [
+            .init(itemID: "11_hyokohyoko", comment: "c",
+                  evidenceRows: [3, 5, 7, 9]),
+            .init(itemID: "12_buruburu", comment: "c", evidenceRows: [11]),
+        ]
+        draft.roadByRow = [3: "F路", 5: "D路", 7: "F路", 11: "段差路"]
+        #expect(draft.roadsForItem("11_hyokohyoko") == ["F路", "D路"])
+        #expect(draft.roadsForItem("12_buruburu") == ["段差路"])
+        #expect(draft.roadsForItem("13_gotsugotsu") == [])
+        // No provenance at all → empty everywhere.
+        draft.roadByRow = nil
+        #expect(draft.roadsForItem("11_hyokohyoko") == [])
     }
 }

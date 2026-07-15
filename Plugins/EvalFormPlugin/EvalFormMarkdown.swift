@@ -42,6 +42,10 @@ public enum EvalFormMarkdown {
             }
             lines.append("- 評点（基準比）: \(score)")
             lines.append("- 好き嫌い (1–9): \(result?.likeDislike.map(String.init) ?? "—")")
+            let roads = draft.roadsForItem(item.id)
+            if !roads.isEmpty {
+                lines.append("- 走行路: \(roads.joined(separator: ", "))")
+            }
             if let comment = result?.comment {
                 lines.append("- コメント: \(comment)")
             }
