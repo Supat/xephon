@@ -948,10 +948,30 @@ final class SummarizerCoordinator {
         }
     }
 
+    /// Nesting depth of plugin inference batches. While positive,
+    /// `pluginGenerate` skips the per-call unload + pipeline rewarm
+    /// so a multi-call run (the eval-form fill makes 6–8 calls)
+    /// keeps the MLX weights resident instead of paying a full
+    /// load/unload cycle per call; the rewarm fires once when the
+    /// outermost batch ends.
+    private var pluginBatchDepth = 0
+
+    func beginPluginBatch() {
+        pluginBatchDepth += 1
+    }
+
+    func endPluginBatch() {
+        pluginBatchDepth = max(0, pluginBatchDepth - 1)
+        if pluginBatchDepth == 0 {
+            scheduleUnloadAndPipelineRewarm()
+        }
+    }
+
     /// Mode-agnostic generation for the plugin layer
     /// (docs/plugin_architecture.md §3, InferenceService). Same
     /// lifecycle envelope as summarize/review — pipeline released
-    /// before, unload + rewarm scheduled after, `withInferenceGate`
+    /// before, unload + rewarm scheduled after (per call outside a
+    /// batch; once at batch end inside one), `withInferenceGate`
     /// serializing against the built-in runs — but the caller owns
     /// the whole prompt and parses the raw output.
     ///
@@ -987,9 +1007,15 @@ final class SummarizerCoordinator {
         }
         return try await withInferenceGate {
             await releasePipelineForSummarization()
-            defer { scheduleUnloadAndPipelineRewarm() }
+            defer {
+                // Inside a batch the resident model outlives the
+                // call; the batch end schedules the single rewarm.
+                if pluginBatchDepth == 0 {
+                    scheduleUnloadAndPipelineRewarm()
+                }
+            }
             AppLog.app.info(
-                "pluginGenerate via \(self.backend.rawValue, privacy: .public): prompt \(effectivePrompt.count, privacy: .public) chars, schema \(schemaJSON != nil ? "yes" : "no", privacy: .public)"
+                "pluginGenerate via \(self.backend.rawValue, privacy: .public): prompt \(effectivePrompt.count, privacy: .public) chars, schema \(schemaJSON != nil ? "yes" : "no", privacy: .public), batch \(self.pluginBatchDepth, privacy: .public)"
             )
             switch backend {
             case .appleFM:

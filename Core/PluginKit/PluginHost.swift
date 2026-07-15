@@ -142,6 +142,24 @@ public protocol InferenceService: Sendable {
         schemaJSON: String?,
         maxOutputTokens: Int
     ) async throws -> String
+
+    /// Run `body` as one inference batch: hosts that pay a model
+    /// load/unload cycle per `generate` keep the model resident for
+    /// the whole batch instead (observed on-device: a six-item fill
+    /// spent most of its wall clock reloading weights between
+    /// calls). Defaults to a plain passthrough for hosts without
+    /// lifecycle costs.
+    func withBatch<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T
+}
+
+extension InferenceService {
+    public func withBatch<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        try await body()
+    }
 }
 
 public enum InferenceAvailability: Sendable, Equatable {

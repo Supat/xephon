@@ -213,6 +213,14 @@ final class PluginInferenceAdapter: InferenceService {
             )
         }
     }
+
+    func withBatch<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        recorder.summarizer.beginPluginBatch()
+        defer { recorder.summarizer.endPluginBatch() }
+        return try await body()
+    }
 }
 
 // MARK: - Payload storage

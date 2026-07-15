@@ -23,6 +23,26 @@ public enum EvalFormRunner {
         inference: any InferenceService,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> EvalFormDraft {
+        // One batch for the whole fill: 6–8 generate calls share a
+        // single model load/unload cycle on hosts that pay one.
+        try await inference.withBatch {
+            try await fillInBatch(
+                template: template,
+                utterances: utterances,
+                utterancesVersion: utterancesVersion,
+                inference: inference,
+                onProgress: onProgress
+            )
+        }
+    }
+
+    private static func fillInBatch(
+        template: EvalFormTemplate,
+        utterances: [UtteranceEstimate],
+        utterancesVersion: Int?,
+        inference: any InferenceService,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async throws -> EvalFormDraft {
         var draft = EvalFormDraft(
             templateID: template.id,
             generatedAtUtterancesVersion: utterancesVersion

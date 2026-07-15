@@ -84,13 +84,28 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
         guard let container else {
             throw SummarizerError.modelNotInstalled
         }
-        return try await MLXLLMSummarizerCore.runInference(
+        // Family turn directives are non-negotiable for raw
+        // generation: without /no_think, Qwen3 spends the entire
+        // output budget inside a think block and the caller gets
+        // truncated non-JSON (observed on-device: every plugin
+        // call ran to the token cap and failed to parse).
+        var effectivePrompt = prompt
+        let directives = MLXLLMSpecDirectives.turnDirectives(family: spec.family)
+        if !directives.isEmpty {
+            effectivePrompt += "\n" + directives.joined(separator: "\n")
+        }
+        let raw = try await MLXLLMSummarizerCore.runInference(
             container: container,
-            prompt: prompt,
+            prompt: effectivePrompt,
             maxTokens: maxOutputTokens,
             repetitionPenalty: spec.repetitionPenalty,
             label: "MLX[\(spec.family.rawValue)] plugin"
         )
+        // Belt to the directive's braces: /no_think still emits an
+        // empty think block on some checkpoints, and a think block
+        // containing braces would poison the caller's first-{ to
+        // last-} slice.
+        return MLXLLMSummarizerCore.stripThinkBlocks(raw)
     }
 
     public func summarize(
