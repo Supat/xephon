@@ -349,6 +349,18 @@ struct EvalFormPluginTests {
         #expect(decoded.supplementaryEvidenceRows == nil)
     }
 
+    // MARK: - Scale geometry
+
+    @Test func scalePositionsNormalizeAndClamp() {
+        #expect(EvalScaleAxis.normalizedPosition(-1, minimum: -1, maximum: 1) == 0)
+        #expect(EvalScaleAxis.normalizedPosition(0, minimum: -1, maximum: 1) == 0.5)
+        #expect(EvalScaleAxis.normalizedPosition(1, minimum: -1, maximum: 1) == 1)
+        #expect(abs(EvalScaleAxis.normalizedPosition(-0.25, minimum: -1, maximum: 1) - 0.375) < 0.0001)
+        // Out-of-range values clamp instead of drawing off-track.
+        #expect(EvalScaleAxis.normalizedPosition(5, minimum: -1, maximum: 1) == 1)
+        #expect(EvalScaleAxis.normalizedPosition(5, minimum: 1, maximum: 9) == 0.5)
+    }
+
     // MARK: - Undetected coverage
 
     /// A draft mirroring the first real trial's shape: some items

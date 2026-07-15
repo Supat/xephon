@@ -304,6 +304,19 @@ struct EvalFormCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // The sheet's two scales, as printed on the form:
+            // strength (強い −1 … +1 弱い) and preference (嫌い 1 …
+            // 9 好き). Empty tracks read as unfilled rows.
+            StrengthScaleView(
+                scale: model.template.strengthScale,
+                stated: result?.strengthScore,
+                inferred: result?.strengthScoreInferred
+            )
+            .padding(.top, 2)
+            PreferenceScaleView(
+                scale: model.template.preferenceScale,
+                value: result?.likeDislike
+            )
             if let comment = result?.comment {
                 Text(comment)
                     .font(.caption2)
