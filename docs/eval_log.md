@@ -42,3 +42,30 @@ TODO before promoting the experiment: side-by-side on 2-3 held-out
 meetings — topic recall (coverage), claim precision (spot-check
 evidence rows), and a subjective coherence rating vs the baseline.
 Also compare map-reduce vs baseline TF-IDF on a >250-row session.
+
+## EvalForm synthetic harness (2026-07-17)
+
+Model-independent eval for the A-1 auto-fill: seeded synthetic
+sessions with by-construction truth (planted stated scores /
+qualitative-only mentions / absent items / metadata / distractors),
+scored on stated-score exact+MAE, false fills, comment recall,
+evidence validity, metadata accuracy. Measures extraction fidelity,
+NOT ride-judgment validity — the human ground-truth eval (research
+doc §6) remains the final gate.
+
+Run (LM Studio serving the candidate model):
+
+    XEPHON_LMSTUDIO_URL=http://127.0.0.1:1234 \
+    XEPHON_LMSTUDIO_MODEL=<served-model-id> \
+    xcodebuild -scheme XephonEval \
+      -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test \
+      -only-testing:XephonEvalTests/EvalFormLiveEvalTests
+
+Offline floor (deterministic tier only, pinned in UnitTests):
+stated scores 2/2 exact, 0 false fills, evidence 2/2 — any live run
+scoring below this floor is a regression, anything above it is what
+the model adds. Paste per-model reports below.
+
+| date | model | scores exact | false fills | comments | evidence | metadata |
+|------|-------|--------------|-------------|----------|----------|----------|
+| —    | —     | —            | —           | —        | —        | —        |

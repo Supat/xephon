@@ -101,11 +101,10 @@ public final class EvalFormModel {
 
     // MARK: - Run
 
-    /// Fill the sheet: deterministic pass per item, then one LLM
-    /// call per item with candidate rows, then a metadata call.
-    /// Items with zero candidate rows stay empty without a model
-    /// call. Errors on one item don't sink the run — the item gets
-    /// a conflict note and the loop continues.
+    /// Fill the sheet via the headless `EvalFormRunner` — the same
+    /// pipeline the eval harness runs. The model owns the gates
+    /// (availability, empty session), the phase readout, and draft
+    /// persistence; the runner owns the extraction.
     public func run() async {
         guard phase != .running("") else { return }
         let snapshot = host.session.snapshot()
@@ -117,181 +116,22 @@ public final class EvalFormModel {
             phase = .failed(reason)
             return
         }
-        var newDraft = EvalFormDraft(
-            templateID: template.id,
-            generatedAtUtterancesVersion: snapshot.utterancesVersion
-        )
-        let utterances = snapshot.utterances
-        // Rows any item claims — the complement feeds 補足コメント.
-        var claimedRows = Set<Int>()
-        for (index, item) in template.items.enumerated() {
-            phase = .running("\(item.titleJa) (\(index + 1)/\(template.items.count))")
-            let candidates = EvalFormExtractor.candidateRowNumbers(
-                for: item, utterances: utterances
-            )
-            guard !candidates.isEmpty else {
-                newDraft.items.append(.init(itemID: item.id))
-                continue
-            }
-            claimedRows.formUnion(candidates)
-            let deterministic = EvalFormExtractor.deterministicFindings(
-                candidateRows: candidates,
-                utterances: utterances,
-                template: template
-            )
-            // Cap the prompt at the first 40 candidate rows — a
-            // pathological vocabulary hit ("フラット" in unrelated
-            // talk) must not blow the context window.
-            let promptRows = candidates.prefix(40).map { row in
-                (
-                    number: row,
-                    speakerID: utterances[row - 1].speakerID,
-                    transcript: utterances[row - 1].transcript
-                )
-            }
-            let prompt = EvalFormExtractor.extractionPrompt(
-                item: item,
-                template: template,
-                rows: Array(promptRows),
-                deterministic: deterministic
-            )
-            var wire: EvalFormExtractor.ItemWire?
-            do {
-                let raw = try await host.inference.generate(
-                    prompt: prompt,
-                    schemaJSON: EvalFormExtractor.itemSchemaJSON,
-                    maxOutputTokens: 512
-                )
-                wire = EvalFormExtractor.parseItemResponse(raw)
-            } catch is CancellationError {
-                phase = .idle
-                return
-            } catch {
-                AppLog.app.warning(
-                    "EvalForm item \(item.id, privacy: .public) generate failed: \(String(describing: error), privacy: .public)"
-                )
-            }
-            var merged = EvalFormExtractor.merge(
-                item: item,
-                template: template,
-                deterministic: deterministic,
-                wire: wire,
-                validRowNumbers: Set(candidates)
-            )
-            if wire == nil {
-                merged.conflicts.append(
-                    String(localized: "evalform.conflict.llmFailed", bundle: .module)
-                )
-            }
-            newDraft.items.append(merged)
-        }
-        phase = .running(String(localized: "evalform.running.supplementary", bundle: .module))
-        let supplementary = await extractSupplementary(
-            utterances: utterances,
-            claimedRows: claimedRows
-        )
-        newDraft.supplementaryComment = supplementary?.comment
-        newDraft.supplementaryEvidenceRows = supplementary?.evidenceRows
-        phase = .running(String(localized: "evalform.running.metadata", bundle: .module))
-        newDraft.metadata = await extractMetadata(utterances: utterances)
-        draft = newDraft
-        persistDraft()
-        phase = .idle
-    }
-
-    /// 補足コメント over the substantive rows no item claimed.
-    /// Failures degrade to "no supplementary comment" — the field
-    /// is additive, never worth sinking a finished run.
-    private func extractSupplementary(
-        utterances: [UtteranceEstimate],
-        claimedRows: Set<Int>
-    ) async -> (comment: String, evidenceRows: [Int])? {
-        let candidates = EvalFormExtractor.supplementaryCandidateRows(
-            utterances: utterances,
-            claimedRows: claimedRows
-        )
-        guard !candidates.isEmpty else { return nil }
-        let rows = candidates.map { row in
-            (
-                number: row,
-                speakerID: utterances[row - 1].speakerID,
-                transcript: utterances[row - 1].transcript
-            )
-        }
-        let prompt = EvalFormExtractor.supplementaryPrompt(
-            template: template,
-            rows: rows
-        )
         do {
-            let raw = try await host.inference.generate(
-                prompt: prompt,
-                schemaJSON: EvalFormExtractor.supplementarySchemaJSON,
-                maxOutputTokens: 384
-            )
-            guard let wire = EvalFormExtractor.parseSupplementaryResponse(raw),
-                  let comment = wire.comment, !comment.isEmpty
-            else { return nil }
-            let valid = Set(candidates)
-            return (
-                comment: comment,
-                evidenceRows: (wire.evidenceRows ?? []).filter(valid.contains).sorted()
-            )
-        } catch {
-            AppLog.app.warning(
-                "EvalForm supplementary extract failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
-        }
-    }
-
-    /// Header metadata, stated-only and null-first — same policy as
-    /// items. Candidate rows are the session opening PLUS any row
-    /// hitting a metadata cue, so specs restated mid-session (an
-    /// absorber swap, a weather change) are visible to the pass.
-    private func extractMetadata(utterances: [UtteranceEstimate]) async -> [String: String] {
-        let candidates = EvalFormExtractor.metadataCandidateRows(
-            utterances: utterances,
-            cues: template.metadataCues
-        )
-        guard !candidates.isEmpty else { return [:] }
-        var lines: [String] = []
-        lines.append("Extract the evaluation-sheet header fields from utterances of a Japanese test-drive session (the opening plus rows that mention conditions/specs).")
-        lines.append("Fields: \(template.metadataFields.joined(separator: ", ")).")
-        lines.append("Return a JSON object with exactly these fields as keys; value = the stated value as a short string, or null when not stated. NEVER guess. When a field is restated later (e.g. a spec swap), the LATEST statement wins.")
-        lines.append("")
-        for row in candidates {
-            lines.append("[\(row)] \(utterances[row - 1].speakerID): \(utterances[row - 1].transcript)")
-        }
-        lines.append("")
-        lines.append("Return ONLY the JSON object. The FIRST character of your output MUST be `{`.")
-        let properties = template.metadataFields
-            .map { "\"\($0)\":{\"type\":[\"string\",\"null\"]}" }
-            .joined(separator: ",")
-        let schema = "{\"type\":\"object\",\"properties\":{\(properties)}}"
-        do {
-            let raw = try await host.inference.generate(
-                prompt: lines.joined(separator: "\n"),
-                schemaJSON: schema,
-                maxOutputTokens: 384
-            )
-            guard let start = raw.firstIndex(of: "{"),
-                  let end = raw.lastIndex(of: "}"), start <= end,
-                  let object = try? JSONSerialization.jsonObject(
-                      with: Data(String(raw[start...end]).utf8)
-                  ) as? [String: Any]
-            else { return [:] }
-            var result: [String: String] = [:]
-            for field in template.metadataFields {
-                if let value = object[field] as? String, !value.isEmpty {
-                    result[field] = value
+            let newDraft = try await EvalFormRunner.fill(
+                template: template,
+                utterances: snapshot.utterances,
+                utterancesVersion: snapshot.utterancesVersion,
+                inference: host.inference,
+                onProgress: { [weak self] step in
+                    Task { @MainActor in self?.phase = .running(step) }
                 }
-            }
-            return result
-        } catch {
-            AppLog.app.warning(
-                "EvalForm metadata extract failed: \(String(describing: error), privacy: .public)"
             )
-            return [:]
+            draft = newDraft
+            persistDraft()
+            phase = .idle
+        } catch {
+            // Runner throws only on cancellation.
+            phase = .idle
         }
     }
 
