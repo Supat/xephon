@@ -19,10 +19,12 @@ public enum EvalFormCSV {
 
         lines.append(row([
             "number", "item", "strengthScore", "strengthScoreInferred",
-            "likeDislike", "comment", "evidenceRows", "reviewed", "conflicts",
+            "likeDislike", "comment", "evidenceRows", "evidenceRoads",
+            "reviewed", "conflicts",
         ]))
         for item in template.items {
             let result = draft.items.first { $0.itemID == item.id }
+            let evidence = result?.evidenceRows ?? []
             lines.append(row([
                 item.number,
                 item.titleJa,
@@ -30,7 +32,8 @@ public enum EvalFormCSV {
                 result?.strengthScoreInferred.map { String($0) } ?? "",
                 result?.likeDislike.map(String.init) ?? "",
                 result?.comment ?? "",
-                (result?.evidenceRows ?? []).map(String.init).joined(separator: " "),
+                evidence.map(String.init).joined(separator: " "),
+                roadPairs(evidence, roadByRow: draft.roadByRow),
                 draft.reviewedItemIDs.contains(item.id) ? "yes" : "",
                 (result?.conflicts ?? []).joined(separator: " / "),
             ]))
@@ -75,6 +78,18 @@ public enum EvalFormCSV {
 
     private static func row(_ fields: [String]) -> String {
         fields.map(escaped).joined(separator: ",")
+    }
+
+    /// "16:D路 36:D路" — road provenance for the cited rows that
+    /// have one; empty when the draft carries no road map.
+    private static func roadPairs(
+        _ rows: [Int],
+        roadByRow: [Int: String]?
+    ) -> String {
+        guard let roadByRow, !roadByRow.isEmpty else { return "" }
+        return rows.compactMap { row in
+            roadByRow[row].map { "\(row):\($0)" }
+        }.joined(separator: " ")
     }
 
     static func escaped(_ field: String) -> String {

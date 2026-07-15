@@ -215,6 +215,12 @@ Precedence and gates, in order:
    A clear contradiction — opposing hits with zero supporting —
    appends 「推定スコアの極性要確認…」. Never a silent sign flip
    (the heuristic can't see negation like 強くない).
+8. **Reference-road cross-check** (soft flag, never a filter):
+   the callout segmentation assigns each row a road; when ≥2 of
+   the item's cited rows have assignments and the majority lie
+   OUTSIDE the item's 評価路 column, append 「根拠発話の多くが
+   評価路以外の区間…」. Skipped entirely when the session has no
+   callouts; unassigned rows count neither way; ties pass.
 
 ## 5. Supplementary pass (補足コメント)
 
@@ -296,6 +302,12 @@ width and case on both sides; different surfaces of one road are
 one road (no spurious segment splits). It assumes live callouts
 ("次、F路60キロ") — retrospective references (一番最初の5ヘルツ…)
 still mis-segment, a known limitation.
+
+The same segmentation feeds the fill: each cited row's road is
+frozen into the draft (`roadByRow`) at fill time, rendered as
+grouped evidence in the card and exports ("D路 [16] [36] ・ F路
+[7]"; CSV `evidenceRoads` column), and drives the merge's
+reference-road cross-check (§4e·8).
 
 ## 11. Degradation table
 

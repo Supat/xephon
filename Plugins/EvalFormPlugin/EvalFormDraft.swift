@@ -64,6 +64,11 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
     /// Item ids the reviewer has marked confirmed (payload v2 —
     /// the review-workflow state that motivated the version bump).
     public var reviewedItemIDs: [String]
+    /// Road provenance for CITED rows, frozen at fill time (row →
+    /// road label from the template's callout segmentation). Nil
+    /// when the session had no callouts. Optional-tolerant v2
+    /// addition — missing key decodes nil.
+    public var roadByRow: [Int: String]?
 
     public init(
         templateID: String,
@@ -72,7 +77,8 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
         supplementaryComment: String? = nil,
         supplementaryEvidenceRows: [Int]? = nil,
         metadata: [String: String] = [:],
-        reviewedItemIDs: [String] = []
+        reviewedItemIDs: [String] = [],
+        roadByRow: [Int: String]? = nil
     ) {
         self.templateID = templateID
         self.generatedAtUtterancesVersion = generatedAtUtterancesVersion
@@ -81,6 +87,7 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
         self.supplementaryEvidenceRows = supplementaryEvidenceRows
         self.metadata = metadata
         self.reviewedItemIDs = reviewedItemIDs
+        self.roadByRow = roadByRow
     }
 
     public func encoded() throws -> Data {

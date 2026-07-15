@@ -46,7 +46,7 @@ public enum EvalFormMarkdown {
                 lines.append("- コメント: \(comment)")
             }
             if let evidence = result?.evidenceRows, !evidence.isEmpty {
-                lines.append("- 根拠発話: \(evidence.map { "[\($0)]" }.joined(separator: " "))")
+                lines.append("- 根拠発話: \(evidenceText(evidence, roadByRow: draft.roadByRow))")
             }
             for conflict in result?.conflicts ?? [] {
                 lines.append("- ⚠ \(conflict)")
@@ -59,7 +59,7 @@ public enum EvalFormMarkdown {
             lines.append(supplementary)
             if let evidence = draft.supplementaryEvidenceRows, !evidence.isEmpty {
                 lines.append("")
-                lines.append("根拠発話: \(evidence.map { "[\($0)]" }.joined(separator: " "))")
+                lines.append("根拠発話: \(evidenceText(evidence, roadByRow: draft.roadByRow))")
             }
             lines.append("")
         }
@@ -91,5 +91,27 @@ public enum EvalFormMarkdown {
     private static func formatted(_ value: Double) -> String {
         let sign = value > 0 ? "+" : ""
         return "\(sign)\(String(format: "%g", value))"
+    }
+
+    /// Evidence rows, grouped by road provenance when the draft
+    /// carries it: "D路 [16] [36] ・ 段差路 [58] ・ — [73]".
+    static func evidenceText(
+        _ rows: [Int],
+        roadByRow: [Int: String]?
+    ) -> String {
+        guard let roadByRow, !roadByRow.isEmpty else {
+            return rows.map { "[\($0)]" }.joined(separator: " ")
+        }
+        var order: [String] = []
+        var byRoad: [String: [Int]] = [:]
+        for row in rows {
+            let road = roadByRow[row] ?? "—"
+            if byRoad[road] == nil { order.append(road) }
+            byRoad[road, default: []].append(row)
+        }
+        return order.map { road in
+            let chips = (byRoad[road] ?? []).map { "[\($0)]" }.joined(separator: " ")
+            return "\(road) \(chips)"
+        }.joined(separator: " ・ ")
     }
 }

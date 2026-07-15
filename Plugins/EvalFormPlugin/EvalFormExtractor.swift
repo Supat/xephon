@@ -132,6 +132,42 @@ public enum EvalFormExtractor {
         return numberedProposals(callouts: callouts, utterances: utterances, visits: &visits)
     }
 
+    /// Per-row road assignment from the same callout scan the
+    /// section proposals use: each row belongs to the most recent
+    /// callout's road; rows before the first callout belong to no
+    /// road (nil). Index i corresponds to row i+1. Empty when the
+    /// session has no callouts.
+    public static func roadAssignments(
+        utterances: [UtteranceEstimate],
+        callouts roadCallouts: [EvalFormTemplate.RoadCallout]
+    ) -> [String?] {
+        // Reuse the proposal scan for identical segmentation.
+        let proposals = roadSectionProposals(
+            utterances: utterances, callouts: roadCallouts
+        )
+        guard !proposals.isEmpty else { return [] }
+        var assignments = [String?](repeating: nil, count: utterances.count)
+        let indexByID = Dictionary(
+            uniqueKeysWithValues: utterances.enumerated().map { ($1.id, $0) }
+        )
+        for proposal in proposals {
+            guard let start = indexByID[proposal.startUtteranceID],
+                  let end = indexByID[proposal.endUtteranceID],
+                  start <= end
+            else { continue }
+            // Strip the repeat-visit suffix — provenance wants the
+            // road, not the visit ("D路 (2)" → "D路").
+            let road = proposal.title.hasSuffix(")")
+                ? String(proposal.title.prefix(while: { $0 != "(" }))
+                    .trimmingCharacters(in: .whitespaces)
+                : proposal.title
+            for index in start...end {
+                assignments[index] = road
+            }
+        }
+        return assignments
+    }
+
     /// Substring match, except single Latin letters must stand
     /// alone: neither neighbour may be a Latin alphanumeric, so a
     /// bare "D" surface matches "Dに入ります" but never 4WD / HD.
@@ -580,7 +616,8 @@ extension EvalFormExtractor {
         deterministic: DeterministicFindings,
         wire: ItemWire?,
         validRowNumbers: Set<Int>,
-        transcriptForRow: (Int) -> String? = { _ in nil }
+        transcriptForRow: (Int) -> String? = { _ in nil },
+        roadForRow: (Int) -> String? = { _ in nil }
     ) -> EvalFormDraft.ItemResult {
         var result = EvalFormDraft.ItemResult(itemID: item.id)
         var evidence = Set<Int>()
@@ -664,6 +701,26 @@ extension EvalFormExtractor {
                 let direction = inferred > 0 ? "「強い」" : "「弱い・減少」"
                 result.conflicts.append(
                     "推定スコアの極性要確認（根拠発話は\(direction)方向、スコアは逆側）"
+                )
+            }
+        }
+
+        // Reference-road cross-check (soft flag, never a filter):
+        // the sheet's 評価路 column says which roads validate this
+        // item — evidence formed mostly elsewhere deserves review.
+        // Rows with no road assignment don't count either way, and
+        // sessions without callouts skip the check entirely.
+        let referenceRoads = Set(EvalFormTemplate.referenceRoadNames(of: item))
+        if !referenceRoads.isEmpty, !result.evidenceRows.isEmpty {
+            var inside = 0
+            var outside = 0
+            for row in result.evidenceRows {
+                guard let road = roadForRow(row) else { continue }
+                if referenceRoads.contains(road) { inside += 1 } else { outside += 1 }
+            }
+            if inside + outside >= 2, outside > inside {
+                result.conflicts.append(
+                    "根拠発話の多くが評価路以外の区間（評価路: \(EvalFormTemplate.referenceRoadNames(of: item).joined(separator: ", "))）"
                 )
             }
         }

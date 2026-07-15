@@ -670,8 +670,71 @@ struct EvalFormPluginTests {
         draft.supplementaryComment = "路面続き"
         draft.supplementaryEvidenceRows = [9]
         let csv = EvalFormCSV.render(draft: draft, template: template)
-        #expect(csv.contains("11,ヒョコヒョコ（過減衰感、バネ上の動き）,-0.25,,,\"収まり, 悪い\",3 5,yes,"))
+        #expect(csv.contains("11,ヒョコヒョコ（過減衰感、バネ上の動き）,-0.25,,,\"収まり, 悪い\",3 5,,yes,"))
         #expect(csv.contains("supplementaryComment,路面続き"))
         #expect(csv.contains("supplementaryEvidenceRows,9"))
+    }
+
+    // MARK: - Road provenance
+
+    @Test func roadAssignmentsSpanCalloutToCallout() {
+        let rows = [
+            utterance("それでは始めます"),        // 1: before any callout → nil
+            utterance("D路40キロで入ります"),      // 2: D路 opens
+            utterance("ゴツゴツ強いね"),           // 3: D路
+            utterance("次、F路60キロ"),            // 4: F路 opens
+            utterance("ブルブル来る"),             // 5: F路
+            utterance("もう一度D路に戻ります"),    // 6: D路 (2) → label D路
+        ]
+        let assignments = EvalFormExtractor.roadAssignments(
+            utterances: rows,
+            callouts: template.effectiveRoadCallouts
+        )
+        #expect(assignments == [nil, "D路", "D路", "F路", "F路", "D路"])
+    }
+
+    @Test func referenceRoadCrossCheckFlagsMajorityOutside() {
+        let hyoko = template.items.first { $0.id == "11_hyokohyoko" }!  // 評価路: E3路, F路
+        func merged(_ roads: [Int: String]) -> EvalFormDraft.ItemResult {
+            EvalFormExtractor.merge(
+                item: hyoko, template: template,
+                deterministic: .init(statedScores: [], statedPreference: nil),
+                wire: .init(statedScore: nil, inferredScore: nil,
+                            likeDislike: nil, comment: "c", evidenceRows: [1, 2]),
+                validRowNumbers: [1, 2],
+                roadForRow: { roads[$0] }
+            )
+        }
+        // Both cited rows on a non-reference road → flagged.
+        #expect(merged([1: "D路", 2: "D路"]).conflicts
+            .contains { $0.contains("評価路以外") })
+        // On a reference road → clean.
+        #expect(!merged([1: "F路", 2: "F路"]).conflicts
+            .contains { $0.contains("評価路以外") })
+        // Tie → benefit of the doubt.
+        #expect(!merged([1: "F路", 2: "D路"]).conflicts
+            .contains { $0.contains("評価路以外") })
+        // Single road-assigned row → too little signal.
+        #expect(!merged([1: "D路"]).conflicts
+            .contains { $0.contains("評価路以外") })
+        // No road data at all → check skipped.
+        #expect(!merged([:]).conflicts
+            .contains { $0.contains("評価路以外") })
+    }
+
+    @Test func rendersCarryRoadProvenance() {
+        var draft = EvalFormDraft(templateID: template.id)
+        draft.items = [
+            .init(itemID: "11_hyokohyoko", strengthScore: -0.25,
+                  comment: "c", evidenceRows: [3, 5, 7])
+        ]
+        draft.roadByRow = [3: "D路", 5: "D路", 7: "F路"]
+        let markdown = EvalFormMarkdown.render(
+            draft: draft, template: template, sessionTitle: ""
+        )
+        #expect(markdown.contains("根拠発話: D路 [3] [5] ・ F路 [7]"))
+
+        let csv = EvalFormCSV.render(draft: draft, template: template)
+        #expect(csv.contains("3:D路 5:D路 7:F路"))
     }
 }

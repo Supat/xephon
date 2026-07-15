@@ -47,6 +47,18 @@ public enum EvalFormRunner {
             templateID: template.id,
             generatedAtUtterancesVersion: utterancesVersion
         )
+        // Road provenance from the callout segmentation (empty when
+        // the session has no callouts) — feeds the merge's
+        // reference-road cross-check and the draft's frozen
+        // row→road map for cited rows.
+        let roadAssignments = EvalFormExtractor.roadAssignments(
+            utterances: utterances,
+            callouts: template.effectiveRoadCallouts
+        )
+        func roadForRow(_ row: Int) -> String? {
+            guard row >= 1, row <= roadAssignments.count else { return nil }
+            return roadAssignments[row - 1]
+        }
         // Rows any item claims — the complement feeds 補足コメント.
         var claimedRows = Set<Int>()
         for (index, item) in template.items.enumerated() {
@@ -124,7 +136,8 @@ public enum EvalFormRunner {
                     (row >= 1 && row <= utterances.count)
                         ? utterances[row - 1].transcript
                         : nil
-                }
+                },
+                roadForRow: roadForRow
             )
             if wire == nil {
                 merged.conflicts.append(
@@ -152,6 +165,18 @@ public enum EvalFormRunner {
             utterances: utterances,
             inference: inference
         )
+
+        // Freeze road provenance for every CITED row so the card
+        // and exports render it from the draft, immune to later
+        // transcript edits.
+        if !roadAssignments.isEmpty {
+            var cited = Set(draft.items.flatMap(\.evidenceRows))
+            cited.formUnion(draft.supplementaryEvidenceRows ?? [])
+            let map = cited.reduce(into: [Int: String]()) { acc, row in
+                if let road = roadForRow(row) { acc[row] = road }
+            }
+            draft.roadByRow = map.isEmpty ? nil : map
+        }
         return draft
     }
 

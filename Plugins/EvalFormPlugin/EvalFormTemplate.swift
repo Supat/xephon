@@ -214,6 +214,19 @@ extension EvalFormTemplate {
         try JSONDecoder().decode(EvalFormTemplate.self, from: data)
     }
 
+    /// Canonical road labels for one item's reference roads
+    /// (speeds stripped) — the roads the sheet says this item is
+    /// evaluated on. Compared against callout road labels, so
+    /// packs should keep `referenceRoads` base names and
+    /// `roadCallouts.road` labels consistent.
+    public static func referenceRoadNames(
+        of item: Item
+    ) -> [String] {
+        item.referenceRoads.map { road in
+            road.split(separator: " ").first.map(String.init) ?? road
+        }
+    }
+
     /// The section-detection lexicon: explicit `roadCallouts` when
     /// the pack provides them, else the exact derived labels (one
     /// surface each).

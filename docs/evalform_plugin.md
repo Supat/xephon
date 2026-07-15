@@ -243,6 +243,12 @@ titles; all surfaces of one road count as one road. It assumes
 live-callout protocol speech; courses with different naming
 (e.g. 5ヘルツ路面) are a pack edit, not a code change.
 
+The segmentation also contributes to fill results: cited rows'
+roads are frozen into the draft (`roadByRow`), evidence renders
+grouped by road in the card and exports, and the merge flags
+items whose evidence majority lies outside their 評価路 column
+(soft flag, never a filter).
+
 ## 12. Testing surfaces
 
 - `EvalFormPluginTests` (unit): grammar fixtures, context-window

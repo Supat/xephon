@@ -353,14 +353,59 @@ struct EvalFormCard: View {
     /// pane is narrower and 7 chips + the toggle overflow it.
     private static let evidenceCollapseLimit = 6
 
-    /// Evidence chips: tap = toggle row playback (same semantics
-    /// as a transcript row's play button). An adaptive grid, not
-    /// an HStack — the context window can put dozens of rows
-    /// behind one item, and an overflowing HStack compresses each
-    /// chip into a vertical character stack in the narrow pane.
-    /// Lists longer than ~one line collapse to the first chips
-    /// plus a "+N" expander; expanded lists get a collapse chip.
+    /// Evidence chips, grouped by road provenance when the draft
+    /// carries it (fill-time callout segmentation): a small road
+    /// label heads each group; rows outside any road group under
+    /// "—". Flat grid when the session had no callouts.
+    @ViewBuilder
     private func evidenceChips(_ rows: [Int], key: String) -> some View {
+        let roadByRow = model.draft?.roadByRow ?? [:]
+        if roadByRow.isEmpty {
+            chipGrid(rows, key: key)
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(roadGroups(rows, roadByRow: roadByRow), id: \.road) { group in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: group.road)
+                            .font(.system(size: 8).weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                        chipGrid(group.rows, key: "\(key)|\(group.road)")
+                    }
+                }
+            }
+        }
+    }
+
+    private struct RoadGroup {
+        let road: String
+        let rows: [Int]
+    }
+
+    /// Groups in first-appearance order over the (sorted) evidence
+    /// rows; rows with no assignment land under "—".
+    private func roadGroups(
+        _ rows: [Int],
+        roadByRow: [Int: String]
+    ) -> [RoadGroup] {
+        var order: [String] = []
+        var byRoad: [String: [Int]] = [:]
+        for row in rows {
+            let road = roadByRow[row] ?? "—"
+            if byRoad[road] == nil { order.append(road) }
+            byRoad[road, default: []].append(row)
+        }
+        return order.map { RoadGroup(road: $0, rows: byRoad[$0] ?? []) }
+    }
+
+    /// One flat chip grid with the collapse behaviour. Tap = toggle
+    /// row playback (same semantics as a transcript row's play
+    /// button). An adaptive grid, not an HStack — the context
+    /// window can put dozens of rows behind one item, and an
+    /// overflowing HStack compresses each chip into a vertical
+    /// character stack in the narrow pane. Lists longer than ~one
+    /// line collapse to the first chips plus a "+N" expander;
+    /// expanded lists get a collapse chip.
+    private func chipGrid(_ rows: [Int], key: String) -> some View {
         let isExpanded = expandedEvidenceKeys.contains(key)
         // No toggle when it would hide a single chip — showing the
         // chip costs the same space as the "+1".
