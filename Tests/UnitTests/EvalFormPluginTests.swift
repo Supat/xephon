@@ -349,6 +349,68 @@ struct EvalFormPluginTests {
         #expect(decoded.supplementaryEvidenceRows == nil)
     }
 
+    // MARK: - Undetected coverage
+
+    /// A draft mirroring the first real trial's shape: some items
+    /// inferred-only, one mentioned without fields, some untouched,
+    /// partial metadata.
+    private var gappyDraft: EvalFormDraft {
+        var draft = EvalFormDraft(templateID: template.id)
+        draft.items = [
+            // Stated score + comment, no preference.
+            .init(itemID: "11_hyokohyoko", strengthScore: -0.25,
+                  comment: "c", evidenceRows: [3]),
+            // Inferred-only + comment.
+            .init(itemID: "12_buruburu", strengthScoreInferred: -0.75,
+                  comment: "c", evidenceRows: [5]),
+            // Evidence but nothing filled — mentioned, all missing.
+            .init(itemID: "13_gotsugotsu", evidenceRows: [7]),
+            // 10_flat, 13_biribiri, 14_harshness untouched.
+        ]
+        draft.metadata = ["評価車両": "ティグアン"]
+        return draft
+    }
+
+    @Test func coverageListsMissingTargetsPerScope() {
+        let undetected = EvalFormCoverage.undetected(
+            draft: gappyDraft,
+            template: template
+        )
+        // Header: every field except the one extracted.
+        #expect(!undetected.missingHeaderFields.contains("評価車両"))
+        #expect(undetected.missingHeaderFields.contains("天気"))
+
+        let byID = Dictionary(
+            uniqueKeysWithValues: undetected.items.map { ($0.itemID, $0) }
+        )
+        // Complete miss on stated score is qualified by an inferred
+        // suggestion when one exists.
+        #expect(EvalFormCoverage.gapPhrase(byID["11_hyokohyoko"]!) == "好き嫌い")
+        #expect(EvalFormCoverage.gapPhrase(byID["12_buruburu"]!)
+            == "評点（推定のみ・要確認）, 好き嫌い")
+        #expect(EvalFormCoverage.gapPhrase(byID["13_gotsugotsu"]!)
+            == "評点, 好き嫌い, コメント")
+        // Untouched items read as not mentioned at all.
+        #expect(EvalFormCoverage.gapPhrase(byID["14_harshness"]!) == "言及なし")
+        #expect(byID["10_flat"]?.mentioned == false)
+    }
+
+    @Test func rendersIncludeUndetectedSection() {
+        let markdown = EvalFormMarkdown.render(
+            draft: gappyDraft,
+            template: template,
+            sessionTitle: ""
+        )
+        #expect(markdown.contains("## 未検出（要手動記入）"))
+        #expect(markdown.contains("- ヘッダ: "))
+        #expect(markdown.contains("14. ハーシュネス（ショック・ノイズ・減衰）: 言及なし"))
+
+        let csv = EvalFormCSV.render(draft: gappyDraft, template: template)
+        #expect(csv.contains("undetected,scope,missing"))
+        #expect(csv.contains("undetected,14,言及なし"))
+        #expect(csv.contains("undetected,12,\"評点（推定のみ・要確認）, 好き嫌い\""))
+    }
+
     // MARK: - CSV
 
     @Test func csvEscapesQuotesCommasAndNewlines() {

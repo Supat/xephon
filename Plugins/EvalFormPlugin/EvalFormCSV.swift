@@ -46,6 +46,30 @@ public enum EvalFormCSV {
                 ]))
             }
         }
+
+        // Undetected block — the reviewer's to-fill list, one row
+        // per scope so it filters cleanly in a spreadsheet.
+        let undetected = EvalFormCoverage.undetected(
+            draft: draft,
+            template: template
+        )
+        if !undetected.isEmpty {
+            lines.append("")
+            lines.append(row(["undetected", "scope", "missing"]))
+            if !undetected.missingHeaderFields.isEmpty {
+                lines.append(row([
+                    "undetected", "header",
+                    undetected.missingHeaderFields.joined(separator: " "),
+                ]))
+            }
+            for gaps in undetected.items {
+                let number = template.items
+                    .first { $0.id == gaps.itemID }?.number ?? gaps.itemID
+                lines.append(row([
+                    "undetected", number, EvalFormCoverage.gapPhrase(gaps),
+                ]))
+            }
+        }
         return lines.joined(separator: "\n")
     }
 
