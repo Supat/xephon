@@ -24,7 +24,7 @@ struct PluginsCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(registry.entries) { entry in
                 HStack(spacing: 8) {
-                    Text(entry.displayName)
+                    Text(entry.properName)
                         .font(.caption)
                         .lineLimit(1)
                     Spacer(minLength: 8)

@@ -80,7 +80,10 @@ goes through it:
 ```swift
 public protocol XephonPlugin: Sendable {
     static var id: PluginID { get }          // reverse-DNS-ish, stable
-    static var displayName: String { get }   // localized
+    static var displayName: String { get }   // localized (page titles)
+    static var properName: String { get }    // formal name, localizable
+                                             // (Settings list); defaults
+                                             // to displayName
     static var payloadVersion: Int { get }   // for .xph payload migration
     @MainActor func activate(host: any PluginHost) -> PluginHandle
 }

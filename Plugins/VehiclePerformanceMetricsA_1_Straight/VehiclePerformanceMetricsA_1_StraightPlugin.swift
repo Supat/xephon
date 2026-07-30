@@ -14,6 +14,10 @@ public struct VehiclePerformanceMetricsA_1_StraightPlugin: XephonPlugin {
     public static var displayName: String {
         String(localized: "evalform.displayName", bundle: .module)
     }
+    /// The formal sheet name (Settings plugins list).
+    public static var properName: String {
+        String(localized: "evalform.properName", bundle: .module)
+    }
     /// v2 added `reviewedItemIDs` to the draft; v1 payloads migrate
     /// on read (see `EvalFormDraft.restore(data:storedVersion:)`).
     public static let payloadVersion = 2

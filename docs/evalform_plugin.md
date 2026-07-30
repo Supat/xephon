@@ -22,8 +22,11 @@ pack. Registered unconditionally in `xephonInstalledPlugins()`
 (Xephon/PluginHost/InstalledPlugins.swift) — it ships in Release
 builds, next to the Debug-only sample plugin.
 
-Identity: `PluginID("xephon.vehicle-performance-metrics-a-1-straight")`, display name 官能評価シート
-/ "Evaluation Form", `payloadVersion 2`.
+Identity: `PluginID("xephon.vehicle-performance-metrics-a-1-straight")`, proper name
+車両評価性能指標Ａ－１ (直線路走行専用) / "Vehicle Performance
+Metrics A-1 (Straight Track)" (Settings plugins list), display
+name 官能評価シート / "Evaluation Form" (page title),
+`payloadVersion 2`.
 
 ## 2. Module boundary
 

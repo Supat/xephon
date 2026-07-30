@@ -65,6 +65,22 @@
         }
       }
     },
+    "evalform.properName" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vehicle Performance Metrics A-1 (Straight Track)"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "車両評価性能指標Ａ－１ (直線路走行専用)"
+          }
+        }
+      }
+    },
     "evalform.error.badPack" : {
       "localizations" : {
         "en" : {

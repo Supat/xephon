@@ -33,8 +33,14 @@ public protocol XephonPlugin: Sendable {
     /// this — changing it orphans previously-saved plugin data.
     static var id: PluginID { get }
 
-    /// Localized, user-facing name (settings list, page titles).
+    /// Localized, user-facing name (page titles).
     static var displayName: String { get }
+
+    /// Formal product name, shown where the plugin is identified
+    /// as a component rather than a feature (the Settings plugins
+    /// list). Localizable. Defaults to `displayName`; override
+    /// when the two differ.
+    static var properName: String { get }
 
     /// Version stamped onto every `.xph` payload this plugin
     /// writes. Bump on incompatible payload changes; the previously
@@ -47,6 +53,10 @@ public protocol XephonPlugin: Sendable {
     /// enabled. The returned handle carries the plugin's event
     /// callback and is retained by the registry until deactivation.
     @MainActor func activate(host: any PluginHost) -> PluginHandle
+}
+
+extension XephonPlugin {
+    public static var properName: String { displayName }
 }
 
 /// What `activate(host:)` hands back: the plugin's live surface as

@@ -24,6 +24,7 @@ final class PluginRegistry {
         var pluginType: any XephonPlugin.Type { type(of: plugin) }
         var id: String { pluginType.id.rawValue }
         var displayName: String { pluginType.displayName }
+        var properName: String { pluginType.properName }
         var isActive: Bool { handle != nil }
     }
 
