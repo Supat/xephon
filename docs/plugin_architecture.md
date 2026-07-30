@@ -169,7 +169,7 @@ Maps the pipeline from `docs/eval_form_autofill_research.md` onto the API:
 | spoken-score capture | plugin-internal (regex/lexicon over snapshot rows) |
 | LLM field extraction | `InferenceService.generate(prompt:schema:)` — stated-vs-inferred / null-first / evidence-rows policy from the research doc |
 | draft form + review state | `PluginStorage` session payload (versioned) |
-| review UI (field ↔ row ↔ audio) | plugin control-pane page + sheet; row playback via a `SessionReading.requestPlayback(row:)` host call |
+| review UI (field ↔ row ↔ audio) | plugin control-pane page + sheet; evidence taps reveal the row via the `PluginHost.requestReveal` host call |
 | export (markdown/CSV) | `ExportRegistering` |
 
 The plugin ships with the A-1 template embedded as its default pack, so the

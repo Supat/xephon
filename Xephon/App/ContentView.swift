@@ -221,7 +221,9 @@ struct ContentView: View {
             .modifier(PluginWiringModifier(
                 recorder: recorder,
                 filePicker: filePicker,
-                pluginRegistry: pluginRegistry
+                pluginRegistry: pluginRegistry,
+                selectedUtteranceID: $selectedUtteranceID,
+                scrollRequestUtteranceID: $scrollRequestUtteranceID
             ))
             .modifier(SessionFileBridge(
                 recorder: recorder,
@@ -420,6 +422,11 @@ private struct PluginWiringModifier: ViewModifier {
     let recorder: RecordingController
     let filePicker: FilePickerCoordinator
     let pluginRegistry: PluginRegistry
+    /// Written by plugin `requestReveal` calls — the same
+    /// select-then-scroll pair the app's own cards write on node
+    /// taps (see SERAggregateCard / SpeakerClusterCard handlers).
+    @Binding var selectedUtteranceID: UUID?
+    @Binding var scrollRequestUtteranceID: UUID?
 
     func body(content: Content) -> some View {
         content
@@ -428,7 +435,11 @@ private struct PluginWiringModifier: ViewModifier {
                     xephonInstalledPlugins(),
                     host: PluginHostServices(
                         recorder: recorder,
-                        filePicker: filePicker
+                        filePicker: filePicker,
+                        onRevealUtterance: { id in
+                            selectedUtteranceID = id
+                            scrollRequestUtteranceID = id
+                        }
                     )
                 )
                 recorder.pluginEventSink = { [weak pluginRegistry] event in

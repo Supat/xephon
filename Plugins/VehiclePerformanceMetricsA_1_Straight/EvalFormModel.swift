@@ -221,11 +221,12 @@ public final class EvalFormModel {
 
     // MARK: - Row helpers + export
 
-    /// Toggle playback of a 1-based session row (evidence chip tap).
-    public func playRow(_ row: Int) {
+    /// Jump the transcript list to a 1-based session row and
+    /// highlight it (evidence chip tap).
+    public func revealRow(_ row: Int) {
         let utterances = host.session.snapshot().utterances
         guard row >= 1, row <= utterances.count else { return }
-        host.requestPlayback(utteranceID: utterances[row - 1].id)
+        host.requestReveal(utteranceID: utterances[row - 1].id)
     }
 
     public func transcript(forRow row: Int) -> String? {

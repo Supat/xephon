@@ -13,7 +13,7 @@ Companions: `docs/eval_form_autofill_research.md` (design rationale),
 2. **Null-first.** Emptiness is cheap at every layer (schema,
    merge, render) so nothing is filled to please.
 3. **Evidence on everything.** Every filled field carries 1-based
-   utterance row numbers; the UI plays them on tap.
+   utterance row numbers; the UI reveals them in the transcript on tap.
 4. **Deterministic beats generative.** Regex-captured values are
    ground truth; the model cannot override them, only fill gaps.
 5. **Degrade loudly, never sink the run.** A failed pass yields a
@@ -274,7 +274,7 @@ Card, top to bottom: header metadata → per-item rows → 補足コメント
 axes as printed — 強い −1…+1 弱い with 0.125 minor ticks, and
 嫌い 1…9 好き. Marker coding: solid tint = stated; orange (+`?`
 badge) = inferred suggestion; empty track = undetected. Evidence
-chips (tap = row playback) wrap in an adaptive grid and collapse
+chips (tap = jump + highlight the transcript row) wrap in an adaptive grid and collapse
 past 6 chips behind a "+N" expander; when the draft carries road
 provenance the chips group under small road labels and the item
 gains a 走行路 line listing the distinct full road names its

@@ -18,11 +18,20 @@ final class PluginHostServices: PluginHost {
     /// while ContentView is mid-reconstruction.
     private let filePicker: FilePickerCoordinator
     private let inferenceAdapter: PluginInferenceAdapter
+    /// Writes ContentView's select + scroll-request bindings —
+    /// view state stays out of this object (and off the recorder,
+    /// which deliberately carries none).
+    private let onRevealUtterance: @MainActor (UUID) -> Void
 
-    init(recorder: RecordingController, filePicker: FilePickerCoordinator) {
+    init(
+        recorder: RecordingController,
+        filePicker: FilePickerCoordinator,
+        onRevealUtterance: @escaping @MainActor (UUID) -> Void
+    ) {
         self.recorder = recorder
         self.filePicker = filePicker
         self.inferenceAdapter = PluginInferenceAdapter(recorder: recorder)
+        self.onRevealUtterance = onRevealUtterance
     }
 
     var session: any SessionReading { self }
@@ -47,6 +56,16 @@ final class PluginHostServices: PluginHost {
             return
         }
         recorder.togglePlayback(for: utterance)
+    }
+
+    func requestReveal(utteranceID: UUID) {
+        guard recorder.utterances.contains(where: { $0.id == utteranceID }) else {
+            AppLog.app.warning(
+                "plugin requestReveal: unknown utterance \(utteranceID, privacy: .public)"
+            )
+            return
+        }
+        onRevealUtterance(utteranceID)
     }
 }
 

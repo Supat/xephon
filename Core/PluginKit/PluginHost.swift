@@ -28,6 +28,13 @@ public protocol PluginHost: AnyObject {
     /// No-op when the id doesn't resolve or the session has no
     /// playable audio (mic-mode sessions don't).
     func requestPlayback(utteranceID: UUID)
+    /// Scroll the app's transcript list to the utterance with `id`
+    /// and select it (same jump-and-highlight the app's own
+    /// analysis cards perform on node taps). No-op when the id
+    /// doesn't resolve. Note the row may still be hidden if the
+    /// user has a transcript filter active that excludes it —
+    /// matching the app-internal jump paths.
+    func requestReveal(utteranceID: UUID)
 }
 
 // MARK: - Session reading

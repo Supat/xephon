@@ -2,7 +2,8 @@ import SwiftUI
 import XephonPluginKit
 
 /// The plugin's control-pane page: coverage readout, run control,
-/// and the per-item review list with evidence-row playback. Scores
+/// and the per-item review list with evidence-row reveal (chip tap
+/// jumps + highlights the transcript row). Scores
 /// follow the visual policy: stated values plain, inferred values
 /// marked and tinted, conflicts called out.
 struct EvalFormCard: View {
@@ -405,9 +406,9 @@ struct EvalFormCard: View {
         return order.map { RoadGroup(road: $0, rows: byRoad[$0] ?? []) }
     }
 
-    /// One flat chip grid with the collapse behaviour. Tap = toggle
-    /// row playback (same semantics as a transcript row's play
-    /// button). An adaptive grid, not an HStack — the context
+    /// One flat chip grid with the collapse behaviour. Tap = jump
+    /// the transcript list to that row and highlight it (host
+    /// reveal). An adaptive grid, not an HStack — the context
     /// window can put dozens of rows behind one item, and an
     /// overflowing HStack compresses each chip into a vertical
     /// character stack in the narrow pane. Lists longer than ~one
@@ -428,7 +429,7 @@ struct EvalFormCard: View {
         ) {
             ForEach(visible, id: \.self) { row in
                 Button {
-                    model.playRow(row)
+                    model.revealRow(row)
                 } label: {
                     Text(verbatim: "[\(row)]")
                         .font(.caption2.monospacedDigit())

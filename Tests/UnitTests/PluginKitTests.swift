@@ -67,6 +67,7 @@ struct PluginKitTests {
                                 ImportPresenting, SessionAnnotating {
         let store: PluginPayloadStore
         private(set) var playbackRequests: [UUID] = []
+        private(set) var revealRequests: [UUID] = []
         private(set) var exportedData: [Data] = []
         private(set) var proposedSections: [PluginSectionProposal] = []
         /// Bytes the next `presentImport` hands back; nil → cancelled.
@@ -93,6 +94,10 @@ struct PluginKitTests {
 
         func requestPlayback(utteranceID: UUID) {
             playbackRequests.append(utteranceID)
+        }
+
+        func requestReveal(utteranceID: UUID) {
+            revealRequests.append(utteranceID)
         }
 
         func contributeKeywords(_ seeds: [PluginKeywordSeed], groupName: String) {
@@ -235,6 +240,9 @@ struct PluginKitTests {
         let rowID = UUID()
         host.requestPlayback(utteranceID: rowID)
         #expect(host.playbackRequests == [rowID])
+
+        host.requestReveal(utteranceID: rowID)
+        #expect(host.revealRequests == [rowID])
 
         var outcome: PluginExportOutcome?
         host.presentExport(

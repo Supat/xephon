@@ -113,7 +113,7 @@ pack are untouched.
 | `ImportPresenting.presentImport` | template-pack JSON import (host owns security scopes; the plugin receives bytes) |
 | `SessionAnnotating.contributeKeywords` | vocabulary seeding (§4) |
 | `SessionAnnotating.proposeSections` | road-section proposals (§11) |
-| `PluginHost.requestPlayback` | evidence-chip taps → row audio, same semantics as a transcript row's play button |
+| `PluginHost.requestReveal` | evidence-chip taps → transcript list jumps to the row and highlights it |
 
 Deliberately NOT used: no network, no ML runtime, no file paths —
 none are reachable from the module, which is the point.
@@ -136,7 +136,7 @@ none are reachable from the module, which is the point.
 - Actions: `run()` (gates → `EvalFormRunner.fill` inside the batch
   → persist), `importTemplatePack()` / `resetTemplateToDefault()`,
   `detectRoadSections()`, `toggleReviewed(_:)` / `isReviewed(_:)`,
-  `playRow(_:)`, `exportMarkdown()` / `exportCSV()`.
+  `revealRow(_:)`, `exportMarkdown()` / `exportCSV()`.
 
 `run()` catches only cancellation (abort, keep the previous
 draft); every other failure is absorbed per-stage by the runner
@@ -196,7 +196,7 @@ the plugin ships one glass card:
    majors, 嫌い 1…9 好き — marker coding matching the badge; the
    a 走行路 line listing the full road names the item's evidence
    came from (when road provenance exists); the comment; evidence
-   chips (adaptive grid, tap = playback, collapsed past 6 behind
+   chips (adaptive grid, tap = reveal in transcript, collapsed past 6 behind
    "+N", grouped under small road labels when provenance exists);
    orange conflict notes (revision trails, llmFailed, 極性要確認,
    評価路以外).
