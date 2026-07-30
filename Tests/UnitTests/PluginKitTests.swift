@@ -4,7 +4,7 @@ import Testing
 import UniformTypeIdentifiers
 @testable import Xephon
 import XephonPluginKit
-import EvalFormPlugin
+import VehiclePerformanceMetricsA_1_Straight
 import Export
 
 /// Phase 0 exit tests for the plugin architecture
@@ -246,11 +246,11 @@ struct PluginKitTests {
         #expect(host.exportedData == [Data("x".utf8)])
     }
 
-    // MARK: - Phase 2: EvalFormPlugin integration
+    // MARK: - Phase 2: A1 Eval plugin integration
 
     @Test func evalFormPluginActivatesWithContributions() {
         let host = StubPluginHost(store: PluginPayloadStore())
-        let handle = EvalFormPlugin().activate(host: host)
+        let handle = VehiclePerformanceMetricsA_1_StraightPlugin().activate(host: host)
         #expect(handle.pages.count == 1)
         #expect(handle.menuCommands.count == 1)
         // Activation seeds the sheet vocabulary into the bank.

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import Fusion
-@testable import EvalFormPlugin
+@testable import VehiclePerformanceMetricsA_1_Straight
 
 /// Pins the deterministic tier of the eval-form pipeline — the
 /// spoken-score grammar, candidate matching, the merge policy, and

@@ -8,7 +8,7 @@ import XephonLogging
 /// observable state, snapshot reads, payload persistence through
 /// Save → Open, a control-pane page, row playback, a text export
 /// through the root picker, and a File-menu item. It is the living
-/// example for plugin authors until EvalFormPlugin exists — keep it
+/// example for plugin authors until the A1 Eval plugin (VehiclePerformanceMetricsA_1_Straight) exists — keep it
 /// small and idiomatic.
 ///
 /// Deliberately NOT localized beyond `String(localized:)` pass-

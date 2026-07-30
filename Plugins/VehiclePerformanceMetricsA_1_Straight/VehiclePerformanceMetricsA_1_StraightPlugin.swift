@@ -2,14 +2,15 @@ import Foundation
 import SwiftUI
 import XephonPluginKit
 
-/// The evaluation-form auto-fill plugin — first shipped consumer of
-/// the plugin architecture (docs/plugin_architecture.md §5, design
-/// in docs/eval_form_autofill_research.md). Fills the A-1 ride-
+/// The evaluation-form auto-fill plugin ("A1 Eval" for short) —
+/// first shipped consumer of the plugin architecture
+/// (docs/plugin_architecture.md §5, design in
+/// docs/eval_form_autofill_research.md). Fills the A-1 ride-
 /// quality sheet from the session transcript: deterministic
 /// spoken-score capture first, schema-constrained per-item LLM
 /// extraction second, human review always.
-public struct EvalFormPlugin: XephonPlugin {
-    public static let id = PluginID("xephon.evalform")
+public struct VehiclePerformanceMetricsA_1_StraightPlugin: XephonPlugin {
+    public static let id = PluginID("xephon.vehicle-performance-metrics-a-1-straight")
     public static var displayName: String {
         String(localized: "evalform.displayName", bundle: .module)
     }
@@ -30,7 +31,7 @@ public struct EvalFormPlugin: XephonPlugin {
             onSessionEvent: { model.handle($0) },
             pages: [
                 PluginPageDescriptor(
-                    id: "xephon.evalform.page",
+                    id: "xephon.vehicle-performance-metrics-a-1-straight.page",
                     title: Self.displayName,
                     systemImage: "checklist"
                 ) {
@@ -39,7 +40,7 @@ public struct EvalFormPlugin: XephonPlugin {
             ],
             menuCommands: [
                 PluginMenuCommand(
-                    id: "xephon.evalform.export",
+                    id: "xephon.vehicle-performance-metrics-a-1-straight.export",
                     title: String(localized: "evalform.menu.export", bundle: .module),
                     systemImage: "checklist",
                     isEnabled: { model.canExport }

@@ -1,6 +1,10 @@
-# EvalFormPlugin — how the evaluation plugin works
+# VehiclePerformanceMetricsA_1_Straight — how the evaluation plugin works
 
-Component reference for `Plugins/EvalFormPlugin/` as built
+> Short name: **A1 Eval**. Renamed from `EvalFormPlugin` (module) /
+> `xephon.evalform` (plugin ID) on 2026-07-30; user-facing display
+> names (官能評価シート / Evaluation Form) are unchanged.
+
+Component reference for `Plugins/VehiclePerformanceMetricsA_1_Straight/` as built
 (2026-07-15): structure, lifecycle, host integration, state, UI,
 persistence, and extension points. The extraction *algorithm*
 (candidate selection → deterministic tier → LLM tier → merge) has
@@ -18,13 +22,13 @@ pack. Registered unconditionally in `xephonInstalledPlugins()`
 (Xephon/PluginHost/InstalledPlugins.swift) — it ships in Release
 builds, next to the Debug-only sample plugin.
 
-Identity: `PluginID("xephon.evalform")`, display name 官能評価シート
+Identity: `PluginID("xephon.vehicle-performance-metrics-a-1-straight")`, display name 官能評価シート
 / "Evaluation Form", `payloadVersion 2`.
 
 ## 2. Module boundary
 
-`EvalFormPlugin` is an SPM target (Package.swift → path
-`Plugins/EvalFormPlugin`) depending ONLY on:
+`VehiclePerformanceMetricsA_1_Straight` is an SPM target (Package.swift → path
+`Plugins/VehiclePerformanceMetricsA_1_Straight`) depending ONLY on:
 
 - `XephonPluginKit` — the frozen host API (its sole window into
   the app),
@@ -43,7 +47,7 @@ live in the target's own catalog
 
 | File | Role |
 |---|---|
-| `EvalFormPlugin.swift` | `XephonPlugin` conformance: activation, keyword seeding, page + menu contribution |
+| `VehiclePerformanceMetricsA_1_StraightPlugin.swift` | `XephonPlugin` conformance: activation, keyword seeding, page + menu contribution |
 | `EvalFormModel.swift` | `@MainActor @Observable` state: phase, draft, template lifecycle, run entry, exports, review toggles |
 | `EvalFormTemplate.swift` | the data-pack schema (`Codable`) + the embedded A-1 default (items, scales incl. ※ rubric anchors, metadata fields/cues) |
 | `EvalFormRunner.swift` | headless fill pipeline (shared by the plugin page and the eval harness) |
@@ -76,9 +80,9 @@ default on.
    evaluation vocabulary even if the user never runs a fill.
 3. A `PluginHandle` is returned carrying:
    - the session-event callback → `model.handle(_:)`;
-   - one page descriptor (`xephon.evalform.page`, checklist icon)
+   - one page descriptor (`xephon.vehicle-performance-metrics-a-1-straight.page`, checklist icon)
      whose content closure builds `EvalFormCard(model:)`;
-   - one menu command (`xephon.evalform.export`, File menu,
+   - one menu command (`xephon.vehicle-performance-metrics-a-1-straight.export`, File menu,
      "評価シートを書き出す…") gated by `isEnabled: { model.canExport }`
      — reading the model's observable state at menu render keeps
      the item live.

@@ -1,7 +1,7 @@
 # LLM-based auto-fill of the vehicle sensory-evaluation form — research & design options
 
 **Status:** implemented — the recommended design (option A+D) ships
-as EvalFormPlugin on the `plugin-arch` branch. This document is
+as VehiclePerformanceMetricsA_1_Straight on the `plugin-arch` branch. This document is
 the design rationale; the as-built references are
 `docs/evalform_plugin.md` (component) and
 `docs/evalform_pipeline.md` (extraction mechanics). The §6

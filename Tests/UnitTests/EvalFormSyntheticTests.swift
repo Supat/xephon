@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import XephonPluginKit
-@testable import EvalFormPlugin
+@testable import VehiclePerformanceMetricsA_1_Straight
 
 /// Pins the synthetic known-answer harness itself plus the
 /// deterministic-tier BASELINE: with the LLM tier failing entirely,

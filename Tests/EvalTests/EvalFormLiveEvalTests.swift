@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import XephonPluginKit
 import Summarizer
-@testable import EvalFormPlugin
+@testable import VehiclePerformanceMetricsA_1_Straight
 
 /// Live model eval over synthetic known-answer sessions — the
 /// model-independent-of-human-evaluator harness. Runs the FULL

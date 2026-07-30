@@ -49,7 +49,7 @@ struct XephonApp: App {
     /// Installed-plugin registry (docs/plugin_architecture.md).
     /// Same construct-once reasoning as `recorder` above. The
     /// install list is intentionally hardcoded and currently empty —
-    /// the first shipped plugin (EvalForm, Phase 2) adds itself
+    /// the first shipped plugin (A1 Eval, Phase 2) adds itself
     /// here; test plugins live in the test target only.
     @State private var pluginRegistry = PluginRegistry()
 

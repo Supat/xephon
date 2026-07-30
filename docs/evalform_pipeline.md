@@ -1,6 +1,6 @@
-# EvalForm pipeline — how a session becomes a filled evaluation sheet
+# A1 Eval pipeline — how a session becomes a filled evaluation sheet
 
-Reference for `Plugins/EvalFormPlugin/` as built (2026-07-15).
+Reference for `Plugins/VehiclePerformanceMetricsA_1_Straight/` as built (2026-07-15).
 Companions: `docs/eval_form_autofill_research.md` (design rationale),
 `docs/plugin_architecture.md` (the host it runs on),
 `docs/eval_log.md` (trial results + harness usage).

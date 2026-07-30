@@ -77,7 +77,7 @@ public final class EvalFormModel {
     }
 
     private var storage: any PluginStorage {
-        host.storage(for: EvalFormPlugin.self)
+        host.storage(for: VehiclePerformanceMetricsA_1_StraightPlugin.self)
     }
 
     private func restoreDraft() {

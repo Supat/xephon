@@ -1,6 +1,6 @@
 import Foundation
 import XephonPluginKit
-import EvalFormPlugin
+import VehiclePerformanceMetricsA_1_Straight
 
 /// THE compile-time plugin install list (docs/plugin_architecture.md
 /// §2 — no runtime discovery on purpose; adding a plugin is a
@@ -13,7 +13,7 @@ import EvalFormPlugin
 /// project.yml), so normal sideloads don't show it.
 @MainActor
 func xephonInstalledPlugins() -> [any XephonPlugin] {
-    var plugins: [any XephonPlugin] = [EvalFormPlugin()]
+    var plugins: [any XephonPlugin] = [VehiclePerformanceMetricsA_1_StraightPlugin()]
     #if DEBUG
     plugins.append(DebugSamplePlugin())
     #endif

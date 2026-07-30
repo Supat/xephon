@@ -1,7 +1,7 @@
 import Foundation
 
 /// Stable identifier for a plugin. Reverse-DNS-ish by convention
-/// (`"xephon.evalform"`), used as the key for `.xph` payload
+/// (`"xephon.vehicle-performance-metrics-a-1-straight"`), used as the key for `.xph` payload
 /// namespacing, settings namespacing, and log categories — so it
 /// must never change once a plugin has shipped payloads.
 public struct PluginID: RawRepresentable, Hashable, Sendable, Codable,

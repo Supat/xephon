@@ -3,7 +3,7 @@
 **Status (2026-07-16):** Phases 0–3 implemented on `plugin-arch`.
 Phase 0 (seams, registry, payloads) → Phase 1 (page/menu/export
 slots, DebugSamplePlugin) → Phase 2 (inference carve-out,
-EvalFormPlugin) → Phase 3 (persistent plugin storage, import
+VehiclePerformanceMetricsA_1_Straight) → Phase 3 (persistent plugin storage, import
 service, section proposals, template-pack import, payload v1→v2
 migration exercise). Notable deltas from the plan as written:
 session events are a `PluginHandle` callback rather than an
@@ -55,7 +55,7 @@ Package.swift
   ├─ XephonPluginKit        NEW — plugin protocol + host service protocols.
   │                          Depends only on Fusion/Export value types.
   ├─ Plugins/
-  │   └─ EvalFormPlugin     NEW — first plugin. Depends on XephonPluginKit
+  │   └─ VehiclePerformanceMetricsA_1_Straight     NEW — first plugin. Depends on XephonPluginKit
   │                          (+ XephonUtilities). Never on the app target.
   └─ (existing Core targets unchanged)
 
@@ -69,7 +69,7 @@ Xephon app target
 ```
 
 Registration is a hardcoded array in `XephonApp` (`PluginRegistry.install
-([EvalFormPlugin()])`). No discovery magic; adding a plugin is a one-line
+([VehiclePerformanceMetricsA_1_StraightPlugin()])`). No discovery magic; adding a plugin is a one-line
 diff plus a `project.yml` target entry.
 
 ## 3. The host API (XephonPluginKit)
@@ -157,7 +157,7 @@ services.
    enable/disable toggles (disabled = not activated at startup; its `.xph`
    payloads still round-trip opaquely).
 
-## 5. First plugin: EvalFormPlugin
+## 5. First plugin: VehiclePerformanceMetricsA_1_Straight
 
 Maps the pipeline from `docs/eval_form_autofill_research.md` onto the API:
 
@@ -184,7 +184,7 @@ day one.
   repo needs to add logic without building the app.
 - **No big-bang retrofit** of existing features (keywords, sections,
   summarizer) into plugins. The boundary is proven by *new* code first.
-  After EvalFormPlugin ships, retrofit candidates get assessed one at a
+  After VehiclePerformanceMetricsA_1_Straight ships, retrofit candidates get assessed one at a
   time — likely first candidate: the keyword-review sheet, which already
   has the shape of a plugin (own model, own sheet, session-scoped state).
 - **No plugin marketplace/versioned ABI concerns** — everything compiles
@@ -201,7 +201,7 @@ day one.
 - **Phase 1 — UI + export slots.** Page injection, menu descriptors,
   exporter registration, `requestPlayback`. Exit: HelloPlugin shows a page
   with live session data and exports a text file through the root picker.
-- **Phase 2 — EvalFormPlugin.** Per §5, template pack + deterministic
+- **Phase 2 — VehiclePerformanceMetricsA_1_Straight.** Per §5, template pack + deterministic
   passes + LLM extraction + review UI + exports; ground-truth eval per the
   research doc's §6, numbers to `docs/eval_log.md`.
 - **Phase 3 — hardening + second consumer.** Template-pack import UX,

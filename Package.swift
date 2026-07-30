@@ -36,7 +36,7 @@ let package = Package(
                 "Export",
                 "Summarizer",
                 "XephonPluginKit",
-                "EvalFormPlugin",
+                "VehiclePerformanceMetricsA_1_Straight",
             ]
         ),
         .library(name: "Audio",            targets: ["Audio"]),
@@ -51,7 +51,7 @@ let package = Package(
         .library(name: "XephonLogging",    targets: ["XephonLogging"]),
         .library(name: "XephonUtilities",  targets: ["XephonUtilities"]),
         .library(name: "XephonPluginKit",  targets: ["XephonPluginKit"]),
-        .library(name: "EvalFormPlugin",   targets: ["EvalFormPlugin"]),
+        .library(name: "VehiclePerformanceMetricsA_1_Straight", targets: ["VehiclePerformanceMetricsA_1_Straight"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.5.0"),
@@ -166,14 +166,14 @@ let package = Package(
             // transcript. Depends on the plugin API + value-type
             // modules ONLY — the app target is unreachable from
             // here by construction.
-            name: "EvalFormPlugin",
+            name: "VehiclePerformanceMetricsA_1_Straight",
             dependencies: [
                 "XephonLogging",
                 "XephonUtilities",
                 "Fusion",
                 "XephonPluginKit",
             ],
-            path: "Plugins/EvalFormPlugin",
+            path: "Plugins/VehiclePerformanceMetricsA_1_Straight",
             resources: [.process("Resources")]
         ),
         .target(
