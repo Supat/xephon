@@ -144,6 +144,19 @@ public enum EvalFormRunner {
                     String(localized: "evalform.conflict.llmFailed", bundle: .module)
                 )
             }
+            // Tier 3a: inferred 好き嫌い via its own tiny call so
+            // its looser instructions can't condition the item
+            // extraction above. Only when nothing was stated;
+            // single attempt — additive, a failure degrades to
+            // an empty cell, never sinks the run.
+            if merged.likeDislike == nil {
+                merged.likeDislikeInferred = await inferPreference(
+                    item: item,
+                    template: template,
+                    rows: Array(promptRows),
+                    inference: inference
+                )
+            }
             draft.items.append(merged)
         }
 
@@ -178,6 +191,40 @@ public enum EvalFormRunner {
             draft.roadByRow = map.isEmpty ? nil : map
         }
         return draft
+    }
+
+    /// The per-item inferred-好き嫌い call (Tier 3a). Same rows as
+    /// the item extraction, its own prompt/schema. Range-gated by
+    /// `acceptedInferredPreference`; any failure (incl. a
+    /// cancellation mid-call — the item loop's next generate or
+    /// checkCancellation ends the run) degrades to nil.
+    private static func inferPreference(
+        item: EvalFormTemplate.Item,
+        template: EvalFormTemplate,
+        rows: [(number: Int, speakerID: String, transcript: String)],
+        inference: any InferenceService
+    ) async -> Int? {
+        let prompt = EvalFormExtractor.preferencePrompt(
+            item: item,
+            template: template,
+            rows: rows
+        )
+        do {
+            let raw = try await inference.generate(
+                prompt: prompt,
+                schemaJSON: EvalFormExtractor.preferenceSchemaJSON,
+                maxOutputTokens: 128
+            )
+            return EvalFormExtractor.acceptedInferredPreference(
+                EvalFormExtractor.parsePreferenceResponse(raw),
+                template: template
+            )
+        } catch {
+            AppLog.app.warning(
+                "EvalForm item \(item.id, privacy: .public) preference infer failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
     }
 
     /// 補足コメント over the substantive rows no item claimed.

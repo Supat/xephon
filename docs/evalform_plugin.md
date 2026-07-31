@@ -194,9 +194,10 @@ the plugin ships one glass card:
    time). Post-run this is replaced by results.
 3. **Results per item**: reviewed-confirmed toggle (green check,
    payload state), title, numeric score badge (stated plain /
-   inferred orange + `?` / — when empty), then the sheet's two
+   inferred orange + `?` / — when empty) and the ♥ preference
+   badge (same stated/inferred coding), then the sheet's two
    axes as printed — 強い −1…+1 弱い with 0.125 ticks and labeled
-   majors, 嫌い 1…9 好き — marker coding matching the badge; the
+   majors, 嫌い 1…9 好き — marker coding matching the badges; the
    a 走行路 line listing the full road names the item's evidence
    came from (when road provenance exists); the comment; evidence
    chips (adaptive grid, tap = reveal in transcript, collapsed past 6 behind

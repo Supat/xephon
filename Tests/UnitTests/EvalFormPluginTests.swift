@@ -266,6 +266,37 @@ struct EvalFormPluginTests {
         #expect(suppressed.strengthScoreInferred == nil)
     }
 
+    @Test func inferredPreferenceGates() {
+        // Range gate: in-range accepted; off-scale dropped (not
+        // clamped); nil wire → nil.
+        #expect(EvalFormExtractor.acceptedInferredPreference(
+            .init(inferredLikeDislike: 7), template: template
+        ) == 7)
+        #expect(EvalFormExtractor.acceptedInferredPreference(
+            .init(inferredLikeDislike: 12), template: template
+        ) == nil)
+        #expect(EvalFormExtractor.acceptedInferredPreference(
+            .init(inferredLikeDislike: 0), template: template
+        ) == nil)
+        #expect(EvalFormExtractor.acceptedInferredPreference(
+            nil, template: template
+        ) == nil)
+
+        // The merge never fills the inferred field — that is the
+        // runner's separate call (stated-suppresses-inferred is
+        // its call-site gate).
+        let item = template.items[1]
+        let merged = EvalFormExtractor.merge(
+            item: item, template: template,
+            deterministic: .init(statedScores: [], statedPreference: nil),
+            wire: .init(statedScore: nil, inferredScore: nil,
+                        likeDislike: nil, comment: "c", evidenceRows: []),
+            validRowNumbers: []
+        )
+        #expect(merged.likeDislike == nil)
+        #expect(merged.likeDislikeInferred == nil)
+    }
+
     @Test func promptCarriesRubricAndPolarityRule() {
         let item = template.items[1]
         let prompt = EvalFormExtractor.extractionPrompt(
@@ -277,6 +308,29 @@ struct EvalFormPluginTests {
         #expect(prompt.contains("POLARITY"))
         #expect(prompt.contains("まったく違う"))                 // rubric anchors injected
         #expect(prompt.contains("敏感な人が分かるレベル"))
+        // Isolation: the inferred-preference instructions live in
+        // their own call, byte-for-byte out of this prompt.
+        #expect(!prompt.contains("inferredLikeDislike"))
+        #expect(!prompt.contains("prefer the mild value"))
+    }
+
+    @Test func preferencePromptIsIsolatedAndCarriesGuide() {
+        let item = template.items[1]
+        let prompt = EvalFormExtractor.preferencePrompt(
+            item: item,
+            template: template,
+            rows: [(number: 1, speakerID: "S01", transcript: "t")]
+        )
+        // The loosened evidence bar, anchor guide, and nudge.
+        #expect(prompt.contains("evaluative wording"))
+        #expect(prompt.contains("7-8 clearly positive"))
+        #expect(prompt.contains("prefer the mild value"))
+        // Spoken measurements must not be converted to preference.
+        #expect(prompt.contains("NOT preference"))
+        // Reverse isolation: nothing of the strength-score world.
+        #expect(!prompt.contains("POLARITY"))
+        #expect(!prompt.contains("statedScore"))
+        #expect(!prompt.contains("まったく違う"))
     }
 
     @Test func inferredPolarityContradictionIsFlagged() {
@@ -352,6 +406,14 @@ struct EvalFormPluginTests {
         #expect(wire?.inferredScore == nil)
         #expect(wire?.likeDislike == 7)
         #expect(wire?.evidenceRows == [84, 158])
+
+        // The preference call's wire: same string-typed leniency.
+        #expect(EvalFormExtractor.parsePreferenceResponse(
+            "{\"inferredLikeDislike\":\"6\"}"
+        )?.inferredLikeDislike == 6)
+        #expect(EvalFormExtractor.parsePreferenceResponse(
+            "{\"inferredLikeDislike\":null}"
+        )?.inferredLikeDislike == nil)
     }
 
     @Test func responseParserRepairsTruncatedOutput() {
@@ -600,9 +662,9 @@ struct EvalFormPluginTests {
             // Stated score + comment, no preference.
             .init(itemID: "11_hyokohyoko", strengthScore: -0.25,
                   comment: "c", evidenceRows: [3]),
-            // Inferred-only + comment.
+            // Inferred-only (score AND preference) + comment.
             .init(itemID: "12_buruburu", strengthScoreInferred: -0.75,
-                  comment: "c", evidenceRows: [5]),
+                  likeDislikeInferred: 6, comment: "c", evidenceRows: [5]),
             // Evidence but nothing filled — mentioned, all missing.
             .init(itemID: "13_gotsugotsu", evidenceRows: [7]),
             // 10_flat, 13_biribiri, 14_harshness untouched.
@@ -627,7 +689,7 @@ struct EvalFormPluginTests {
         // suggestion when one exists.
         #expect(EvalFormCoverage.gapPhrase(byID["11_hyokohyoko"]!) == "好き嫌い")
         #expect(EvalFormCoverage.gapPhrase(byID["12_buruburu"]!)
-            == "評点（推定のみ・要確認）, 好き嫌い")
+            == "評点（推定のみ・要確認）, 好き嫌い（推定のみ・要確認）")
         #expect(EvalFormCoverage.gapPhrase(byID["13_gotsugotsu"]!)
             == "評点, 好き嫌い, コメント")
         // Untouched items read as not mentioned at all.
@@ -644,11 +706,13 @@ struct EvalFormPluginTests {
         #expect(markdown.contains("## 未検出（要手動記入）"))
         #expect(markdown.contains("- ヘッダ: "))
         #expect(markdown.contains("14. ハーシュネス（ショック・ノイズ・減衰）: 言及なし"))
+        // Inferred preference renders as a marked suggestion.
+        #expect(markdown.contains("- 好き嫌い (1–9): （推定 6 — 要確認）"))
 
         let csv = EvalFormCSV.render(draft: gappyDraft, template: template)
         #expect(csv.contains("undetected,scope,missing"))
         #expect(csv.contains("undetected,14,言及なし"))
-        #expect(csv.contains("undetected,12,\"評点（推定のみ・要確認）, 好き嫌い\""))
+        #expect(csv.contains("undetected,12,\"評点（推定のみ・要確認）, 好き嫌い（推定のみ・要確認）\""))
     }
 
     // MARK: - CSV
@@ -670,7 +734,7 @@ struct EvalFormPluginTests {
         draft.supplementaryComment = "路面続き"
         draft.supplementaryEvidenceRows = [9]
         let csv = EvalFormCSV.render(draft: draft, template: template)
-        #expect(csv.contains("11,ヒョコヒョコ（過減衰感、バネ上の動き）,-0.25,,,\"収まり, 悪い\",3 5,,yes,"))
+        #expect(csv.contains("11,ヒョコヒョコ（過減衰感、バネ上の動き）,-0.25,,,,\"収まり, 悪い\",3 5,,yes,"))
         #expect(csv.contains("supplementaryComment,路面続き"))
         #expect(csv.contains("supplementaryEvidenceRows,9"))
     }

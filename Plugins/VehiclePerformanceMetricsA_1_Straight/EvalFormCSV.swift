@@ -19,8 +19,8 @@ public enum EvalFormCSV {
 
         lines.append(row([
             "number", "item", "strengthScore", "strengthScoreInferred",
-            "likeDislike", "comment", "evidenceRows", "evidenceRoads",
-            "reviewed", "conflicts",
+            "likeDislike", "likeDislikeInferred", "comment", "evidenceRows",
+            "evidenceRoads", "reviewed", "conflicts",
         ]))
         for item in template.items {
             let result = draft.items.first { $0.itemID == item.id }
@@ -31,6 +31,7 @@ public enum EvalFormCSV {
                 result?.strengthScore.map { String($0) } ?? "",
                 result?.strengthScoreInferred.map { String($0) } ?? "",
                 result?.likeDislike.map(String.init) ?? "",
+                result?.likeDislikeInferred.map(String.init) ?? "",
                 result?.comment ?? "",
                 evidence.map(String.init).joined(separator: " "),
                 roadPairs(evidence, roadByRow: draft.roadByRow),

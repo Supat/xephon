@@ -18,6 +18,12 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
         public var strengthScoreInferred: Double?
         /// Stated 1–9 preference. Nil = not stated.
         public var likeDislike: Int?
+        /// Model-suggested 1–9 preference from wording that
+        /// expresses liking/disliking. Kept apart from
+        /// `likeDislike` by design — a suggestion, never a sheet
+        /// entry. Optional-tolerant addition within payload v2
+        /// (missing key decodes nil).
+        public var likeDislikeInferred: Int?
         /// Distilled per-item comment (ja). Nil = item not discussed.
         public var comment: String?
         /// 1-based row numbers (into the extraction's numbered row
@@ -32,6 +38,7 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
             strengthScore: Double? = nil,
             strengthScoreInferred: Double? = nil,
             likeDislike: Int? = nil,
+            likeDislikeInferred: Int? = nil,
             comment: String? = nil,
             evidenceRows: [Int] = [],
             conflicts: [String] = []
@@ -40,6 +47,7 @@ public struct EvalFormDraft: Codable, Sendable, Equatable {
             self.strengthScore = strengthScore
             self.strengthScoreInferred = strengthScoreInferred
             self.likeDislike = likeDislike
+            self.likeDislikeInferred = likeDislikeInferred
             self.comment = comment
             self.evidenceRows = evidenceRows
             self.conflicts = conflicts

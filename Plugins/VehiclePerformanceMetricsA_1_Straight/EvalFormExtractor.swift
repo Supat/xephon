@@ -456,6 +456,75 @@ public enum EvalFormExtractor {
         return nil
     }
 
+    // MARK: - Inferred preference (Tier 3a, separate call)
+
+    /// Schema for the per-item inferred-好き嫌い call. A second,
+    /// tiny generate kept SEPARATE from the item extraction on
+    /// purpose: one shared prompt conditions every field, and the
+    /// looser instructions this pass needs (evaluative wording,
+    /// prefer-mild-over-null) were observed shifting the
+    /// strength-score behaviour when they lived in the item
+    /// prompt. See docs/evalform_inferred_preference.md.
+    public static let preferenceSchemaJSON = """
+    {"type":"object","properties":{
+      "inferredLikeDislike":{"type":["integer","null"],"description":"1-9 preference read from the evaluator's overall impression; null when the rows carry no evaluative wording"}
+    },"required":["inferredLikeDislike"]}
+    """
+
+    public struct PreferenceWire: Equatable, Sendable {
+        public var inferredLikeDislike: Int?
+
+        public init(inferredLikeDislike: Int?) {
+            self.inferredLikeDislike = inferredLikeDislike
+        }
+    }
+
+    /// Build the inferred-preference prompt over the same rows the
+    /// item extraction saw. Carries the preference scale only —
+    /// no strength scale, rubric, or polarity rule — so nothing
+    /// here can leak back into score behaviour, and vice versa.
+    public static func preferencePrompt(
+        item: EvalFormTemplate.Item,
+        template: EvalFormTemplate,
+        rows: [(number: Int, speakerID: String, transcript: String)]
+    ) -> String {
+        var lines: [String] = []
+        lines.append("You are estimating ONE cell of a Japanese vehicle ride-quality evaluation sheet: the evaluator's 好き嫌い (preference) for one item, from test-drive utterances.")
+        lines.append("Sheet: \(template.name)")
+        lines.append("Item \(item.number): \(item.titleJa) — \(item.definition)")
+        lines.append("Preference scale: \(template.preferenceScale.minimum) (嫌い) to \(template.preferenceScale.maximum) (好き). The evaluator did NOT state a numeric preference — read their overall impression of this item from how they talked about it.")
+        lines.append("Evidence: preference wording (気に入った・いいね・好みじゃない・嫌だ…) or evaluative wording about the behaviour (良い・悪い・気になる・不快・うるさい・改善した・収まりが悪い…).")
+        lines.append("Guide: 2-3 clearly negative, 4 mildly negative, 5 mixed, 6 mildly positive, 7-8 clearly positive. When torn between null and a mild value, prefer the mild value.")
+        lines.append("Spoken relative-strength scores in the rows (プラス/マイナス0.25 など) are measurements against a baseline spec, NOT preference — never convert them. Use null only when the rows are pure measurement talk with no evaluative wording.")
+        lines.append("")
+        lines.append("Utterances (numbered [n] speaker: text):")
+        for row in rows {
+            lines.append("[\(row.number)] \(row.speakerID): \(row.transcript)")
+        }
+        lines.append("")
+        lines.append("Return ONLY the JSON object. The FIRST character of your output MUST be `{`.")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func parsePreferenceResponse(_ raw: String) -> PreferenceWire? {
+        parseJSONObject(raw)
+    }
+
+    /// Range gate for the preference call's suggestion — dropped,
+    /// not clamped, when off the scale. The stated-suppresses-
+    /// inferred gate lives at the call site (the runner only asks
+    /// when the merge produced no stated preference).
+    public static func acceptedInferredPreference(
+        _ wire: PreferenceWire?,
+        template: EvalFormTemplate
+    ) -> Int? {
+        guard let value = wire?.inferredLikeDislike,
+              (template.preferenceScale.minimum...template.preferenceScale.maximum)
+                  .contains(value)
+        else { return nil }
+        return value
+    }
+
     // MARK: - Supplementary comment (補足コメント)
 
     /// Rows for the 補足コメント pass: substantive utterances no
@@ -543,6 +612,22 @@ extension EvalFormExtractor.ItemWire: Codable {
         try c.encodeIfPresent(likeDislike, forKey: .likeDislike)
         try c.encodeIfPresent(comment, forKey: .comment)
         try c.encodeIfPresent(evidenceRows, forKey: .evidenceRows)
+    }
+}
+
+extension EvalFormExtractor.PreferenceWire: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case inferredLikeDislike
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inferredLikeDislike = EvalFormExtractor.lenientInt(c, .inferredLikeDislike)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(inferredLikeDislike, forKey: .inferredLikeDislike)
     }
 }
 
@@ -668,7 +753,11 @@ extension EvalFormExtractor {
         }
 
         // Preference: deterministic wins; wire fills the gap when
-        // in range.
+        // in range. The INFERRED preference is deliberately NOT
+        // part of this merge — it comes from the runner's separate
+        // per-item call (`preferencePrompt`) so its looser
+        // instructions cannot condition the strength-score
+        // extraction above.
         if let p = deterministic.statedPreference {
             result.likeDislike = p.value
             evidence.insert(p.row)

@@ -204,8 +204,11 @@ Precedence and gates, in order:
 3. **Inferred**: accepted only when no stated value exists, and
    only on a legal step. Stored in `strengthScoreInferred` — a
    separate field end-to-end.
-4. **Preference**: deterministic wins; model value fills the gap
-   when within range.
+4. **Preference**: deterministic wins; the model's stated value
+   fills the gap when within range. The INFERRED preference is
+   not part of this merge — it comes from the separate per-item
+   call (§4f), applied by the runner only when the merge
+   produced no stated preference.
 5. **Comment**: model's, nil when empty.
 6. **Evidence**: deterministic rows ∪ model rows filtered to the
    candidate set (invented numbers are silently dropped), sorted.
@@ -221,6 +224,24 @@ Precedence and gates, in order:
    OUTSIDE the item's 評価路 column, append 「根拠発話の多くが
    評価路以外の区間…」. Skipped entirely when the session has no
    callouts; unassigned rows count neither way; ties pass.
+
+### 4f. Inferred 好き嫌い call (Tier 3a)
+
+When the merge produced no stated preference for an item, the
+runner makes ONE extra small generate over the SAME rows
+(`preferencePrompt` / `preferenceSchemaJSON`:
+`{inferredLikeDislike: integer|null}`). Kept out of the item
+prompt on purpose — one shared prompt conditions every field,
+and this pass's deliberately looser instructions (evaluative
+wording counts, a 2-3…7-8 anchor guide, prefer-mild-over-null)
+were observed shifting strength-score behaviour when co-located.
+The prompt carries the preference scale only — no strength
+scale, rubric, or POLARITY rule — plus a guard that spoken
+±scores in the rows are measurements, never convertible to
+preference. Result is range-gated (dropped, not clamped) into
+`likeDislikeInferred`; single attempt; failure degrades to an
+empty cell. Design + revision history:
+docs/evalform_inferred_preference.md.
 
 ## 5. Supplementary pass (補足コメント)
 
@@ -251,7 +272,11 @@ Precedence and gates, in order:
 One model load ~15 s (batch envelope), prefill 4–9 s per call
 (~600–1300 prompt tokens), decode ~20 tok/s. A six-item session
 with supplementary + metadata ≈ 8 calls ≈ 1½–2 minutes total. A
-parse-failure retry adds one call.
+parse-failure retry adds one call. The inferred-好き嫌い pass
+(§4f) adds one call per mentioned item without a stated
+preference — near all of them in practice; its decode is tiny
+but prefill runs over the same rows, so the item pass roughly
+doubles (a full session lands ≈ 2½–3½ minutes).
 
 ## 8. Draft persistence and migration
 
@@ -262,8 +287,9 @@ JSON-encoded into the plugin's `.xph` payload (payload v2).
 Restore is version-aware: v2 decodes; v1 (pre-review-state)
 migrates with empty `reviewedItemIDs`; payloads from a NEWER
 plugin build are left untouched in the bundle (no guess-decode).
-Optional fields added within v2 (e.g. `supplementaryEvidenceRows`)
-are missing-key tolerant — same rule `SessionDocument` uses.
+Optional fields added within v2 (e.g. `supplementaryEvidenceRows`,
+`ItemResult.likeDislikeInferred`) are missing-key tolerant — same
+rule `SessionDocument` uses.
 
 ## 9. Review UI (the card) and exports
 
@@ -272,8 +298,9 @@ Card, top to bottom: header metadata → per-item rows → 補足コメント
 (always visible). Each item row: reviewed-confirmed toggle
 (payload v2 state), title, numeric badge, then the sheet's two
 axes as printed — 強い −1…+1 弱い with 0.125 minor ticks, and
-嫌い 1…9 好き. Marker coding: solid tint = stated; orange (+`?`
-badge) = inferred suggestion; empty track = undetected. Evidence
+嫌い 1…9 好き. Marker coding on BOTH axes: solid tint = stated;
+orange (+`?` badge — `-0.5?` / `♥6?`) = inferred suggestion;
+empty track = undetected. Evidence
 chips (tap = jump + highlight the transcript row) wrap in an adaptive grid and collapse
 past 6 chips behind a "+N" expander; when the draft carries road
 provenance the chips group under small road labels and the item
@@ -285,7 +312,8 @@ Exports (markdown + CSV, through the root file picker) mirror the
 card: detections with evidence numbers, inferred values explicitly
 marked 要確認, and the 未検出（要手動記入） section — missing
 header fields plus per-item gap phrases (評点（推定のみ・要確認） /
-評点 / 好き嫌い / コメント / 言及なし) — computed by the same
+評点 / 好き嫌い（推定のみ・要確認） / 好き嫌い / コメント /
+言及なし) — computed by the same
 `EvalFormCoverage` helper as the card, so report and UI cannot
 disagree. CSV uses RFC-4180 quoting and filterable `undetected`
 rows.

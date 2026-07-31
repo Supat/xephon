@@ -154,19 +154,32 @@ struct StrengthScaleView: View {
 struct PreferenceScaleView: View {
     let scale: EvalFormTemplate.PreferenceScale
     let value: Int?
+    let inferred: Int?
 
     var body: some View {
         EvalScaleAxis(
             ticks: ticks,
             leadingLabel: "嫌い",
             trailingLabel: "好き",
-            marker: value.map { v in
-                (EvalScaleAxis.normalizedPosition(
-                    Double(v),
-                    minimum: Double(scale.minimum),
-                    maximum: Double(scale.maximum)
-                ), false)
-            }
+            marker: marker
+        )
+    }
+
+    private var marker: (position: CGFloat, inferred: Bool)? {
+        if let value {
+            return (normalized(value), false)
+        }
+        if let inferred {
+            return (normalized(inferred), true)
+        }
+        return nil
+    }
+
+    private func normalized(_ v: Int) -> CGFloat {
+        EvalScaleAxis.normalizedPosition(
+            Double(v),
+            minimum: Double(scale.minimum),
+            maximum: Double(scale.maximum)
         )
     }
 

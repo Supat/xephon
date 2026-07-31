@@ -316,6 +316,12 @@ struct EvalFormCard: View {
                     Text(verbatim: "♥\(preference)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
+                } else if let inferred = result?.likeDislikeInferred {
+                    // Inferred = suggestion, same coding as the
+                    // score badge.
+                    Text(verbatim: "♥\(inferred)?")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.orange)
                 }
             }
             // Where this item's cited evidence was actually driven
@@ -337,7 +343,8 @@ struct EvalFormCard: View {
             .padding(.top, 2)
             PreferenceScaleView(
                 scale: model.template.preferenceScale,
-                value: result?.likeDislike
+                value: result?.likeDislike,
+                inferred: result?.likeDislikeInferred
             )
             if let comment = result?.comment {
                 Text(comment)

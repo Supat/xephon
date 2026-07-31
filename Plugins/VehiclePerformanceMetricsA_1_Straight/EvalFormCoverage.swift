@@ -17,7 +17,10 @@ public enum EvalFormCoverage {
         /// an inferred suggestion exists but needs confirmation.
         public let statedScoreMissing: Bool
         public let inferredScorePresent: Bool
+        /// No STATED preference; `inferredPreferencePresent`
+        /// qualifies it the same way the score pair does.
         public let preferenceMissing: Bool
+        public let inferredPreferencePresent: Bool
         public let commentMissing: Bool
 
         public var hasGaps: Bool {
@@ -48,6 +51,7 @@ public enum EvalFormCoverage {
                 $0.strengthScore != nil
                     || $0.strengthScoreInferred != nil
                     || $0.likeDislike != nil
+                    || $0.likeDislikeInferred != nil
                     || $0.comment != nil
                     || !$0.evidenceRows.isEmpty
             } ?? false
@@ -57,6 +61,7 @@ public enum EvalFormCoverage {
                 statedScoreMissing: result?.strengthScore == nil,
                 inferredScorePresent: result?.strengthScoreInferred != nil,
                 preferenceMissing: result?.likeDislike == nil,
+                inferredPreferencePresent: result?.likeDislikeInferred != nil,
                 commentMissing: result?.comment == nil
             )
             return gaps.hasGaps ? gaps : nil
@@ -73,7 +78,13 @@ public enum EvalFormCoverage {
         if gaps.statedScoreMissing {
             parts.append(gaps.inferredScorePresent ? "評点（推定のみ・要確認）" : "評点")
         }
-        if gaps.preferenceMissing { parts.append("好き嫌い") }
+        if gaps.preferenceMissing {
+            parts.append(
+                gaps.inferredPreferencePresent
+                    ? "好き嫌い（推定のみ・要確認）"
+                    : "好き嫌い"
+            )
+        }
         if gaps.commentMissing { parts.append("コメント") }
         return parts.joined(separator: ", ")
     }
