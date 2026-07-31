@@ -47,7 +47,7 @@ struct EvalFormLiveEvalTests {
             }
             return try await client.chat(
                 userMessage: prompt,
-                temperature: 0.2,
+                temperature: 0.0,  // greedy — match the app's plugin path
                 maxTokens: maxOutputTokens,
                 responseFormatJSON: responseFormat
             )

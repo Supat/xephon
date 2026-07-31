@@ -106,7 +106,11 @@ public final class EvalFormModel {
     /// (availability, empty session), the phase readout, and draft
     /// persistence; the runner owns the extraction.
     public func run() async {
-        guard phase != .running("") else { return }
+        // Any running step blocks re-entry. (The old `!= .running("")`
+        // guard compared against the empty step only, so a tap during
+        // a fill queued a byte-identical duplicate run behind the
+        // batch envelope — observed doubling a field run's wall time.)
+        if case .running = phase { return }
         let snapshot = host.session.snapshot()
         guard !snapshot.utterances.isEmpty else {
             phase = .failed(String(localized: "evalform.error.empty", bundle: .module))
@@ -116,6 +120,11 @@ public final class EvalFormModel {
             phase = .failed(reason)
             return
         }
+        // Claim the phase BEFORE the first await: the first
+        // onProgress lands only after the batch envelope is
+        // acquired, and until then a `.idle` phase leaves the Run
+        // button enabled — the double-tap window.
+        phase = .running("")
         do {
             let newDraft = try await EvalFormRunner.fill(
                 template: template,

@@ -1067,7 +1067,10 @@ final class SummarizerCoordinator {
                 }
                 return try await client.chat(
                     userMessage: effectivePrompt,
-                    temperature: 0.2,
+                    // Greedy: plugin calls fill evaluation sheets —
+                    // repeat runs on the same session must
+                    // reproduce (llama.cpp maps 0 to argmax).
+                    temperature: 0.0,
                     maxTokens: maxOutputTokens,
                     responseFormatJSON: responseFormat
                 )
@@ -1412,10 +1415,13 @@ final class SummarizerCoordinator {
     /// prefill memory. Snapshots the FluidAudio speaker DB first so
     /// embedding-based matching survives the rebuild.
     private func releasePipelineForSummarization() async {
-        AppLog.app.info(
-            "releasing analysis pipeline before summarization (free ~1.5 GB)"
-        )
         if let pipeline = parent.pipeline {
+            // Log only when there is actually a pipeline to free —
+            // per-call invocations within one batch are no-ops and
+            // used to spam this line once per generate.
+            AppLog.app.info(
+                "releasing analysis pipeline before summarization (free ~1.5 GB)"
+            )
             savedSpeakerDB = await pipeline.exportSpeakerDatabase()
             if let blob = savedSpeakerDB {
                 AppLog.app.info(

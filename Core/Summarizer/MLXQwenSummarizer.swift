@@ -99,7 +99,10 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
             prompt: effectivePrompt,
             maxTokens: maxOutputTokens,
             repetitionPenalty: spec.repetitionPenalty,
-            label: "MLX[\(spec.family.rawValue)] plugin"
+            label: "MLX[\(spec.family.rawValue)] plugin",
+            // Greedy: plugin calls fill evaluation sheets — repeat
+            // runs on the same session must reproduce.
+            temperature: 0
         )
         // Belt to the directive's braces: /no_think still emits an
         // empty think block on some checkpoints, and a think block

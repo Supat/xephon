@@ -912,7 +912,8 @@ internal enum MLXLLMSummarizerCore {
         prompt: String,
         maxTokens: Int,
         repetitionPenalty: Float?,
-        label: String
+        label: String,
+        temperature: Float = 0.2
     ) async throws -> String {
         do {
             return try await container.perform { context -> String in
@@ -925,10 +926,11 @@ internal enum MLXLLMSummarizerCore {
                 AppLog.app.info("\(preparedMsg, privacy: .public)")
                 var parameters = GenerateParameters(
                     maxTokens: maxTokens,
-                    // Deterministic for reproducibility — the
-                    // summary is a derived artifact, not
-                    // creative writing.
-                    temperature: 0.2
+                    // 0.2 (default) = low-variance but still
+                    // sampled — fine for summaries. Extraction
+                    // paths pass 0 for greedy decoding so repeat
+                    // runs on the same session reproduce.
+                    temperature: temperature
                 )
                 if let penalty = repetitionPenalty {
                     parameters.repetitionPenalty = penalty

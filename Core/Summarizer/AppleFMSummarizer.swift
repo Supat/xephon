@@ -79,7 +79,12 @@ public actor AppleFMSummarizer: SessionSummarizer {
         do {
             let response = try await session.respond(
                 to: prompt,
-                options: GenerationOptions(maximumResponseTokens: maxOutputTokens)
+                // Greedy: plugin calls fill evaluation sheets —
+                // repeat runs on the same session must reproduce.
+                options: GenerationOptions(
+                    sampling: .greedy,
+                    maximumResponseTokens: maxOutputTokens
+                )
             )
             return response.content
         } catch {

@@ -171,6 +171,14 @@ through `SummarizerCoordinator.pluginGenerate`:
   block; first-trial root cause), and `stripThinkBlocks` runs on
   the output so a brace inside a think block can't poison slicing.
 
+**Decoding is greedy on every backend** (MLX temperature 0, LM
+Studio temperature 0, Apple FM `.greedy`; the built-in summaries
+keep their 0.2): sheet extraction is a derived artifact, and
+repeat runs on an unchanged session should reproduce instead of
+fluctuating with the sampler. Residual variance can only come
+from a changed prompt (edited rows, template) or rare GPU
+argmax ties — not from sampling.
+
 Parsing (`parseItemResponse` → `parseJSONObject`):
 1. slice from the first `{` to the last `}` and strict-decode;
 2. on failure, **truncation repair** over the tail from the first
