@@ -126,3 +126,31 @@ confirmed back to pre-turbo behavior after the prompt revert
 action-bar mount (404c76d). Still unobserved in the field: the
 second-consecutive-run residency payoff (no model reload) and a
 large prefix-cache reuse on a verbatim retry.
+
+## 2026-08-06 — back-to-back Summary → A1 fill: residency payoff confirmed
+
+Same device/session as above. Meeting summarize (5096 tokens,
+prefill 32.6 s, 945 tokens out, 94.2 s) → A1 eval fill started
+immediately after.
+
+- **Residency payoff observed**: the plugin batch began with NO
+  "MLXQwenSummarizer loading" line — the model stayed resident from
+  the summary run straight into the fill, saving the ~15 s reload.
+  Headroom stable at ~11.2-11.6 GB throughout; both post-run
+  decisions kept the model.
+- A1 fill: 12 calls in ~175 s, zero parse-failure retries (so the
+  retry-reuse path remains field-unobserved). Call pattern: six
+  item extractions (~960-1800 prompt tokens, 71-176 out) each
+  followed by a Tier 3a preference call (13 output tokens behind an
+  8-11 s full prefill of the same rows). The six preference
+  prefills total ~55-60 s of the 175 s — the concrete, field-
+  measured cost the shared-prefix prompt layout would remove once
+  the ground-truth harness can gate the prompt reorder.
+- Cross-call prefix reuse is 3-5 tokens (chat-template header) as
+  expected with the instructions-first prompts.
+- Progress "first emission" logged on the summary and on every
+  plugin call — delivery chain confirmed everywhere.
+- Minor churn observed: the pipeline re-warmed (~2.5 s) after the
+  summary and was immediately released again when the fill started.
+  A short rewarm debounce (cancel if another LLM run starts within
+  a few seconds) would remove it.
