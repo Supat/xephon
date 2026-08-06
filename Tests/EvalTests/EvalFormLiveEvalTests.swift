@@ -6,13 +6,24 @@ import Summarizer
 
 /// Live model eval over synthetic known-answer sessions — the
 /// model-independent-of-human-evaluator harness. Runs the FULL
-/// pipeline (deterministic + LLM tiers) against an LM Studio
-/// server and scores against the by-construction truth.
+/// pipeline (deterministic + LLM tiers) against a real model and
+/// scores against the by-construction truth.
 ///
-/// Gated on `XEPHON_LMSTUDIO_URL` (e.g. `http://127.0.0.1:1234`);
-/// set `XEPHON_LMSTUDIO_MODEL` to pick the served model — this is
-/// how the backend bake-off runs: same harness, different served
-/// model, compare the printed reports (numbers → docs/eval_log.md).
+/// Two backends, selected by environment:
+/// - `XEPHON_MLX_MODEL_DIR=<dir>` — the PRODUCTION inference path
+///   (`MLXQwenSummarizer.generateRaw`, prompt-contract schema, KV
+///   prefix cache and all), running MLX directly in the test host.
+///   Point it at a Qwen3-8B-4bit directory (the app's
+///   Application Support install, `Models/qwen3-8b-4bit` from
+///   `fetch_models.sh --with-summarizer`, or a HF snapshot). Needs
+///   real Metal — physical device or a Designed-for-iPad run on an
+///   Apple silicon Mac; the iOS Simulator won't do.
+/// - `XEPHON_LMSTUDIO_URL` (e.g. `http://127.0.0.1:1234`) + optional
+///   `XEPHON_LMSTUDIO_MODEL` — any served model via the LM Studio
+///   client (native json_schema enforcement). This is the
+///   cross-model bake-off path.
+/// MLX wins when both are set. Reports print to the test log —
+/// numbers go to docs/eval_log.md.
 ///
 /// Hard assertions cover only what the deterministic tier
 /// guarantees REGARDLESS of model (stated-score recovery, no
@@ -21,7 +32,8 @@ import Summarizer
 /// asserted — models differ, the report is the deliverable.
 @Suite(
     "EvalForm live model eval",
-    .enabled(if: ProcessInfo.processInfo.environment["XEPHON_LMSTUDIO_URL"] != nil)
+    .enabled(if: ProcessInfo.processInfo.environment["XEPHON_LMSTUDIO_URL"] != nil
+        || ProcessInfo.processInfo.environment["XEPHON_MLX_MODEL_DIR"] != nil)
 )
 struct EvalFormLiveEvalTests {
 
@@ -54,8 +66,62 @@ struct EvalFormLiveEvalTests {
         }
     }
 
-    private func makeInference() throws -> (LMStudioEvalInference, String) {
+    /// The production on-device path: same actor, same greedy
+    /// settings, same prompt-contract schema appendix the
+    /// coordinator's `pluginGenerate` uses for MLX backends — so
+    /// harness numbers transfer to the iPad, and prompt/KV-cache
+    /// changes are exercised exactly as shipped.
+    struct MLXEvalInference: InferenceService {
+        let actor: MLXQwenSummarizer
+
+        @MainActor var availability: InferenceAvailability { .available }
+
+        func generate(
+            prompt: String,
+            schemaJSON: String?,
+            maxOutputTokens: Int
+        ) async throws -> String {
+            var effectivePrompt = prompt
+            if let schemaJSON {
+                // Byte-for-byte the coordinator's non-native schema
+                // appendix (SummarizerCoordinator.pluginGenerate).
+                effectivePrompt += """
+
+
+                Return ONLY a valid JSON object conforming to this JSON Schema. \
+                The FIRST character of your output MUST be `{`. No prose.
+                \(schemaJSON)
+                """
+            }
+            return try await actor.generateRaw(
+                prompt: effectivePrompt,
+                maxOutputTokens: maxOutputTokens
+            )
+        }
+    }
+
+    enum EvalBackend {
+        case mlx(MLXEvalInference)
+        case lmStudio(LMStudioEvalInference)
+
+        var service: any InferenceService {
+            switch self {
+            case .mlx(let s): return s
+            case .lmStudio(let s): return s
+            }
+        }
+    }
+
+    private func makeInference() throws -> (EvalBackend, String) {
         let env = ProcessInfo.processInfo.environment
+        if let dir = env["XEPHON_MLX_MODEL_DIR"] {
+            let url = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath)
+            let actor = MLXQwenSummarizer(
+                modelIdentifier: "qwen3-8b-4bit",
+                modelDirectory: url
+            )
+            return (.mlx(.init(actor: actor)), "mlx:qwen3-8b-4bit")
+        }
         guard let urlString = env["XEPHON_LMSTUDIO_URL"],
               let url = URL(string: urlString) else {
             throw TestSkipError()
@@ -66,7 +132,7 @@ struct EvalFormLiveEvalTests {
             modelID: model,
             requestTimeoutSeconds: 180
         ))
-        return (LMStudioEvalInference(client: client), model)
+        return (.lmStudio(.init(client: client)), model)
     }
 
     struct TestSkipError: Error {}
@@ -102,11 +168,35 @@ struct EvalFormLiveEvalTests {
             distractorCount: 20,
             seed: 99
         )),
+        // Tier 3a battery: positive + negative evaluative wording
+        // must land in-band; measurement-only wording must leave
+        // the inferred cell nil (false-positive check); a stated
+        // score with no preference must not grow an inferred one
+        // from measurement talk.
+        ("tier3a", EvalFormSynthetic.Spec(
+            facts: [
+                "10_flat": .qualitativePositive,
+                "11_hyokohyoko": .qualitativeOnly,
+                "12_buruburu": .measurementOnly,
+                "14_harshness": .statedScore(-0.25),
+            ],
+            metadata: [:],
+            distractorCount: 14,
+            seed: 3131
+        )),
     ]
 
-    @Test(.timeLimit(.minutes(30)))
+    @Test(.timeLimit(.minutes(60)))
     func liveModelAgainstSyntheticTruth() async throws {
-        let (inference, model) = try makeInference()
+        let (backend, model) = try makeInference()
+        defer {
+            // Free the ~4.6 GB MLX weights before the next suite in
+            // the host process.
+            if case .mlx(let mlx) = backend {
+                Task { await mlx.actor.unload() }
+            }
+        }
+        let inference = backend.service
         let template = EvalFormTemplate.a1StraightRoad
         var lines: [String] = ["=== EvalForm live eval — model: \(model) ==="]
 

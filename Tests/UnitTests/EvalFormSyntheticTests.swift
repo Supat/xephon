@@ -101,6 +101,65 @@ struct EvalFormSyntheticTests {
         #expect(report.falseMetadata == 0)
     }
 
+    @Test func tier3aFactsCarryBandsAndMeasurementOnlyStaysBandless() {
+        let spec = EvalFormSynthetic.Spec(
+            facts: [
+                "10_flat": .qualitativePositive,
+                "11_hyokohyoko": .qualitativeOnly,
+                "12_buruburu": .measurementOnly,
+            ],
+            seed: 5
+        )
+        let session = EvalFormSynthetic.generate(template: template, spec: spec)
+        #expect(session.expected.inferredBands["10_flat"] == 6...8)
+        #expect(session.expected.inferredBands["11_hyokohyoko"] == 2...4)
+        #expect(session.expected.inferredBands["12_buruburu"] == nil)
+        // All three are discussed (comments expected), including
+        // the measurement-only item.
+        #expect(session.expected.discussedItems == [
+            "10_flat", "11_hyokohyoko", "12_buruburu",
+        ])
+        // Measurement-only wording must not trip the stated-score
+        // grammar — the deterministic floor stays clean.
+        #expect(session.expected.statedScores.isEmpty)
+    }
+
+    @Test func scorerJudgesInferredPreferenceBands() {
+        let spec = EvalFormSynthetic.Spec(
+            facts: [
+                "10_flat": .qualitativePositive,    // expect 6...8
+                "11_hyokohyoko": .qualitativeOnly,  // expect 2...4
+                "12_buruburu": .measurementOnly,    // expect nil
+                "13_gotsugotsu": .qualitativeOnly,  // expect 2...4
+            ],
+            seed: 6
+        )
+        let session = EvalFormSynthetic.generate(template: template, spec: spec)
+        var draft = EvalFormDraft(templateID: template.id)
+        draft.items = [
+            // In band.
+            .init(itemID: "10_flat", likeDislikeInferred: 7, comment: "c"),
+            // Out of band (positive answer to negative wording).
+            .init(itemID: "11_hyokohyoko", likeDislikeInferred: 6, comment: "c"),
+            // FALSE inference on measurement-only talk.
+            .init(itemID: "12_buruburu", likeDislikeInferred: 4, comment: "c"),
+            // Missed (nil where a band was expected).
+            .init(itemID: "13_gotsugotsu", comment: "c"),
+            // FALSE inference on an absent item.
+            .init(itemID: "14_harshness", likeDislikeInferred: 5),
+        ]
+        let report = EvalFormSynthetic.score(
+            draft: draft,
+            expected: session.expected,
+            template: template
+        )
+        #expect(report.inferredExpected == 3)
+        #expect(report.inferredInBand == 1)
+        #expect(report.inferredOutOfBand == 1)
+        #expect(report.inferredMissed == 1)
+        #expect(report.falseInferred == 2)
+    }
+
     @Test func scorerCountsFalseFillsAndMisses() {
         let session = EvalFormSynthetic.generate(template: template, spec: spec)
         var draft = EvalFormDraft(templateID: template.id)

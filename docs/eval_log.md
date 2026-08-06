@@ -53,22 +53,41 @@ evidence validity, metadata accuracy. Measures extraction fidelity,
 NOT ride-judgment validity — the human ground-truth eval (research
 doc §6) remains the final gate.
 
-Run (LM Studio serving the candidate model):
+Since 2026-08-06 the battery also covers the Tier 3a inferred
+好き嫌い channel (positive/negative wording must land in band 6–8 /
+2–4; measurement-only wording must leave the cell nil) and the
+harness has two backends:
 
-    XEPHON_LMSTUDIO_URL=http://127.0.0.1:1234 \
-    XEPHON_LMSTUDIO_MODEL=<served-model-id> \
-    xcodebuild -scheme XephonEval \
-      -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test \
-      -only-testing:XephonEvalTests/EvalFormLiveEvalTests
+Run A — the PRODUCTION MLX path (MLXQwenSummarizer.generateRaw,
+prompt-contract schema, KV prefix cache), on an Apple silicon Mac
+via the Designed-for-iPad destination (no server, no device;
+`TEST_RUNNER_` prefixed vars reach the test host):
+
+    xcodebuild -project Xephon.xcodeproj -scheme Xephon \
+      -destination 'platform=macOS,arch=arm64,variant=Designed for iPad' \
+      test -only-testing:XephonEvalTests/EvalFormLiveEvalTests \
+      TEST_RUNNER_XEPHON_MLX_MODEL_DIR=<qwen3-8b-4bit dir>
+
+Run B — any served model via LM Studio (cross-model bake-off,
+native json_schema enforcement):
+
+    xcodebuild ... test -only-testing:XephonEvalTests/EvalFormLiveEvalTests \
+      TEST_RUNNER_XEPHON_LMSTUDIO_URL=http://127.0.0.1:1234 \
+      TEST_RUNNER_XEPHON_LMSTUDIO_MODEL=<served-model-id>
+
+MLX wins when both are set. Note Run A on a Mac shares the model
+family and the exact prompt path with the iPad but not its silicon
+— treat cross-run deltas as meaningful, absolute latencies as
+Mac-only.
 
 Offline floor (deterministic tier only, pinned in UnitTests):
 stated scores 2/2 exact, 0 false fills, evidence 2/2 — any live run
 scoring below this floor is a regression, anything above it is what
 the model adds. Paste per-model reports below.
 
-| date | model | scores exact | false fills | comments | evidence | metadata |
-|------|-------|--------------|-------------|----------|----------|----------|
-| —    | —     | —            | —           | —        | —        | —        |
+| date | model | scores exact | false fills | inferred in-band | false inferred | comments | evidence | metadata |
+|------|-------|--------------|-------------|------------------|----------------|----------|----------|----------|
+| —    | —     | —            | —           | —                | —              | —        | —        | —        |
 
 ### First real-session trial — Qwen3-8B-4bit on-device (2026-07-15)
 
@@ -154,3 +173,28 @@ immediately after.
   summary and was immediately released again when the fill started.
   A short rewarm debounce (cancel if another LLM run starts within
   a few seconds) would remove it.
+
+## 2026-08-06 — first live harness run: Qwen3-8B-4bit via production MLX path
+
+Mac (Designed for iPad, sandboxed test host; model APFS-cloned into
+the app container), battery of 4 specs incl. the new tier3a, 111.6 s
+wall. Aggregates:
+
+| date | model | scores exact | false fills | inferred in-band | false inferred | comments | evidence | metadata |
+|------|-------|--------------|-------------|------------------|----------------|----------|----------|----------|
+| 2026-08-06 | mlx:qwen3-8b-4bit (Mac) | 5/5 | 0 | 4/5 | 0 | 4/11 | 8/8 | 4/4 (+1 false) |
+
+Read:
+- Anti-hallucination floor is clean under the live model: zero false
+  score fills, zero false comments, zero false inferred preferences
+  (measurement-only rows correctly left nil), evidence 8/8 valid.
+- Tier 3a direction is good: 4/5 in band incl. the positive case,
+  zero missed (the always-null failure mode is gone), one
+  out-of-band (mixed-2's negative-wording item).
+- Comments 4/11 is depressed by a REAL defect the harness caught:
+  on two items the model ECHOED THE APPENDED JSON SCHEMA as its
+  output (both attempts unparseable → item degraded to
+  deterministic-only, no comment). The production prompt-contract
+  appendix does not forbid schema echo.
+- The verbatim-retry KV reuse worked in production form: retry
+  reused 827/828 tokens, prefill 0.04 s vs 2.35 s cold.

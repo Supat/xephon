@@ -20,10 +20,25 @@ public enum EvalFormSynthetic {
         /// preference). Expect: strengthScore == value, evidence
         /// hits the planted row.
         case statedScore(Double, preference: Int? = nil)
-        /// Discussed qualitatively, no number. Expect: comment
-        /// non-nil, strengthScore nil (an inferred suggestion is
-        /// allowed, a stated fill is a violation).
+        /// Discussed with clearly NEGATIVE evaluative wording, no
+        /// number. Expect: comment non-nil, strengthScore nil (an
+        /// inferred score suggestion is allowed, a stated fill is a
+        /// violation), and the Tier 3a inferred 好き嫌い in the
+        /// negative band (2–4).
         case qualitativeOnly
+        /// Discussed with clearly POSITIVE evaluative wording, no
+        /// number. Expect: inferred 好き嫌い in the positive band
+        /// (6–8). Tier 3a directional coverage — the negative case
+        /// alone can't catch a model that answers "4" to
+        /// everything.
+        case qualitativePositive
+        /// Discussed as pure measurement talk — the item's
+        /// vocabulary appears but NO evaluative wording. Expect:
+        /// inferred 好き嫌い stays nil (the channel's
+        /// false-positive check; the preference prompt's own rule:
+        /// "Use null only when the rows are pure measurement
+        /// talk").
+        case measurementOnly
         /// Never mentioned. Expect: everything empty.
         case absent
     }
@@ -70,6 +85,11 @@ public enum EvalFormSynthetic {
         public var factRows: [String: [Int]] = [:]
         /// Stated header fields.
         public var metadata: [String: String] = [:]
+        /// itemID → the band the Tier 3a inferred 好き嫌い must
+        /// land in. Items NOT in this map (and without a planted
+        /// stated preference) must keep the inferred cell nil —
+        /// any value there counts as a false inference.
+        public var inferredBands: [String: ClosedRange<Int>] = [:]
     }
 
     // MARK: - Generation
@@ -105,7 +125,16 @@ public enum EvalFormSynthetic {
                 }
                 body.append((item.id, text))
             case .qualitativeOnly:
+                expected.inferredBands[item.id] = 2...4
                 body.append((item.id, "\(surface)がかなり気になりますね、収まりがもう少し欲しいです"))
+            case .qualitativePositive:
+                expected.inferredBands[item.id] = 6...8
+                body.append((item.id, "\(surface)はだいぶ良くなりましたね、これなら不満はないです"))
+            case .measurementOnly:
+                // Vocabulary present, zero evaluative wording — the
+                // number is off the strength scale's steps so the
+                // spoken-score grammar can't bite either.
+                body.append((item.id, "\(surface)は15ヘルツあたりで出ています、あとでデータを確認します"))
             case .absent:
                 break
             }
@@ -209,6 +238,18 @@ public enum EvalFormSynthetic {
         public var metadataCorrect = 0
         public var metadataExpected = 0
         public var falseMetadata = 0
+        // Tier 3a inferred 好き嫌い (likeDislikeInferred).
+        public var inferredInBand = 0
+        public var inferredExpected = 0
+        /// Non-nil but outside the expected band.
+        public var inferredOutOfBand = 0
+        /// Nil where a band was expected (the always-null failure
+        /// mode the 2026-07-31 loosening was aimed at).
+        public var inferredMissed = 0
+        /// Non-nil on items with no expected band — measurement-only
+        /// rows, absent items, or items whose preference was stated.
+        /// The channel's false-positive count.
+        public var falseInferred = 0
 
         public func render(label: String) -> String {
             let mae = scoreExpected > 0
@@ -219,6 +260,8 @@ public enum EvalFormSynthetic {
             stated scores : \(scoreExact)/\(scoreExpected) exact, MAE \(mae), \
             false fills \(falseScoreFills), missed \(missedScores)
             preferences   : \(preferenceExact)/\(preferenceExpected) exact
+            inferred 好き嫌い : \(inferredInBand)/\(inferredExpected) in band, \
+            out-of-band \(inferredOutOfBand), missed \(inferredMissed), false \(falseInferred)
             comments      : \(commentsPresent)/\(commentsExpected) present, false \(falseComments)
             evidence      : \(evidenceValid)/\(evidenceChecked) valid
             metadata      : \(metadataCorrect)/\(metadataExpected) correct, false \(falseMetadata)
@@ -257,6 +300,26 @@ public enum EvalFormSynthetic {
                 if result?.likeDislike == expectedPreference {
                     report.preferenceExact += 1
                 }
+            }
+
+            // Tier 3a inferred channel. A band expectation means the
+            // planted wording carried clear evaluative direction; no
+            // band (and no stated preference) means the cell must
+            // stay empty.
+            let inferred = result?.likeDislikeInferred
+            if let band = expected.inferredBands[item.id] {
+                report.inferredExpected += 1
+                if let inferred {
+                    if band.contains(inferred) {
+                        report.inferredInBand += 1
+                    } else {
+                        report.inferredOutOfBand += 1
+                    }
+                } else {
+                    report.inferredMissed += 1
+                }
+            } else if inferred != nil {
+                report.falseInferred += 1
             }
 
             let discussed = expected.discussedItems.contains(item.id)
