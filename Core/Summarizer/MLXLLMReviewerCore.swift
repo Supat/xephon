@@ -215,6 +215,8 @@ internal enum MLXLLMReviewerCore {
                     parameters: parameters
                 )
                 var firstTokenTime: Date? = nil
+                let report = MLXGenerationProgress.handler
+                var lastReport = Date.distantPast
                 let result = MLXLMCommon.generate(
                     input: remaining,
                     context: context,
@@ -240,6 +242,19 @@ internal enum MLXLLMReviewerCore {
                                 label, tokens.count, elapsed, tps
                             )
                             AppLog.app.info("\(msg, privacy: .public)")
+                        }
+                        // UI progress at ~2 Hz — same shape as
+                        // MLXLLMSummarizerCore.runInference.
+                        if let report, -lastReport.timeIntervalSinceNow >= 0.5 {
+                            lastReport = Date()
+                            let elapsed = Date()
+                                .timeIntervalSince(firstTokenTime!)
+                            report(.init(phase: .decoding(
+                                generatedTokens: tokens.count,
+                                tokensPerSecond: elapsed > 0
+                                    ? Double(tokens.count) / elapsed
+                                    : 0
+                            )))
                         }
                         return Task.isCancelled ? .stop : .more
                     }

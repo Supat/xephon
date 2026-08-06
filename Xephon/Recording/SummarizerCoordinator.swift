@@ -54,6 +54,12 @@ final class SummarizerCoordinator {
     /// True while `summarize` is generating tokens. Disables the
     /// "Summarize session" toolbar button mid-run.
     private(set) var inferenceRunning: Bool = false
+    /// Live phase/token progress of the in-flight MLX generation,
+    /// published for the summary/review sheets' generating views.
+    /// Nil outside MLX runs (Apple FM and LM Studio emit nothing)
+    /// and cleared when the wrapped call returns. Set only via
+    /// `withMLXProgress`.
+    private(set) var liveProgress: MLXGenerationProgress?
     /// Wall-clock instant the most recent summarization started;
     /// drives the live elapsed-time readout in `SessionSummarySheet`.
     private(set) var inferenceStart: Date?
@@ -903,13 +909,15 @@ final class SummarizerCoordinator {
             : Set<UUID>()
         let glossaryTerms = mode == .meetingExperimental ? meetingGlossaryTerms() : []
         do {
-            let summary = try await actor.summarize(
-                utterances: utterances,
-                speakerNames: parent.speakerNameOverrides,
-                mode: mode,
-                boostedUtteranceIDs: boostedIDs,
-                glossaryTerms: glossaryTerms
-            )
+            let summary = try await withMLXProgress {
+                try await actor.summarize(
+                    utterances: utterances,
+                    speakerNames: parent.speakerNameOverrides,
+                    mode: mode,
+                    boostedUtteranceIDs: boostedIDs,
+                    glossaryTerms: glossaryTerms
+                )
+            }
             writeback(summary)
             return summary
         } catch is CancellationError {
@@ -1063,10 +1071,12 @@ final class SummarizerCoordinator {
                 // from a previous run.
                 await reviewerActor?.unload()
                 reviewerActor = nil
-                return try await actor.generateRaw(
-                    prompt: effectivePrompt,
-                    maxOutputTokens: maxOutputTokens
-                )
+                return try await withMLXProgress {
+                    try await actor.generateRaw(
+                        prompt: effectivePrompt,
+                        maxOutputTokens: maxOutputTokens
+                    )
+                }
             case .lmStudio:
                 guard parent.lmStudioSettings.enabled,
                       let baseURL = parent.lmStudioSettings.baseURL else {
@@ -1303,11 +1313,13 @@ final class SummarizerCoordinator {
         // (see comment in `reviewWithAppleFM`).
         defer { scheduleUnloadAndPipelineRewarm() }
         do {
-            let issues = try await actor.review(
-                utterances: parent.utterances,
-                speakerNames: parent.speakerNameOverrides,
-                language: reviewLanguage()
-            )
+            let issues = try await withMLXProgress {
+                try await actor.review(
+                    utterances: parent.utterances,
+                    speakerNames: parent.speakerNameOverrides,
+                    language: reviewLanguage()
+                )
+            }
             self.issues = issues
             return issues
         } catch is CancellationError {
@@ -1489,6 +1501,26 @@ final class SummarizerCoordinator {
     /// must never hold 4.6 GB of idle weights — it is first in
     /// line for Jetsam.
     @ObservationIgnored private var appIsBackgrounded = false
+
+    /// Run `body` with the MLX progress task-local bound to a
+    /// handler that publishes into `liveProgress`. Emissions arrive
+    /// on the generation task (throttled at the source to ~2 Hz);
+    /// each hops to the main actor. A hop landing after the defer
+    /// clears the field briefly re-populates it — harmless, the
+    /// sheets only render it while their generating state shows,
+    /// and the next run's first emission overwrites it.
+    private func withMLXProgress<T>(
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        defer { liveProgress = nil }
+        return try await MLXGenerationProgress.$handler.withValue({ [weak self] progress in
+            Task { @MainActor [weak self] in
+                self?.liveProgress = progress
+            }
+        }) {
+            try await body()
+        }
+    }
 
     /// Post-run residency decision. Deciding here — before the
     /// pipeline re-warm claims its memory — sees the process at

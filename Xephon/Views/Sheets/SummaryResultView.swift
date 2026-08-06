@@ -179,6 +179,7 @@ struct SummaryResultView: View {
                     .font(.title3.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            LLMLiveProgressLabel(progress: recorder.summarizerLiveProgress)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

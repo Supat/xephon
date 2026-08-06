@@ -51,6 +51,11 @@ enum MLXCancellablePrefill {
             reused = 0
         }
         let step = parameters.prefillStepSize
+        let totalTokens = input.text.tokens.size
+        let report = MLXGenerationProgress.handler
+        report?(.init(phase: .prefill(
+            processedTokens: reused, totalTokens: totalTokens
+        )))
         var text = input.text
         if reused > 0 {
             text = text[reused...]
@@ -64,6 +69,10 @@ enum MLXCancellablePrefill {
             )
             eval(cache)
             text = text[step...]
+            report?(.init(phase: .prefill(
+                processedTokens: totalTokens - text.tokens.size,
+                totalTokens: totalTokens
+            )))
         }
         try Task.checkCancellation()
         let remaining = LMInput(text: text)

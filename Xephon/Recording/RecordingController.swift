@@ -199,6 +199,7 @@ final class RecordingController {
     var summarizerDownloadingBackend: SummarizerBackend? { summarizer.downloadingBackend }
     var summarizerInferenceRunning: Bool { summarizer.inferenceRunning }
     var summarizerInferenceStart: Date? { summarizer.inferenceStart }
+    var summarizerLiveProgress: MLXGenerationProgress? { summarizer.liveProgress }
     /// ID of the section whose summary is currently being
     /// generated, or nil when no per-section summarization is
     /// in flight. Lets the Sections card render the spinner /

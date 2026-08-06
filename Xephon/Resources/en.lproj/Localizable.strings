@@ -135,6 +135,8 @@
 "summary.title" = "Session Summary";
 "summary.done" = "Done";
 "summary.generating" = "Generating summary. This can take a minute on the first run.";
+"llm.progress.prefill" = "Reading transcript… %d%%";
+"llm.progress.decoding" = "%1$d tokens · %2$.1f tok/s";
 "summary.empty" = "No summary yet. Tap Summarize from the toolbar.";
 "summary.section.setting" = "Setting";
 "summary.section.topic" = "Topic";

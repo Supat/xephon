@@ -966,6 +966,8 @@ internal enum MLXLLMSummarizerCore {
                     AppLog.app.info("\(reuseMsg, privacy: .public)")
                 }
                 var firstTokenTime: Date? = nil
+                let report = MLXGenerationProgress.handler
+                var lastReport = Date.distantPast
                 let result = MLXLMCommon.generate(
                     input: remaining,
                     context: context,
@@ -991,6 +993,20 @@ internal enum MLXLLMSummarizerCore {
                                 label, tokens.count, elapsed, tps
                             )
                             AppLog.app.info("\(msg, privacy: .public)")
+                        }
+                        // UI progress at ~2 Hz — decoupled from the
+                        // 64-token log cadence above so the display
+                        // updates steadily at any decode speed.
+                        if let report, -lastReport.timeIntervalSinceNow >= 0.5 {
+                            lastReport = Date()
+                            let elapsed = Date()
+                                .timeIntervalSince(firstTokenTime!)
+                            report(.init(phase: .decoding(
+                                generatedTokens: tokens.count,
+                                tokensPerSecond: elapsed > 0
+                                    ? Double(tokens.count) / elapsed
+                                    : 0
+                            )))
                         }
                         return Task.isCancelled ? .stop : .more
                     }
