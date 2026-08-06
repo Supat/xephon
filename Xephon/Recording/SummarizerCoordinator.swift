@@ -205,7 +205,7 @@ final class SummarizerCoordinator {
     /// System memory-pressure watcher backing the residency
     /// policy's eviction path. Kept for the coordinator's (= app's)
     /// lifetime; never cancelled.
-    @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
+    @ObservationIgnored private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
 
     init(parent: RecordingController) {
         self.parent = parent
