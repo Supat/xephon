@@ -88,3 +88,34 @@ whole run. Qualitative read (no ground truth yet):
   evidence rows (near the whole candidate set); ゴツゴツ has
   evidence rows with no filled field. Prompt/merge tightening
   candidates. Reviewer adjudication via evidence chips worked.
+
+## 2026-08-06 — turbo branch field confirmation (residency + prefix cache + progress)
+
+Device: Kiyosumi (iPad Pro M4-class, 15.14 GB reported, iOS 26.6).
+Model: Qwen3-8B-4bit. Timing observations, not accuracy numbers.
+
+- Meeting summarize, 171 utterances / 5096 prompt tokens: prefill
+  30.6 s (~167 tok/s), decode 954 tokens at 17.5 → 16.4 tok/s
+  (mild thermal droop), 88.9 s total. A1 plugin call, 1120 prompt
+  tokens: prefill 8.48 s (~132 tok/s), 74 output tokens, 12.2 s
+  total.
+- Residency policy's first field decision: "11583 MB available,
+  floor 4096 MB → keep resident"; the riskiest path — pipeline
+  re-warm WITH 4.6 GB of weights held — completed cleanly in ~2.5 s
+  (mlmodelc compiles cached: wespeaker 5.4 s cold at launch vs
+  49 ms on re-warm), speaker DB snapshot/restore intact, no memory
+  kill.
+- Prefix cache engaged: "reusing 3 of 1120 prompt tokens" on a
+  cross-item plugin call — tiny LCP is expected with the reverted
+  instructions-first prompts; the big reuse case (verbatim
+  parse-failure retry) did not occur in this run.
+- Caveat on the residency floor: os_proc_available_memory() on this
+  device reads ~15000 MB idle and 16078 MB after pipeline release —
+  it measures against the entitled Jetsam limit, not physical RAM,
+  and can exceed it. On 16 GB-class hardware the 4096 MB floor is
+  therefore effectively always-keep; the operative guards there are
+  the memory-pressure eviction and the backgrounding eviction. The
+  floor still does its intended job on smaller-RAM devices.
+- Not yet exercised: a second run against the resident model (the
+  log ends before one) — expect no "MLXQwenSummarizer loading" line
+  and the run starting straight at prompt prep.
