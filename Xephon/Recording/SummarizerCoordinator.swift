@@ -1031,11 +1031,18 @@ final class SummarizerCoordinator {
             && parent.lmStudioSettings.useStructuredOutput
         var effectivePrompt = prompt
         if let schemaJSON, !nativeSchema {
+            // The trailing "do not copy" rule is load-bearing: the
+            // first live harness run caught Qwen3-8B-4bit echoing
+            // the schema itself as its output on 2 of 12 calls
+            // (both attempts unparseable). Any wording change here
+            // must be mirrored byte-for-byte in the harness's
+            // MLXEvalInference and re-scored.
             effectivePrompt += """
 
 
             Return ONLY a valid JSON object conforming to this JSON Schema. \
-            The FIRST character of your output MUST be `{`. No prose.
+            The FIRST character of your output MUST be `{`. No prose. \
+            Do NOT copy or repeat the schema itself — output only the data object.
             \(schemaJSON)
             """
         }

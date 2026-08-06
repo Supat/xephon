@@ -60,20 +60,31 @@ harness has two backends:
 
 Run A — the PRODUCTION MLX path (MLXQwenSummarizer.generateRaw,
 prompt-contract schema, KV prefix cache), on an Apple silicon Mac
-via the Designed-for-iPad destination (no server, no device;
-`TEST_RUNNER_` prefixed vars reach the test host):
+via the Designed-for-iPad destination (no server, no device). Two
+gotchas, both load-bearing: `TEST_RUNNER_` vars must be environment
+variables ON the xcodebuild process (as trailing arguments they
+become build settings and the suite silently skips), and the test
+host is sandboxed — the model directory must live INSIDE the app
+container (`cp -cRL` = APFS clonefile, instant and free):
 
-    xcodebuild -project Xephon.xcodeproj -scheme Xephon \
+    CONTAINER=~/Library/Containers/<xephon-container-uuid>/Data
+    mkdir -p "$CONTAINER/Library/Application Support/eval-models"
+    cp -cRL <qwen3-8b-4bit dir> \
+      "$CONTAINER/Library/Application Support/eval-models/qwen3-8b-4bit"
+
+    TEST_RUNNER_XEPHON_MLX_MODEL_DIR="$CONTAINER/Library/Application Support/eval-models/qwen3-8b-4bit" \
+    xcodebuild -project Xephon.xcodeproj -scheme XephonEval \
       -destination 'platform=macOS,arch=arm64,variant=Designed for iPad' \
-      test -only-testing:XephonEvalTests/EvalFormLiveEvalTests \
-      TEST_RUNNER_XEPHON_MLX_MODEL_DIR=<qwen3-8b-4bit dir>
+      test -only-testing:XephonEvalTests/EvalFormLiveEvalTests
 
 Run B — any served model via LM Studio (cross-model bake-off,
 native json_schema enforcement):
 
-    xcodebuild ... test -only-testing:XephonEvalTests/EvalFormLiveEvalTests \
-      TEST_RUNNER_XEPHON_LMSTUDIO_URL=http://127.0.0.1:1234 \
-      TEST_RUNNER_XEPHON_LMSTUDIO_MODEL=<served-model-id>
+    TEST_RUNNER_XEPHON_LMSTUDIO_URL=http://127.0.0.1:1234 \
+    TEST_RUNNER_XEPHON_LMSTUDIO_MODEL=<served-model-id> \
+    xcodebuild -project Xephon.xcodeproj -scheme XephonEval \
+      -destination 'platform=macOS,arch=arm64,variant=Designed for iPad' \
+      test -only-testing:XephonEvalTests/EvalFormLiveEvalTests
 
 MLX wins when both are set. Note Run A on a Mac shares the model
 family and the exact prompt path with the iPad but not its silicon
@@ -198,3 +209,27 @@ Read:
   appendix does not forbid schema echo.
 - The verbatim-retry KV reuse worked in production form: retry
   reused 827/828 tokens, prefill 0.04 s vs 2.35 s cold.
+
+### Candidate: schema-echo fix (same day)
+
+One appendix line added to the shared prompt contract ("Do NOT copy
+or repeat the schema itself — output only the data object"), both
+copies (coordinator + harness) in lockstep. Same battery, same model:
+
+| run | scores exact | false fills | inferred in-band | false inferred | comments | evidence | metadata | wall |
+|-----|--------------|-------------|------------------|----------------|----------|----------|----------|------|
+| baseline | 5/5 | 0 | 4/5 | 0 | 4/11 | 8/8 | 4/4 +1 false | 111.6 s |
+| schema-echo fix | 5/5 | 0 | 3/5 | 0 | 9/11 | 11/11 | 4/4 +3 false | 75.3 s |
+
+- Targeted defect eliminated: zero schema echoes, zero parse
+  failures, zero retries (the wall-clock drop is the two retry
+  calls plus the wasted echo decodes). Comment recall 4/11 → 9/11
+  and evidence 11/11 follow directly — echoed items had degraded
+  to deterministic-only.
+- Single-run caveats (small deltas, treat as noise until repeated):
+  one tier3a inferred flipped in-band → missed (nil), and tier3a
+  grew 2 false metadata fields. Greedy decode is not bit-stable
+  across runs (Metal reduction order); per the measurement
+  discipline, repeat/interleave before reading anything into
+  ±1-count changes. The parse-failure elimination is causal and
+  mechanism-understood; the rest needs N>1.

@@ -89,7 +89,8 @@ struct EvalFormLiveEvalTests {
 
 
                 Return ONLY a valid JSON object conforming to this JSON Schema. \
-                The FIRST character of your output MUST be `{`. No prose.
+                The FIRST character of your output MUST be `{`. No prose. \
+                Do NOT copy or repeat the schema itself — output only the data object.
                 \(schemaJSON)
                 """
             }
