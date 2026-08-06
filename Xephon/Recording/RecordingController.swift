@@ -2114,6 +2114,10 @@ final class RecordingController {
     /// during init.
     func setBackgroundMode(_ inBackground: Bool) async {
         latestBackgroundMode = inBackground
+        // Residency policy: a backgrounded app must not sit on a
+        // resident MLX model's weights (idle → evicted now; an
+        // in-flight run's post-run decision sees the flag).
+        summarizer.handleScenePhase(background: inBackground)
         if !inBackground {
             // Consume any auto-summarize fire that was deferred
             // because the app was backgrounded at fire time.

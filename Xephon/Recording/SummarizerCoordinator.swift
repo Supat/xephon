@@ -196,6 +196,11 @@ final class SummarizerCoordinator {
     /// (keyword edits, picker exploration) coalesces into one pass.
     static let autoReRunDebounceSec: TimeInterval = 2.5
 
+    /// System memory-pressure watcher backing the residency
+    /// policy's eviction path. Kept for the coordinator's (= app's)
+    /// lifetime; never cancelled.
+    @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
+
     init(parent: RecordingController) {
         self.parent = parent
         self.enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
@@ -207,6 +212,21 @@ final class SummarizerCoordinator {
         if UserDefaults.standard.object(forKey: Self.autoKey) != nil {
             self.autoSummarizeEnabled = UserDefaults.standard.bool(forKey: Self.autoKey)
         }
+        // A model kept resident between runs must yield the moment
+        // the system signals pressure — the residency gate is a
+        // point-in-time estimate; this is the correction path when
+        // the world changes afterwards (big session load, another
+        // app's working set, live analysis growth).
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.evictResidentMLX(reason: "memory pressure")
+            }
+        }
+        source.activate()
+        memoryPressureSource = source
     }
 
     func setAutoSummarizeEnabled(_ value: Bool) {
@@ -868,6 +888,12 @@ final class SummarizerCoordinator {
             scheduleUnloadAndPipelineRewarm()
             return nil
         }
+        // Mirror of reviewWithMLX's belt-and-braces: residency can
+        // leave the REVIEWER actor loaded from a previous run; drop
+        // it before the summarizer's ~4.6 GB weights come up —
+        // holding both families is a guaranteed Jetsam.
+        await reviewerActor?.unload()
+        reviewerActor = nil
         // Inference gating owned by the public entry method
         // (see comment in `summarizeWithAppleFM`).
         defer { scheduleUnloadAndPipelineRewarm() }
@@ -1032,6 +1058,11 @@ final class SummarizerCoordinator {
                           directory: directory
                       )
                 else { throw PluginGenerateError.backendNotReady }
+                // Same reviewer retire as summarizeWithMLX —
+                // residency can leave the reviewer's weights loaded
+                // from a previous run.
+                await reviewerActor?.unload()
+                reviewerActor = nil
                 return try await actor.generateRaw(
                     prompt: effectivePrompt,
                     maxOutputTokens: maxOutputTokens
@@ -1435,21 +1466,100 @@ final class SummarizerCoordinator {
         await Task.yield()
     }
 
-    /// Unload Qwen and re-warm the pipeline in the background.
-    /// Runs in `defer` so it fires whether summarization succeeded
-    /// or failed. Restores the pre-summarize speaker DB snapshot
-    /// after the fresh diarizer is warm.
-    private func scheduleUnloadAndPipelineRewarm() {
-        unloadRewarmTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            // Unload BOTH Qwen actors. Only one is loaded at a time
-            // by construction, but a stale reference here would keep
-            // ~4.6 GB of weights resident across the pipeline rewarm.
+    // MARK: - MLX model residency
+
+    /// Floor of `os_proc_available_memory()` headroom — measured
+    /// after a run finishes, with the pipeline still released —
+    /// above which the finished run's MLX actor stays resident for
+    /// the next run instead of unloading (skipping that run's
+    /// ~15 s weight reload). Budget behind the number: the pipeline
+    /// re-warm claims ~1.5 GB, the next run's inference scratch
+    /// (KV + activations, incl. the plugin path's retained prefix
+    /// cache) peaks ~1 GB, and the rest stays as margin against
+    /// the Jetsam kill threshold. On a 16 GB iPad Pro (with the
+    /// increased-memory entitlement) one resident 4.6 GB model
+    /// leaves ~5 GB at the decision point → resident; devices
+    /// without that headroom keep the historical unload-every-run
+    /// behavior. First-cut number — validate on-device and record
+    /// in docs/eval_log.md before trusting it near the edge.
+    private static let residencyKeepFloorMB = 4096
+
+    /// Mirror of the scenePhase, relayed by
+    /// `RecordingController.setBackgroundMode`. A backgrounded app
+    /// must never hold 4.6 GB of idle weights — it is first in
+    /// line for Jetsam.
+    @ObservationIgnored private var appIsBackgrounded = false
+
+    /// Post-run residency decision. Deciding here — before the
+    /// pipeline re-warm claims its memory — sees the process at
+    /// its leanest, which is exactly the state the floor above is
+    /// calibrated against.
+    private func shouldKeepMLXResident() -> Bool {
+        guard summarizerActor != nil || reviewerActor != nil else { return false }
+        guard !appIsBackgrounded else { return false }
+        let availableMB = Int(os_proc_available_memory()) / (1024 * 1024)
+        let keep = availableMB >= Self.residencyKeepFloorMB
+        AppLog.app.info(
+            "MLX residency: \(availableMB, privacy: .public) MB available, floor \(Self.residencyKeepFloorMB, privacy: .public) MB → \(keep ? "keep resident" : "unload", privacy: .public)"
+        )
+        return keep
+    }
+
+    /// scenePhase relay. Backgrounding evicts an idle resident
+    /// actor immediately; an in-flight run is being cancelled by
+    /// `LLMSheetCoordinator.cancelForBackground` in the same
+    /// transition, and its post-run decision sees the flag and
+    /// unloads. Foregrounding just clears the flag — the next
+    /// run's post-run decision re-evaluates residency.
+    func handleScenePhase(background: Bool) {
+        appIsBackgrounded = background
+        if background {
+            evictResidentMLX(reason: "app backgrounded")
+        }
+    }
+
+    /// Drop an idle resident-between-runs MLX actor. No pipeline
+    /// rewarm here — eviction only fires between runs, when the
+    /// pipeline is already warm (or being re-warmed by the
+    /// post-run task). No-op while any run or plugin batch is in
+    /// flight; the run's own post-run decision handles those.
+    private func evictResidentMLX(reason: String) {
+        guard !inferenceRunning, !reviewRunning, pluginBatchDepth == 0 else { return }
+        guard summarizerActor != nil || reviewerActor != nil else { return }
+        AppLog.app.info(
+            "evicting resident MLX actor (\(reason, privacy: .public))"
+        )
+        Task { @MainActor [weak self] in
+            guard let self,
+                  !self.inferenceRunning, !self.reviewRunning,
+                  self.pluginBatchDepth == 0 else { return }
             await self.summarizerActor?.unload()
             self.summarizerActor = nil
             await self.reviewerActor?.unload()
             self.reviewerActor = nil
-            AppLog.app.info("Qwen unloaded; re-warming analysis pipeline")
+        }
+    }
+
+    /// Unload Qwen — unless the residency gate keeps it — and
+    /// re-warm the pipeline in the background. Runs in `defer` so
+    /// it fires whether summarization succeeded or failed. Restores
+    /// the pre-summarize speaker DB snapshot after the fresh
+    /// diarizer is warm.
+    private func scheduleUnloadAndPipelineRewarm() {
+        unloadRewarmTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if self.shouldKeepMLXResident() {
+                AppLog.app.info("MLX actor kept resident; re-warming analysis pipeline")
+            } else {
+                // Unload BOTH Qwen actors. Only one is loaded at a time
+                // by construction, but a stale reference here would keep
+                // ~4.6 GB of weights resident across the pipeline rewarm.
+                await self.summarizerActor?.unload()
+                self.summarizerActor = nil
+                await self.reviewerActor?.unload()
+                self.reviewerActor = nil
+                AppLog.app.info("Qwen unloaded; re-warming analysis pipeline")
+            }
             let pipeline = await self.parent.ensurePipeline()
             if let saved = self.savedSpeakerDB {
                 do {

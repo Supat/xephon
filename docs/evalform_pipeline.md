@@ -277,8 +277,10 @@ docs/evalform_inferred_preference.md.
 
 ## 7. Timing profile (Qwen3-8B-4bit, M4 iPad, field runs)
 
-One model load ~15 s (batch envelope), prefill 4–9 s per call
-(~600–1300 prompt tokens), decode ~20 tok/s. A six-item session
+One model load ~15 s (batch envelope; since 2026-08-06 skipped
+entirely when a prior run left the model resident — see the
+residency policy in `SummarizerCoordinator`), prefill 4–9 s per
+call (~600–1300 prompt tokens), decode ~20 tok/s. A six-item session
 with supplementary + metadata ≈ 8 calls ≈ 1½–2 minutes total. A
 parse-failure retry adds one call. The inferred-好き嫌い pass
 (§4f) adds one call per mentioned item without a stated

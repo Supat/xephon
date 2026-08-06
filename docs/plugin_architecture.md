@@ -222,7 +222,13 @@ day one.
   device testing on exactly those traps.
 - **Model contention** — plugin inference vs auto-summarize/review runs;
   the host gate serializes, but UX for "queued behind summarizer" needs a
-  design pass in Phase 2.
+  design pass in Phase 2. Since 2026-08-06 the load/unload half of the
+  cost is addressed: the MLX actor stays resident between consecutive
+  runs when `os_proc_available_memory()` headroom allows
+  (`SummarizerCoordinator.shouldKeepMLXResident`), so back-to-back
+  plugin fill → summarize → review no longer pays a ~15 s weight
+  reload per run; eviction on memory pressure, backgrounding, backend
+  switch, and model removal.
 - **Payload forward-compat** — opaque preservation is specified in Phase 0
   precisely because it's the easiest thing to get silently wrong later.
 - **Where prompts live** — plugin code (versioned with logic) vs data pack
