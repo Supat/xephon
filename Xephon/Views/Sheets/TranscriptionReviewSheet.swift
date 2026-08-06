@@ -360,6 +360,10 @@ struct TranscriptionReviewSheet: View {
                         ElapsedTimeLabel(start: start)
                             .foregroundStyle(.secondary)
                     }
+                    // Re-reviewing with issues already listed renders
+                    // this bar, not `reviewingView` — the live
+                    // progress line must appear in both states.
+                    LLMLiveProgressLabel(progress: recorder.summarizerLiveProgress)
                 } else {
                     Image(systemName: "text.magnifyingglass")
                 }

@@ -1515,7 +1515,17 @@ final class SummarizerCoordinator {
         defer { liveProgress = nil }
         return try await MLXGenerationProgress.$handler.withValue({ [weak self] progress in
             Task { @MainActor [weak self] in
-                self?.liveProgress = progress
+                guard let self else { return }
+                // One log line per run, on the nil → value edge —
+                // field-verifiable proof the task-local chain
+                // delivered (the UI can be in a state that hides
+                // the label; this line can't be).
+                if self.liveProgress == nil {
+                    AppLog.app.info(
+                        "MLX progress: first emission this run (\(String(describing: progress.phase), privacy: .public))"
+                    )
+                }
+                self.liveProgress = progress
             }
         }) {
             try await body()

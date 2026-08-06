@@ -152,6 +152,10 @@ struct SummaryResultView: View {
                         ElapsedTimeLabel(start: start)
                             .foregroundStyle(.secondary)
                     }
+                    // Regenerating over an EXISTING summary renders
+                    // this bar, not `generatingView` — the live
+                    // progress line must appear in both states.
+                    LLMLiveProgressLabel(progress: recorder.summarizerLiveProgress)
                 } else {
                     Image(systemName: "arrow.clockwise")
                 }
