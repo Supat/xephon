@@ -31,6 +31,12 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
     private let modelDirectory: URL
     private var container: ModelContainer?
     private let spec = MLXQwenSpec()
+    /// KV reuse across consecutive plugin calls: the A1 Eval item →
+    /// preference call pairs (and parse-failure retries) re-send the
+    /// same leading tokens; the cache lets them skip that prefill.
+    /// Plugin path only — summarize/review prompts don't share
+    /// prefixes worth the held KV memory.
+    private let pluginPrefixCache = MLXPromptPrefixCache()
 
     public init(modelIdentifier: String, modelDirectory: URL) {
         self.modelIdentifier = modelIdentifier
@@ -76,6 +82,9 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
 
     public func unload() {
         container = nil
+        // The held KV state references model-sized MLX buffers —
+        // never outlive the weights.
+        pluginPrefixCache.reset()
         AppLog.app.info("MLXQwenSummarizer unloaded")
     }
 
@@ -102,7 +111,8 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
             label: "MLX[\(spec.family.rawValue)] plugin",
             // Greedy: plugin calls fill evaluation sheets — repeat
             // runs on the same session must reproduce.
-            temperature: 0
+            temperature: 0,
+            prefixCache: pluginPrefixCache
         )
         // Belt to the directive's braces: /no_think still emits an
         // empty think block on some checkpoints, and a think block

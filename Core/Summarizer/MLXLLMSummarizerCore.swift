@@ -913,7 +913,8 @@ internal enum MLXLLMSummarizerCore {
         maxTokens: Int,
         repetitionPenalty: Float?,
         label: String,
-        temperature: Float = 0.2
+        temperature: Float = 0.2,
+        prefixCache: MLXPromptPrefixCache? = nil
     ) async throws -> String {
         do {
             return try await container.perform { context -> String in
@@ -951,11 +952,19 @@ internal enum MLXLLMSummarizerCore {
                 // loop has none, so backgrounding mid-prefill kept
                 // submitting GPU work after iOS revoked access and
                 // aborted the process (see MLXCancellablePrefill).
-                let (remaining, iterator) = try MLXCancellablePrefill.primedIterator(
+                let (remaining, iterator, reusedTokens) = try MLXCancellablePrefill.primedIterator(
                     input: lmInput,
                     context: context,
-                    parameters: parameters
+                    parameters: parameters,
+                    prefixCache: prefixCache
                 )
+                if reusedTokens > 0 {
+                    let reuseMsg = String(
+                        format: "%@ prefix cache: reusing %d of %d prompt tokens",
+                        label, reusedTokens, lmInput.text.tokens.size
+                    )
+                    AppLog.app.info("\(reuseMsg, privacy: .public)")
+                }
                 var firstTokenTime: Date? = nil
                 let result = MLXLMCommon.generate(
                     input: remaining,

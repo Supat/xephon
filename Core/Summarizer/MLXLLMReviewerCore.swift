@@ -209,7 +209,7 @@ internal enum MLXLLMReviewerCore {
                 // MLXLLMSummarizerCore.runInference (see
                 // MLXCancellablePrefill's doc for the backgrounding
                 // crash this prevents).
-                let (remaining, iterator) = try MLXCancellablePrefill.primedIterator(
+                let (remaining, iterator, _) = try MLXCancellablePrefill.primedIterator(
                     input: lmInput,
                     context: context,
                     parameters: parameters

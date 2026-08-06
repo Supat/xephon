@@ -119,10 +119,29 @@ the preference scale only (no strength scale / rubric / POLARITY
 Single attempt, range-gated, failure degrades to an empty cell.
 
 Cost: one extra generate per mentioned item without a stated
-preference — roughly doubles the item-pass wall time
+preference — originally roughly doubling the item-pass wall time
 (prefill-dominated over the same rows; decode is ~a dozen
 tokens). Accepted in exchange for a strength-score path that no
 future preference-prompt tuning can perturb.
+
+## Revision 2026-08-06 — shared-prefix KV reuse pays the cost down
+
+Both per-item prompts now open with a byte-identical head
+(`EvalFormExtractor.sharedItemPrefixLines`: sheet/item identity +
+the candidate rows) with each call's task instructions after the
+rows, and the MLX plugin path keeps the previous call's KV cache
+alive (`MLXPromptPrefixCache`, verified longest-common-token-
+prefix, trim-and-reuse). The preference call therefore skips
+prefilling the rows the item call just pushed through the model —
+its marginal cost drops to prefilling its own short instruction
+tail plus ~a dozen decode tokens. Parse-failure retries (verbatim
+re-sends) get the same discount. The isolation guarantee is
+untouched: the calls remain separate generations; they merely
+stop re-paying for identical leading tokens. Note the instruction
+blocks now sit AFTER the rows in both prompts — extraction
+quality against ground truth must be re-checked when the eval
+harness lands (the pending-validation caveat above already
+applies to this channel).
 
 ## Validation
 

@@ -22,6 +22,9 @@ public actor MLXLlamaSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
     private let modelDirectory: URL
     private var container: ModelContainer?
     private let spec = MLXLlamaSpec()
+    /// KV reuse across consecutive plugin calls — see the twin
+    /// property on `MLXQwenSummarizer`.
+    private let pluginPrefixCache = MLXPromptPrefixCache()
 
     public init(modelIdentifier: String, modelDirectory: URL) {
         self.modelIdentifier = modelIdentifier
@@ -56,6 +59,9 @@ public actor MLXLlamaSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
 
     public func unload() {
         container = nil
+        // The held KV state references model-sized MLX buffers —
+        // never outlive the weights.
+        pluginPrefixCache.reset()
         AppLog.app.info("MLXLlamaSummarizer unloaded")
     }
 
@@ -82,7 +88,8 @@ public actor MLXLlamaSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
             label: "MLX[\(spec.family.rawValue)] plugin",
             // Greedy: plugin calls fill evaluation sheets — repeat
             // runs on the same session must reproduce.
-            temperature: 0
+            temperature: 0,
+            prefixCache: pluginPrefixCache
         )
         // Belt to the directive's braces: /no_think still emits an
         // empty think block on some checkpoints, and a think block

@@ -333,6 +333,39 @@ struct EvalFormPluginTests {
         #expect(!prompt.contains("まったく違う"))
     }
 
+    /// The MLX backend's prompt-prefix KV reuse
+    /// (`MLXPromptPrefixCache`) hinges on the item → preference
+    /// call pair sharing a byte-identical head through the rows
+    /// block. Pin it: both prompts must start with exactly
+    /// `sharedItemPrefixLines`, and the rows must sit inside that
+    /// shared head, with each prompt's task instructions strictly
+    /// after it.
+    @Test func extractionAndPreferencePromptsShareHeadThroughRows() {
+        let item = template.items[1]
+        let rows = [
+            (number: 3, speakerID: "S01", transcript: "ゴツゴツが強い"),
+            (number: 4, speakerID: "S02", transcript: "マイナス0.5ですね"),
+        ]
+        let shared = EvalFormExtractor.sharedItemPrefixLines(
+            item: item, template: template, rows: rows
+        ).joined(separator: "\n") + "\n"
+        let extraction = EvalFormExtractor.extractionPrompt(
+            item: item,
+            template: template,
+            rows: rows,
+            deterministic: .init(statedScores: [], statedPreference: nil)
+        )
+        let preference = EvalFormExtractor.preferencePrompt(
+            item: item, template: template, rows: rows
+        )
+        #expect(extraction.hasPrefix(shared))
+        #expect(preference.hasPrefix(shared))
+        // The rows are part of the shared head, not the per-call
+        // tail — that's what makes the second call's prefill cheap.
+        #expect(shared.contains("[3] S01: ゴツゴツが強い"))
+        #expect(shared.contains("[4] S02: マイナス0.5ですね"))
+    }
+
     @Test func inferredPolarityContradictionIsFlagged() {
         let item = template.items[1]
         // Evidence says STRONGER; model inferred the weak (+) side.

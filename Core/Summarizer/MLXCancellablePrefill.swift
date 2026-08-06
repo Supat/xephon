@@ -23,18 +23,38 @@ import MLXLMCommon
 /// Text-only by design — the summarizer / reviewer prompts carry no
 /// image/video input, and the VLM prepare path differs.
 enum MLXCancellablePrefill {
-    /// Prefill `input`'s prompt into a fresh KV cache, checking for
+    /// Prefill `input`'s prompt into a KV cache, checking for
     /// Task cancellation between chunks, and return the iterator to
     /// hand to `generate(input:context:iterator:didGenerate:)`
     /// together with the remainder input it was built from.
+    ///
+    /// When `prefixCache` is given, the leading tokens the prompt
+    /// verifiably shares with the previous call on that cache are
+    /// skipped instead of re-prefilled (see `MLXPromptPrefixCache`);
+    /// `reusedTokens` reports how many were skipped (0 = cold).
     static func primedIterator(
         input: LMInput,
         context: ModelContext,
-        parameters: GenerateParameters
-    ) throws -> (remaining: LMInput, iterator: TokenIterator) {
-        let cache = context.model.newCache(parameters: parameters)
+        parameters: GenerateParameters,
+        prefixCache: MLXPromptPrefixCache? = nil
+    ) throws -> (remaining: LMInput, iterator: TokenIterator, reusedTokens: Int) {
+        let cache: [KVCache]
+        let reused: Int
+        if let prefixCache {
+            (cache, reused) = prefixCache.adopt(
+                fullTokens: input.text.tokens.asArray(Int.self),
+                model: context.model,
+                parameters: parameters
+            )
+        } else {
+            cache = context.model.newCache(parameters: parameters)
+            reused = 0
+        }
         let step = parameters.prefillStepSize
         var text = input.text
+        if reused > 0 {
+            text = text[reused...]
+        }
         while text.tokens.size > step {
             try Task.checkCancellation()
             _ = context.model(
@@ -53,6 +73,6 @@ enum MLXCancellablePrefill {
             cache: cache,
             parameters: parameters
         )
-        return (remaining, iterator)
+        return (remaining, iterator, reused)
     }
 }
