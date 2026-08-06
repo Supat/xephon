@@ -119,3 +119,10 @@ Model: Qwen3-8B-4bit. Timing observations, not accuracy numbers.
 - Not yet exercised: a second run against the resident model (the
   log ends before one) — expect no "MLXQwenSummarizer loading" line
   and the run starting straight at prompt prep.
+
+Follow-up (same day, second field run): A1 extraction quality
+confirmed back to pre-turbo behavior after the prompt revert
+(fca98ac), and the live progress line confirmed rendering after the
+action-bar mount (404c76d). Still unobserved in the field: the
+second-consecutive-run residency payoff (no model reload) and a
+large prefix-cache reuse on a verbatim retry.
