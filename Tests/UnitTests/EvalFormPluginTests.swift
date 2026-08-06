@@ -333,22 +333,15 @@ struct EvalFormPluginTests {
         #expect(!prompt.contains("まったく違う"))
     }
 
-    /// The MLX backend's prompt-prefix KV reuse
-    /// (`MLXPromptPrefixCache`) hinges on the item → preference
-    /// call pair sharing a byte-identical head through the rows
-    /// block. Pin it: both prompts must start with exactly
-    /// `sharedItemPrefixLines`, and the rows must sit inside that
-    /// shared head, with each prompt's task instructions strictly
-    /// after it.
-    @Test func extractionAndPreferencePromptsShareHeadThroughRows() {
+    /// Pins the field-validated instructions-first ordering: rules
+    /// and scales BEFORE the rows in both per-item prompts. A
+    /// rows-first shared-head variant (for MLX KV-prefix reuse)
+    /// shipped on 2026-08-06, regressed extraction quality
+    /// significantly in the field, and was reverted — any reorder
+    /// must go through the ground-truth eval harness first.
+    @Test func promptsPutInstructionsBeforeRows() {
         let item = template.items[1]
-        let rows = [
-            (number: 3, speakerID: "S01", transcript: "ゴツゴツが強い"),
-            (number: 4, speakerID: "S02", transcript: "マイナス0.5ですね"),
-        ]
-        let shared = EvalFormExtractor.sharedItemPrefixLines(
-            item: item, template: template, rows: rows
-        ).joined(separator: "\n") + "\n"
+        let rows = [(number: 3, speakerID: "S01", transcript: "ゴツゴツが強い")]
         let extraction = EvalFormExtractor.extractionPrompt(
             item: item,
             template: template,
@@ -358,12 +351,11 @@ struct EvalFormPluginTests {
         let preference = EvalFormExtractor.preferencePrompt(
             item: item, template: template, rows: rows
         )
-        #expect(extraction.hasPrefix(shared))
-        #expect(preference.hasPrefix(shared))
-        // The rows are part of the shared head, not the per-call
-        // tail — that's what makes the second call's prefill cheap.
-        #expect(shared.contains("[3] S01: ゴツゴツが強い"))
-        #expect(shared.contains("[4] S02: マイナス0.5ですね"))
+        let rowLine = "[3] S01: ゴツゴツが強い"
+        #expect(extraction.range(of: "STRICT RULES:")!.lowerBound
+            < extraction.range(of: rowLine)!.lowerBound)
+        #expect(preference.range(of: "prefer the mild value")!.lowerBound
+            < preference.range(of: rowLine)!.lowerBound)
     }
 
     @Test func inferredPolarityContradictionIsFlagged() {

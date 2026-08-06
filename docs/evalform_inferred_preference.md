@@ -124,24 +124,31 @@ preference — originally roughly doubling the item-pass wall time
 tokens). Accepted in exchange for a strength-score path that no
 future preference-prompt tuning can perturb.
 
-## Revision 2026-08-06 — shared-prefix KV reuse pays the cost down
+## Revision 2026-08-06 — shared-prefix prompt reorder: shipped and reverted
 
-Both per-item prompts now open with a byte-identical head
-(`EvalFormExtractor.sharedItemPrefixLines`: sheet/item identity +
-the candidate rows) with each call's task instructions after the
-rows, and the MLX plugin path keeps the previous call's KV cache
-alive (`MLXPromptPrefixCache`, verified longest-common-token-
-prefix, trim-and-reuse). The preference call therefore skips
-prefilling the rows the item call just pushed through the model —
-its marginal cost drops to prefilling its own short instruction
-tail plus ~a dozen decode tokens. Parse-failure retries (verbatim
-re-sends) get the same discount. The isolation guarantee is
-untouched: the calls remain separate generations; they merely
-stop re-paying for identical leading tokens. Note the instruction
-blocks now sit AFTER the rows in both prompts — extraction
-quality against ground truth must be re-checked when the eval
-harness lands (the pending-validation caveat above already
-applies to this channel).
+To let the MLX backend's KV prefix cache (`MLXPromptPrefixCache`)
+skip re-prefilling the rows across the item → preference pair,
+both prompts were briefly restructured rows-first with a
+byte-identical shared head and instructions after the rows.
+Field result: evaluation quality dropped significantly, and the
+speedup never materialized — `MLXLMCommon.trimPromptCache` in the
+pinned 2.29.1 trims only the first layer's cache (upstream bug),
+so the cache's own verification rejected reuse on every call and
+each call ran a cold prefill of the REORDERED prompts. A Mac
+repro harness against the same Qwen3-8B-4bit confirmed both
+halves: (a) with the broken trim, outputs are byte-identical to
+cold runs — the KV mechanism could not have caused the quality
+drop; the prompt reorder alone did; (b) with a per-layer trim
+fix, reuse works and reproduces cold-prefill outputs (preference
+call 5.5 s → 1.6 s in the harness, item output identical).
+
+Resolution: prompts reverted byte-for-byte to the
+instructions-first shape (this file's earlier sections describe
+it); the trim bug is fixed inside `MLXPromptPrefixCache`; KV
+reuse stays enabled and now benefits verbatim parse-failure
+retries, which need no prompt cooperation. Re-attempting a
+shared-head prompt layout requires the ground-truth eval harness
+to gate the quality change — the infrastructure is ready for it.
 
 ## Validation
 

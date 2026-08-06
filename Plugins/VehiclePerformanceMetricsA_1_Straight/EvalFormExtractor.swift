@@ -272,50 +272,29 @@ public enum EvalFormExtractor {
     },"required":["statedScore","inferredScore","likeDislike","comment","evidenceRows"]}
     """
 
-    /// The leading block shared BYTE-FOR-BYTE by `extractionPrompt`
-    /// and `preferencePrompt` for the same item: session framing,
-    /// sheet/item identity, and the candidate rows. Data-first,
-    /// instructions-after ordering is deliberate — the MLX backend
-    /// reuses the KV cache across consecutive plugin calls whose
-    /// prompts share a leading token run (`MLXPromptPrefixCache`),
-    /// and the item → preference pair re-sends the same rows; a
-    /// shared prefix makes the second call's prefill nearly free.
-    /// Both prompts MUST build their head through this one helper
-    /// so the prefix can't drift. (Instruction recency also favors
-    /// rules-after-data on the small quantized models — same reason
-    /// the summarizer prompts restate directives at the tail.)
-    static func sharedItemPrefixLines(
-        item: EvalFormTemplate.Item,
-        template: EvalFormTemplate,
-        rows: [(number: Int, speakerID: String, transcript: String)]
-    ) -> [String] {
-        var lines: [String] = []
-        lines.append("Utterances from a Japanese vehicle ride-quality test-drive session, selected for ONE evaluation-sheet item (numbered [n] speaker: text; the rows mentioning the item plus their immediate neighbours — a verdict or score often lands in the row AFTER the mention):")
-        lines.append("Sheet: \(template.name)")
-        lines.append("Item \(item.number): \(item.titleJa) — \(item.definition)")
-        lines.append("")
-        for row in rows {
-            lines.append("[\(row.number)] \(row.speakerID): \(row.transcript)")
-        }
-        lines.append("")
-        return lines
-    }
-
     /// Build the per-item extraction prompt over the candidate
     /// rows. Row lines carry the SESSION-global number so evidence
     /// resolves session-wide. The deterministic findings are given
     /// to the model as ground truth it must not contradict.
-    /// Head must come from `sharedItemPrefixLines` — see its doc.
+    ///
+    /// Ordering is instructions-first, rows-last — the shape every
+    /// field-validated run used. A rows-first variant (shared head
+    /// with `preferencePrompt` for MLX KV-prefix reuse) shipped
+    /// briefly on 2026-08-06 and regressed extraction quality
+    /// significantly in the field; reverted byte-for-byte. Do not
+    /// reorder again without the ground-truth eval harness gating
+    /// the change. KV reuse still engages for verbatim retries,
+    /// which need no prompt cooperation.
     public static func extractionPrompt(
         item: EvalFormTemplate.Item,
         template: EvalFormTemplate,
         rows: [(number: Int, speakerID: String, transcript: String)],
         deterministic: DeterministicFindings
     ) -> String {
-        var lines = sharedItemPrefixLines(
-            item: item, template: template, rows: rows
-        )
-        lines.append("You are filling this item's row of the evaluation sheet from the utterances above.")
+        var lines: [String] = []
+        lines.append("You are filling ONE row of a Japanese vehicle ride-quality evaluation sheet from test-drive utterances.")
+        lines.append("Sheet: \(template.name)")
+        lines.append("Item \(item.number): \(item.titleJa) — \(item.definition)")
         lines.append("Strength scale: \(template.strengthScale.minimum) (strong) to +\(template.strengthScale.maximum) (weak) relative to the baseline spec, in steps of \(template.strengthScale.step). Preference scale: \(template.preferenceScale.minimum) (嫌い) to \(template.preferenceScale.maximum) (好き).")
         lines.append("POLARITY: negative = the sensation is STRONGER than the baseline (強い・増えた side); positive = WEAKER (弱い・減った・なくなった side). The score's sign MUST agree with the direction the evaluator described.")
         if let anchors = template.strengthScale.anchors, !anchors.isEmpty {
@@ -328,12 +307,17 @@ public enum EvalFormExtractor {
         lines.append("- statedScore / likeDislike: ONLY values the evaluator explicitly SAID. Never convert qualitative wording into a stated value. When nothing was said, use null.")
         lines.append("- inferredScore: your suggestion from qualitative wording, only when statedScore is null and the wording clearly implies a direction; must be one of the scale's quantized steps; otherwise null.")
         lines.append("- comment: short Japanese distillation of what was actually said about THIS item; null when the rows don't discuss it.")
-        lines.append("- evidenceRows: the [n] numbers of the rows each filled field rests on. Only numbers that appear in the utterances above. A claim without a row does not belong on the sheet.")
+        lines.append("- evidenceRows: the [n] numbers of the rows each filled field rests on. Only numbers that appear below. A claim without a row does not belong on the sheet.")
         if !deterministic.statedScores.isEmpty {
             let stated = deterministic.statedScores
                 .map { "[\($0.row)] → \($0.value)" }
                 .joined(separator: ", ")
             lines.append("Pre-verified stated scores (regex-captured; treat as ground truth): \(stated)")
+        }
+        lines.append("")
+        lines.append("Utterances (numbered [n] speaker: text; the rows mentioning the item plus their immediate neighbours — a verdict or score often lands in the row AFTER the mention):")
+        for row in rows {
+            lines.append("[\(row.number)] \(row.speakerID): \(row.transcript)")
         }
         lines.append("")
         lines.append("Return ONLY the JSON object. The FIRST character of your output MUST be `{`.")
@@ -508,24 +492,26 @@ public enum EvalFormExtractor {
     /// item extraction saw. Carries the preference scale only —
     /// no strength scale, rubric, or polarity rule — so nothing
     /// here can leak back into score behaviour, and vice versa.
-    /// Head must come from `sharedItemPrefixLines` — this prompt
-    /// always follows the item extraction over the same rows, and
-    /// the shared head is what lets the MLX backend skip re-
-    /// prefilling them (the pass that used to double item-pass
-    /// wall time, docs/evalform_inferred_preference.md).
+    /// Instructions-first ordering matches `extractionPrompt` —
+    /// see the revert note on its doc comment.
     public static func preferencePrompt(
         item: EvalFormTemplate.Item,
         template: EvalFormTemplate,
         rows: [(number: Int, speakerID: String, transcript: String)]
     ) -> String {
-        var lines = sharedItemPrefixLines(
-            item: item, template: template, rows: rows
-        )
-        lines.append("You are estimating ONE cell of the evaluation sheet: the evaluator's 好き嫌い (preference) for this item, from the utterances above.")
+        var lines: [String] = []
+        lines.append("You are estimating ONE cell of a Japanese vehicle ride-quality evaluation sheet: the evaluator's 好き嫌い (preference) for one item, from test-drive utterances.")
+        lines.append("Sheet: \(template.name)")
+        lines.append("Item \(item.number): \(item.titleJa) — \(item.definition)")
         lines.append("Preference scale: \(template.preferenceScale.minimum) (嫌い) to \(template.preferenceScale.maximum) (好き). The evaluator did NOT state a numeric preference — read their overall impression of this item from how they talked about it.")
         lines.append("Evidence: preference wording (気に入った・いいね・好みじゃない・嫌だ…) or evaluative wording about the behaviour (良い・悪い・気になる・不快・うるさい・改善した・収まりが悪い…).")
         lines.append("Guide: 2-3 clearly negative, 4 mildly negative, 5 mixed, 6 mildly positive, 7-8 clearly positive. When torn between null and a mild value, prefer the mild value.")
         lines.append("Spoken relative-strength scores in the rows (プラス/マイナス0.25 など) are measurements against a baseline spec, NOT preference — never convert them. Use null only when the rows are pure measurement talk with no evaluative wording.")
+        lines.append("")
+        lines.append("Utterances (numbered [n] speaker: text):")
+        for row in rows {
+            lines.append("[\(row.number)] \(row.speakerID): \(row.transcript)")
+        }
         lines.append("")
         lines.append("Return ONLY the JSON object. The FIRST character of your output MUST be `{`.")
         return lines.joined(separator: "\n")

@@ -5,14 +5,21 @@ import MLXLMCommon
 /// Reusable KV-cache state for consecutive MLX generation calls
 /// whose prompts share a leading token run.
 ///
-/// The plugin fill pipeline is prefill-dominated: the A1 Eval item
-/// call and its Tier 3a preference call re-send the same rendered
-/// transcript rows, and a parse-failure retry re-sends the whole
-/// prompt verbatim — each paying 4–9 s of prefill for tokens the
-/// previous call already pushed through the model. This cache keeps
-/// the KV state of the last plugin call alive on the owning actor
-/// and lets the next call skip every leading token it shares with
-/// it, prefilling only the divergent tail.
+/// The plugin fill pipeline is prefill-dominated (4–9 s per call
+/// on-device). Today the win is the A1 Eval parse-failure retry,
+/// which re-sends its prompt verbatim and reuses all but the tail
+/// token. A rows-first prompt layout that also let the Tier 3a
+/// preference call share the item call's rows (measured 3.4×
+/// faster on that call in the Mac harness) regressed extraction
+/// quality in the field and was reverted — if a future prompt
+/// redesign reintroduces a shared head, gate it on the
+/// ground-truth eval harness; this cache needs no code change to
+/// benefit.
+///
+/// Reuse note: a warm prefill starts mid-sequence, so its Metal
+/// reduction orders differ from a cold run's — greedy outputs can
+/// diverge at near-ties (observed: one synonym swap late in a
+/// 256-token generation). Equivalent quality, not bit-identical.
 ///
 /// Reuse is verified, never assumed (the discipline is borrowed
 /// from TurboFieldfare's verified-prefix prompt cache): the number
@@ -63,7 +70,15 @@ final class MLXPromptPrefixCache: @unchecked Sendable {
         if reusable > 0, !kv.isEmpty, canTrimPromptCache(kv) {
             let excess = offset - reusable
             if excess > 0 {
-                _ = trimPromptCache(kv, numTokens: excess)
+                // Per-layer, NOT MLXLMCommon.trimPromptCache: in the
+                // pinned 2.29.1 that helper trims only cache.first
+                // (upstream bug — the Python mlx_lm loops over all
+                // layers), which left layers 1…N-1 untrimmed, failed
+                // the verify below, and silently disabled reuse on
+                // every call (found via the Mac repro harness).
+                for layerCache in kv {
+                    _ = layerCache.trim(excess)
+                }
             }
             // Trust the cache's own account of what it holds, not
             // ours — a cache type that under-trims is discarded.

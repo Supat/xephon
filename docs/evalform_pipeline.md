@@ -286,14 +286,15 @@ preference — near all of them in practice.
 
 Since 2026-08-06 the MLX backend reuses the KV cache across
 consecutive plugin calls that share a leading token run
-(`MLXPromptPrefixCache`; both per-item prompts open with the
-byte-identical `sharedItemPrefixLines` head). The preference
-call and any verbatim retry skip re-prefilling the rows the item
-call just processed, so the preference pass no longer roughly
-doubles the item pass — its marginal cost is the short
-instruction tail plus ~a dozen decode tokens. On-device timings
-for the cached path are pending a field run; the figures above
-are the uncached (cold-call) profile.
+(`MLXPromptPrefixCache`, verified token-prefix + per-layer trim).
+With the field-validated instructions-first prompts, only
+verbatim parse-failure retries share a prefix, so the practical
+effect is a cheap retry; the preference pass still pays a full
+prefill. (A rows-first prompt layout that made the preference
+call nearly free was tried and reverted the same day — it
+regressed extraction quality; see
+docs/evalform_inferred_preference.md.) The figures above are the
+cold-call profile and still describe the nominal session.
 
 ## 8. Draft persistence and migration
 

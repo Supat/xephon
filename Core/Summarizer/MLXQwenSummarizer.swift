@@ -31,11 +31,12 @@ public actor MLXQwenSummarizer: SessionSummarizer, MLXLLMSummarizerActor {
     private let modelDirectory: URL
     private var container: ModelContainer?
     private let spec = MLXQwenSpec()
-    /// KV reuse across consecutive plugin calls: the A1 Eval item →
-    /// preference call pairs (and parse-failure retries) re-send the
-    /// same leading tokens; the cache lets them skip that prefill.
-    /// Plugin path only — summarize/review prompts don't share
-    /// prefixes worth the held KV memory.
+    /// KV reuse across consecutive plugin calls — today that means
+    /// verbatim parse-failure retries (see MLXPromptPrefixCache's
+    /// doc for the reverted shared-head history). Plugin path only —
+    /// summarize/review prompts don't share prefixes worth the held
+    /// KV memory (~0.6 GB for a 2k-token prompt, held for the
+    /// batch envelope's lifetime).
     private let pluginPrefixCache = MLXPromptPrefixCache()
 
     public init(modelIdentifier: String, modelDirectory: URL) {
