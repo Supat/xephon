@@ -22,8 +22,8 @@ settings:
     # level override into the GENERATED pbxproj, which touches only
     # one target (app=2, widget=1 → install failure) and is wiped by
     # the next generate_project.sh anyway.
-    CURRENT_PROJECT_VERSION: 2
-    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: 5
+    MARKETING_VERSION: "0.1.7"
     # DEVELOPMENT_TEAM (+ CODE_SIGN_STYLE) live in
     # Config/Local.xcconfig — gitignored per-developer. The xcconfig
     # is wired into both signed targets (main app + widget
@@ -66,6 +66,7 @@ targets:
         CFBundleDisplayName: Xephon
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSApplicationCategoryType: public.app-category.utilities
         LSRequiresIPhoneOS: true
         NSMicrophoneUsageDescription: "Xephon records short conversational audio to estimate per-speaker emotion. Audio is processed entirely on this device unless you toggle Cloud ASR fallback."
         NSSpeechRecognitionUsageDescription: "Xephon transcribes Japanese conversational audio on-device using Apple Speech."
@@ -136,6 +137,13 @@ targets:
       base:
         PRODUCT_NAME: Xephon
         PRODUCT_BUNDLE_IDENTIFIER: com.supatsaetia.xephon
+        # Mirror the Info.plist identity keys as INFOPLIST_KEY_*
+        # build settings: Xcode's General tab reads THESE, not the
+        # explicit plist, so without them App Category / Display
+        # Name render as None/empty in the UI even though the
+        # built product is correct. Keep both in sync.
+        INFOPLIST_KEY_CFBundleDisplayName: Xephon
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         # Increased-memory-limit entitlement for on-device LLM
         # inference — see comment in Xephon/Xephon.entitlements.
         CODE_SIGN_ENTITLEMENTS: Xephon/Xephon.entitlements
